@@ -1,0 +1,35 @@
+[build-system]
+# Minimum requirements for the build system to execute.
+requires = [
+    "setuptools",
+    "wheel",
+    "numpy>=1.20",
+    "scipy>=1.0.0",
+]
+
+[project]
+name = "cmad"
+version = "1.0.0"
+description = "Constitutive Models via Automatic Differentiation"
+requires-python = ">=3.8"
+readme = "README.md"
+authors = [
+    {name = "Tom Seidl", email = "dtseidl@sandia.gov"}
+]
+classifiers = ["Programming Language :: Python :: 3"]
+
+dependencies = [
+    "numpy >= 1.16.4",
+    "matplotlib",
+    "scipy >= 1.1.0",
+    "sympy",
+    "scikit-learn",
+    "coverage>=6.4",
+    "pytest-cov",
+    "pytest>=4.6",
+    "jax[cpu]",
+]
+
+[project.optional-dependencies]
+docs = ["numpydoc", "sphinx", "sphinx_automodapi", "sphinx_rtd_theme",
+        "sphinx-gallery", "jupyter"]
