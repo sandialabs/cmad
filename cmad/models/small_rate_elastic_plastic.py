@@ -7,7 +7,7 @@ from functools import partial
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.elastic_stress import (isotropic_linear_elastic_stress,
-    two_mu_scale_factor)
+                                        two_mu_scale_factor)
 from cmad.models.effective_stress import effective_stress_fun
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F
@@ -81,7 +81,7 @@ class SmallRateElasticPlastic(Model):
             num_residuals = 2
 
         elif def_type == DefType.PLANE_STRESS \
-            or def_type == DefType.UNIAXIAL_STRESS:
+                or def_type == DefType.UNIAXIAL_STRESS:
             num_residuals = 3
 
         else:
@@ -146,11 +146,10 @@ class SmallRateElasticPlastic(Model):
 
         super().__init__(residual, cauchy)
 
-
     @staticmethod
     def _residual(xi, xi_prev, params, u, u_prev,
-            def_type, elastic_stress, effective_stress, hardening,
-            yield_tol) -> jnp.array:
+                  def_type, elastic_stress, effective_stress, hardening,
+                  yield_tol) -> jnp.array:
 
         # state variables for the model
         cauchy = get_sym_tensor_from_vector(xi[0], 3)
@@ -192,7 +191,7 @@ class SmallRateElasticPlastic(Model):
             C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha]
 
         elif def_type == def_type.PLANE_STRESS or \
-             def_type == def_type.UNIAXIAL_STRESS:
+                def_type == def_type.UNIAXIAL_STRESS:
 
             if def_type == def_type.PLANE_STRESS:
                 C_elastic_stretch = trial_delta_cauchy[2, 2] / scale_factor
@@ -200,21 +199,19 @@ class SmallRateElasticPlastic(Model):
 
             elif def_type == def_type.UNIAXIAL_STRESS:
                 C_elastic_stretch = jnp.r_[trial_delta_cauchy[1, 1],
-                    trial_delta_cauchy[2, 2]] / scale_factor
+                                           trial_delta_cauchy[2, 2]] / scale_factor
                 C_plastic_stretch = jnp.r_[delta_cauchy[1, 1],
-                    delta_cauchy[2, 2]] / scale_factor
+                                           delta_cauchy[2, 2]] / scale_factor
 
             C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha,
-                C_elastic_stretch]
+                               C_elastic_stretch]
             C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha,
-                C_plastic_stretch]
+                               C_plastic_stretch]
 
         return cond_residual(yield_fun, C_elastic, C_plastic, yield_tol)
 
-
     def _check_params(self, parameters):
         raise NotImplementedError
-
 
     @staticmethod
     def cauchy(xi, xi_prev, params, u, u_prev, def_type) -> jnp.array:

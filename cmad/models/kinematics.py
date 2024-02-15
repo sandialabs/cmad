@@ -11,14 +11,14 @@ def gather_F(xi, u, def_type, local_var_idx):
         F_2D = u[0]
         F_33 = xi[local_var_idx]
         F = jnp.r_[jnp.c_[F_2D, jnp.zeros((2, 1))],
-                  jnp.c_[jnp.zeros((1, 2)), F_33]]
+                   jnp.c_[jnp.zeros((1, 2)), F_33]]
 
         return F
 
     elif def_type == DefType.PLANE_STRAIN:
         F_2D = u[0]
         F = jnp.r_[jnp.c_[F_2D, jnp.zeros((2, 1))],
-                  jnp.c_[jnp.zeros((1, 2)), 1.]]
+                   jnp.c_[jnp.zeros((1, 2)), 1.]]
 
         return F
 

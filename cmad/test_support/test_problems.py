@@ -123,13 +123,14 @@ def params_hyperelastic(flat_param_values):
 
     hyperelastic_transforms = hyperelastic_values.copy()
     hyperelastic_transforms = tree_map(lambda a: None, hyperelastic_transforms)
-    hyperelastic_transforms["elastic"] \
-        = tree_map(lambda x: elastic_params_log_scale,
-        hyperelastic_transforms["elastic"], is_leaf=lambda x: x is None)
+    hyperelastic_transforms["elastic"] = tree_map(
+        lambda x: elastic_params_log_scale,
+        hyperelastic_transforms["elastic"],
+        is_leaf=lambda x: x is None)
 
     hyperelastic_parameters = \
         Parameters(hyperelastic_values, hyperelastic_active_flags,
-        hyperelastic_transforms)
+                   hyperelastic_transforms)
 
     return hyperelastic_parameters
 

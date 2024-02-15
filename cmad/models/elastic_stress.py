@@ -14,7 +14,7 @@ def isotropic_linear_elastic_stress(elastic_strain, params):
     lame_mu = compute_mu(E, nu)
 
     cauchy = lame_lambda * jnp.trace(elastic_strain) * jnp.eye(3) \
-           + 2. * lame_mu * elastic_strain
+        + 2. * lame_mu * elastic_strain
 
     return cauchy
 
@@ -25,7 +25,7 @@ def isotropic_linear_elastic_cauchy_stress(F, u, params):
     grad_u = F - I
     epsilon = 0.5 * (grad_u + grad_u.T)
     trace_epsilon = jnp.trace(epsilon)
-    dev_epsilon = epsilon - trace_epsilon / 3. * I;
+    dev_epsilon = epsilon - trace_epsilon / 3. * I
 
     kappa = params["elastic"]["kappa"]
     mu = params["elastic"]["mu"]

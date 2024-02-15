@@ -13,9 +13,9 @@ def compute_cauchy_from_psi_b(F, u, params, psi_b_fun):
 
     dpsi_dIs = grad(psi_b_fun)(invariants_b, params)
     cauchy = 2. * J**-1 \
-           * (I3 * dpsi_dIs[2] * jnp.eye(3) \
-           + (dpsi_dIs[0] + I1 * dpsi_dIs[1]) * b \
-           - dpsi_dIs[1] * b @ b)
+        * (I3 * dpsi_dIs[2] * jnp.eye(3)
+           + (dpsi_dIs[0] + I1 * dpsi_dIs[1]) * b
+            - dpsi_dIs[1] * b @ b)
 
     return cauchy
 

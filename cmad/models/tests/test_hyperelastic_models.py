@@ -6,31 +6,34 @@ from functools import partial
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.elastic import Elastic
 from cmad.models.elastic_potential import (compute_cauchy_from_psi_b,
-    compressible_neohookean_potential)
+                                           compressible_neohookean_potential)
 from cmad.models.elastic_stress import (compressible_neohookean_cauchy_stress,
-    isotropic_linear_elastic_cauchy_stress)
+                                        isotropic_linear_elastic_cauchy_stress)
 from cmad.solver.nonlinear_solver import newton_solve
 from cmad.test_support.test_problems import params_hyperelastic
 
 
 class TestHyperelasticModels(unittest.TestCase):
     def test_potential_vs_analytic_uniaxial_cauchy(self, num_steps=100):
-        kappa = 0.5 # MPa
-        mu = 0.375 # MPa
+        kappa = 0.5  # MPa
+        mu = 0.375  # MPa
         elastic_params = np.array([kappa, mu])
         params = params_hyperelastic(elastic_params)
 
-        potential_model = Elastic(params,
-            elastic_stress_fun=partial(compute_cauchy_from_psi_b,
-            psi_b_fun=compressible_neohookean_potential),
+        potential_model = Elastic(
+            params,
+            elastic_stress_fun=partial(
+                compute_cauchy_from_psi_b,
+                psi_b_fun=compressible_neohookean_potential),
             def_type=DefType.UNIAXIAL_STRESS)
 
-        analytic_model = Elastic(params,
+        analytic_model = Elastic(
+            params,
             elastic_stress_fun=compressible_neohookean_cauchy_stress,
             def_type=DefType.UNIAXIAL_STRESS)
 
         linear_elastic_model = Elastic(params,
-            def_type=DefType.UNIAXIAL_STRESS)
+                                       def_type=DefType.UNIAXIAL_STRESS)
 
         F = np.repeat(np.eye(1)[:, :, np.newaxis], num_steps + 1, axis=2)
         strain_11 = np.linspace(0, 0.4, num_steps + 1)
@@ -53,7 +56,7 @@ class TestHyperelasticModels(unittest.TestCase):
 
         linear_elastic_model.set_xi_to_init_vals()
         linear_elastic_model.store_xi(xi_at_step,
-            linear_elastic_model.xi_prev(), 0)
+                                      linear_elastic_model.xi_prev(), 0)
         linear_elastic_cauchy = np.zeros((3, 3, num_steps + 1))
         linear_elastic_J = np.ones(num_steps + 1)
 
@@ -80,28 +83,30 @@ class TestHyperelasticModels(unittest.TestCase):
 
                 model.advance_xi()
 
-
         diff_tol = 1e-14
         cauchy_diff = potential_cauchy - analytic_cauchy
         J_diff = potential_J - analytic_J
         assert np.linalg.norm(cauchy_diff) < diff_tol
         assert np.linalg.norm(J_diff) < diff_tol
 
-        #hyper_sigma_11 = analytic_cauchy[0, 0, :]
-        #hyper_tau_11 = analytic_J * hyper_sigma_11
-        #le_sigma_11 = linear_elastic_cauchy[0, 0, :]
-        #print(f"\n\nNeohookean Cauchy stress = {hyper_sigma_11}\n")
-        #print(f"Neohookean Kirchhoff stress = {hyper_tau_11}\n")
-        #print(f"Linear elastic cauchy stress = {le_sigma_11}")
+        # hyper_sigma_11 = analytic_cauchy[0, 0, :]
+        # hyper_tau_11 = analytic_J * hyper_sigma_11
+        # le_sigma_11 = linear_elastic_cauchy[0, 0, :]
+        # print(f"\n\nNeohookean Cauchy stress = {hyper_sigma_11}\n")
+        # print(f"Neohookean Kirchhoff stress = {hyper_tau_11}\n")
+        # print(f"Linear elastic cauchy stress = {le_sigma_11}")
 
         # check consistency with 3D models
-        potential_model_3D = Elastic(params,
-            elastic_stress_fun=partial(compute_cauchy_from_psi_b,
-            psi_b_fun=compressible_neohookean_potential),
+        potential_model_3D = Elastic(
+            params,
+            elastic_stress_fun=partial(
+                compute_cauchy_from_psi_b,
+                psi_b_fun=compressible_neohookean_potential),
             def_type=DefType.FULL_3D)
         potential_cauchy_3D = np.zeros((3, 3, num_steps + 1))
 
-        analytic_model_3D = Elastic(params,
+        analytic_model_3D = Elastic(
+            params,
             elastic_stress_fun=compressible_neohookean_cauchy_stress,
             def_type=DefType.FULL_3D)
         analytic_cauchy_3D = np.zeros((3, 3, num_steps + 1))
@@ -139,6 +144,6 @@ class TestHyperelasticModels(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    hyperelastic_test_suite= \
+    hyperelastic_test_suite = \
         unittest.TestLoader().loadTestsFromTestCase(TestHyperelasticModels)
     unittest.TextTestRunner(verbosity=2).run(hyperelastic_test_suite)

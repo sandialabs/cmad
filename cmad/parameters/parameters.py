@@ -175,9 +175,9 @@ class Parameters():
         flat_values, _ = ravel_pytree(self.values)
         if return_canonical:
             active_flat_values = np.array([
-                transform_to_canonical(v, a, t) for v, a, t in 
-                zip(flat_values, self._flat_active_flags, 
-                self._flat_transforms)])[self._active_idx]
+                transform_to_canonical(v, a, t) for v, a, t in
+                zip(flat_values, self._flat_active_flags,
+                    self._flat_transforms)])[self._active_idx]
         else:
             active_flat_values = \
                 np.array(flat_values[self._active_idx])
@@ -204,7 +204,6 @@ class Parameters():
         flat_jac, _ = tree_flatten(reshaped_jacobian)
         array_jac = jnp.hstack(flat_jac)
         return array_jac[:, active_idx]
-
 
     def scalar_active_params_jacobian(self, jacobian):
         return self._active_params_jacobian(jacobian, 1, self._active_idx)

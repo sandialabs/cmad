@@ -63,11 +63,11 @@ class TestJ2Calibrations(unittest.TestCase):
                                    num_pts_per_increment),
                        np.ones(num_pts_per_increment) * strain_increment]
         eps_yy = np.r_[np.zeros(1),
-            np.zeros(num_pts_per_increment) * strain_increment,
-            np.linspace(
-                init_strain,
-                strain_increment,
-                num_pts_per_increment)]
+                       np.zeros(num_pts_per_increment) * strain_increment,
+                       np.linspace(
+            init_strain,
+            strain_increment,
+            num_pts_per_increment)]
 
         def_type = DefType.PLANE_STRESS
         ndims = def_type_ndims(def_type)

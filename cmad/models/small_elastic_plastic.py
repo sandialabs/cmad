@@ -7,7 +7,7 @@ from functools import partial
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.elastic_stress import (isotropic_linear_elastic_stress,
-    two_mu_scale_factor)
+                                        two_mu_scale_factor)
 from cmad.models.effective_stress import effective_stress_fun
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F
@@ -74,7 +74,7 @@ class SmallElasticPlastic(Model):
             num_residuals = 2
 
         elif def_type == DefType.PLANE_STRESS \
-            or def_type == DefType.UNIAXIAL_STRESS:
+                or def_type == DefType.UNIAXIAL_STRESS:
             num_residuals = 3
 
         else:
@@ -137,15 +137,14 @@ class SmallElasticPlastic(Model):
                            yield_tol=yield_tol)
 
         cauchy = partial(self.cauchy,
-            def_type=def_type, elastic_stress=elastic_stress_fun)
+                         def_type=def_type, elastic_stress=elastic_stress_fun)
 
         super().__init__(residual, cauchy)
 
-
     @staticmethod
     def _residual(xi, xi_prev, params, u, u_prev,
-            def_type, elastic_stress, effective_stress, hardening,
-            yield_tol) -> jnp.array:
+                  def_type, elastic_stress, effective_stress, hardening,
+                  yield_tol) -> jnp.array:
 
         # state variables for the model
         pstrain = get_sym_tensor_from_vector(xi[0], 3)
@@ -179,7 +178,7 @@ class SmallElasticPlastic(Model):
             C_plastic = jnp.r_[C_plastic_pstrain, C_plastic_alpha]
 
         elif def_type == def_type.PLANE_STRESS or \
-             def_type == def_type.UNIAXIAL_STRESS:
+                def_type == def_type.UNIAXIAL_STRESS:
 
             scale_factor = two_mu_scale_factor(params)
 
@@ -195,14 +194,12 @@ class SmallElasticPlastic(Model):
 
         return cond_residual(yield_fun, C_elastic, C_plastic, yield_tol)
 
-
     def _check_params(self, parameters):
         raise NotImplementedError
 
-
     @staticmethod
     def cauchy(xi, xi_prev, params, u, u_prev,
-        def_type, elastic_stress) -> jnp.array:
+               def_type, elastic_stress) -> jnp.array:
 
         elastic_strain = compute_elastic_strain(xi, params, u, def_type)
 

@@ -5,7 +5,7 @@ from functools import partial
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.elastic_stress import (isotropic_linear_elastic_cauchy_stress,
-    two_mu_scale_factor)
+                                        two_mu_scale_factor)
 from cmad.models.kinematics import gather_F
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
@@ -20,6 +20,7 @@ class Elastic(Model):
     """
     General elastic model
     """
+
     def __init__(self, parameters: Parameters,
                  elastic_stress_fun=isotropic_linear_elastic_cauchy_stress,
                  def_type=DefType.FULL_3D):
@@ -32,7 +33,7 @@ class Elastic(Model):
             num_residuals = 1
 
         elif def_type == DefType.PLANE_STRESS \
-            or def_type == DefType.UNIAXIAL_STRESS:
+                or def_type == DefType.UNIAXIAL_STRESS:
             num_residuals = 2
 
         else:
@@ -84,7 +85,6 @@ class Elastic(Model):
 
         super().__init__(residual, cauchy)
 
-
     @staticmethod
     def _residual(xi, xi_prev, params, u, u_prev,
                   def_type, elastic_stress) -> jnp.array:
@@ -93,8 +93,8 @@ class Elastic(Model):
         cauchy = get_sym_tensor_from_vector(xi[0], 3)
 
         # global state variables
-        F = gather_F(xi, u, def_type, 1) # 3D deformation gradient
-        #T = u[1] # temperature
+        F = gather_F(xi, u, def_type, 1)  # 3D deformation gradient
+        # T = u[1] # temperature
 
         # elastic residual
         scale_factor = two_mu_scale_factor(params)
@@ -107,7 +107,7 @@ class Elastic(Model):
             C_elastic = C_elastic_cauchy
 
         elif def_type == def_type.PLANE_STRESS or \
-             def_type == def_type.UNIAXIAL_STRESS:
+                def_type == def_type.UNIAXIAL_STRESS:
 
             if def_type == def_type.PLANE_STRESS:
                 C_stretch = cauchy[2, 2] / scale_factor
@@ -120,10 +120,8 @@ class Elastic(Model):
 
         return C_elastic
 
-
     def _check_params(self, parameters):
         raise NotImplementedError
-
 
     @staticmethod
     def cauchy(xi, xi_prev, params, u, u_prev,

@@ -3,15 +3,19 @@ import numpy as np
 from jax import jit
 
 
-def compute_elastic_fields(stress_tensor_at_yield,
-    min_stress_scale, max_stress_scale, elastic_params, num_steps):
+def compute_elastic_fields(
+        stress_tensor_at_yield,
+        min_stress_scale,
+        max_stress_scale,
+        elastic_params,
+        num_steps):
 
     E, nu = elastic_params
     stress_scale = np.linspace(min_stress_scale, max_stress_scale, num_steps)
 
     # stress
     stress = np.repeat(stress_tensor_at_yield[:, :, np.newaxis], num_steps,
-        axis=2)
+                       axis=2)
     for idx, scale in enumerate(stress_scale):
         stress[:, :, idx] *= scale
     I = np.eye(3)
@@ -26,7 +30,7 @@ def compute_elastic_fields(stress_tensor_at_yield,
 
 
 def compute_plastic_fields(stress_mask, yield_fun, yield_normal_fun,
-    isotropic_params, max_alpha, num_steps):
+                           isotropic_params, max_alpha, num_steps):
 
     yield_normal_fun = yield_normal_fun
 
