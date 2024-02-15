@@ -204,3 +204,7 @@ class Parameters():
         flat_jac, _ = tree_flatten(reshaped_jacobian)
         array_jac = jnp.hstack(flat_jac)
         return array_jac[:, active_idx]
+
+
+    def scalar_active_params_jacobian(self, jacobian):
+        return self._active_params_jacobian(jacobian, 1, self._active_idx)

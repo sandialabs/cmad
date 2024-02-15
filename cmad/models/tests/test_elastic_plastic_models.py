@@ -42,12 +42,14 @@ def get_F(I, strain, num_steps):
 
 def get_stress_masks(def_type):
     if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRESS:
-        stress_masks = [np.zeros((3, 3))] * 2
+        stress_masks = [None] * 2
         # uniaxial stress
+        stress_masks[0] = np.zeros((3, 3))
         stress_masks[0][0, 0] = 1.
         # equal and opposite biaxial stress
-        stress_masks[1][0, 0] = 1.
+        stress_masks[1] = np.eye(3)
         stress_masks[1][1, 1] = -1.
+        stress_masks[1][2, 2] = 0.
     elif def_type == DefType.UNIAXIAL_STRESS:
         stress_masks = [np.zeros((3, 3))] * 1
         stress_masks[0][0, 0] = 1.
@@ -122,7 +124,7 @@ def run_model_and_compare(model, F, weight, alpha, stress):
 
 class TestJ2Models(unittest.TestCase):
     def test_small_3D(self):
-        run_test("small", DefType.FULL_3D, num_steps=100)
+        run_test("small", DefType.FULL_3D)
 
     def test_small_plane_stress(self):
         run_test("small", DefType.PLANE_STRESS)

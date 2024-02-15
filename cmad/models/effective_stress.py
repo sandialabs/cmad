@@ -3,6 +3,9 @@ These all assume 3D cauchy stress inputs
 """
 import jax.numpy as jnp
 
+from cmad.models.elastic_constants import compute_mu
+from cmad.parameters.parameters import unpack_elastic_params
+
 
 def effective_stress_fun(effective_stress_type):
     if effective_stress_type == "J2":
@@ -31,9 +34,9 @@ def hill_effective_stress(cauchy, params):
     phi = jnp.sqrt(F * (cauchy[1, 1] - cauchy[2, 2])**2
                    + G * (cauchy[2, 2] - cauchy[0, 0])**2
                    + H * (cauchy[0, 0] - cauchy[1, 1])**2
-                   + 2. * ((L * cauchy[1, 2])**2
-                           + (M * cauchy[0, 2])**2
-                           + (N * cauchy[0, 1])**2))
+                   + L * (cauchy[2, 1]**2 + cauchy[1, 2]**2)
+                   + M * (cauchy[2, 0]**2 + cauchy[0, 2]**2)
+                   + N * (cauchy[1, 0]**2 + cauchy[0, 1]**2))
 
     return phi
 

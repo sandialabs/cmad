@@ -4,7 +4,7 @@ from jax import tree_map
 
 from cmad.parameters.parameters import Parameters
 from cmad.verification.functions import J2_yield, J2_yield_normal
-from cmad.verification.solutions import compute_fields
+from cmad.verification.solutions import compute_plastic_fields
 
 
 def params_J2_voce(flat_param_values):
@@ -109,6 +109,31 @@ def params_J2_voce(flat_param_values):
     return J2_parameters, hill_parameters, hosford_parameters
 
 
+def params_hyperelastic(flat_param_values):
+
+    kappa, mu = flat_param_values
+    elastic_params = {"kappa": kappa, "mu": mu}
+    elastic_params_log_scale = np.array([1.])
+
+    hyperelastic_values = {"elastic": elastic_params}
+
+    hyperelastic_active_flags = hyperelastic_values.copy()
+    hyperelastic_active_flags["elastic"] = tree_map(
+        lambda x: True, hyperelastic_active_flags["elastic"])
+
+    hyperelastic_transforms = hyperelastic_values.copy()
+    hyperelastic_transforms = tree_map(lambda a: None, hyperelastic_transforms)
+    hyperelastic_transforms["elastic"] \
+        = tree_map(lambda x: elastic_params_log_scale,
+        hyperelastic_transforms["elastic"], is_leaf=lambda x: x is None)
+
+    hyperelastic_parameters = \
+        Parameters(hyperelastic_values, hyperelastic_active_flags,
+        hyperelastic_transforms)
+
+    return hyperelastic_parameters
+
+
 class J2AnalyticalProblem():
     """
     Effective stress: J2 or J2 equivalent Hill
@@ -125,7 +150,8 @@ class J2AnalyticalProblem():
     def analytical_solution(self, stress_mask, max_alpha, num_steps):
 
         stress, strain, alpha = \
-            compute_fields(stress_mask, J2_yield, J2_yield_normal,
-                           self._flat_param_values, max_alpha, num_steps)
+            compute_plastic_fields(stress_mask, J2_yield, J2_yield_normal,
+                                   self._flat_param_values, max_alpha,
+                                   num_steps)
 
         return stress, strain, alpha

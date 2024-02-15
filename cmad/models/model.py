@@ -173,72 +173,48 @@ class Model(ABC):
         self._xi[idx] = xi.copy()
 
     def set_sym_tensor_xi(self, idx, xi):
-        if self._ndims == 3:
+        if self._num_eqs[idx] == 6:
             self._xi[idx][0] = xi[0, 0]
             self._xi[idx][1] = xi[0, 1]
             self._xi[idx][2] = xi[0, 2]
             self._xi[idx][3] = xi[1, 1]
             self._xi[idx][4] = xi[1, 2]
             self._xi[idx][5] = xi[2, 2]
-        if self._ndims == 2:
+        elif self._num_eqs[idx] == 3:
             self._xi[idx][0] = xi[0, 0]
             self._xi[idx][1] = xi[0, 1]
             self._xi[idx][2] = xi[1, 1]
-        if self._ndims == 1:
+        elif self._num_eqs[idx] == 1:
             self._xi[idx][0] = xi[0, 0]
 
+    def get_tensor_ndim(num_eqs):
+        if self._num_eqs[idx] == 9:
+            ndim = 3
+        elif self._num_eqs[idx] == 4:
+            ndim = 2
+        elif self._num_eqs[idx] == 1:
+            ndim = 1
+
+        return ndim
+
     def set_tensor_xi(self, idx, xi):
+        ndim = get_tensor_ndim(self._num_eqs[idx])
         eq = 0
-        for ii in range(self._ndims):
-            for jj in range(self._ndims):
+        for ii in range(ndim):
+            for jj in range(ndim):
                 self._xi[idx][eq] = xi[ii, jj]
                 eq += 1
 
     def add_to_xi(self, delta_xi):
         for idx in range(self.num_residuals):
             var_type = self._var_types[idx]
-            if var_type == VarType.SCALAR:
-                self.add_to_scalar_xi(idx, delta_xi)
-            if var_type == VarType.VECTOR:
-                self.add_to_vector_xi(idx, delta_xi)
-            if var_type == VarType.SYM_TENSOR:
-                self.add_to_sym_tensor_xi(idx, delta_xi)
-            if var_type == VarType.TENSOR:
-                self.add_to_tensor_xi(idx, delta_xi)
-
-    def add_to_scalar_xi(self, idx, delta_xi):
-        assert self._var_types[idx] == VarType.SCALAR
-        offset = self.delta_xi_offset(idx, 0)
-        self._xi[idx] += delta_xi[offset]
-
-    def add_to_vector_xi(self, idx, delta_xi):
-        assert self._var_types[idx] == VarType.VECTOR
-        for eq in range(self._ndims):
-            offset = self.delta_xi_offset(idx, eq)
-            self._xi[idx][eq] += delta_xi[offset]
-
-    def add_to_sym_tensor_xi(self, idx, delta_xi):
-        assert self._var_types[idx] == VarType.SYM_TENSOR
-        if self._ndims == 3:
-            for eq in range(6):
-                offset = self.delta_xi_offset(idx, eq)
-                self._xi[idx][eq] += delta_xi[offset]
-        if self._ndims == 2:
-            for eq in range(3):
-                offset = self.delta_xi_offset(idx, eq)
-                self._xi[idx][eq] += delta_xi[offset]
-        if self._ndims == 1:
-            offset = self.delta_xi_offset(idx, 0)
-            self._xi[idx][0] += delta_xi[offset]
-
-    def add_to_tensor_xi(self, idx, delta_xi):
-        assert self._var_types[idx] == VarType.TENSOR
-        eq = 0
-        for ii in range(self._ndims):
-            for jj in range(self._ndims):
-                offset = self.delta_xi_offsets(idx, eq)
-                self._xi[idx][eq] += delta_xi[offset]
-                eq += 1
+            if var_type != VarType.SCALAR:
+                for eq in range(self._num_eqs[idx]):
+                    offset = self.delta_xi_offset(idx, eq)
+                    self._xi[idx][eq] += delta_xi[offset]
+            else:
+                offset = self.delta_xi_offset(idx, 0)
+                self._xi[idx] += delta_xi[offset]
 
     def set_scalar_xi_prev(self, idx, xi_prev):
         self._xi_prev[idx] = xi_prev.copy()
@@ -247,24 +223,25 @@ class Model(ABC):
         self._xi_prev[idx] = xi_prev.copy()
 
     def set_sym_tensor_xi_prev(self, idx, xi_prev):
-        if self._ndims == 3:
+        if self._num_eqs[idx] == 6:
             self._xi_prev[idx][0] = xi_prev[0, 0]
             self._xi_prev[idx][1] = xi_prev[0, 1]
             self._xi_prev[idx][2] = xi_prev[0, 2]
             self._xi_prev[idx][3] = xi_prev[1, 1]
             self._xi_prev[idx][4] = xi_prev[1, 2]
             self._xi_prev[idx][5] = xi_prev[2, 2]
-        if self._ndims == 2:
+        elif self._num_eqs[idx] == 3:
             self._xi_prev[idx][0] = xi_prev[0, 0]
             self._xi_prev[idx][1] = xi_prev[0, 1]
             self._xi_prev[idx][2] = xi_prev[1, 1]
-        if self._ndims == 1:
+        elif self._num_eqs[idx] == 1:
             self._xi_prev[idx][0] = xi_prev[0, 0]
 
     def set_tensor_xi_prev(self, idx, xi_prev):
+        ndim = get_tensor_ndim(self._num_eqs[idx])
         eq = 0
-        for ii in range(self._ndims):
-            for jj in range(self._ndims):
+        for ii in range(ndim):
+            for jj in range(ndim):
                 self._xi_prev[idx][eq] = xi_prev[ii, jj]
                 eq += 1
 
@@ -275,24 +252,25 @@ class Model(ABC):
         self._u[idx] = u.copy()
 
     def set_sym_tensor_u(self, idx, u):
-        if self._ndims == 3:
-            self.u[idx][0] = u[0, 0]
-            self.u[idx][1] = u[0, 1]
-            self.u[idx][2] = u[0, 2]
-            self.u[idx][3] = u[1, 1]
-            self.u[idx][4] = u[1, 2]
-            self.u[idx][5] = u[2, 2]
-        if self._ndims == 2:
-            self.u[idx][0] = u[0, 0]
-            self.u[idx][1] = u[0, 1]
-            self.u[idx][2] = u[1, 1]
-        if self._ndims == 1:
-            self.u[idx][0] = u[0, 0]
+        if self._num_eqs[idx] == 6:
+            self._u[idx][0] = u[0, 0]
+            self._u[idx][1] = u[0, 1]
+            self._u[idx][2] = u[0, 2]
+            self._u[idx][3] = u[1, 1]
+            self._u[idx][4] = u[1, 2]
+            self._u[idx][5] = u[2, 2]
+        elif self._num_eqs[idx] == 3:
+            self._u[idx][0] = u[0, 0]
+            self._u[idx][1] = u[0, 1]
+            self._u[idx][2] = u[1, 1]
+        elif self._num_eqs[idx] == 1:
+            self._u[idx][0] = u[0, 0]
 
     def set_tensor_u(self, idx, u):
+        ndim = get_tensor_ndim(self._num_eqs[idx])
         eq = 0
-        for ii in range(self._ndims):
-            for jj in range(self._ndims):
+        for ii in range(ndim):
+            for jj in range(ndim):
                 self._u[idx][eq] = u[ii, jj]
                 eq += 1
 
@@ -303,24 +281,25 @@ class Model(ABC):
         self._u_prev[idx] = u_prev.copy()
 
     def set_sym_tensor_u_prev(self, idx, u_prev):
-        if self._ndims == 3:
-            self.u_prev[idx][0] = u_prev[0, 0]
-            self.u_prev[idx][1] = u_prev[0, 1]
-            self.u_prev[idx][2] = u_prev[0, 2]
-            self.u_prev[idx][3] = u_prev[1, 1]
-            self.u_prev[idx][4] = u_prev[1, 2]
-            self.u_prev[idx][5] = u_prev[2, 2]
-        if self._ndims == 2:
-            self.u_prev[idx][0] = u_prev[0, 0]
-            self.u_prev[idx][1] = u_prev[0, 1]
-            self.u_prev[idx][2] = u_prev[1, 1]
-        if self._ndims == 1:
-            self.u_prev[idx][0] = u_prev[0, 0]
+        if self._num_eqs[idx] == 6:
+            self._u_prev[idx][0] = u_prev[0, 0]
+            self._u_prev[idx][1] = u_prev[0, 1]
+            self._u_prev[idx][2] = u_prev[0, 2]
+            self._u_prev[idx][3] = u_prev[1, 1]
+            self._u_prev[idx][4] = u_prev[1, 2]
+            self._u_prev[idx][5] = u_prev[2, 2]
+        elif self._num_eqs[idx] == 3:
+            self._u_prev[idx][0] = u_prev[0, 0]
+            self._u_prev[idx][1] = u_prev[0, 1]
+            self._u_prev[idx][2] = u_prev[1, 1]
+        elif self._num_eqs[idx] == 1:
+            self._u_prev[idx][0] = u_prev[0, 0]
 
     def set_tensor_u_prev(self, idx, u_prev):
+        ndim = get_tensor_ndim(self._num_eqs[idx])
         eq = 0
-        for ii in range(self._ndims):
-            for jj in range(self._ndims):
+        for ii in range(ndim):
+            for jj in range(ndim):
                 self._u_prev[idx][eq] = u_prev[ii, jj]
                 eq += 1
 
