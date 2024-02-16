@@ -41,6 +41,19 @@ def hill_effective_stress(cauchy, params):
     return phi
 
 
+def hybrid_hill_effective_stress(cauchy, params, nn_fun):
+    phi_hill = hill_effective_stress(cauchy, params)
+    hydro_cauchy = jnp.trace(cauchy) / 3.
+    s = cauchy - hydro_cauchy * jnp.eye(3)
+    flat_s = jnp.array([s[0, 0], s[1, 1], s[2, 2],
+        s[0, 1], s[0, 2], s[1, 2]])
+    phi_discrepancy = nn_fun(flat_s,
+        params["effective stress"]["neural network"])
+
+    return phi_hill + phi_discrepancy[0]
+    #return phi_discrepancy[0] # NN only fit
+
+
 # only working for diagonal cauchy stress now
 def hosford_effective_stress(cauchy, params):
     vm_stress = J2_effective_stress(cauchy, params)
