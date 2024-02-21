@@ -16,10 +16,11 @@ from jax.flatten_util import ravel_pytree
 from jax.tree_util import tree_unflatten, tree_flatten
 
 
-def forward_with_offset(x, params, input_scale, output_scale):
-    xs = input_scale * x
-    output = forward(xs, params) - forward(jnp.zeros_like(xs), params)
-    return output_scale * output
+def forward_with_offset(x, params, input_scaler, output_scaler):
+    xs = input_scaler.scale_ * x + input_scaler.min_
+    scaled_output = forward(xs, params) - forward(jnp.zeros_like(xs), params)
+    output = (scaled_output - output_scaler.min_) / output_scaler.scale_
+    return output
 
 
 def forward(x, params):
@@ -39,12 +40,14 @@ def forward(x, params):
 class InputConvexNeuralNetwork():
 
     def __init__(self, layer_widths: list,
-                 input_scale: float = 1., output_scale: float = 1.):
-        self._init_params(layer_widths)
-        self.evaluate = partial(forward_with_offset, input_scale=input_scale,
-                                output_scale=output_scale)
+                 input_scaler, output_scaler,
+                 seed: int = 22):
+        self._init_params(layer_widths, seed)
+        self.evaluate = partial(forward_with_offset,
+                                input_scaler=input_scaler,
+                                output_scaler=output_scaler)
 
-    def _init_params(self, layer_widths: list, seed: int = 22):
+    def _init_params(self, layer_widths: list, seed: int):
         np.random.seed(seed)
         num_x_trainable_layers = len(layer_widths) - 1
         num_z_trainable_layers = len(layer_widths) - 2
