@@ -10,7 +10,7 @@ from cmad.models.elastic_stress import (isotropic_linear_elastic_stress,
                                         two_mu_scale_factor)
 from cmad.models.effective_stress import effective_stress_fun
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
-from cmad.models.kinematics import gather_F
+from cmad.models.kinematics import gather_F, off_axis_idx
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
 from cmad.models.paths import cond_residual
@@ -24,23 +24,30 @@ from cmad.models.var_types import (
     get_tensor_from_vector)
 
 
-def compute_elastic_strain(xi, params, u, def_type):
+def compute_elastic_strain(xi, params, u, def_type, uniaxial_stress_idx):
     local_var_idx = 2
-    F = gather_F(xi, u, def_type, local_var_idx)
+    F = gather_F(xi, u, def_type, local_var_idx, uniaxial_stress_idx)
     plastic_strain = get_sym_tensor_from_vector(xi[0], 3)
     grad_u = F - jnp.eye(3)
+    global_total_strain = 0.5 * (grad_u + grad_u.T)
+    # Q is a rotation from material coordinates to global / lab coordinates
+    # Q_{ij} = e_i (global) \dot e_j (material)
+    Q = params["rotation matrix"]
+    material_total_strain = Q.T @ global_total_strain @ Q
 
-    return 0.5 * (grad_u + grad_u.T) - plastic_strain
+    return material_total_strain - plastic_strain
 
 
 def compute_yield_fun_and_normal(xi, xi_prev, params, u, u_prev, def_type,
-                                 elastic_stress, effective_stress, hardening):
+                                 elastic_stress, effective_stress, hardening,
+                                 uniaxial_stress_idx):
 
     plastic_params = params["plastic"]
     Y = plastic_params["flow stress"]["initial yield"]["Y"]
     hardening_params = plastic_params["flow stress"]["hardening"]
 
-    elastic_strain = compute_elastic_strain(xi, params, u, def_type)
+    elastic_strain = compute_elastic_strain(xi, params, u, def_type,
+        uniaxial_stress_idx)
     cauchy = elastic_stress(elastic_strain, params)
     phi = effective_stress(cauchy, plastic_params)
 
@@ -64,7 +71,8 @@ class SmallElasticPlastic(Model):
                  def_type=DefType.FULL_3D,
                  elastic_stress_fun=isotropic_linear_elastic_stress,
                  hardening_funs: dict = get_hardening_funs(),
-                 yield_tol=1e-14):
+                 yield_tol=1e-14,
+                 uniaxial_stress_idx=0):
 
         self._def_type = def_type
         ndims = def_type_ndims(def_type)
@@ -82,7 +90,7 @@ class SmallElasticPlastic(Model):
 
         self._init_residuals(num_residuals)
 
-        # linearized plastic strain tensor
+        # linearized plastic strain tensor in material coordinates
         self.resid_names[0] = "plastic strain"
         self._var_types[0] = VarType.SYM_TENSOR
         self._num_eqs[0] = get_num_eqs(VarType.SYM_TENSOR, 3)
@@ -113,6 +121,7 @@ class SmallElasticPlastic(Model):
             self._var_types[2] = VarType.VECTOR
             self._num_eqs[2] = get_num_eqs(VarType.VECTOR, 2)
             init_off_axis_stretches = np.ones(self._num_eqs[2])
+            self._uniaxial_stress_idx = uniaxial_stress_idx
 
             self._init_xi += [init_off_axis_stretches]
 
@@ -134,17 +143,20 @@ class SmallElasticPlastic(Model):
                                effective_stress_type),
                            hardening=partial(combined_hardening_fun,
                                              hardening_funs=hardening_funs),
-                           yield_tol=yield_tol)
+                           yield_tol=yield_tol,
+                           uniaxial_stress_idx=uniaxial_stress_idx)
 
         cauchy = partial(self.cauchy,
-                         def_type=def_type, elastic_stress=elastic_stress_fun)
+                         def_type=def_type,
+                         elastic_stress=elastic_stress_fun,
+                         uniaxial_stress_idx=uniaxial_stress_idx)
 
         super().__init__(residual, cauchy)
 
     @staticmethod
     def _residual(xi, xi_prev, params, u, u_prev,
                   def_type, elastic_stress, effective_stress, hardening,
-                  yield_tol) -> jnp.array:
+                  yield_tol, uniaxial_stress_idx) -> jnp.array:
 
         # state variables for the model
         pstrain = get_sym_tensor_from_vector(xi[0], 3)
@@ -154,9 +166,10 @@ class SmallElasticPlastic(Model):
 
         # intermediate quantities
         delta_gamma = alpha - alpha_prev
-        cauchy, yield_fun, yield_normal = compute_yield_fun_and_normal(
+        material_cauchy, yield_fun, yield_normal = compute_yield_fun_and_normal(
             xi, xi_prev, params, u, u_prev, def_type,
-            elastic_stress, effective_stress, hardening)
+            elastic_stress, effective_stress, hardening,
+            uniaxial_stress_idx)
 
         # elastic residual
         C_elastic_pstrain_tensor = pstrain - pstrain_prev
@@ -182,12 +195,19 @@ class SmallElasticPlastic(Model):
 
             scale_factor = two_mu_scale_factor(params)
 
+            Q = params["rotation matrix"]
+            global_cauchy = Q @ material_cauchy @ Q.T
+            off_axis_stress_idx = off_axis_idx(uniaxial_stress_idx)
+
             if def_type == def_type.PLANE_STRESS:
-                C_stretch = cauchy[2, 2] / scale_factor
+                C_stretch = global_cauchy[2, 2] / scale_factor
 
             elif def_type == def_type.UNIAXIAL_STRESS:
-                C_stretch = jnp.r_[cauchy[1, 1], cauchy[2, 2]] \
-                    / scale_factor
+                first_idx = off_axis_stress_idx[0]
+                second_idx = off_axis_stress_idx[1]
+                C_stretch = jnp.r_[global_cauchy[first_idx, first_idx],
+                                   global_cauchy[second_idx, second_idx]] \
+                            / scale_factor
 
             C_elastic = jnp.r_[C_elastic_pstrain, C_elastic_alpha, C_stretch]
             C_plastic = jnp.r_[C_plastic_pstrain, C_plastic_alpha, C_stretch]
@@ -199,8 +219,13 @@ class SmallElasticPlastic(Model):
 
     @staticmethod
     def cauchy(xi, xi_prev, params, u, u_prev,
-               def_type, elastic_stress) -> jnp.array:
+               def_type, elastic_stress,
+               uniaxial_stress_idx) -> jnp.array:
 
-        elastic_strain = compute_elastic_strain(xi, params, u, def_type)
+        elastic_strain = compute_elastic_strain(xi, params, u, def_type,
+            uniaxial_stress_idx)
+        material_cauchy = elastic_stress(elastic_strain, params)
+        Q = params["rotation matrix"]
+        global_cauchy = Q @ material_cauchy @ Q.T
 
-        return elastic_stress(elastic_strain, params)
+        return global_cauchy
