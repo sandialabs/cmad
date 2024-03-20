@@ -197,12 +197,12 @@ class SmallElasticPlastic(Model):
 
             Q = params["rotation matrix"]
             global_cauchy = Q @ material_cauchy @ Q.T
-            off_axis_stress_idx = off_axis_idx(uniaxial_stress_idx)
 
             if def_type == def_type.PLANE_STRESS:
                 C_stretch = global_cauchy[2, 2] / scale_factor
 
             elif def_type == def_type.UNIAXIAL_STRESS:
+                off_axis_stress_idx = off_axis_idx(uniaxial_stress_idx)
                 first_idx = off_axis_stress_idx[0]
                 second_idx = off_axis_stress_idx[1]
                 C_stretch = jnp.r_[global_cauchy[first_idx, first_idx],
