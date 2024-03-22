@@ -20,15 +20,18 @@ from cmad.models.var_types import (
     get_scalar,
     get_sym_tensor_from_vector,
     get_vector_from_sym_tensor,
-    get_tensor_from_vector)
+    get_tensor_from_vector,
+    get_vector
+)
 
 
 def compute_delta_strain(xi, xi_prev, params, u, u_prev, def_type,
         uniaxial_stress_idx):
 
     local_var_idx = 2
-    F = gather_F(xi, u, def_type, local_var_idx)
-    F_prev = gather_F(xi_prev, u_prev, def_type, local_var_idx)
+    F = gather_F(xi, u, def_type, local_var_idx, uniaxial_stress_idx)
+    F_prev = gather_F(xi_prev, u_prev, def_type, local_var_idx,
+        uniaxial_stress_idx)
 
     I = jnp.eye(3)
     grad_u = F - I
@@ -36,12 +39,31 @@ def compute_delta_strain(xi, xi_prev, params, u, u_prev, def_type,
 
     epsilon = 0.5 * (grad_u + grad_u.T)
     epsilon_prev = 0.5 * (grad_u_prev + grad_u_prev.T)
+    delta_epsilon = epsilon - epsilon_prev
 
-    # Q is a rotation from material coordinates to global / lab coordinates
+    # Q is a rotation from material coordinates to global coordinates
     # Q_{ij} = e_i (global) \dot e_j (material)
     Q = params["rotation matrix"]
 
-    return Q.T @ (epsilon - epsilon_prev) @ Q
+    if def_type == DefType.UNIAXIAL_STRESS:
+        off_axis_delta_strain = get_vector(xi[3], 3)
+        constrained_delta_epsilon = jnp.array([
+            [delta_epsilon[0, 0],
+            off_axis_delta_strain[0],
+            off_axis_delta_strain[1]],
+            [off_axis_delta_strain[0],
+            delta_epsilon[1, 1],
+            off_axis_delta_strain[2]],
+            [off_axis_delta_strain[1],
+            off_axis_delta_strain[2],
+            delta_epsilon[2, 2]]
+        ])
+        material_delta_epsilon = Q.T @ constrained_delta_epsilon @ Q
+    else:
+        material_delta_epsilon = Q.T @ delta_epsilon @ Q
+
+
+    return material_delta_epsilon
 
 
 def compute_yield_fun_and_normal(xi, params, def_type,
@@ -85,9 +107,11 @@ class SmallRateElasticPlastic(Model):
         if def_type == DefType.FULL_3D:
             num_residuals = 2
 
-        elif def_type == DefType.PLANE_STRESS \
-                or def_type == DefType.UNIAXIAL_STRESS:
+        elif def_type == DefType.PLANE_STRESS:
             num_residuals = 3
+
+        elif def_type == DefType.UNIAXIAL_STRESS:
+            num_residuals = 4
 
         else:
             raise NotImplementedError
@@ -117,8 +141,6 @@ class SmallRateElasticPlastic(Model):
 
             self._init_xi += [init_oop_stretch]
 
-        # may want to allow for some idx ([0, 1 ,2]) to be the uniaxial
-        # stress idx later
         elif def_type == DefType.UNIAXIAL_STRESS:
             # off-axis stretches
             self.resid_names[2] = "off-axis stretches"
@@ -126,7 +148,14 @@ class SmallRateElasticPlastic(Model):
             self._num_eqs[2] = get_num_eqs(VarType.VECTOR, 2)
             init_off_axis_stretches = np.ones(self._num_eqs[2])
 
-            self._init_xi += [init_off_axis_stretches]
+            # off-axis delta strains
+            self.resid_names[3] = "off-axis delta strains"
+            self._var_types[3] = VarType.VECTOR
+            self._num_eqs[3] = get_num_eqs(VarType.VECTOR, 3)
+            init_off_axis_delta_strains = np.zeros(self._num_eqs[3])
+
+            self._init_xi += [init_off_axis_stretches] \
+                           + [init_off_axis_delta_strains]
 
         # set the initial values for xi and xi_prev
         self._init_state_variables()
@@ -146,7 +175,7 @@ class SmallRateElasticPlastic(Model):
                            hardening=partial(combined_hardening_fun,
                                              hardening_funs=hardening_funs),
                            yield_tol=yield_tol,
-                           uniaxial_stress_idx=0)
+                           uniaxial_stress_idx=uniaxial_stress_idx)
 
         cauchy = partial(self.cauchy, def_type=def_type)
 
@@ -209,10 +238,16 @@ class SmallRateElasticPlastic(Model):
                     / scale_factor
                 C_plastic_stretch = global_delta_cauchy[2, 2] / scale_factor
 
+                C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha,
+                                   C_elastic_stretch]
+                C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha,
+                                   C_plastic_stretch]
+
             elif def_type == def_type.UNIAXIAL_STRESS:
                 off_axis_stress_idx = off_axis_idx(uniaxial_stress_idx)
                 first_idx = off_axis_stress_idx[0]
                 second_idx = off_axis_stress_idx[1]
+
                 C_elastic_stretch = jnp.r_[
                     global_trial_delta_cauchy[first_idx, first_idx],
                     global_trial_delta_cauchy[second_idx, second_idx]] \
@@ -221,11 +256,21 @@ class SmallRateElasticPlastic(Model):
                     global_delta_cauchy[first_idx, first_idx],
                     global_delta_cauchy[second_idx, second_idx]] \
                     / scale_factor
+                C_elastic_delta_strain = jnp.r_[
+                    global_trial_delta_cauchy[0, 1],
+                    global_trial_delta_cauchy[0, 2],
+                    global_trial_delta_cauchy[1, 2]
+                ] / scale_factor
+                C_plastic_delta_strain = jnp.r_[
+                    global_delta_cauchy[0, 1],
+                    global_delta_cauchy[0, 2],
+                    global_delta_cauchy[1, 2]
+                ] / scale_factor
 
-            C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha,
-                               C_elastic_stretch]
-            C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha,
-                               C_plastic_stretch]
+                C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha,
+                                   C_elastic_stretch, C_elastic_delta_strain]
+                C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha,
+                                   C_plastic_stretch, C_plastic_delta_strain]
 
         return cond_residual(yield_fun, C_elastic, C_plastic, yield_tol)
 

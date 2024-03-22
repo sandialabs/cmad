@@ -26,7 +26,7 @@ def gather_F(xi, u, def_type, local_var_idx,
 
     elif def_type == DefType.UNIAXIAL_STRESS:
         on_axis_idx = uniaxial_stress_idx
-        F_uniaxial = u[0][on_axis_idx, on_axis_idx]
+        F_uniaxial = u[0][0, 0]
         stretches = xi[local_var_idx]
 
         if on_axis_idx == 0:
