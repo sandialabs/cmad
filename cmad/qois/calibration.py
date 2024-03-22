@@ -17,8 +17,11 @@ class Calibration(QoI):
                               weight=jnp.asarray(weight, dtype=np.float64))
         super().__init__(partial_qoi)
 
-    # _qoi not an abstract class, as signatures may be class-specific
 
+    def data_at_step(self, step):
+        return self._data[:, :, step]
+
+    # _qoi not an abstract class, as signatures may be class-specific
     @staticmethod
     def _qoi(xi, xi_prev, params, u, u_prev,
              data_at_step, cauchy_fun, weight) -> Array:

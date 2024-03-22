@@ -21,7 +21,7 @@ class QoI(ABC):
 
         variables = self._model.variables()
         deriv_mode = self._model.deriv_mode()
-        data_at_step = self._data[:, :, step]
+        data_at_step = self.data_at_step(step)
 
         if deriv_mode == DerivType.DNONE:
             self._J = np.asarray(self._qoi(*variables, data_at_step),
