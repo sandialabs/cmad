@@ -30,10 +30,27 @@ def compute_elastic_strain(xi, params, u, def_type, uniaxial_stress_idx):
     plastic_strain = get_sym_tensor_from_vector(xi[0], 3)
     grad_u = F - jnp.eye(3)
     global_total_strain = 0.5 * (grad_u + grad_u.T)
-    # Q is a rotation from material coordinates to global / lab coordinates
+
+    # Q is a rotation from material coordinates to global coordinates
     # Q_{ij} = e_i (global) \dot e_j (material)
     Q = params["rotation matrix"]
-    material_total_strain = Q.T @ global_total_strain @ Q
+
+    if def_type == DefType.UNIAXIAL_STRESS:
+        off_axis_global_plastic_strain = Q @ plastic_strain @ Q.T
+        constrained_global_total_strain = jnp.array([
+            [global_total_strain[0, 0],
+            off_axis_global_plastic_strain[0, 1],
+            off_axis_global_plastic_strain[0, 2]],
+            [off_axis_global_plastic_strain[1, 0],
+            global_total_strain[1, 1],
+            off_axis_global_plastic_strain[1, 2]],
+            [off_axis_global_plastic_strain[2, 0],
+            off_axis_global_plastic_strain[2, 1],
+            global_total_strain[2, 2]]
+        ])
+        material_total_strain = Q.T @ constrained_global_total_strain @ Q
+    else:
+        material_total_strain = Q.T @ global_total_strain @ Q
 
     return material_total_strain - plastic_strain
 
@@ -113,8 +130,6 @@ class SmallElasticPlastic(Model):
 
             self._init_xi += [init_oop_stretch]
 
-        # may want to allow for some idx ([0, 1 ,2]) to be the uniaxial
-        # stress idx later
         elif def_type == DefType.UNIAXIAL_STRESS:
             # off-axis stretches
             self.resid_names[2] = "off-axis stretches"
