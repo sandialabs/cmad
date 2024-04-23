@@ -1,7 +1,7 @@
 import numpy as np
 
 import jax.numpy as jnp
-from jax import jit, jacfwd, jacrev, Array
+from jax import hessian, jit, jacfwd, jacrev, Array
 
 from abc import ABC, abstractmethod
 from functools import partial
@@ -16,6 +16,23 @@ class Model(ABC):
         self._jacobian = [jit(jacfwd(residual_fun, argnums=DerivType.DXI)),
                           jit(jacfwd(residual_fun, argnums=DerivType.DXI_PREV)),
                           jit(jacrev(residual_fun, argnums=DerivType.DPARAMS))]
+
+
+        self._hessian_states = jit(hessian(residual_fun,
+                                   argnums=(DerivType.DXI,
+                                            DerivType.DXI_PREV)))
+
+        # not sure if jacfwd or jacrev is preferred
+        self._hessian_xi_params = jit(jacrev(jacfwd(residual_fun,
+                                      argnums=DerivType.DXI),
+                                      argnums=DerivType.DPARAMS))
+
+        self._hessian_xi_prev_params = jit(jacrev(jacfwd(residual_fun,
+                                           argnums=DerivType.DXI_PREV),
+                                           argnums=DerivType.DPARAMS))
+
+        self._hessian_params_params = jit(hessian(residual_fun,
+                                          argnums=DerivType.DPARAMS))
 
         self.cauchy = jit(cauchy_fun)
         self.dcauchy = [jit(jacfwd(cauchy_fun, argnums=DerivType.DXI)),
@@ -62,6 +79,19 @@ class Model(ABC):
                     Jac, self.num_dofs), dtype=np.float64)
         else:
             self._Jac = np.hstack(self._jacobian[deriv_mode](*variables))
+
+
+    def evaluate_hessians(self):
+        """
+        Evaluate the Hessians of the residual
+        y[2]["elastic"]["E"][2]["elastic"]["E"]
+        # (argnum, variable idx / pytree key, argnum, variable idx / pytree key, num_residuals)
+        """
+
+        variables = self.variables()
+
+        self._d2C_dstates = self._hessian_states(*variables)
+
 
     def evaluate_cauchy(self):
         """

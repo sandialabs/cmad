@@ -25,7 +25,7 @@ from jax.tree_util import tree_flatten, tree_flatten_with_path, tree_reduce
 
 
 def get_model_state_hessian(model, first_deriv_type, second_deriv_type):
-    hessians = model._d2C
+    hessians = model._d2C_dstates
 
     num_residuals = model.num_residuals
 
@@ -38,15 +38,12 @@ def get_model_state_hessian(model, first_deriv_type, second_deriv_type):
     return d2C_dxi2
 
 
-def get_model_params_hessian(model, second_deriv_type):
+def get_model_params_hessian(model):
     first_deriv_type = DerivType.DPARAMS
-    hessians = model._d2C
 
     num_active_params = model.parameters.num_active_params
     num_dofs = model.num_dofs
     num_residuals = model.num_residuals
-    d2C_dxi2 = np.zeros((num_dofs, num_dofs, num_dofs))
-
 
     pp_hessian = model._hessian_params_params(*model.variables())
     flat, _ = tree_flatten_with_path(pp_hessian)
@@ -75,6 +72,8 @@ def get_model_params_hessian(model, second_deriv_type):
         [flat[idx][1].reshape(num_dofs, *model.parameters.block_shapes[idx])
         for idx in range(offset, offset + num_names)]
         for offset in offsets])
+
+    assert False
 
     offsets = num_residuals * np.arange(num_residuals)
 
@@ -217,7 +216,7 @@ def compute_cauchy(model, F):
         d2C_dxi_prev2 = get_model_state_hessian(model,
                         DerivType.DXI_PREV, DerivType.DXI_PREV)
 
-        #z = get_model_params_hessian(model, DerivType.DPARAMS)
+        z = get_model_params_hessian(model)
 
 
         model.evaluate_cauchy()

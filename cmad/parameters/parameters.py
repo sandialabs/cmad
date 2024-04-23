@@ -127,6 +127,10 @@ class Parameters():
 
         if active_flags is not None:
             param_sizes = tree_map(lambda x: get_size(x), self.values)
+            flat_param_sizes, _ = tree_flatten(param_sizes)
+            self.block_shapes = [(x, y)
+                for x in flat_param_sizes
+                for y in flat_param_sizes]
 
             self._flat_active_flags = \
                 np.array(flatten_by_value_size(values, active_flags)).squeeze()
