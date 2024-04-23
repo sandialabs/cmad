@@ -35,6 +35,16 @@ def get_model_state_hessian(model, first_deriv_type, second_deriv_type):
         for col_res_idx in range(num_residuals)], axis=2)
         for row_res_idx in range(num_residuals)], axis=1)
 
+    chk_d2C_dxi2 = np.block([[
+        hessians[first_deriv_type][row_res_idx][second_deriv_type][col_res_idx]
+        for col_res_idx in range(num_residuals)]
+        for row_res_idx in range(num_residuals)]
+    )
+
+    hnorm = np.linalg.norm(d2C_dxi2)
+    hnorm_diff = np.linalg.norm(d2C_dxi2 - chk_d2C_dxi2)
+    print(f"hessian norm, diff = {hnorm:.2e}, {hnorm_diff:.2e}")
+
     return d2C_dxi2
 
 
@@ -111,10 +121,10 @@ def get_model_params_hessian(model, second_deriv_type):
 
     # flatten the pytree; this time the structure will be different / simpler
 
-    d2C_dparams2 = np.block([
-        [pxi_flat[idx][1].reshape(num_dofs, *model.parameters.block_shapes[idx])
-        for idx in range(offset, offset + num_residuals)]
-        for offset in offsets])
+    #d2C_dparams2 = np.block([
+    #    [pxi_flat[idx][1].reshape(num_dofs, *model.parameters.block_shapes[idx])
+    #    for idx in range(offset, offset + num_residuals)]
+    #    for offset in offsets])
 
     #d2C_dparams2 = np.block([
     #    [flat[idx][1].reshape(num_dofs, *model.parameters.block_shapes[idx])
@@ -245,7 +255,7 @@ def compute_cauchy(model, F):
         d2C_dxi_prev2 = get_model_state_hessian(model,
                         DerivType.DXI_PREV, DerivType.DXI_PREV)
 
-        z = get_model_params_hessian(model, DerivType.DPARAMS)
+        #z = get_model_params_hessian(model, DerivType.DPARAMS)
 
 
         model.evaluate_cauchy()
@@ -306,6 +316,8 @@ J2_parameters_nn = create_J2_parameters_nn(hardening_nn.params)
 nn_hardening_fun = {"neural network": hardening_nn.evaluate}
 model = SmallRateElasticPlastic(J2_parameters_nn, def_type,
                                 hardening_funs=nn_hardening_fun)
+
+#model = SmallElasticPlastic(J2_parameters_nn, def_type,
 
 initial_guess = model.parameters.flat_active_values(True).copy()
 num_active_params = model.parameters.num_active_params
