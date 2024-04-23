@@ -194,8 +194,7 @@ class Objective():
         # adjoint pass
         num_dofs = model.num_dofs
         history_vec = np.zeros((num_dofs, 1))
-        # container to store adjoint variables
-        phi_at_step = [None] * (num_steps + 1)
+        phi_at_step = [np.zeros(num_dofs)] * (num_steps + 1)
 
         for step in range(num_steps, 0, -1):
 
@@ -233,6 +232,7 @@ class Objective():
 
         # direct-adjoint pass for Hessian
         hessian = np.zeros((num_active_params, num_active_params))
+        dxi_dp_prev = np.zeros((num_dofs, num_active_params))
         dxi_dp = np.zeros((num_dofs, num_active_params))
 
         for step in range(1, num_steps + 1):
@@ -245,7 +245,6 @@ class Objective():
             xi_prev = xi_at_step[step - 1]
             model.gather_xi(xi, xi_prev)
 
-            #solve for forward sensitivity matrix
             model.seed_xi()
             model.evaluate()
             dC_dxi = model.Jac()
@@ -258,8 +257,8 @@ class Objective():
             model.evaluate()
             dC_dp = model.Jac()
 
-            rhs = -dC_dp - dC_dxi_prev @ dxi_dp
-            dxi_dp_new = np.linalg.solve(dC_dxi, rhs)
+            rhs = -dC_dp - dC_dxi_prev @ dxi_dp_prev
+            dxi_dp = np.linalg.solve(dC_dxi, rhs)
 
             model.evaluate_hessians()
             d2C_dxi2 = model.d2C_dxi2
@@ -279,26 +278,25 @@ class Objective():
             # compute hessian
             hessian += d2J_dp2 \
                 + np.einsum("q,qij->ij", phi, d2C_dp2) \
-                + np.einsum("ik,kj->ij", d2J_dp_dxi, dxi_dp_new) \
-                + np.einsum("q,qik,kj->ij", phi, d2C_dp_dxi,dxi_dp_new) \
-                + np.einsum("ki,jk->ij", dxi_dp_new, d2J_dp_dxi) \
-                + np.einsum("ki,q,qjk->ij", dxi_dp_new, phi, d2C_dp_dxi) \
-                + np.einsum("km,ki,mj->ij", d2J_dxi2, dxi_dp_new, dxi_dp_new) \
-                + np.einsum("q,qkm,ki,mj->ij", phi, d2C_dxi2, dxi_dp_new,
-                                               dxi_dp_new) \
+                + np.einsum("ik,kj->ij", d2J_dp_dxi, dxi_dp) \
+                + np.einsum("q,qik,kj->ij", phi, d2C_dp_dxi,dxi_dp) \
+                + np.einsum("ki,jk->ij", dxi_dp, d2J_dp_dxi) \
+                + np.einsum("ki,q,qjk->ij", dxi_dp, phi, d2C_dp_dxi) \
+                + np.einsum("km,ki,mj->ij", d2J_dxi2, dxi_dp, dxi_dp) \
+                + np.einsum("q,qkm,ki,mj->ij", phi, d2C_dxi2, dxi_dp,
+                                               dxi_dp) \
                 + np.einsum("q,qik,kj->ij", phi, d2C_dp_dxi_prev,dxi_dp) \
                 + np.einsum("q,qkm,ki,mj->ij", phi, d2C_dxi_dxi_prev,
-                                               dxi_dp_new, dxi_dp) \
+                                               dxi_dp, dxi_dp) \
                 + np.einsum("q,qmk,ki,mj->ij", phi, d2C_dxi_dxi_prev, dxi_dp,
-                                               dxi_dp_new) \
-                + np.einsum("q,qkm,ki,mj->ij", phi, d2C_dxi_prev2, dxi_dp,
                                                dxi_dp) \
-                + np.einsum("q,ki,qjk->ij", phi, dxi_dp, d2C_dp_dxi_prev)
+                + np.einsum("q,qkm,ki,mj->ij", phi, d2C_dxi_prev2, dxi_dp,
+                                               dxi_dp_prev) \
+                + np.einsum("q,ki,qjk->ij", phi, dxi_dp_prev, d2C_dp_dxi_prev)
 
-            dxi_dp = dxi_dp_new
+            dxi_dp_prev = dxi_dp
 
         # this function doesn't exist yet
         #hessian = model.parameters.transform_hessian(hessian)
-
 
         return J, grad, hessian
