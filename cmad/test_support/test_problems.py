@@ -65,7 +65,6 @@ def params_J2_voce(flat_param_values):
 
     hill_active_flags = hill_values.copy()
     hill_active_flags = tree_map(lambda a: False, hill_active_flags)
-    hill_active_flags["plastic"]["effective stress"]["hill"]["Y"] = True
     hill_active_flags["plastic"]["flow stress"] = \
         tree_map(lambda x: True, hill_active_flags["plastic"]["flow stress"])
 
@@ -93,7 +92,6 @@ def params_J2_voce(flat_param_values):
 
     hosford_active_flags = hosford_values.copy()
     hosford_active_flags = tree_map(lambda a: False, hosford_active_flags)
-    hosford_active_flags["plastic"]["effective stress"]["hosford"]["Y"] = True
     hosford_active_flags["plastic"]["flow stress"] = \
         tree_map(lambda x: True,
                  hosford_active_flags["plastic"]["flow stress"])

@@ -139,7 +139,7 @@ class Model(ABC):
 
         hessian_states = self._hessian_states(*variables)
         hessian_params_params = self._hessian_params_params(*variables)
-        hessian_xi_params =  self._hessian_xi_params(*variables)
+        hessian_xi_params = self._hessian_xi_params(*variables)
         hessian_xi_prev_params = self._hessian_xi_prev_params(*variables)
 
         self.d2C_dxi2 = self.unpack_state_hessian(hessian_states,

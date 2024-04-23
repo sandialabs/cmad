@@ -90,70 +90,6 @@ def get_models(problem, model_type, def_type):
     return J2_model, hill_model, hosford_model
 
 
-def get_model_state_hessian(model, first_deriv_type, second_deriv_type):
-    hessians = model._d2C
-
-    num_dofs = model.num_dofs
-    num_residuals = model.num_residuals
-
-    d2C_dxi2 = np.concatenate([np.concatenate(
-        [hessians[first_deriv_type][row_res_idx][second_deriv_type][col_res_idx]
-        for col_res_idx in range(num_residuals)], axis=2)
-        for row_res_idx in range(num_residuals)], axis=1)
-
-    return d2C_dxi2
-
-
-def get_model_params_hessian(model, second_deriv_type):
-    first_deriv_type = DerivType.DPARAMS
-    hessians = model._d2C
-
-    num_active_params = model.parameters.num_active_params
-    num_dofs = model.num_dofs
-    num_residuals = model.num_residuals
-    d2C_dxi2 = np.zeros((num_dofs, num_dofs, num_dofs))
-
-    #m = tree_map(lambda y : y[2], tree_map(lambda x: x, hessians[2]))
-
-    #z = jnp.concatenate(tree_flatten(tree_map(lambda x: x.reshape(num_dofs, -1),
-    #    hessians[2]["elastic"]["E"][2]))[0], axis=1)
-
-    #z = tree_flatten(tree_map(jnp.concatenate(tree_flatten(tree_map(lambda x: x.reshape(num_dofs, -1),
-    #    y))[0], axis=1), y))[0]
-
-    z = jnp.concatenate(tree_flatten(tree_map(lambda x: x.reshape(num_dofs, -1),
-        hessians[2]["elastic"]["E"][2]))[0], axis=1)
-
-    #z = jnp.stack(tree_map(jnp.concatenate(
-    #    tree_map: lambda x: x.reshape(num_dofs, -1), axis=1)
-
-    #flats, _ = tree_flatten_with_path(hessians[2])
-
-    #z = jnp.stack(jnp.concatenate(tree_map(lambda y:
-    #    tree_flatten(tree_map(lambda x: x.reshape(num_dofs, -1),
-    #    y[2]))[0], axis=1), hessians[2]), axis=2)
-
-    #z = jnp.stack(tree_flatten(tree_map(
-    #    jnp.concatenate(lambda y: tree_flatten(tree_map(
-    #    lambda x: x.reshape(num_dofs, -1), y[2]))[0], axis=1),
-    #    hessians[2]))[0], axis=2)
-
-    #z = jnp.stack(jnp.concatenate(tree_map(lambda y:
-    #    tree_flatten(tree_map(lambda x: x.reshape(num_dofs, -1),
-    #    y[2]))[0]), hessians[2]), axis=2)
-
-
-    #z = np.concatenate(tree_map(lambda x:
-    #    ravel_pytree(hessians[2]["elastic"]["E"][2])))
-
-    #flat_hess = np.concatenate(tree_map(lambda x: ravel_pytree(x)[0],
-    #    hessians[first_deriv_type]), axis=
-
-    assert False
-
-    return d2C_dxi2
-
-
 def run_model_and_compare(model, F, weight, alpha, stress):
     num_steps = F.shape[2] - 1
     xi_at_step = [[None, None] for ii in range(num_steps + 1)]
@@ -178,22 +114,14 @@ def run_model_and_compare(model, F, weight, alpha, stress):
         qoi.evaluate(step)
         J += qoi.J()
 
-        model.evaluate_hessians()
-
-        d2C_dxi2 = get_model_state_hessian(model, DerivType.DXI, DerivType.DXI)
-        d2C_dxi_dxi_prev = get_model_state_hessian(model,
-                           DerivType.DXI, DerivType.DXI_PREV)
-        d2C_dxi_prev2 = get_model_state_hessian(model,
-                        DerivType.DXI_PREV, DerivType.DXI_PREV)
-
-        z = get_model_params_hessian(model, DerivType.DPARAMS)
-
         qoi.evaluate_hessians(step)
-        y = qoi._d2J
+        d2J_dxi2 = qoi.d2J_dxi2
+        d2J_dparams2 = qoi.d2J_dparams2
+        d2J_dxi_dparams = qoi.d2J_dxi_dparams
 
-        #z = model._hessian[0](*model.variables())
-        #print(z)
         assert False
+
+        model.evaluate_hessians()
 
         model.evaluate_cauchy()
         cauchy[:, :, step] = model.Sigma().copy()
