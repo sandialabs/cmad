@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import jax.numpy as jnp
 
 from jax import tree_map
+from jax.tree_util import tree_flatten
 
 from scipy.optimize import fmin_l_bfgs_b
 
@@ -18,10 +19,6 @@ from cmad.qois.calibration import Calibration
 from cmad.qois.tests.test_J2_fd_checks import (fd_grad_check_components,
                                                fd_grad_check)
 from cmad.solver.nonlinear_solver import newton_solve
-
-from jax import tree_map, jit
-from jax.flatten_util import ravel_pytree
-from jax.tree_util import tree_flatten, tree_flatten_with_path, tree_reduce
 
 
 def get_model_state_hessian(model, first_deriv_type, second_deriv_type):
@@ -57,10 +54,9 @@ def get_model_params_hessian(model, first_deriv_type):
         elif first_deriv_type == DerivType.DXI_PREV:
             pytree_hessian = model.d2C_dxi_prev_dparams
 
-    flat_hessian, _ = tree_flatten_with_path(pytree_hessian)
-
+    flat_hessian, _ = tree_flatten(pytree_hessian)
     hessian = np.block([
-        [flat_hessian[idx][1].reshape(num_dofs, *block_shapes[idx])
+        [flat_hessian[idx].reshape(num_dofs, *block_shapes[idx])
         for idx in range(offset, offset + num_param_names)]
         for offset in offsets])
 
