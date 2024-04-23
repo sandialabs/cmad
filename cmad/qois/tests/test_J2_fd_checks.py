@@ -11,12 +11,114 @@ from cmad.solver.nonlinear_solver import newton_solve
 from cmad.test_support.test_problems import J2AnalyticalProblem
 
 
-def evaluate_hessian(qoi, hs=np.logspace(-2, -10, 9)):
+def evaluate_hessian(qoi):
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
     hessian_obj = Objective(qoi, "direct-adjoint hessian")
     return hessian_obj.evaluate(flat_active_values)
+
+
+def fd_hessian_check_components(qoi, hs=np.logspace(-2, -10, 9), seed=22):
+    model = qoi.model()
+    flat_active_values = model.parameters.flat_active_values(True)
+    num_active_params = model.parameters.num_active_params
+    hessian_obj = Objective(qoi, "direct-adjoint hessian")
+
+    J_ref, grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
+
+    unique_idx = np.triu_indices(num_active_params)
+    num_unique_entries = len(unique_idx[0])
+    fd_error = np.zeros((len(hs), num_unique_entries))
+
+    for hh, h in enumerate(hs):
+        fd_hessian = np.zeros((num_active_params, num_active_params))
+
+        for ii in range(num_active_params):
+            for jj in range(num_active_params):
+
+                if ii == jj:
+                    params_plus = flat_active_values.copy()
+                    params_plus[ii] += h
+                    model.parameters.set_active_values_from_flat(params_plus)
+                    J_plus = compute_fun(qoi)
+
+                    params_minus = flat_active_values.copy()
+                    params_minus[ii] -= h
+                    model.parameters.set_active_values_from_flat(params_minus)
+                    J_minus = compute_fun(qoi)
+
+                    fd_hessian[ii, ii] = (J_plus + J_minus - 2. * J_ref) \
+                        / h**2
+
+                elif ii < jj:
+
+                    params_pp = flat_active_values.copy()
+                    params_pp[ii] += h
+                    params_pp[jj] += h
+                    model.parameters.set_active_values_from_flat(params_pp)
+                    J_pp = compute_fun(qoi)
+
+                    params_mm = flat_active_values.copy()
+                    params_mm[ii] -= h
+                    params_mm[jj] -= h
+                    model.parameters.set_active_values_from_flat(params_mm)
+                    J_mm = compute_fun(qoi)
+
+                    params_pm = flat_active_values.copy()
+                    params_pm[ii] += h
+                    params_pm[jj] -= h
+                    model.parameters.set_active_values_from_flat(params_pm)
+                    J_pm = compute_fun(qoi)
+
+                    params_mp = flat_active_values.copy()
+                    params_mp[ii] -= h
+                    params_mp[jj] += h
+                    model.parameters.set_active_values_from_flat(params_mp)
+                    J_mp = compute_fun(qoi)
+
+                    fd_hessian[ii, jj] = (J_pp + J_mm - J_pm - J_mp) \
+                        / (4. * h**2)
+
+                else:
+                    fd_hessian[ii, jj] = fd_hessian[jj, ii]
+
+        fd_error[hh, :] = np.abs(hessian_ref[unique_idx] \
+                        - fd_hessian[unique_idx])
+
+    return fd_error
+
+
+def fd_hessian_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
+    model = qoi.model()
+    flat_active_values = model.parameters.flat_active_values(True)
+    num_active_params = model.parameters.num_active_params
+    hessian_obj = Objective(qoi, "direct-adjoint hessian")
+
+    J_ref, grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
+
+    np.random.seed(seed)
+    d = np.random.uniform(low=-1.0, size=num_active_params)
+
+    dir_deriv_ref = (d @ hessian_ref @ d.T).squeeze()
+
+    fd_error = np.zeros(len(hs))
+
+    for ii, h in enumerate(hs):
+        params_plus = flat_active_values.copy()
+        params_plus += h * d
+        model.parameters.set_active_values_from_flat(params_plus)
+        J_plus = compute_fun(qoi)
+
+        params_minus = flat_active_values.copy()
+        params_minus -= h * d
+        model.parameters.set_active_values_from_flat(params_minus)
+        J_minus = compute_fun(qoi)
+
+        dir_deriv = (J_plus + J_minus - 2. * J_ref) / h**2
+        fd_error[ii] = np.abs(dir_deriv - dir_deriv_ref)
+
+    return fd_error
 
 
 def fd_grad_check_components(qoi, hs=np.logspace(-2, -10, 9)):
@@ -134,7 +236,7 @@ def test_J2_finite_difference_grads():
     #J2_analytical_problem = J2AnalyticalProblem()
 
     # without parameter scaling
-    scale_params = True
+    scale_params = False
     J2_analytical_problem = J2AnalyticalProblem(scale_params)
 
     # numbers of steps to run solver for (does not include the IC)
@@ -193,6 +295,11 @@ def test_J2_finite_difference_grads():
     assert np.linalg.norm(fd_components_diff) < diff_tol
 
     hessian = evaluate_hessian(qoi)
+    #hessian_fd_error = fd_hessian_check(qoi)
+    #hessian_fd_error = fd_hessian_check(qoi, np.logspace(-2, -10, 9))
+    hessian_fd_error = fd_hessian_check(qoi, np.logspace(2, -4, 7))
+    #hessian_fd_component_error = fd_hessian_check_components(qoi)
+    hessian_fd_component_error = fd_hessian_check_components(qoi, np.logspace(1, -4, 6))
 
     assert False
 

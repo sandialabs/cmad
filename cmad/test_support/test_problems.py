@@ -7,7 +7,7 @@ from cmad.verification.functions import J2_yield, J2_yield_normal
 from cmad.verification.solutions import compute_plastic_fields
 
 
-def params_J2_voce(flat_param_values):
+def params_J2_voce(flat_param_values, scale_params):
 
     E, nu, Y, S, D = flat_param_values
 
@@ -43,10 +43,11 @@ def params_J2_voce(flat_param_values):
     J2_transforms = J2_values.copy()
     J2_transforms = tree_map(lambda a: None, J2_transforms)
 
-    J2_flow_stress_transforms = J2_transforms["plastic"]["flow stress"]
-    J2_flow_stress_transforms["initial yield"]["Y"] = Y_log_scale
-    J2_flow_stress_transforms["hardening"]["voce"]["S"] = S_bounds
-    J2_flow_stress_transforms["hardening"]["voce"]["D"] = D_bounds
+    if scale_params:
+        J2_flow_stress_transforms = J2_transforms["plastic"]["flow stress"]
+        J2_flow_stress_transforms["initial yield"]["Y"] = Y_log_scale
+        J2_flow_stress_transforms["hardening"]["voce"]["S"] = S_bounds
+        J2_flow_stress_transforms["hardening"]["voce"]["D"] = D_bounds
 
     J2_parameters = \
         Parameters(J2_values, J2_active_flags, J2_transforms)
@@ -70,10 +71,12 @@ def params_J2_voce(flat_param_values):
 
     hill_transforms = hill_values.copy()
     hill_transforms = tree_map(lambda a: None, hill_transforms)
-    hill_flow_stress_transforms = hill_transforms["plastic"]["flow stress"]
-    hill_flow_stress_transforms["initial yield"]["Y"] = Y_log_scale
-    hill_flow_stress_transforms["hardening"]["voce"]["S"] = S_bounds
-    hill_flow_stress_transforms["hardening"]["voce"]["D"] = D_bounds
+
+    if scale_params:
+        hill_flow_stress_transforms = hill_transforms["plastic"]["flow stress"]
+        hill_flow_stress_transforms["initial yield"]["Y"] = Y_log_scale
+        hill_flow_stress_transforms["hardening"]["voce"]["S"] = S_bounds
+        hill_flow_stress_transforms["hardening"]["voce"]["D"] = D_bounds
 
     hill_parameters = \
         Parameters(hill_values, hill_active_flags, hill_transforms)
@@ -98,11 +101,12 @@ def params_J2_voce(flat_param_values):
 
     hosford_transforms = hosford_values.copy()
     hosford_transforms = tree_map(lambda a: None, hosford_transforms)
-    hosford_flow_stress_transforms = \
-        hosford_transforms["plastic"]["flow stress"]
-    hosford_flow_stress_transforms["initial yield"]["Y"] = Y_log_scale
-    hosford_flow_stress_transforms["hardening"]["voce"]["S"] = S_bounds
-    hosford_flow_stress_transforms["hardening"]["voce"]["D"] = D_bounds
+    if scale_params:
+        hosford_flow_stress_transforms = \
+            hosford_transforms["plastic"]["flow stress"]
+        hosford_flow_stress_transforms["initial yield"]["Y"] = Y_log_scale
+        hosford_flow_stress_transforms["hardening"]["voce"]["S"] = S_bounds
+        hosford_flow_stress_transforms["hardening"]["voce"]["D"] = D_bounds
 
     hosford_parameters = \
         Parameters(hosford_values, hosford_active_flags, hosford_transforms)
@@ -142,12 +146,12 @@ class J2AnalyticalProblem():
     Hardening: Voce
     """
 
-    def __init__(self):
+    def __init__(self, scale_params=True):
 
         # E, nu, Y, S, D
         self._flat_param_values = np.array([200e3, 0.3, 200., 200., 20.])
         self.J2_parameters, self.hill_parameters, self.hosford_parameters = \
-            params_J2_voce(self._flat_param_values)
+            params_J2_voce(self._flat_param_values, scale_params)
 
     def analytical_solution(self, stress_mask, max_alpha, num_steps):
 
