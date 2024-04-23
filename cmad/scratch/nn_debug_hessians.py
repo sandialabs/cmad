@@ -27,6 +27,8 @@ from jax.tree_util import tree_flatten, tree_flatten_with_path, tree_reduce
 def get_model_state_hessian(model, first_deriv_type, second_deriv_type):
     hessians = model._d2C
 
+    num_residuals = model.num_residuals
+
     d2C_dxi2 = np.block([[
         hessians[first_deriv_type][row_res_idx][second_deriv_type][col_res_idx]
         for col_res_idx in range(num_residuals)]
@@ -34,34 +36,6 @@ def get_model_state_hessian(model, first_deriv_type, second_deriv_type):
     )
 
     return d2C_dxi2
-
-
-def eval_keypath(full, left_keypath, right_keypath):
-
-    sub = full
-    for idx, key in enumerate(keypath):
-        if idx == 0:
-            sub = full.get(key)
-        else:
-            sub = sub.get(key)
-
-    return sub
-
-
-
-def get_stuff(obj, keypath):
-    for path in keypath:
-        obj = obj[path.key]
-    return obj
-
-
-def special_reshape(array):
-    shape = array.shape
-    if len(shape) == 1:
-        return array.reshape((shape[0], 1, 1))
-    else:
-        num_flat_params = shape[-1] * shape[-2]
-        return array.reshape((shape[0], num_flat_params, num_flat_params))
 
 
 def get_model_params_hessian(model, second_deriv_type):
