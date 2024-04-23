@@ -39,46 +39,41 @@ def get_model_state_hessian(model, first_deriv_type, second_deriv_type):
 
 
 def get_model_params_hessian(model):
-    first_deriv_type = DerivType.DPARAMS
 
     num_active_params = model.parameters.num_active_params
     num_dofs = model.num_dofs
     num_residuals = model.num_residuals
-
-    pp_hessian = model._hessian_params_params(*model.variables())
-    flat, _ = tree_flatten_with_path(pp_hessian)
-
     num_names = len(model.parameters._names)
 
+    params_params_hessian = model._hessian_params_params(*model.variables())
+    params_params_flat, _ = tree_flatten_with_path(params_params_hessian)
     offsets = num_names * np.arange(num_names)
 
-    #d2C_dparams2 = np.concatenate(
-    #    [flat[idx][1].reshape(num_dofs, 1, -1)
-    #    for idx in range(0, 0 + num_names)], axis=2)
-
-    #d2C_dparams2 = [np.concatenate(
-    #    [flat[idx][1].reshape(num_dofs, 1, -1)
-    #    for idx in range(offset, offset + num_names)], axis=2)
-    #    for offset in offsets]
-
-    #d2C_dparams2 = np.block([
-    #    [special_reshape(flat[idx][1])
-    #    for idx in range(offset, offset + num_names)]
-    #    for offset in offsets])
-
-    #z = model.parameters.block_shapes
-
     d2C_dparams2 = np.block([
-        [flat[idx][1].reshape(num_dofs, *model.parameters.block_shapes[idx])
+        [params_params_flat[idx][1].reshape(num_dofs,
+        *model.parameters.block_shapes[idx])
         for idx in range(offset, offset + num_names)]
         for offset in offsets])
 
-    assert False
+    xi_params_hessian = model._hessian_xi_params(*model.variables())
+    xi_params_flat, _ = tree_flatten_with_path(xi_params_hessian)
+    offsets = num_names * np.arange(num_residuals)
 
-    offsets = num_residuals * np.arange(num_residuals)
+    d2C_dxi_dparams = np.block([
+        [xi_params_flat[idx][1].reshape(num_dofs,
+        *model.parameters.mixed_block_shapes[idx])
+        for idx in range(offset, offset + num_names)]
+        for offset in offsets])
 
-    pxi_hessian = model._hessian_params_xi(*model.variables())
-    pxi_flat, _ = tree_flatten_with_path(pxi_hessian)
+    xi_prev_params_hessian = model._hessian_xi_prev_params(*model.variables())
+    xi_prev_params_flat, _ = tree_flatten_with_path(xi_prev_params_hessian)
+
+    d2C_dxi_prev_dparams = np.block([
+        [xi_prev_params_flat[idx][1].reshape(num_dofs,
+        *model.parameters.mixed_block_shapes[idx])
+        for idx in range(offset, offset + num_names)]
+        for offset in offsets])
+
 
     # flatten the pytree; this time the structure will be different / simpler
 

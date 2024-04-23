@@ -45,6 +45,8 @@ class Model(ABC):
             jit(self.parameters.model_active_params_jacobian,
                 static_argnums=1)
 
+        self.parameters.compute_mixed_block_shapes(self._num_eqs)
+
     @staticmethod
     def _residual(xi, xi_prev, params, u, u_prev) -> Array:
         """

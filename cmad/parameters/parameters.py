@@ -125,12 +125,13 @@ class Parameters():
         for key_path, value in flattened:
             self._names.append(str(key_path[-1]))
 
+        param_sizes = tree_map(lambda x: get_size(x), self.values)
+        self.flat_param_sizes, _ = tree_flatten(param_sizes)
+        self.block_shapes = [(x, y)
+            for x in self.flat_param_sizes
+            for y in self.flat_param_sizes]
+
         if active_flags is not None:
-            param_sizes = tree_map(lambda x: get_size(x), self.values)
-            flat_param_sizes, _ = tree_flatten(param_sizes)
-            self.block_shapes = [(x, y)
-                for x in flat_param_sizes
-                for y in flat_param_sizes]
 
             self._flat_active_flags = \
                 np.array(flatten_by_value_size(values, active_flags)).squeeze()
@@ -200,6 +201,13 @@ class Parameters():
             grad[ii] = grad_transform(grad[ii], value, transform)
 
         return grad
+
+
+    def compute_mixed_block_shapes(self, num_eqs):
+        self.mixed_block_shapes = [(x, y)
+                                  for x in num_eqs
+                                  for y in self.flat_param_sizes]
+
 
     @staticmethod
     def _active_params_jacobian(jacobian, num_eqns, active_idx):
