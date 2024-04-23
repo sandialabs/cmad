@@ -136,15 +136,15 @@ class Parameters():
             self._flat_active_flags = \
                 np.array(flatten_by_value_size(values, active_flags)).squeeze()
             self.num_active_params = np.sum(self._flat_active_flags)
-            self._active_idx = \
+            self.active_idx = \
                 np.arange(self.num_params)[self._flat_active_flags]
             self.model_active_params_jacobian = \
                 partial(self._active_params_jacobian,
-                        active_idx=self._active_idx)
+                        active_idx=self.active_idx)
             self.qoi_active_params_jacobian = \
                 jit(partial(self._active_params_jacobian,
                             num_eqns=1,
-                            active_idx=self._active_idx))
+                            active_idx=self.active_idx))
 
             self._expanded_flat_transforms = \
                 flatten_by_value_size(values, transforms)
@@ -152,7 +152,7 @@ class Parameters():
                 tree_flatten(self._expanded_flat_transforms,
                              is_leaf=lambda x: x is None)
             self._flat_active_transforms = [self._flat_transforms[ii]
-                                            for ii in self._active_idx]
+                                            for ii in self.active_idx]
             self.opt_bounds = \
                 np.array([get_opt_bounds(transform)
                           for transform in self._flat_active_transforms])
@@ -172,7 +172,7 @@ class Parameters():
                                     are_canonical=True):
 
         updated_flat_values = np.array(self._flat_values)
-        updated_flat_values[self._active_idx] = flat_active_values
+        updated_flat_values[self.active_idx] = flat_active_values
         updated_values = self.reconstruct_from_flat(updated_flat_values)
         self.set_active_values(updated_values, are_canonical)
 
@@ -182,16 +182,16 @@ class Parameters():
             active_flat_values = np.array([
                 transform_to_canonical(v, a, t) for v, a, t in
                 zip(flat_values, self._flat_active_flags,
-                    self._flat_transforms)])[self._active_idx]
+                    self._flat_transforms)])[self.active_idx]
         else:
             active_flat_values = \
-                np.array(flat_values[self._active_idx])
+                np.array(flat_values[self.active_idx])
 
         return active_flat_values
 
     def get_active_from_flat(self, pytree):
         flat, _ = ravel_pytree(pytree)
-        return flat[self._active_idx]
+        return flat[self.active_idx]
 
     def transform_grad(self, grad):
         active_flat_values = self.get_active_from_flat(self.values)
@@ -218,4 +218,4 @@ class Parameters():
         return array_jac[:, active_idx]
 
     def scalar_active_params_jacobian(self, jacobian):
-        return self._active_params_jacobian(jacobian, 1, self._active_idx)
+        return self._active_params_jacobian(jacobian, 1, self.active_idx)

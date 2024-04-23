@@ -2,6 +2,7 @@ import numpy as np
 
 import jax.numpy as jnp
 from jax import hessian, jit, jacfwd, jacrev, Array
+from jax.tree_util import tree_flatten
 
 from abc import ABC, abstractmethod
 from functools import partial
@@ -83,6 +84,52 @@ class Model(ABC):
             self._Jac = np.hstack(self._jacobian[deriv_mode](*variables))
 
 
+    # consider jitting
+    def unpack_state_hessian(self,
+            pytree_hessian,
+            first_deriv_type,
+            second_deriv_type):
+
+        num_residuals = self.num_residuals
+        hessian = np.block([[np.asarray(
+            pytree_hessian[first_deriv_type][row_res_idx]
+                          [second_deriv_type][col_res_idx])
+            for col_res_idx in range(num_residuals)]
+            for row_res_idx in range(num_residuals)]
+        )
+
+        return hessian
+
+
+    # consider jitting
+    def unpack_params_hessian(self,
+            pytree_hessian,
+            first_deriv_type):
+
+        num_dofs = self.num_dofs
+        num_param_names = len(self.parameters._names)
+        active_idx = self.parameters.active_idx
+
+        if first_deriv_type == DerivType.DPARAMS:
+            offsets = num_param_names * np.arange(num_param_names)
+            block_shapes = self.parameters.block_shapes
+        else:
+            num_residuals = self.num_residuals
+            offsets = num_param_names * np.arange(num_residuals)
+            block_shapes = self.parameters.mixed_block_shapes
+
+        flat_hessian, _ = tree_flatten(pytree_hessian)
+        hessian = np.block([
+            [np.asarray(flat_hessian[idx]).reshape(num_dofs, *block_shapes[idx])
+            for idx in range(offset, offset + num_param_names)]
+            for offset in offsets])[:, :, active_idx]
+
+        if first_deriv_type == DerivType.DPARAMS:
+            return hessian[:, active_idx, :]
+        else:
+            return hessian
+
+
     def evaluate_hessians(self):
         """
         Evaluate the Hessians of the residual
@@ -90,10 +137,25 @@ class Model(ABC):
 
         variables = self.variables()
 
-        self.d2C_dstates = self._hessian_states(*variables)
-        self.d2C_dparams2 = self._hessian_params_params(*variables)
-        self.d2C_dxi_dparams = self._hessian_xi_params(*variables)
-        self.d2C_dxi_prev_dparams = self._hessian_xi_prev_params(*variables)
+        hessian_states = self._hessian_states(*variables)
+        hessian_params_params = self._hessian_params_params(*variables)
+        hessian_xi_params =  self._hessian_xi_params(*variables)
+        hessian_xi_prev_params = self._hessian_xi_prev_params(*variables)
+
+        self.d2C_dxi2 = self.unpack_state_hessian(hessian_states,
+            DerivType.DXI, DerivType.DXI)
+        self.d2C_dxi_dxi_prev = self.unpack_state_hessian(hessian_states,
+            DerivType.DXI, DerivType.DXI_PREV)
+        self.d2C_dxi_prev2 = self.unpack_state_hessian(hessian_states,
+            DerivType.DXI_PREV, DerivType.DXI_PREV)
+
+        self.d2C_dparams2 = self.unpack_params_hessian(hessian_params_params,
+            DerivType.DPARAMS)
+        self.d2C_dxi_dparams = self.unpack_params_hessian(hessian_xi_params,
+            DerivType.DXI)
+        self.d2C_dxi_prev_dparams = \
+            self.unpack_params_hessian(hessian_xi_prev_params,
+            DerivType.DXI_PREV)
 
 
     def evaluate_cauchy(self):

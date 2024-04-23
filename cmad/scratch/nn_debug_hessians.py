@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import jax.numpy as jnp
 
 from jax import tree_map
-from jax.tree_util import tree_flatten
 
 from scipy.optimize import fmin_l_bfgs_b
 
@@ -19,48 +18,6 @@ from cmad.qois.calibration import Calibration
 from cmad.qois.tests.test_J2_fd_checks import (fd_grad_check_components,
                                                fd_grad_check)
 from cmad.solver.nonlinear_solver import newton_solve
-
-
-def get_model_state_hessian(model, first_deriv_type, second_deriv_type):
-    pytree_hessian = model.d2C_dstates
-    num_residuals = model.num_residuals
-
-    hessian = np.block([[
-        pytree_hessian[first_deriv_type][row_res_idx]
-                      [second_deriv_type][col_res_idx]
-        for col_res_idx in range(num_residuals)]
-        for row_res_idx in range(num_residuals)]
-    )
-
-    return hessian
-
-
-def get_model_params_hessian(model, first_deriv_type):
-
-    num_dofs = model.num_dofs
-    num_param_names = len(model.parameters._names)
-    num_active_params = model.parameters.num_active_params
-
-    if first_deriv_type == DerivType.DPARAMS:
-        pytree_hessian = model.d2C_dparams2
-        offsets = num_param_names * np.arange(num_param_names)
-        block_shapes = model.parameters.block_shapes
-    else:
-        num_residuals = model.num_residuals
-        offsets = num_param_names * np.arange(num_residuals)
-        block_shapes = model.parameters.mixed_block_shapes
-        if first_deriv_type == DerivType.DXI:
-            pytree_hessian = model.d2C_dxi_dparams
-        elif first_deriv_type == DerivType.DXI_PREV:
-            pytree_hessian = model.d2C_dxi_prev_dparams
-
-    flat_hessian, _ = tree_flatten(pytree_hessian)
-    hessian = np.block([
-        [flat_hessian[idx].reshape(num_dofs, *block_shapes[idx])
-        for idx in range(offset, offset + num_param_names)]
-        for offset in offsets])
-
-    return hessian
 
 
 def create_J2_parameters_nn(nn_params):
@@ -122,17 +79,13 @@ def compute_cauchy(model, F):
 
         model.evaluate_hessians()
 
-        d2C_dxi2 = get_model_state_hessian(model, DerivType.DXI, DerivType.DXI)
-        d2C_dxi_dxi_prev = get_model_state_hessian(model,
-                           DerivType.DXI, DerivType.DXI_PREV)
-        d2C_dxi_prev2 = get_model_state_hessian(model,
-                        DerivType.DXI_PREV, DerivType.DXI_PREV)
+        d2C_dxi2 = model.d2C_dxi2
+        d2C_dxi_dxi_prev = model.d2C_dxi_dxi_prev
+        d2C_dxi_prev2 = model.d2C_dxi_prev2
 
-        d2C_dparams2 = get_model_params_hessian(model, DerivType.DPARAMS)
-        d2C_dxi_dparams = get_model_params_hessian(model, DerivType.DXI)
-        d2C_dxi_prev_dparams = get_model_params_hessian(model,
-            DerivType.DXI_PREV)
-
+        d2C_dparams2 = model.d2C_dparams2
+        d2C_dxi_dparams = model.d2C_dxi_dparams
+        d2C_dxi_prev_dparams = model.d2C_dxi_prev_dparams
 
         model.evaluate_cauchy()
         cauchy[:, :, step] = model.Sigma().copy()
