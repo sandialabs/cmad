@@ -62,12 +62,44 @@ def flatten_by_value_size(values, pytree):
 
 
 def grad_transform(grad, value, transform):
+
+    return first_deriv_transform(value, transform) * grad
+
+
+def first_deriv_transform(value, transform):
     if transform is None:
-        return grad
+        return 1.
     if len(transform) == 2:
-        return 0.5 * (transform[1] - transform[0]) * grad
+        return 0.5 * (transform[1] - transform[0])
     if len(transform) == 1:
-        return value * grad
+        return value
+
+
+def second_deriv_transform(value, transform):
+    if transform is None:
+        return 0.
+    if len(transform) == 2:
+        return 0.
+    if len(transform) == 1:
+        return value
+
+
+def diagonal_hessian_transform(hessian, grad, value, transform):
+
+    transformed_hessian = hessian * first_deriv_transform(value, transform)**2 \
+        + grad * second_deriv_transform(value, transform)
+
+    return transformed_hessian
+
+
+def off_diagonal_hessian_transform(hessian, value_ii, value_jj,
+        transform_ii, transform_jj):
+
+    transformed_hessian = hessian \
+        * first_deriv_transform(value_ii, transform_ii) \
+        * first_deriv_transform(value_jj, transform_jj)
+
+    return transformed_hessian
 
 
 def get_opt_bounds(transform):
@@ -160,6 +192,7 @@ class Parameters():
             assert active_flags == transforms
             self.num_active_params = 0
 
+
     def set_active_values(self, values, are_canonical=True):
         if are_canonical:
             self.values = \
@@ -168,6 +201,7 @@ class Parameters():
         else:
             self.values = values
 
+
     def set_active_values_from_flat(self, flat_active_values,
                                     are_canonical=True):
 
@@ -175,6 +209,7 @@ class Parameters():
         updated_flat_values[self.active_idx] = flat_active_values
         updated_values = self.reconstruct_from_flat(updated_flat_values)
         self.set_active_values(updated_values, are_canonical)
+
 
     def flat_active_values(self, return_canonical=False):
         flat_values, _ = ravel_pytree(self.values)
@@ -189,9 +224,11 @@ class Parameters():
 
         return active_flat_values
 
+
     def get_active_from_flat(self, pytree):
         flat, _ = ravel_pytree(pytree)
         return flat[self.active_idx]
+
 
     def transform_grad(self, grad):
         active_flat_values = self.get_active_from_flat(self.values)
@@ -201,6 +238,31 @@ class Parameters():
             grad[ii] = grad_transform(grad[ii], value, transform)
 
         return grad
+
+
+    def transform_hessian(self, hessian, grad):
+        active_flat_values = self.get_active_from_flat(self.values)
+        for ii in range(self.num_active_params):
+            for jj in range(self.num_active_params):
+                if ii == jj:
+                    value = active_flat_values[ii]
+                    transform = self._flat_active_transforms[ii]
+                    hessian[ii, ii] = \
+                        diagonal_hessian_transform(hessian[ii, ii], grad[ii],
+                        value, transform)
+                elif ii < jj:
+                    value_ii = active_flat_values[ii]
+                    transform_ii = self._flat_active_transforms[ii]
+                    value_jj = active_flat_values[jj]
+                    transform_jj = self._flat_active_transforms[jj]
+                    hessian[ii, jj] = \
+                        off_diagonal_hessian_transform(hessian[ii, jj],
+                        value_ii, value_jj,
+                        transform_ii, transform_jj)
+                else:
+                    hessian[ii, jj] = hessian[jj, ii]
+
+        return hessian
 
 
     def compute_mixed_block_shapes(self, num_eqs):

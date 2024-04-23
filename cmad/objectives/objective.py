@@ -228,7 +228,8 @@ class Objective():
 
             grad += phi.T @ dC_dp + dJ_dp
 
-        grad = model.parameters.transform_grad(grad.squeeze())
+        grad_ref = grad.copy().squeeze()
+        transformed_grad = model.parameters.transform_grad(grad.squeeze())
 
         # direct-adjoint pass for Hessian
         hessian = np.zeros((num_active_params, num_active_params))
@@ -296,7 +297,6 @@ class Objective():
 
             dxi_dp_prev = dxi_dp
 
-        # this function doesn't exist yet
-        #hessian = model.parameters.transform_hessian(hessian)
+        transformed_hessian = model.parameters.transform_hessian(hessian, grad_ref)
 
-        return J, grad, hessian
+        return J, transformed_grad, transformed_hessian

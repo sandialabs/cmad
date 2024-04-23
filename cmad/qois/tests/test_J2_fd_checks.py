@@ -236,7 +236,7 @@ def test_J2_finite_difference_grads():
     #J2_analytical_problem = J2AnalyticalProblem()
 
     # without parameter scaling
-    scale_params = False
+    scale_params = True
     J2_analytical_problem = J2AnalyticalProblem(scale_params)
 
     # numbers of steps to run solver for (does not include the IC)
@@ -297,9 +297,9 @@ def test_J2_finite_difference_grads():
     hessian = evaluate_hessian(qoi)
     #hessian_fd_error = fd_hessian_check(qoi)
     #hessian_fd_error = fd_hessian_check(qoi, np.logspace(-2, -10, 9))
-    hessian_fd_error = fd_hessian_check(qoi, np.logspace(2, -4, 7))
+    hessian_fd_error = fd_hessian_check(qoi, np.logspace(0, -4, 20))
     #hessian_fd_component_error = fd_hessian_check_components(qoi)
-    hessian_fd_component_error = fd_hessian_check_components(qoi, np.logspace(1, -4, 6))
+    hessian_fd_component_error = fd_hessian_check_components(qoi, np.logspace(0, -4, 20))
 
     assert False
 
