@@ -86,13 +86,14 @@ class Model(ABC):
     def evaluate_hessians(self):
         """
         Evaluate the Hessians of the residual
-        y[2]["elastic"]["E"][2]["elastic"]["E"]
-        # (argnum, variable idx / pytree key, argnum, variable idx / pytree key, num_residuals)
         """
 
         variables = self.variables()
 
-        self._d2C_dstates = self._hessian_states(*variables)
+        self.d2C_dstates = self._hessian_states(*variables)
+        self.d2C_dparams2 = self._hessian_params_params(*variables)
+        self.d2C_dxi_dparams = self._hessian_xi_params(*variables)
+        self.d2C_dxi_prev_dparams = self._hessian_xi_prev_params(*variables)
 
 
     def evaluate_cauchy(self):

@@ -25,125 +25,46 @@ from jax.tree_util import tree_flatten, tree_flatten_with_path, tree_reduce
 
 
 def get_model_state_hessian(model, first_deriv_type, second_deriv_type):
-    hessians = model._d2C_dstates
-
+    pytree_hessian = model.d2C_dstates
     num_residuals = model.num_residuals
 
-    d2C_dxi2 = np.block([[
-        hessians[first_deriv_type][row_res_idx][second_deriv_type][col_res_idx]
+    hessian = np.block([[
+        pytree_hessian[first_deriv_type][row_res_idx]
+                      [second_deriv_type][col_res_idx]
         for col_res_idx in range(num_residuals)]
         for row_res_idx in range(num_residuals)]
     )
 
-    return d2C_dxi2
+    return hessian
 
 
-def get_model_params_hessian(model):
+def get_model_params_hessian(model, first_deriv_type):
 
-    num_active_params = model.parameters.num_active_params
     num_dofs = model.num_dofs
-    num_residuals = model.num_residuals
-    num_names = len(model.parameters._names)
+    num_param_names = len(model.parameters._names)
+    num_active_params = model.parameters.num_active_params
 
-    params_params_hessian = model._hessian_params_params(*model.variables())
-    params_params_flat, _ = tree_flatten_with_path(params_params_hessian)
-    offsets = num_names * np.arange(num_names)
+    if first_deriv_type == DerivType.DPARAMS:
+        pytree_hessian = model.d2C_dparams2
+        offsets = num_param_names * np.arange(num_param_names)
+        block_shapes = model.parameters.block_shapes
+    else:
+        num_residuals = model.num_residuals
+        offsets = num_param_names * np.arange(num_residuals)
+        block_shapes = model.parameters.mixed_block_shapes
+        if first_deriv_type == DerivType.DXI:
+            pytree_hessian = model.d2C_dxi_dparams
+        elif first_deriv_type == DerivType.DXI_PREV:
+            pytree_hessian = model.d2C_dxi_prev_dparams
 
-    d2C_dparams2 = np.block([
-        [params_params_flat[idx][1].reshape(num_dofs,
-        *model.parameters.block_shapes[idx])
-        for idx in range(offset, offset + num_names)]
+    flat_hessian, _ = tree_flatten_with_path(pytree_hessian)
+
+    hessian = np.block([
+        [flat_hessian[idx][1].reshape(num_dofs, *block_shapes[idx])
+        for idx in range(offset, offset + num_param_names)]
         for offset in offsets])
 
-    xi_params_hessian = model._hessian_xi_params(*model.variables())
-    xi_params_flat, _ = tree_flatten_with_path(xi_params_hessian)
-    offsets = num_names * np.arange(num_residuals)
-
-    d2C_dxi_dparams = np.block([
-        [xi_params_flat[idx][1].reshape(num_dofs,
-        *model.parameters.mixed_block_shapes[idx])
-        for idx in range(offset, offset + num_names)]
-        for offset in offsets])
-
-    xi_prev_params_hessian = model._hessian_xi_prev_params(*model.variables())
-    xi_prev_params_flat, _ = tree_flatten_with_path(xi_prev_params_hessian)
-
-    d2C_dxi_prev_dparams = np.block([
-        [xi_prev_params_flat[idx][1].reshape(num_dofs,
-        *model.parameters.mixed_block_shapes[idx])
-        for idx in range(offset, offset + num_names)]
-        for offset in offsets])
-
-
-    # flatten the pytree; this time the structure will be different / simpler
-
-    #d2C_dparams2 = np.block([
-    #    [pxi_flat[idx][1].reshape(num_dofs, *model.parameters.block_shapes[idx])
-    #    for idx in range(offset, offset + num_residuals)]
-    #    for offset in offsets])
-
-    #d2C_dparams2 = np.block([
-    #    [flat[idx][1].reshape(num_dofs, *model.parameters.block_shapes[idx])
-    #    for idx in range(offset, offset + num_names)]
-    #    for offset in offsets])
-    #flat, _ = tree_flatten_with_path(pp_hessian)
-
-    #tmp = [flat[idx][1].reshape(num_dofs, -1)
-    #    for idx in range(0, 0 + num_names)]
-
-    #d2C_dparams2 = np.concatenate([np.concatenate(
-    #    [flat[idx][1].reshape(num_dofs, 1, -1)
-    #    for idx in range(offset, offset + num_names)], axis=2)
-    #    for offset in offsets], axis=1)
-
-    #tmp = get_stuff(hessians[2], model.parameters._full_key_paths[1])
-
-    #tmp = eval_keypath(hessians[2]["elastic"]["E"], model.parameters._full_key_paths[1])
-
-    #outer_flat, _ = tree_flatten_with_path(hessians[2])
-
-    assert False
-
-
-    #m = tree_map(lambda y : y[2], tree_map(lambda x: x, hessians[2]))
-
-    #z = jnp.concatenate(tree_flatten(tree_map(lambda x: x.reshape(num_dofs, -1),
-    #    hessians[2]["elastic"]["E"][2]))[0], axis=1)
-
-    #z = tree_flatten(tree_map(jnp.concatenate(tree_flatten(tree_map(lambda x: x.reshape(num_dofs, -1),
-    #    y))[0], axis=1), y))[0]
-
-    z = jnp.concatenate(tree_flatten(tree_map(lambda x: x.reshape(num_dofs, -1),
-        hessians[2]["elastic"]["E"][2]))[0], axis=1)
-
-    #z = jnp.stack(tree_map(jnp.concatenate(
-    #    tree_map: lambda x: x.reshape(num_dofs, -1), axis=1)
-
-    #flats, _ = tree_flatten_with_path(hessians[2])
-
-    #z = jnp.stack(jnp.concatenate(tree_map(lambda y:
-    #    tree_flatten(tree_map(lambda x: x.reshape(num_dofs, -1),
-    #    y[2]))[0], axis=1), hessians[2]), axis=2)
-
-    #z = jnp.stack(tree_flatten(tree_map(
-    #    jnp.concatenate(lambda y: tree_flatten(tree_map(
-    #    lambda x: x.reshape(num_dofs, -1), y[2]))[0], axis=1),
-    #    hessians[2]))[0], axis=2)
-
-    #z = jnp.stack(jnp.concatenate(tree_map(lambda y:
-    #    tree_flatten(tree_map(lambda x: x.reshape(num_dofs, -1),
-    #    y[2]))[0]), hessians[2]), axis=2)
-
-
-    #z = np.concatenate(tree_map(lambda x:
-    #    ravel_pytree(hessians[2]["elastic"]["E"][2])))
-
-    #flat_hess = np.concatenate(tree_map(lambda x: ravel_pytree(x)[0],
-    #    hessians[first_deriv_type]), axis=
-
-    assert False
-
-    return d2C_dxi2
+    return hessian
 
 
 def create_J2_parameters_nn(nn_params):
@@ -211,7 +132,10 @@ def compute_cauchy(model, F):
         d2C_dxi_prev2 = get_model_state_hessian(model,
                         DerivType.DXI_PREV, DerivType.DXI_PREV)
 
-        z = get_model_params_hessian(model)
+        d2C_dparams2 = get_model_params_hessian(model, DerivType.DPARAMS)
+        d2C_dxi_dparams = get_model_params_hessian(model, DerivType.DXI)
+        d2C_dxi_prev_dparams = get_model_params_hessian(model,
+            DerivType.DXI_PREV)
 
 
         model.evaluate_cauchy()
