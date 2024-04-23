@@ -27,23 +27,11 @@ from jax.tree_util import tree_flatten, tree_flatten_with_path, tree_reduce
 def get_model_state_hessian(model, first_deriv_type, second_deriv_type):
     hessians = model._d2C
 
-    num_dofs = model.num_dofs
-    num_residuals = model.num_residuals
-
-    d2C_dxi2 = np.concatenate([np.concatenate(
-        [hessians[first_deriv_type][row_res_idx][second_deriv_type][col_res_idx]
-        for col_res_idx in range(num_residuals)], axis=2)
-        for row_res_idx in range(num_residuals)], axis=1)
-
-    chk_d2C_dxi2 = np.block([[
+    d2C_dxi2 = np.block([[
         hessians[first_deriv_type][row_res_idx][second_deriv_type][col_res_idx]
         for col_res_idx in range(num_residuals)]
         for row_res_idx in range(num_residuals)]
     )
-
-    hnorm = np.linalg.norm(d2C_dxi2)
-    hnorm_diff = np.linalg.norm(d2C_dxi2 - chk_d2C_dxi2)
-    print(f"hessian norm, diff = {hnorm:.2e}, {hnorm_diff:.2e}")
 
     return d2C_dxi2
 
@@ -314,10 +302,9 @@ hardening_nn = SimpleNeuralNetwork(layer_widths, input_scale=2.,
 
 J2_parameters_nn = create_J2_parameters_nn(hardening_nn.params)
 nn_hardening_fun = {"neural network": hardening_nn.evaluate}
-model = SmallRateElasticPlastic(J2_parameters_nn, def_type,
+#model = SmallRateElasticPlastic(J2_parameters_nn, def_type,
+model = SmallElasticPlastic(J2_parameters_nn, def_type,
                                 hardening_funs=nn_hardening_fun)
-
-#model = SmallElasticPlastic(J2_parameters_nn, def_type,
 
 initial_guess = model.parameters.flat_active_values(True).copy()
 num_active_params = model.parameters.num_active_params
