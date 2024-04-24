@@ -237,8 +237,6 @@ class Parameters():
             transform = self._flat_active_transforms[ii]
             grad[ii] = grad_transform(grad[ii], value, transform)
 
-        return grad
-
 
     def transform_hessian(self, hessian, grad):
         active_flat_values = self.get_active_from_flat(self.values)
@@ -261,8 +259,6 @@ class Parameters():
                         transform_ii, transform_jj)
                 else:
                     hessian[ii, jj] = hessian[jj, ii]
-
-        return hessian
 
 
     def compute_mixed_block_shapes(self, num_eqs):
