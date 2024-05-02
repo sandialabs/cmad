@@ -101,6 +101,7 @@ def fd_hessian_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     d = np.random.uniform(low=-1.0, size=num_active_params)
 
     dir_deriv_ref = (d @ hessian_ref @ d.T).squeeze()
+    print(f"hessian directional deriv = {dir_deriv_ref:.10e}")
 
     fd_error = np.zeros(len(hs))
 
@@ -117,6 +118,7 @@ def fd_hessian_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
 
         dir_deriv = (J_plus + J_minus - 2. * J_ref) / h**2
         fd_error[ii] = np.abs(dir_deriv - dir_deriv_ref)
+        print(f"hessian approx directional deriv = {dir_deriv:.10e}")
 
     return fd_error
 
@@ -228,85 +230,83 @@ def compute_fun(qoi):
     return J
 
 
-#class TestJ2FDChecks(unittest.TestCase):
-#def test_J2_finite_difference_grads(self):
-def test_J2_finite_difference_grads():
+class TestJ2FDChecks(unittest.TestCase):
+    def test_J2_finite_difference_grads(self):
 
-    # with parameter scaling
-    #J2_analytical_problem = J2AnalyticalProblem()
+        scale_params = True
+        J2_analytical_problem = J2AnalyticalProblem(scale_params)
 
-    # without parameter scaling
-    scale_params = True
-    J2_analytical_problem = J2AnalyticalProblem(scale_params)
+        # numbers of steps to run solver for (does not include the IC)
+        num_steps = 100
 
-    # numbers of steps to run solver for (does not include the IC)
-    num_steps = 100
+        # uniaxial stress analytical solution
+        stress_mask = np.zeros((3, 3))
+        stress_mask[0, 0] = 1.
+        max_alpha = 0.5
+        stress, strain, alpha = \
+            J2_analytical_problem.analytical_solution(stress_mask, max_alpha,
+                                                      num_steps)
 
-    # uniaxial stress analytical solution
-    stress_mask = np.zeros((3, 3))
-    stress_mask[0, 0] = 1.
-    max_alpha = 0.5
-    stress, strain, alpha = \
-        J2_analytical_problem.analytical_solution(stress_mask, max_alpha,
-                                                  num_steps)
+        # construct the global state variable F
+        def_type = DefType.FULL_3D
+        ndims = def_type_ndims(def_type)
+        I = np.eye(ndims)
+        F = np.repeat(I[:, :, np.newaxis], num_steps + 1, axis=2)
+        F[0, 0, 1:] += strain[0, 0, :]
+        F[1, 1, 1:] += strain[1, 1, :]
+        F[2, 2, 1:] += strain[2, 2, :]
 
-    # construct the global state variable F
-    def_type = DefType.FULL_3D
-    ndims = def_type_ndims(def_type)
-    I = np.eye(ndims)
-    F = np.repeat(I[:, :, np.newaxis], num_steps + 1, axis=2)
-    F[0, 0, 1:] += strain[0, 0, :]
-    F[1, 1, 1:] += strain[1, 1, :]
-    F[2, 2, 1:] += strain[2, 2, :]
+        # weight for calibration qoi
+        weight = np.zeros((3, 3))
+        weight[0, 0] = 1.
 
-    # weight for calibration qoi
-    weight = np.zeros((3, 3))
-    weight[0, 0] = 1.
+        model = SmallRateElasticPlastic(J2_analytical_problem.J2_parameters,
+                                        def_type)
 
-    model = SmallRateElasticPlastic(J2_analytical_problem.J2_parameters,
-                                    def_type)
+        # tweak the parameters to make the solution not uniaxial
+        new_params = np.array([210., 21., 109.])
 
-    # tweak the parameters to make the solution not uniaxial
-    new_params = np.array([210., 21., 109.])
+        zero_data = np.zeros((3, 3, num_steps + 1))
+        qoi = Calibration(model, F, zero_data, weight)
 
-    zero_data = np.zeros((3, 3, num_steps + 1))
-    qoi = Calibration(model, F, zero_data, weight)
+        model.parameters.set_active_values_from_flat(new_params, False)
+        fs_fd_dir_deriv_error, adjoint_fd_dir_deriv_error = \
+            fd_grad_check(qoi, seed=10)
 
-    model.parameters.set_active_values_from_flat(new_params, False)
-    fs_fd_dir_deriv_error, adjoint_fd_dir_deriv_error = \
-        fd_grad_check(qoi, seed=10)
+        model.parameters.set_active_values_from_flat(new_params, False)
+        fs_fd_component_error, adjoint_fd_component_error = \
+            fd_grad_check_components(qoi)
 
-    model.parameters.set_active_values_from_flat(new_params, False)
-    fs_fd_component_error, adjoint_fd_component_error = \
-        fd_grad_check_components(qoi)
+        assert np.allclose(fs_fd_dir_deriv_error,
+                           adjoint_fd_dir_deriv_error)
 
-    assert np.allclose(fs_fd_dir_deriv_error,
-                       adjoint_fd_dir_deriv_error)
+        error_drop_tol = 4.
+        min_fd_error = np.min(fs_fd_dir_deriv_error)
+        max_fd_error = np.max(fs_fd_dir_deriv_error)
+        grad_log10_error_drop = np.log10(max_fd_error / min_fd_error)
+        assert grad_log10_error_drop > error_drop_tol
 
-    error_drop_tol = 4.
-    min_fd_error = np.min(fs_fd_dir_deriv_error)
-    max_fd_error = np.max(fs_fd_dir_deriv_error)
-    log10_error_drop = np.log10(max_fd_error / min_fd_error)
-    assert log10_error_drop > error_drop_tol
+        diff_tol = 1e-6
+        fd_components_diff = fs_fd_component_error \
+            - adjoint_fd_component_error
+        assert np.linalg.norm(fd_components_diff) < diff_tol
 
-    diff_tol = 1e-6
-    fd_components_diff = fs_fd_component_error \
-        - adjoint_fd_component_error
-    assert np.linalg.norm(fd_components_diff) < diff_tol
+        #hessian = evaluate_hessian(qoi)
 
-    hessian = evaluate_hessian(qoi)
-    #hessian_fd_error = fd_hessian_check(qoi)
-    #hessian_fd_error = fd_hessian_check(qoi, np.logspace(-2, -10, 9))
-    hessian_fd_error = fd_hessian_check(qoi, np.logspace(0, -4, 20))
-    #hessian_fd_component_error = fd_hessian_check_components(qoi)
-    hessian_fd_component_error = fd_hessian_check_components(qoi, np.logspace(0, -4, 20))
+        model.parameters.set_active_values_from_flat(new_params, False)
+        hessian_fd_dir_deriv_error = fd_hessian_check(qoi,
+            np.logspace(0, -4, 20))
+        min_fd_error = np.min(hessian_fd_dir_deriv_error)
+        max_fd_error = np.max(hessian_fd_dir_deriv_error)
+        hessian_log10_error_drop = np.log10(max_fd_error / min_fd_error)
+        assert hessian_log10_error_drop > error_drop_tol
 
-    assert False
+        model.parameters.set_active_values_from_flat(new_params, False)
+        hessian_fd_component_error = fd_hessian_check_components(qoi,
+            np.logspace(0, -4, 20))
 
 
-#if __name__ == "__main__":
-#    J2_FD_checks_test_suite = unittest.TestLoader().loadTestsFromTestCase(
-#        TestJ2FDChecks)
-#    unittest.TextTestRunner(verbosity=2).run(J2_FD_checks_test_suite)
-
-test_J2_finite_difference_grads()
+if __name__ == "__main__":
+    J2_FD_checks_test_suite = unittest.TestLoader().loadTestsFromTestCase(
+        TestJ2FDChecks)
+    unittest.TextTestRunner(verbosity=2).run(J2_FD_checks_test_suite)

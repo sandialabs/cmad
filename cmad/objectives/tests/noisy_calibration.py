@@ -12,8 +12,6 @@ from cmad.neural_networks.simple_neural_network import SimpleNeuralNetwork
 from cmad.objectives.objective import Objective
 from cmad.parameters.parameters import Parameters
 from cmad.qois.calibration import Calibration
-from cmad.qois.tests.test_J2_fd_checks import (fd_grad_check_components,
-                                               fd_grad_check)
 from cmad.solver.nonlinear_solver import newton_solve
 
 
@@ -39,6 +37,7 @@ def create_J2_parameters():
     D_log_scale = np.array([20.])
 
     J2_values = {
+        "rotation matrix": np.eye(3),
         "elastic": elastic_params,
         "plastic": {
             "effective stress": J2_effective_stress_params,
@@ -76,6 +75,7 @@ def create_J2_parameters_nn(nn_params):
     hardening_params = {"neural network": nn_params}
 
     J2_values = {
+        "rotation matrix": np.eye(3),
         "elastic": elastic_params,
         "plastic": {
             "effective stress": J2_effective_stress_params,
@@ -229,7 +229,7 @@ cauchy = compute_cauchy(model_true, F)
 data = cauchy + rng.normal(0., noise_std, cauchy.shape)
 
 qoi = Calibration(model, F, data, weight)
-objective = Objective(qoi, gradient_type="adjoint")
+objective = Objective(qoi, sensitivity_type="adjoint gradient")
 
 # fs_fd_dir_deriv_error, adjoint_fd_dir_deriv_error = \
 #    fd_grad_check(qoi, seed=10)

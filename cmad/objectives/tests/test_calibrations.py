@@ -94,8 +94,8 @@ class TestJ2Calibrations(unittest.TestCase):
         # cauchy_fig = plot_cauchy(cauchy)
 
         qoi = Calibration(model, F, cauchy, weight)
-        objectives = [Objective(qoi, gradient_type="adjoint"),
-                      Objective(qoi, gradient_type="forward_sens")]
+        objectives = [Objective(qoi, sensitivity_type="adjoint gradient"),
+                      Objective(qoi, sensitivity_type="direct gradient")]
 
         for objective in objectives:
 
