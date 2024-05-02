@@ -15,12 +15,35 @@ from cmad.qois.calibration import Calibration
 from cmad.solver.nonlinear_solver import newton_solve
 
 
+def newton_optimization(initial_guess, objective, grad_tol=1e-4):
+
+    x = initial_guess.copy()
+    grad_norm = 1e+10
+
+    ii = 0
+    while True:
+        J, grad, hessian = objective.evaluate(x)
+
+        grad_norm = np.linalg.norm(grad)
+        print(f"iter {ii}: J = {J:.2e}, ||g|| = {grad_norm:.2e},"
+              f" det(H) = {np.linalg.det(hessian):.2e},"
+              f" cond(H) = {np.linalg.cond(hessian):.2e}")
+
+        if (grad_norm < grad_tol):
+            break
+
+        x -= np.linalg.solve(hessian, grad)
+        J, grad, hessian = objective.evaluate(x)
+        ii += 1
+
+    return x
+
+
 def create_J2_parameters():
     E = 70e3
     nu = 0.3
     Y = 200.
-    K = 3e3
-    # K = 0e3
+    K = 0e3
     S = 200.
     D = 20.
 
@@ -28,11 +51,9 @@ def create_J2_parameters():
     J2_effective_stress_params = {"J2": 0.}
     initial_yield_params = {"Y": Y}
     voce_params = {"S": S, "D": D}
-    linear_params = {"K": K}
-    hardening_params = {"voce": voce_params, "linear": linear_params}
+    hardening_params = {"voce": voce_params}
 
     Y_log_scale = np.array([200.])
-    K_log_scale = np.array([3e3])
     S_log_scale = np.array([200.])
     D_log_scale = np.array([20.])
 
@@ -54,7 +75,6 @@ def create_J2_parameters():
     J2_transforms = tree_map(lambda a: None, J2_transforms)
     J2_flow_stress_transforms = J2_transforms["plastic"]["flow stress"]
     J2_flow_stress_transforms["initial yield"]["Y"] = Y_log_scale
-    J2_flow_stress_transforms["hardening"]["linear"]["K"] = K_log_scale
     J2_flow_stress_transforms["hardening"]["voce"]["S"] = S_log_scale
     J2_flow_stress_transforms["hardening"]["voce"]["D"] = D_log_scale
 
@@ -209,18 +229,32 @@ weight[1, 1] = 1.
 J2_parameters = create_J2_parameters()
 model_true = SmallElasticPlastic(J2_parameters, def_type)
 
-layer_widths = [1, 5, 1]
-hardening_nn = SimpleNeuralNetwork(layer_widths, input_scale=2.,
-                                   output_scale=1e2)
+voce_hardening = True
+nn_hardening = False
+assert voce_hardening + nn_hardening == 1
 
-J2_parameters_nn = create_J2_parameters_nn(hardening_nn.params)
-nn_hardening_fun = {"neural network": hardening_nn.evaluate}
-model = SmallRateElasticPlastic(J2_parameters_nn, def_type,
-                                hardening_funs=nn_hardening_fun)
+if voce_hardening:
+    J2_parameters = create_J2_parameters()
+    model = SmallElasticPlastic(J2_parameters, def_type)
+    # convoluted chain of commands to get an initial guess not equal
+    # to the true parameters
+    true_active_param_values = model_true.parameters.flat_active_values(False)
+    initial_guess = 1.1 * true_active_param_values
+    model.parameters.set_active_values_from_flat(initial_guess, False)
+    initial_guess = model.parameters.flat_active_values(True).copy()
 
-initial_guess = model.parameters.flat_active_values(True).copy()
+if nn_hardening:
+    layer_widths = [1, 5, 1]
+    hardening_nn = SimpleNeuralNetwork(layer_widths, input_scale=2.,
+                                       output_scale=1e2)
+    J2_parameters = create_J2_parameters_nn(hardening_nn.params)
+    nn_hardening_fun = {"neural network": hardening_nn.evaluate}
+    model = SmallRateElasticPlastic(J2_parameters, def_type,
+                                    hardening_funs=nn_hardening_fun)
+    initial_guess = model.parameters.flat_active_values(True).copy()
+
 num_active_params = model.parameters.num_active_params
-opt_bounds = J2_parameters_nn.opt_bounds
+opt_bounds = J2_parameters.opt_bounds
 
 rng = np.random.default_rng(seed=22)
 noise_std = 5.
@@ -231,22 +265,23 @@ data = cauchy + rng.normal(0., noise_std, cauchy.shape)
 qoi = Calibration(model, F, data, weight)
 objective = Objective(qoi, sensitivity_type="adjoint gradient")
 
-# fs_fd_dir_deriv_error, adjoint_fd_dir_deriv_error = \
-#    fd_grad_check(qoi, seed=10)
+minimize_lbfgs = True
+minimize_newton = True
 
-# fs_fd_component_error, adjoint_fd_component_error = \
-#    fd_grad_check_components(qoi)
+if minimize_lbfgs:
 
-max_iters = 50
-opt_params, fun_vals, cvg_dict = fmin_l_bfgs_b(
-    objective.evaluate, initial_guess, bounds=opt_bounds, iprint=1,
-    maxiter=max_iters)
+    max_iters = 50
+    opt_params, fun_vals, cvg_dict = fmin_l_bfgs_b(
+        objective.evaluate, initial_guess, bounds=opt_bounds, iprint=1,
+        maxiter=max_iters)
+
+if minimize_newton:
+    print("\n")
+    objective = Objective(qoi, sensitivity_type="direct-adjoint hessian")
+    opt_params = newton_optimization(initial_guess, objective)
 
 model.parameters.set_active_values_from_flat(opt_params)
 unscaled_opt_params = model.parameters.flat_active_values()
-
-# cauchy_actual = compute_cauchy(model_true, test_F)
-# cauchy_fit = compute_cauchy(model, test_F)
 
 cauchy_actual = compute_cauchy(model_true, F)
 cauchy_fit = compute_cauchy(model, F)
