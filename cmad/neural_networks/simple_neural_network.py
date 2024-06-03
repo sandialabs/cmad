@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from functools import partial
 
 from jax import jit, grad, tree_map
-from jax.nn import relu, sigmoid
+from jax.nn import relu, sigmoid, softplus
 from jax.flatten_util import ravel_pytree
 from jax.tree_util import tree_unflatten, tree_flatten
 
@@ -26,6 +26,8 @@ def forward(x, params):
     *hidden, last = params
     for layer in hidden:
         x = sigmoid(x @ layer["weights"] + layer["biases"])
+        #x = softplus(x @ layer["weights"] + layer["biases"])
+        #x = relu(x @ layer["weights"] + layer["biases"])
     return x @ last["weights"] + last["biases"]
 
 
@@ -46,6 +48,8 @@ class SimpleNeuralNetwork():
 
         # abs initialization for monotonic networks
         for idx, num_in, num_out in layer_props:
+            #params[idx] = dict(weights=np.log(np.abs(np.random.normal(size=(num_in, num_out))
+            #    * np.sqrt(2. / num_in))), biases=np.zeros(num_out))
             params[idx] = dict(weights=np.abs(np.random.normal(size=(num_in, num_out))
                 * np.sqrt(2. / num_in)), biases=np.ones(num_out))
 

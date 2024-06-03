@@ -16,7 +16,32 @@ from jax.flatten_util import ravel_pytree
 from jax.tree_util import tree_unflatten, tree_flatten
 
 
+# possibly different ways to do this offset with the input symmetric version
+
+
+def seagull(x):
+    return jnp.log(jnp.ones_like(x) + x**2)
+
+
+def input_symmetric_forward(x, params):
+    zero_output = forward(jnp.zeros_like(x), params)
+    #positive_scaled_output = forward(x, params) - zero_output
+    #negative_scaled_output = forward(-x, params) - zero_output
+    positive_scaled_output = forward(x, params) - zero_output
+    negative_scaled_output = forward(-x, params) - zero_output
+    symmetric_output = 0.5 * (positive_scaled_output + negative_scaled_output)
+    return symmetric_output
+
+def input_symmetric_forward_with_offset(x, params, input_scaler, output_scaler):
+    xs = input_scaler.scale_ * x + input_scaler.min_
+    scaled_output = input_symmetric_forward(xs, params)
+    #    - input_symmetric_forward(jnp.zeros_like(xs), params)
+    output = (scaled_output - output_scaler.min_) / output_scaler.scale_
+    return output
+
+
 def forward_with_offset(x, params, input_scaler, output_scaler):
+    #xs = jnp.r_[input_scaler.scale_ * x[:6] + input_scaler.min_, input_scaler.scale_ * x[6:] + input_scaler.min_]
     xs = input_scaler.scale_ * x + input_scaler.min_
     scaled_output = forward(xs, params) - forward(jnp.zeros_like(xs), params)
     output = (scaled_output - output_scaler.min_) / output_scaler.scale_
@@ -25,6 +50,8 @@ def forward_with_offset(x, params, input_scaler, output_scaler):
 
 def forward(x, params):
     activation = softplus
+    #activation = seagull
+    #activation = jnp.abs
     *x_hidden, x_last = params["x params"]
     *z_hidden, z_last = params["z params"]
 
@@ -43,7 +70,10 @@ class InputConvexNeuralNetwork():
                  input_scaler, output_scaler,
                  seed: int = 22):
         self._init_params(layer_widths, seed)
-        self.evaluate = partial(forward_with_offset,
+        #self.evaluate = partial(forward_with_offset,
+        #                        input_scaler=input_scaler,
+        #                        output_scaler=output_scaler)
+        self.evaluate = partial(input_symmetric_forward_with_offset,
                                 input_scaler=input_scaler,
                                 output_scaler=output_scaler)
 
