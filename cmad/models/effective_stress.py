@@ -3,6 +3,11 @@ These all assume 3D cauchy stress inputs
 """
 import jax.numpy as jnp
 
+from functools import partial
+from jax import grad
+from jax.debug import print as jax_print
+from jax.lax import cond, fori_loop
+
 from cmad.models.elastic_constants import compute_mu
 from cmad.parameters.parameters import unpack_elastic_params
 
@@ -41,6 +46,59 @@ def hill_effective_stress(cauchy, params):
     return phi
 
 
+def scaled_input_phi(beta, cauchy, params, phi_function):
+    return phi_function(beta * cauchy, params)
+
+
+def beta_newton(ii, carry,
+        scaled_phi_fun, scaled_phi_fun_grad):
+
+    beta, params, cauchy = carry
+    Y = params["flow stress"]["initial yield"]["Y"]
+
+    res = scaled_phi_fun(beta, cauchy, params) / Y - 1.
+    Jac = scaled_phi_fun_grad(beta, cauchy, params) / Y
+
+    res_norm = jnp.abs(res)
+    #jax_print("Y = {x}", x=Y)
+    #jax_print("beta = {x}", x=beta)
+    #jax_print("res norm = {x}", x=res_norm)
+    #jax_print("cauchy = {x}", x=cauchy)
+
+    delta_beta = -res / Jac
+    beta += delta_beta
+
+    return beta, params, cauchy
+
+
+def trivial_branch(cauchy, params):
+    return 0.
+
+
+def hybrid_hill_scaled_output(cauchy, params, nn_fun, max_iters):
+
+    phi_fun = partial(hybrid_hill_effective_stress, nn_fun=nn_fun)
+    scaled_phi_fun = partial(scaled_input_phi, phi_function=phi_fun)
+    scaled_phi_fun_grad = grad(scaled_phi_fun)
+    Y = params["flow stress"]["initial yield"]["Y"]
+    pt_beta_newton = partial(beta_newton,
+        scaled_phi_fun=scaled_phi_fun, scaled_phi_fun_grad=scaled_phi_fun_grad)
+    # could consider using a better initial guess
+    beta = fori_loop(0, max_iters, pt_beta_newton, (1., params, cauchy))[0]
+
+    return Y / beta
+
+
+def branching_hybrid_hill_effective_stress(cauchy, params, nn_fun, max_iters):
+    pt_hybrid_hill_scaled_output = partial(hybrid_hill_scaled_output,
+        nn_fun=nn_fun, max_iters=max_iters)
+    phi = cond(jnp.linalg.norm(cauchy) != 0.,
+        pt_hybrid_hill_scaled_output, trivial_branch,
+        cauchy, params)
+
+    return phi
+
+
 def hybrid_hill_effective_stress(cauchy, params, nn_fun):
     phi_hill = hill_effective_stress(cauchy, params)
     hydro_cauchy = jnp.trace(cauchy) / 3.
@@ -52,6 +110,10 @@ def hybrid_hill_effective_stress(cauchy, params, nn_fun):
 
     return phi_hill + phi_discrepancy[0]
     #return phi_discrepancy[0] # NN only fit
+
+# branch 1: return 0 if jnp.linalg.norm(cauchy) == 0.
+# branch 2: return Y / beta otherwise
+#  - find beta by solving the NL problem for a fixed # of iterations
 
 
 # only working for diagonal cauchy stress now
