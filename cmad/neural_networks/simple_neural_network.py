@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from functools import partial
 
 from jax import jit, grad, tree_map
-from jax.nn import relu, sigmoid
+from jax.nn import relu, sigmoid, softplus
 from jax.flatten_util import ravel_pytree
 from jax.tree_util import tree_unflatten, tree_flatten
 
