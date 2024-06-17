@@ -111,7 +111,8 @@ def params_hill_voce(p_elastic, p_hill, p_voce):
             "effective stress": hill_effective_stress_params,
             "flow stress": {
                 "initial yield": initial_yield_params,
-                "hardening": hardening_params}}}
+                "hardening": hardening_params}},
+            "rotation matrix": np.eye(3)}
 
     hill_active_flags = hill_values.copy()
     hill_active_flags = tree_map(lambda a: False, hill_active_flags)
