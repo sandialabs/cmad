@@ -33,6 +33,8 @@ def compute_elastic_strain(xi, params, u, def_type, uniaxial_stress_idx):
 
     # Q is a rotation from material coordinates to global coordinates
     # Q_{ij} = e_i (global) \dot e_j (material)
+    #import ipdb
+    #ipdb.set_trace()
     Q = params["rotation matrix"]
 
     if def_type == DefType.UNIAXIAL_STRESS:

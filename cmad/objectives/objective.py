@@ -5,13 +5,13 @@ from cmad.solver.nonlinear_solver import newton_solve
 
 class Objective():
 
-    def __init__(self, qoi, gradient_type):
+    def __init__(self, qoi, gradient_type, weights=None):
         self._qoi = qoi
         self._model = qoi.model()
         self._parameters = qoi.model().parameters
         self._global_state = qoi.global_state()
 
-        self._num_steps = qoi.data().shape[2] - 1
+        self._num_steps = qoi.data().shape[-1] - 1
         self._xi_at_step = [[None] * self._model.num_residuals
                             for ii in range(self._num_steps + 1)]
         self._model.store_xi(self._xi_at_step, self._model.xi(), 0)
@@ -22,6 +22,12 @@ class Objective():
             self._evaluate = self._compute_forward_sens_fun_and_grad
         else:
             raise NotImplementedError
+
+        if weights is None:
+            self.weights = np.ones(self._num_steps+1)
+        else:
+            self.weights = weights
+
 
     def evaluate(self, flat_active_values):
 
@@ -56,7 +62,7 @@ class Objective():
 
             model.seed_none()
             qoi.evaluate(step)
-            J += qoi.J()
+            J += self.weights[step]*qoi.J()
 
             model.advance_xi()
 
@@ -78,7 +84,7 @@ class Objective():
             model.evaluate()
             dC_dxi = model.Jac()
             qoi.evaluate(step)
-            dJ_dxi = qoi.dJ()
+            dJ_dxi = self.weights[step]*qoi.dJ()
 
             phi = np.linalg.solve(dC_dxi.T, -dJ_dxi.T + history_vec)
 
@@ -91,7 +97,7 @@ class Objective():
             model.evaluate()
             dC_dp = model.Jac()
             qoi.evaluate(step)
-            dJ_dp = qoi.dJ()
+            dJ_dp = self.weights[step]*qoi.dJ()
 
             grad += phi.T @ dC_dp + dJ_dp
 
@@ -127,14 +133,14 @@ class Objective():
 
             model.seed_none()
             qoi.evaluate(step)
-            J += qoi.J()
+            J += self.weights[step]*qoi.J()
 
             model.seed_xi()
             model.evaluate()
             dC_dxi = model.Jac()
 
             qoi.evaluate(step)
-            dJ_dxi = qoi.dJ()
+            dJ_dxi = self.weights[step]*qoi.dJ()
 
             model.seed_xi_prev()
             model.evaluate()
@@ -145,7 +151,7 @@ class Objective():
             dC_dp = model.Jac()
 
             qoi.evaluate(step)
-            dJ_dp = qoi.dJ()
+            dJ_dp = self.weights[step]*qoi.dJ()
 
             rhs = -dC_dp - dC_dxi_prev @ dxi_dp
             dxi_dp = np.linalg.solve(dC_dxi, rhs)
