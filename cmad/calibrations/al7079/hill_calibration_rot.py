@@ -1,7 +1,16 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+import jax.numpy as jnp
+from scipy.optimize import fmin_l_bfgs_b
 
+from cmad.calibrations.al7079.support import (
+    slab_data,
+    calibration_weights,
+    calibrated_hill_coefficients,
+    params_hill_voce,
+    params_hybrid_hill_voce
+)
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
@@ -9,14 +18,7 @@ from cmad.qois.calibration import UniaxialCalibration
 from cmad.solver.nonlinear_solver import newton_solve
 from cmad.models.var_types import get_sym_tensor_from_vector
 from cmad.objectives.objective import Objective
-import jax.numpy as jnp
-from al7079 import (
-    slab_data,
-    calibrated_hill_coefficients,
-    params_hill_voce,
-    params_icnn_hybrid_hill_voce
-)
-from scipy.optimize import fmin_l_bfgs_b
+
 
 def compute_cauchy(model, F, Rmat):
 

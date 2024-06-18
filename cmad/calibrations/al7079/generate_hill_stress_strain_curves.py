@@ -3,17 +3,23 @@ import matplotlib.pyplot as plt
 
 from functools import partial
 
+from cmad.calibrations.al7079.support import (
+    slab_data,
+    calibration_weights,
+    calibrated_hill_coefficients,
+    params_hill_voce,
+    params_hybrid_hill_voce
+)
 from cmad.models.deformation_types import DefType
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.solver.nonlinear_solver import newton_solve
 from cmad.verification.functions import hill_yield, hill_yield_normal
-from cmad.verification.solutions import (compute_elastic_fields,
-    compute_plastic_fields)
+from cmad.verification.solutions import (
+    compute_elastic_fields,
+    compute_plastic_fields
+)
 
-# local import
-from al7079 import (slab_data, calibration_weights,
-    calibrated_hill_coefficients, params_hill_voce, params_hybrid_hill_voce)
 
 alpha_angles, alpha_sigma_c_values, alpha_ratio_c_values, R_alphas = \
     slab_data("alpha")
