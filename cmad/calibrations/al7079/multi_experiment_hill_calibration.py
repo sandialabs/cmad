@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import jax.numpy as jnp
+from functools import partial
 from scipy.optimize import fmin_l_bfgs_b
 
 from cmad.calibrations.al7079.support import (
@@ -18,6 +19,21 @@ from cmad.qois.calibration import UniaxialCalibration
 from cmad.solver.nonlinear_solver import newton_solve
 from cmad.models.var_types import get_sym_tensor_from_vector
 from cmad.objectives.objective import Objective
+
+
+def multiobjective(x, objective, Rmats, data):
+    J_total = 0.
+    grad_total = np.zeros(len(x))
+    for rr, Rmat in enumerate(Rmats):
+        objective._qoi.model().parameters.set_rotation_matrix(Rmat)
+        objective._qoi.update_data(data[rr, ...])
+
+        J, grad = objective.evaluate(x)
+
+        J_total += J
+        grad_total += grad
+
+    return J_total, grad_total
 
 
 def compute_cauchy(model, F, Rmat):
@@ -89,30 +105,17 @@ initial_guess = model.parameters.flat_active_values(True).copy()
 num_active_params = model.parameters.num_active_params
 opt_bounds = params.opt_bounds
 
-weights_qoi = np.array([2e-3, 2e1, 2e1])
-weights_time = np.ones(num_steps + 1)
-weights_time[0:10] = 0.
-qoi = UniaxialCalibration(model, F, data[0], weights_qoi,
+weights = np.atleast_2d([2e-3, 2e1, 2e1]).T @ np.ones((1, num_steps + 1))
+weights[:, :10] = 0.
+qoi = UniaxialCalibration(model, F, data[0], weights,
     uniaxial_stress_idx, stretch_var_idx)
-objective = Objective(qoi, sensitivity_type="adjoint gradient", weights=weights_time)
+objective = Objective(qoi, sensitivity_type="adjoint gradient")
 
-def multiobjective(Rmats, data):
-    def mobjective(varlist):
-        J_total = 0.
-        grad_total = np.zeros(varlist.shape)
-        for j,Rmat in enumerate(Rmats):
-            objective._qoi.model().parameters.set_rotation_matrix(Rmat)
-            objective._qoi._data = data[j]
+opt_obj = partial(multiobjective, objective=objective,
+    Rmats=Rmats, data=data)
 
-            J, grad = objective.evaluate(varlist)
-
-            J_total += J
-            grad_total += grad 
-        return J_total, grad_total
-    return mobjective
-
-opt_params, fun_vals, cvg_dict = fmin_l_bfgs_b(
-    multiobjective(Rmats,data), params_true.flat_active_values(True)+.1, 
+opt_params, fun_vals, cvg_dict = fmin_l_bfgs_b(opt_obj,
+    x0=params_true.flat_active_values(True) + 0.1,
     bounds=opt_bounds, iprint=1, maxiter=400)
 
 model.parameters.set_active_values_from_flat(opt_params)

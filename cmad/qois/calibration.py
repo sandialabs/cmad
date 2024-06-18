@@ -37,17 +37,16 @@ class Calibration(QoI):
              cauchy_fun) -> Array:
 
         cauchy = cauchy_fun(xi, xi_prev, params, u, u_prev)
-        mismatch = weight_at_step @ (cauchy - data_at_step) # should this be * instead of @ ?
+        mismatch = weight_at_step * (cauchy - data_at_step)
         return 0.5 * jnp.sum(mismatch * mismatch)
 
 
-# all weights go into weight; remove from objective class
 class UniaxialCalibration(QoI):
     def __init__(self, model, global_state, data, weight,
             uniaxial_stress_idx, stretch_var_idx):
         self._model = model
         assert global_state.shape[-1] == data.shape[-1]
-        #assert data.shape == weight.shape
+        assert data.shape == weight.shape
         self._global_state = global_state
         self._data = data
         self._weight = weight
@@ -58,13 +57,18 @@ class UniaxialCalibration(QoI):
         super().__init__(partial_qoi)
 
 
+    def update_data(self, data):
+        old_shape = self._data.shape
+        assert data.shape == old_shape
+        self._data = data
+
+
     def data_at_step(self, step):
         return self._data[..., step]
 
 
     def weight_at_step(self, step):
-        return self._weight
-        #return self._weight[..., step]
+        return self._weight[:, step]
 
 
     @staticmethod
