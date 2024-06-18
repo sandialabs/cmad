@@ -67,7 +67,10 @@ p_voce = np.array([1., 200.]) # need to fiddle with these
 
 def_type = DefType.UNIAXIAL_STRESS
 params_true = params_hill_voce(p_elastic, p_hill, p_voce)
-model_true = SmallElasticPlastic(params_true, def_type, uniaxial_stress_idx=1)
+uniaxial_stress_idx = 1
+stretch_var_idx = 2
+model_true = SmallElasticPlastic(params_true, def_type,
+    uniaxial_stress_idx=uniaxial_stress_idx)
 
 num_steps = 50
 ndims = def_type_ndims(def_type)
@@ -86,10 +89,11 @@ initial_guess = model.parameters.flat_active_values(True).copy()
 num_active_params = model.parameters.num_active_params
 opt_bounds = params.opt_bounds
 
-weights_qoi = [2e-3, 2e1, 2e1]
+weights_qoi = np.array([2e-3, 2e1, 2e1])
 weights_time = np.ones(num_steps + 1)
 weights_time[0:10] = 0.
-qoi = UniaxialCalibration(model, F, data[0], weights_qoi)
+qoi = UniaxialCalibration(model, F, data[0], weights_qoi,
+    uniaxial_stress_idx, stretch_var_idx)
 objective = Objective(qoi, sensitivity_type="adjoint gradient", weights=weights_time)
 
 def multiobjective(Rmats, data):
