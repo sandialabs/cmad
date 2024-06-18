@@ -192,9 +192,11 @@ class Parameters():
             assert active_flags == transforms
             self.num_active_params = 0
 
-    def set_rotate(self,Rmat):
-        self.values['rotation matrix']= Rmat
+
+    def set_rotation_matrix(self, rotation_matrix):
+        self.values["rotation matrix"] = rotation_matrix
         self._flat_values, _  = ravel_pytree(self.values)
+
 
     def set_active_values(self, values, are_canonical=True):
         if are_canonical:

@@ -109,16 +109,16 @@ def multiobjective(Rmats, data):
         J_total = 0.
         grad_total = np.zeros(varlist.shape)
         for j,Rmat in enumerate(Rmats):
-            objective._qoi.model().parameters.set_rotate(Rmat)
+            objective._qoi.model().parameters.set_rotation_matrix(Rmat)
             objective._qoi._data = data[j]
-        
+
             J, grad = objective.evaluate(varlist)
-        
+
             J_total += J
             grad_total += grad 
         return J_total,grad_total
     return mobjective
 
 opt_params, fun_vals, cvg_dict = fmin_l_bfgs_b(
-     multiobjective(Rmats,data), params_true.flat_active_values(True)+.1, bounds=opt_bounds, iprint=1,
-    maxiter=400)
+    multiobjective(Rmats,data), params_true.flat_active_values(True)+.1, 
+    bounds=opt_bounds, iprint=1, maxiter=400)
