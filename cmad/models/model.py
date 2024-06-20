@@ -14,7 +14,8 @@ from cmad.models.var_types import VarType
 class Model(ABC):
     def __init__(self, residual_fun, cauchy_fun):
         self._residual = jit(residual_fun)
-        self._jacobian = [jit(jacfwd(residual_fun, argnums=DerivType.DXI, holomorphic=self._is_complex)),
+        self._jacobian = [jit(jacfwd(residual_fun, argnums=DerivType.DXI,
+                          holomorphic=self._is_complex)),
                           jit(jacfwd(residual_fun, argnums=DerivType.DXI_PREV)),
                           jit(jacrev(residual_fun, argnums=DerivType.DPARAMS))]
 

@@ -205,7 +205,7 @@ class Parameters():
     def set_active_values_from_flat(self, flat_active_values,
                                     are_canonical=True, is_complex=False):
         if is_complex:
-            updated_flat_values = np.array(self._flat_values, dtype = complex)
+            updated_flat_values = np.array(self._flat_values, dtype=complex)
         else:
             updated_flat_values = np.array(self._flat_values)
         updated_flat_values[self.active_idx] = flat_active_values

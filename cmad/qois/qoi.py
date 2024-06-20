@@ -49,7 +49,6 @@ class QoI(ABC):
         else:
             self._dJ = \
                 np.atleast_2d(np.hstack(self._dqoi[deriv_mode](*variables,
-
                                                                data_at_step)))
 
     # consider jitting

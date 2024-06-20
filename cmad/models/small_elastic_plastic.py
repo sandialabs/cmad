@@ -90,7 +90,7 @@ class SmallElasticPlastic(Model):
                  hardening_funs: dict = get_hardening_funs(),
                  yield_tol=1e-14,
                  uniaxial_stress_idx=0, is_complex=False):
-        
+
         self._is_complex = is_complex
         self.dtype = float
         if is_complex:
