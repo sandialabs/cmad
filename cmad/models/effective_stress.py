@@ -21,7 +21,7 @@ def effective_stress_fun(effective_stress_type):
 def J2_effective_stress(cauchy, params):
     hydro_cauchy = jnp.trace(cauchy) / 3.
     s = cauchy - hydro_cauchy * jnp.eye(3)
-    snorm = jnp.linalg.norm(s)
+    snorm = jnp.sqrt(jnp.sum(s * s))
     phi = jnp.sqrt(3. / 2.) * snorm
     return phi
 
