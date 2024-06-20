@@ -11,7 +11,7 @@ class Objective():
         self._parameters = qoi.model().parameters
         self._global_state = qoi.global_state()
 
-        self._num_steps = qoi.data().shape[2] - 1
+        self._num_steps = qoi.data().shape[-1] - 1
         self._xi_at_step = [[None] * self._model.num_residuals
                             for ii in range(self._num_steps + 1)]
         self._model.store_xi(self._xi_at_step, self._model.xi(), 0)
@@ -24,6 +24,7 @@ class Objective():
             self._evaluate = self._compute_direct_adjoint_sens_fun_grad_hessian
         else:
             raise NotImplementedError
+
 
     def evaluate(self, flat_active_values):
 

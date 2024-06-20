@@ -107,6 +107,7 @@ def params_hill_voce(p_elastic, p_hill, p_voce):
     hill_coefficients_bounds = np.array([0.1, 3.])
 
     hill_values = {
+        "rotation matrix": np.eye(3),
         "elastic": elastic_params,
         "plastic": {
             "effective stress": hill_effective_stress_params,
@@ -146,6 +147,7 @@ def params_hybrid_hill_voce(p_elastic, p_hill, p_voce, nn_params):
     hill_coefficients_bounds = np.array([0.1, 3.])
 
     hybrid_hill_values = {
+        "rotation matrix": np.eye(3),
         "elastic": elastic_params,
         "plastic": {
             "effective stress": {
