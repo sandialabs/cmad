@@ -35,13 +35,18 @@ class QoI(ABC):
         variables = self._model.variables()
         deriv_mode = self._model.deriv_mode()
         data_at_step = self.data_at_step(step)
+        weight_at_step = self.weight_at_step(step)
 
         if deriv_mode == DerivType.DNONE:
-            self._J = np.asarray(self._qoi(*variables, data_at_step),
+            self._J = np.asarray(self._qoi(*variables,
+                                 data_at_step,
+                                 weight_at_step),
                                  dtype=self.model().dtype)
             self._dJ = None
         elif deriv_mode == DerivType.DPARAMS:
-            dJ = self._dqoi[deriv_mode](*variables, data_at_step)
+            dJ = self._dqoi[deriv_mode](*variables,
+                                        data_at_step,
+                                        weight_at_step)
             self._dJ = \
                 np.asarray(
                     self._model.parameters.qoi_active_params_jacobian(dJ),
@@ -49,7 +54,8 @@ class QoI(ABC):
         else:
             self._dJ = \
                 np.atleast_2d(np.hstack(self._dqoi[deriv_mode](*variables,
-                                                               data_at_step)))
+                                                               data_at_step,
+                                                               weight_at_step)))
 
     # consider jitting
     def unpack_state_hessian(self,
@@ -99,12 +105,19 @@ class QoI(ABC):
 
         variables = self._model.variables()
         data_at_step = self.data_at_step(step)
+        weight_at_step = self.weight_at_step(step)
         hessian_params_params = \
-            self._hessian_params_params(*variables, data_at_step)
+            self._hessian_params_params(*variables,
+                                        data_at_step,
+                                        weight_at_step)
         hessian_xi_params = \
-            self._hessian_xi_params(*variables, data_at_step)
+            self._hessian_xi_params(*variables,
+                                    data_at_step,
+                                    weight_at_step)
         hessian_xi_xi = \
-            self._hessian_xi_xi(*variables, data_at_step)
+            self._hessian_xi_xi(*variables,
+                                data_at_step,
+                                weight_at_step)
 
         self.d2J_dparams2 = self.unpack_params_hessian(hessian_params_params,
             DerivType.DPARAMS)
