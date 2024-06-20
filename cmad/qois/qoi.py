@@ -38,7 +38,7 @@ class QoI(ABC):
 
         if deriv_mode == DerivType.DNONE:
             self._J = np.asarray(self._qoi(*variables, data_at_step),
-                                 dtype=np.float64)
+                                 dtype=self.model().dtype)
             self._dJ = None
         elif deriv_mode == DerivType.DPARAMS:
             dJ = self._dqoi[deriv_mode](*variables, data_at_step)

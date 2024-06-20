@@ -23,7 +23,12 @@ class Elastic(Model):
 
     def __init__(self, parameters: Parameters,
                  elastic_stress_fun=isotropic_linear_elastic_cauchy_stress,
-                 def_type=DefType.FULL_3D):
+                 def_type=DefType.FULL_3D, is_complex=False):
+        
+        self._is_complex = is_complex
+        self.dtype = float
+        if is_complex:
+            self.dtype = complex
 
         self._def_type = def_type
         ndims = def_type_ndims(def_type)
