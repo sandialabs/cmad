@@ -57,7 +57,7 @@ def compute_elastic_strain(xi, params, u, def_type, uniaxial_stress_idx):
 
 def compute_yield_fun_and_normal(xi, xi_prev, params, u, u_prev, def_type,
                                  elastic_stress, effective_stress, hardening,
-                                 uniaxial_stress_idx):
+                                 uniaxial_stress_idx, is_complex):
 
     plastic_params = params["plastic"]
     Y = plastic_params["flow stress"]["initial yield"]["Y"]
@@ -72,7 +72,7 @@ def compute_yield_fun_and_normal(xi, xi_prev, params, u, u_prev, def_type,
     sigma_flow = Y + hardening(alpha, hardening_params)
 
     yield_fun = (phi - sigma_flow) / two_mu_scale_factor(params)
-    yield_normal = grad(effective_stress)(cauchy, plastic_params)
+    yield_normal = grad(effective_stress, holomorphic=is_complex)(cauchy, plastic_params)
 
     return cauchy, yield_fun, yield_normal
 
@@ -89,7 +89,12 @@ class SmallElasticPlastic(Model):
                  elastic_stress_fun=isotropic_linear_elastic_stress,
                  hardening_funs: dict = get_hardening_funs(),
                  yield_tol=1e-14,
-                 uniaxial_stress_idx=0):
+                 uniaxial_stress_idx=0, is_complex=False):
+
+        self._is_complex = is_complex
+        self.dtype = float
+        if is_complex:
+            self.dtype = complex
 
         self._def_type = def_type
         ndims = def_type_ndims(def_type)
@@ -159,7 +164,7 @@ class SmallElasticPlastic(Model):
                            hardening=partial(combined_hardening_fun,
                                              hardening_funs=hardening_funs),
                            yield_tol=yield_tol,
-                           uniaxial_stress_idx=uniaxial_stress_idx)
+                           uniaxial_stress_idx=uniaxial_stress_idx, is_complex=is_complex)
 
         cauchy = partial(self.cauchy,
                          def_type=def_type,
@@ -171,7 +176,7 @@ class SmallElasticPlastic(Model):
     @staticmethod
     def _residual(xi, xi_prev, params, u, u_prev,
                   def_type, elastic_stress, effective_stress, hardening,
-                  yield_tol, uniaxial_stress_idx) -> jnp.array:
+                  yield_tol, uniaxial_stress_idx, is_complex) -> jnp.array:
 
         # state variables for the model
         pstrain = get_sym_tensor_from_vector(xi[0], 3)
@@ -184,7 +189,7 @@ class SmallElasticPlastic(Model):
         material_cauchy, yield_fun, yield_normal = compute_yield_fun_and_normal(
             xi, xi_prev, params, u, u_prev, def_type,
             elastic_stress, effective_stress, hardening,
-            uniaxial_stress_idx)
+            uniaxial_stress_idx, is_complex)
 
         # elastic residual
         C_elastic_pstrain_tensor = pstrain - pstrain_prev

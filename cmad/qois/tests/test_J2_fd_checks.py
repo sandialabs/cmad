@@ -202,6 +202,83 @@ def fd_grad_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     return fs_fd_error, adjoint_fd_error
 
 
+def complex_step_grad_check(qoi, qoi_complex, hs=np.logspace(-2, -10, 9),
+        seed=22):
+
+    model = qoi.model()
+    flat_active_values = model.parameters.flat_active_values(True)
+    num_active_params = model.parameters.num_active_params
+
+    direct_obj = Objective(qoi, sensitivity_type="direct gradient")
+    adjoint_obj = Objective(qoi, sensitivity_type="adjoint gradient")
+
+    J_ref, direct_grad_ref = \
+        direct_obj.evaluate(flat_active_values)
+    J_ref, adjoint_grad_ref = \
+        adjoint_obj.evaluate(flat_active_values)
+
+    model_complex = qoi_complex.model()
+    flat_active_values_complex = model_complex.parameters.flat_active_values(True)
+
+    np.random.seed(seed)
+    d = np.random.uniform(low=-1.0, size=num_active_params)
+
+    fs_dir_deriv_ref = d.dot(direct_grad_ref)
+    adjoint_dir_deriv_ref = d.dot(adjoint_grad_ref)
+
+    fs_fd_error = np.zeros(len(hs))
+    adjoint_fd_error = np.zeros(len(hs))
+
+    for ii, h in enumerate(hs):
+        params_plus_complex = flat_active_values_complex.copy()
+        params_plus_complex += complex(0, 1) * h * d
+        model_complex.parameters.set_active_values_from_flat(params_plus_complex,
+            is_complex=True)
+        complex_dir_deriv = compute_fun(qoi_complex).imag / h
+        fs_fd_error[ii] = np.abs(complex_dir_deriv - fs_dir_deriv_ref)
+        adjoint_fd_error[ii] = np.abs(complex_dir_deriv - adjoint_dir_deriv_ref)
+
+    return fs_fd_error, adjoint_fd_error
+
+
+def complex_step_hessian_check(qoi, qoi_complex, hs=np.logspace(-2, -10, 9), seed=22):
+    model = qoi.model()
+    flat_active_values = model.parameters.flat_active_values(True)
+    num_active_params = model.parameters.num_active_params
+    hessian_obj = Objective(qoi, "direct-adjoint hessian")
+
+    J_ref, grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
+
+    model_complex = qoi_complex.model()
+    flat_active_values_complex = model_complex.parameters.flat_active_values(True)
+
+    np.random.seed(seed)
+    d = np.random.uniform(low=-1.0, size=num_active_params)
+
+    dir_deriv_ref = (d @ hessian_ref @ d.T).squeeze()
+
+    fd_error = np.zeros(len(hs))
+
+    for ii, h in enumerate(hs):
+        # Evaluate objective function with perturbation
+        params_plus_complex = flat_active_values_complex.copy()
+        params_plus_complex += complex(0.5, np.sqrt(3.) / 2.) * h * d
+        model_complex.parameters.set_active_values_from_flat(params_plus_complex,
+            is_complex=True)
+        J_1 = compute_fun(qoi_complex)
+
+        params_plus_complex = flat_active_values_complex.copy()
+        params_plus_complex += complex(-0.5, -np.sqrt(3.) / 2.) * h * d
+        model_complex.parameters.set_active_values_from_flat(params_plus_complex,
+            is_complex=True)
+        J_2 = compute_fun(qoi_complex)
+
+        dir_deriv = (J_1 + J_2).imag / (np.sqrt(3.) / 2. * h**2)
+        fd_error[ii] = np.abs(dir_deriv - dir_deriv_ref)
+
+    return fd_error
+
+
 def compute_fun(qoi):
 
     model = qoi.model()
@@ -235,6 +312,7 @@ class TestJ2FDChecks(unittest.TestCase):
 
         scale_params = True
         J2_analytical_problem = J2AnalyticalProblem(scale_params)
+        J2_analytical_problem_complex = J2AnalyticalProblem(scale_params)
 
         # numbers of steps to run solver for (does not include the IC)
         num_steps = 100
@@ -260,14 +338,29 @@ class TestJ2FDChecks(unittest.TestCase):
         weight = np.zeros((3, 3))
         weight[0, 0] = 1.
 
-        model = SmallRateElasticPlastic(J2_analytical_problem.J2_parameters,
-                                        def_type)
-
         # tweak the parameters to make the solution not uniaxial
         new_params = np.array([210., 21., 109.])
 
         zero_data = np.zeros((3, 3, num_steps + 1))
+
+        # Instantiate real model
+        model = SmallRateElasticPlastic(J2_analytical_problem.J2_parameters,
+                                        def_type, is_complex=False)
+
         qoi = Calibration(model, F, zero_data, weight)
+        model.parameters.set_active_values_from_flat(new_params, False)
+
+        # Instantiate complex model
+        model_complex = SmallRateElasticPlastic(
+            J2_analytical_problem_complex.J2_parameters,
+            def_type, is_complex=True)
+
+        qoi_complex = Calibration(model_complex, F, zero_data.astype(complex), weight)
+        model_complex.parameters.set_active_values_from_flat(
+            new_params.astype(complex), False, is_complex=True)
+
+        fs_complex_step_dir_deriv_error, adjoint_complex_step_dir_deriv_error = \
+            complex_step_grad_check(qoi, qoi_complex, seed = 10)
 
         model.parameters.set_active_values_from_flat(new_params, False)
         fs_fd_dir_deriv_error, adjoint_fd_dir_deriv_error = \
@@ -279,6 +372,8 @@ class TestJ2FDChecks(unittest.TestCase):
 
         assert np.allclose(fs_fd_dir_deriv_error,
                            adjoint_fd_dir_deriv_error)
+        assert np.allclose(fs_complex_step_dir_deriv_error,
+                           adjoint_complex_step_dir_deriv_error)
 
         error_drop_tol = 4.
         min_fd_error = np.min(fs_fd_dir_deriv_error)
@@ -292,6 +387,17 @@ class TestJ2FDChecks(unittest.TestCase):
         assert np.linalg.norm(fd_components_diff) < diff_tol
 
         #hessian = evaluate_hessian(qoi)
+
+        model.parameters.set_active_values_from_flat(new_params, False)
+        model_complex.parameters.set_active_values_from_flat(
+            new_params.astype(complex), False, is_complex=True)
+        hessian_complex_step_dir_deriv_error = complex_step_hessian_check(qoi,
+             qoi_complex, np.logspace(-1, -10, 20))
+        min_complex_step_error = np.min(hessian_complex_step_dir_deriv_error)
+        max_complex_step_error = np.max(hessian_complex_step_dir_deriv_error)
+        hessian_log10_error_drop = \
+            np.log10(max_complex_step_error / min_complex_step_error)
+        assert hessian_log10_error_drop > error_drop_tol
 
         model.parameters.set_active_values_from_flat(new_params, False)
         hessian_fd_dir_deriv_error = fd_hessian_check(qoi,

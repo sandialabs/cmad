@@ -14,7 +14,8 @@ from cmad.models.var_types import VarType
 class Model(ABC):
     def __init__(self, residual_fun, cauchy_fun):
         self._residual = jit(residual_fun)
-        self._jacobian = [jit(jacfwd(residual_fun, argnums=DerivType.DXI)),
+        self._jacobian = [jit(jacfwd(residual_fun, argnums=DerivType.DXI,
+                          holomorphic=self._is_complex)),
                           jit(jacfwd(residual_fun, argnums=DerivType.DXI_PREV)),
                           jit(jacrev(residual_fun, argnums=DerivType.DPARAMS))]
 
@@ -73,7 +74,7 @@ class Model(ABC):
         deriv_mode = self._deriv_mode
 
         if deriv_mode == DerivType.DNONE:
-            self._C = np.asarray(self._residual(*variables), dtype=np.float64)
+            self._C = np.asarray(self._residual(*variables), dtype=self.dtype)
             self._Jac = None
         elif deriv_mode == DerivType.DPARAMS:
             Jac = self._jacobian[deriv_mode](*variables)
@@ -179,8 +180,8 @@ class Model(ABC):
 
     def set_xi_to_init_vals(self):
         for ii in range(self.num_residuals):
-            self._xi[ii] = self._init_xi[ii].copy()
-            self._xi_prev[ii] = self._init_xi[ii].copy()
+            self._xi[ii] = self._init_xi[ii].copy().astype(self.dtype)
+            self._xi_prev[ii] = self._init_xi[ii].copy().astype(self.dtype)
 
     def C(self):
         return self._C
