@@ -101,7 +101,7 @@ def fd_hessian_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     d = np.random.uniform(low=-1.0, size=num_active_params)
 
     dir_deriv_ref = (d @ hessian_ref @ d.T).squeeze()
-    print(f"hessian directional deriv = {dir_deriv_ref:.10e}")
+    #print(f"hessian directional deriv = {dir_deriv_ref:.10e}")
 
     fd_error = np.zeros(len(hs))
 
@@ -118,7 +118,7 @@ def fd_hessian_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
 
         dir_deriv = (J_plus + J_minus - 2. * J_ref) / h**2
         fd_error[ii] = np.abs(dir_deriv - dir_deriv_ref)
-        print(f"hessian approx directional deriv = {dir_deriv:.10e}")
+        #print(f"hessian approx directional deriv = {dir_deriv:.10e}")
 
     return fd_error
 
@@ -360,7 +360,7 @@ class TestJ2FDChecks(unittest.TestCase):
             new_params.astype(complex), False, is_complex=True)
 
         fs_complex_step_dir_deriv_error, adjoint_complex_step_dir_deriv_error = \
-            complex_step_grad_check(qoi, qoi_complex, seed = 10)
+            complex_step_grad_check(qoi, qoi_complex, seed=10)
 
         model.parameters.set_active_values_from_flat(new_params, False)
         fs_fd_dir_deriv_error, adjoint_fd_dir_deriv_error = \
@@ -381,12 +381,15 @@ class TestJ2FDChecks(unittest.TestCase):
         grad_log10_error_drop = np.log10(max_fd_error / min_fd_error)
         assert grad_log10_error_drop > error_drop_tol
 
+        min_fd_error = np.min(fs_complex_step_dir_deriv_error)
+        max_fd_error = np.max(fs_complex_step_dir_deriv_error)
+        grad_log10_error_drop = np.log10(max_fd_error / min_fd_error)
+        assert grad_log10_error_drop > error_drop_tol
+
         diff_tol = 1e-6
         fd_components_diff = fs_fd_component_error \
             - adjoint_fd_component_error
         assert np.linalg.norm(fd_components_diff) < diff_tol
-
-        #hessian = evaluate_hessian(qoi)
 
         model.parameters.set_active_values_from_flat(new_params, False)
         model_complex.parameters.set_active_values_from_flat(
