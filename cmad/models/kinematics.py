@@ -52,5 +52,5 @@ def compute_invariants(A):
 
 
 def off_axis_idx(uniaxial_stress_idx):
-   all_idx = jnp.arange(3)
-   return jnp.sort(jnp.setdiff1d(all_idx, uniaxial_stress_idx, size=2))
+    all_idx = jnp.arange(3)
+    return jnp.sort(jnp.setdiff1d(all_idx, uniaxial_stress_idx, size=2))
