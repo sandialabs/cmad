@@ -284,20 +284,20 @@ class Objective():
             hessian += d2J_dp2 \
                 + np.einsum("q,qij->ij", phi, d2C_dp2) \
                 + np.einsum("ik,kj->ij", d2J_dp_dxi, dxi_dp) \
-                + np.einsum("q,qik,kj->ij", phi, d2C_dp_dxi,dxi_dp) \
-                + np.einsum("ki,jk->ij", dxi_dp, d2J_dp_dxi) \
-                + np.einsum("ki,q,qjk->ij", dxi_dp, phi, d2C_dp_dxi) \
+                + np.einsum("q,qik,kj->ij", phi, d2C_dp_dxi, dxi_dp) \
+                + np.einsum("jk,ki->ij", d2J_dp_dxi, dxi_dp) \
+                + np.einsum("q,qjk,ki->ij", phi, d2C_dp_dxi, dxi_dp) \
                 + np.einsum("km,ki,mj->ij", d2J_dxi2, dxi_dp, dxi_dp) \
                 + np.einsum("q,qkm,ki,mj->ij", phi, d2C_dxi2, dxi_dp,
                                                dxi_dp) \
-                + np.einsum("q,qik,kj->ij", phi, d2C_dp_dxi_prev,dxi_dp) \
+                + np.einsum("q,qik,kj->ij", phi, d2C_dp_dxi_prev, dxi_dp_prev) \
                 + np.einsum("q,qkm,ki,mj->ij", phi, d2C_dxi_dxi_prev,
-                                               dxi_dp, dxi_dp) \
-                + np.einsum("q,qmk,ki,mj->ij", phi, d2C_dxi_dxi_prev, dxi_dp,
-                                               dxi_dp) \
-                + np.einsum("q,qkm,ki,mj->ij", phi, d2C_dxi_prev2, dxi_dp,
+                                               dxi_dp, dxi_dp_prev) \
+                + np.einsum("q,qmk,ki,mj->ij", phi, d2C_dxi_dxi_prev,
+                                               dxi_dp_prev, dxi_dp) \
+                + np.einsum("q,qkm,ki,mj->ij", phi, d2C_dxi_prev2, dxi_dp_prev,
                                                dxi_dp_prev) \
-                + np.einsum("q,ki,qjk->ij", phi, dxi_dp_prev, d2C_dp_dxi_prev)
+                + np.einsum("q,qjk,ki->ij", phi, d2C_dp_dxi_prev, dxi_dp_prev)
 
             dxi_dp_prev = dxi_dp
 
