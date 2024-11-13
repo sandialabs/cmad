@@ -188,6 +188,16 @@ class Parameters():
             self.opt_bounds = \
                 np.array([get_opt_bounds(transform)
                           for transform in self._flat_active_transforms])
+            self.get_params_pytree_from_flat_canonical_active = partial(
+                self._get_params_pytree_from_flat_canonical_active,
+                flat_values=self._flat_values,
+                reconstruct_from_flat=self.reconstruct_from_flat,
+                active_idx=self.active_idx,
+                active_flags=self._active_flags,
+                transforms=self._transforms
+            )
+
+
         else:
             assert active_flags == transforms
             self.num_active_params = 0
@@ -282,5 +292,20 @@ class Parameters():
         array_jac = jnp.hstack(flat_jac)
         return array_jac[:, active_idx]
 
+
     def scalar_active_params_jacobian(self, jacobian):
         return self._active_params_jacobian(jacobian, 1, self.active_idx)
+
+
+    @staticmethod
+    def _get_params_pytree_from_flat_canonical_active(flat_canonical_active,
+            flat_values, reconstruct_from_flat,
+            active_idx, active_flags, transforms):
+
+        for active_idx, active_value in zip(active_idx, flat_canonical_active):
+            flat_values = flat_values.at[active_idx].set(active_value)
+        pytree = reconstruct_from_flat(flat_values)
+        pytree = tree_map(lambda v, a, t: transform_from_canonical(v, a, t),
+            pytree, active_flags, transforms)
+
+        return pytree
