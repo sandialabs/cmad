@@ -35,24 +35,6 @@ def compute_forward_and_backward_matrices():
     return F, B
 
 
-def compute_dev_plane_angle(pi_coords):
-    pi_1 = pi_coords[0, :]
-    pi_2 = pi_coords[1, :]
-
-    return np.mod(np.arctan2(pi_2, pi_1), 2. * np.pi)
-
-
-def compute_dev_plane_radius(pi_coords):
-    pi_1 = pi_coords[0, :]
-    pi_2 = pi_coords[1, :]
-
-    return np.sqrt(zeta_1**2 + zeta_2**2)
-
-
-def compute_dev_plane_coords_from_dev_polar(radius, angle):
-    return np.c_[radius * np.cos(angle), radius * np.sin(angle)]
-
-
 diff_tol = 1e-14
 num_angles = 720
 
@@ -61,10 +43,10 @@ num_angles = 720
 dev_plane_angles = np.mod(np.linspace(0., 2. * np.pi, num_angles,
     endpoint=False) - np.pi / 6., 2. * np.pi)
 dev_plane_radii = np.ones(num_angles)
-dev_plane_coords = \
-    compute_dev_plane_coords_from_dev_polar(
-    dev_plane_radii, dev_plane_angles
-)
+dev_plane_coords = np.c_[
+    dev_plane_radii * np.cos(dev_plane_angles),
+    dev_plane_radii * np.sin(dev_plane_angles)
+]
 
 F, B = compute_forward_and_backward_matrices()
 diff_tol = 1e-14
