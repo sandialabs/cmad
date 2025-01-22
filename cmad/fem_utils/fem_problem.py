@@ -17,9 +17,9 @@ class fem_problem():
             = quadrature_rule.create_quadrature_rule_on_tetrahedron(order)
         gauss_pts_3D = self._quad_rule_3D.xigauss
         self._shape_func_tetra = interpolants.shape_tetrahedron(gauss_pts_3D)
-        
-        if problem_type == "hole_block_example": 
-            
+
+        if problem_type == "hole_block_example":
+
             self._mesh = Mesh("hole_block")
 
             self._nodal_coords = self._mesh.get_nodal_coordinates()
@@ -32,7 +32,7 @@ class fem_problem():
             self._num_elem = len(self._colume_conn)
             self._num_nodes_surf = 3
 
-            # fix all nodes on plane x = 0 
+            # fix all nodes on plane x = 0
             pres_nodes = []
             for i in range(self._num_nodes):
                 if self._nodal_coords[i][0] == 0.0:
@@ -58,7 +58,7 @@ class fem_problem():
             self._pres_surf = np.array(pres_surf)
 
         if problem_type == "uniaxial_stress":
-            
+
             self._mesh = Mesh("bar")
 
             self._nodal_coords = self._mesh.get_nodal_coordinates()
@@ -71,7 +71,7 @@ class fem_problem():
             self._num_elem = len(self._colume_conn)
             self._num_nodes_surf = 3
 
-            # prescribe ux = 0 on x = 0, uy = 0 on y = 0, and uz = 0 on z = 0 
+            # prescribe ux = 0 on x = 0, uy = 0 on y = 0, and uz = 0 on z = 0
             disp_node = []
             for i in range(self._num_nodes):
                 if self._nodal_coords[i][0] == 0.0:
@@ -91,10 +91,10 @@ class fem_problem():
                 if (surface_points[:, 0] == 2 * np.ones(3)).all():
                     pres_surf.append(surface)
             self._pres_surf = np.array(pres_surf)
-        
+
         # setup patch test form B
         if problem_type == "patch_B":
-            
+
             self._mesh = Mesh("cube")
 
             self._nodal_coords = self._mesh.get_nodal_coordinates()
@@ -178,7 +178,7 @@ class fem_problem():
 
     def get_2D_basis_functions(self):
         return self._quad_rule_2D, self._shape_func_triangle
-    
+
     def get_3D_basis_functions(self):
         return self._quad_rule_3D, self._shape_func_tetra
 
@@ -190,7 +190,7 @@ class fem_problem():
     def get_boundary_conditions(self):
         return self._disp_node, self._disp_val, \
             self._pres_surf, self._surf_traction_vector
-    
+
     def save_data(self, filename, data):
         self._mesh.add_point_data(data)
         self._mesh.save_mesh(filename)

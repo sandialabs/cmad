@@ -55,15 +55,15 @@ class Mesh():
 
     def get_nodal_coordinates(self):
         return self._points
-    
+
     def get_volume_connectivity(self):
         return self._volume_conn
-    
+
     def get_surface_connectivity(self):
         return self._surface_conn
-    
+
     def add_point_data(self, data):
         self._mesh.point_data = {"displacement_field": data}
-    
+
     def save_mesh(self, filename):
         self._mesh.write(filename + ".vtk")

@@ -65,12 +65,12 @@ def shape_triangle(evaluationPoints):
 
     shape = np.vstack((1 - evaluationPoints[:,0] - evaluationPoints[:,1],
                        evaluationPoints[:,0], evaluationPoints[:,1])).T
-    
+
     dshape = np.zeros((num_eval_points, dof_node, num_nodes_elem))
 
     for i in range(num_eval_points):
         dshape[i, :, :] = np.array([[-1, 1, 0],[-1, 0, 1]])
-    
+
     return ShapeFunctions(shape, dshape)
 
 def shape_quad(evaluationPoints):
@@ -109,7 +109,7 @@ def shape_quad(evaluationPoints):
         l0y = 1 - point[1]
         l1y = 1 + point[1]
         dshape[i, :, :] = np.array([[-l0y, l0y, l1y, -l1y],[-l0x, -l1x, l1x, l0x]])
-    
+
     return ShapeFunctions(shape, dshape)
 
 def shape_tetrahedron(evaluationPoints):
@@ -135,12 +135,12 @@ def shape_tetrahedron(evaluationPoints):
 
     shape = np.vstack((1 - evaluationPoints[:,0] - evaluationPoints[:,1] - evaluationPoints[:,2],
                        evaluationPoints[:,0], evaluationPoints[:,1], evaluationPoints[:,2])).T
-    
+
     dshape = np.zeros((num_eval_points, dof_node, num_nodes_elem))
 
     for i in range(num_eval_points):
         dshape[i, :, :] = np.array([[-1, 1, 0, 0], [-1, 0, 1, 0], [-1, 0, 0, 1]])
-    
+
     return ShapeFunctions(shape, dshape)
 
 
@@ -158,7 +158,7 @@ def shape_brick(evaluationPoints):
       in a tuple (``shape``, ``dshape``).
       shapes: [num_eval_points, num_nodes_elem]
       dshapes: [num_eval_points, dof_node, num_nodes_elem]
-      
+
     """
 
     num_eval_points = len(evaluationPoints)
@@ -188,7 +188,7 @@ def shape_brick(evaluationPoints):
         dshape[i, :, :] = np.array([[-m2 * m3 / 8, m2 * m3 / 8, p2 * m3 / 8, -p2 * m3 / 8, -m2 * p3 / 8, m2 * p3 / 8, p2 * p3 / 8, -p2 * p3 / 8],
                                    [-m1 * m3 / 8, -p1 * m3 / 8, p1 * m3 / 8, m1 * m3 / 8, -m1 * p3 / 8, -p1 * p3 / 8, p1 * p3 / 8, m1 * p3 / 8],
                                    [-m1 * m2 / 8, -p1 * m2 / 8, -p1 * p2 / 8, -m1 * p2 / 8, m1 * m2 / 8, p1 * m2 / 8, p1 * p2 / 8, m1 * p2 / 8]])
-    
+
     return ShapeFunctions(shape, dshape)
 
 

@@ -1,5 +1,5 @@
 from cmad.fem_utils.fem_problem import fem_problem
-from cmad.fem_utils.fem_functions import (initialize_equation, 
+from cmad.fem_utils.fem_functions import (initialize_equation,
                                           assemble_module, assemble_module_AD,
                                           solve_module)
 import time
@@ -17,30 +17,30 @@ num_pres_dof: number of prescribed degrees of freedom
 surf_traction_vector: surface traction vector
 E: Youngs Modulus
 nu: Poisson's ratio
-disp_node: (num_pres_dof x 2) array that specifies 
+disp_node: (num_pres_dof x 2) array that specifies
     which node and dof is prescribed
-disp_val: (NUM_PRED_DOF x 1) array of values 
+disp_val: (NUM_PRED_DOF x 1) array of values
     of the prescribed displacements
-eq_num: (num_nodes x dof_node) array that specifies where 
+eq_num: (num_nodes x dof_node) array that specifies where
     each node and its DOFs belong in the global stifness matrix
 volume_conn: connectivity matrix for 3D elements
 pres_surf: connectivity for surfaces that have a prescribed traction
 nodal_coords: spacial coordinates for each node in mesh
 
-In the definitions below, "P" stands for prescribed displacements 
+In the definitions below, "P" stands for prescribed displacements
 and "F" stands for free displacments
 
-KPP: (num_pres_dof x num_pres_dof) partion of stiffness matrix with rows 
+KPP: (num_pres_dof x num_pres_dof) partion of stiffness matrix with rows
     and columns corresponding with prescribed DOFS
-KPF: (num_pres_dof x num_free_dof) partion of stiffness matrix with rows 
-    corresponding with prescribed DOFS and columns corresponding with free DOFS 
-KFF: (num_free_dof x num_free_dof) partion of stiffness matrix with rows and 
+KPF: (num_pres_dof x num_free_dof) partion of stiffness matrix with rows
+    corresponding with prescribed DOFS and columns corresponding with free DOFS
+KFF: (num_free_dof x num_free_dof) partion of stiffness matrix with rows and
     columns corresponding with free DOFS
-KFP: (num_free_dof x num_free_dof) partion of stiffness matrix with rows 
+KFP: (num_free_dof x num_free_dof) partion of stiffness matrix with rows
     corresponding with free DOFS and columns corresponding with prescribed DOFS
 PF: (num_free_dof, ) RHS vector corresponding with free DOFS
 PP: (num_pres_dof, ) RHS vector corresponding with prescribed DOFS
-UP: (num_pres_dof, ) vector of prescribed displacements 
+UP: (num_pres_dof, ) vector of prescribed displacements
 UF: (num_free_dof, ) vector of free displacements (the ones that we solve for)
 UUR: (num_nodes x 3) matrix of displacements at all nodes in the mesh
 """
@@ -70,7 +70,7 @@ print("Number of free degrees of freedom: ", num_free_dof)
 KPP, KPF, KFF, KFP, PF, PP, UP \
     = assemble_module_AD(num_pres_dof, num_free_dof, num_elem, num_nodes_ELE,
                       dof_node, num_nodes_surf, surf_traction_vector, params,
-                      disp_node, disp_val, eq_num, volume_conn, nodal_coords, 
+                      disp_node, disp_val, eq_num, volume_conn, nodal_coords,
                       pres_surf, quad_rule_3D, shape_func_tetra, quad_rule_2D,
                       shape_func_triangle)
 

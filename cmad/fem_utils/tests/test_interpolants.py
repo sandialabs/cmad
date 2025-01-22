@@ -27,7 +27,7 @@ class TestInterpolants(unittest.TestCase):
             for j in range(len(dshape)):
                 gradient = dshape[j]
                 assert np.allclose(np.sum(gradient, axis = 1), np.zeros(len(gradient)))
-    
+
     def test_quad_shape_functions(self):
         for i in range(2, 6):
             test_points = quadrature_rule.create_quadrature_rule_on_quad(i).xigauss

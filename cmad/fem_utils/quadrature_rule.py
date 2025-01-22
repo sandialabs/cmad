@@ -2,7 +2,7 @@ import numpy as np
 import scipy.special
 
 class QuadratureRule():
-    
+
     def __init__(self, xigauss, wgauss):
         self.xigauss = xigauss
         self.wgauss = wgauss
@@ -13,7 +13,7 @@ class QuadratureRule():
 def create_quadrature_rule_1D(degree):
     """Creates a Gauss-Legendre quadrature on the interval [-1, 1].
 
-    The rule can exactly integrate polynomials of degree up to 
+    The rule can exactly integrate polynomials of degree up to
     ``degree``.
 
     Parameters
@@ -38,9 +38,9 @@ def create_quadrature_rule_1D(degree):
 def create_quadrature_rule_on_triangle(degree):
     """Creates a Gauss-Legendre quadrature on the unit triangle.
 
-    The rule can exactly integrate 2D polynomials up to the value of 
+    The rule can exactly integrate 2D polynomials up to the value of
     ``degree``. The domain is the triangle between the vertices
-    (0, 0)-(1, 0)-(0, 1). The rules here are guaranteed to be 
+    (0, 0)-(1, 0)-(0, 1). The rules here are guaranteed to be
     cyclically symmetric in triangular coordinates and to have strictly
     positive weights.
 
@@ -181,7 +181,7 @@ def create_quadrature_rule_on_triangle(degree):
 def create_quadrature_rule_on_quad(degree):
     """Creates a Gauss-Legendre quadrature on square.
 
-    The rule can exactly integrate 2D polynomials up to the value of 
+    The rule can exactly integrate 2D polynomials up to the value of
     ``degree``. The domain is the square between the vertices
     (1, -1)-(1, 1)-(-1, 1)-(-1, -1).
 
@@ -205,7 +205,7 @@ def create_quadrature_rule_on_quad(degree):
                        [a, -a],
                        [a, a],
                        [-a, a]])
-        
+
         w = np.array([1, 1, 1, 1])
     elif degree <= 5:
         a = 0.774596669241483
@@ -223,7 +223,7 @@ def create_quadrature_rule_on_quad(degree):
 
         w = np.array([c * c, b * c, c * c, c * b,
                       b * b, c * b, c * c, b * c, c * c])
-    
+
     else:
         raise ValueError("Quadrature of precision this high is not implemented.")
 
@@ -236,11 +236,11 @@ def create_quadrature_rule_on_tetrahedron(degree):
         w = np.array([1.0/6.0])
 
     elif degree == 2:
-        xi = np.array([[0.138196601125011, 0.138196601125011, 0.138196601125011], 
+        xi = np.array([[0.138196601125011, 0.138196601125011, 0.138196601125011],
                        [0.585410196624969, 0.138196601125011, 0.138196601125011],
                        [0.138196601125011, 0.585410196624969, 0.138196601125011],
                        [0.138196601125011, 0.138196601125011, 0.585410196624969]])
-        
+
         w = np.array([0.25/6.0, 0.25/6.0, 0.25/6.0, 0.25/6.0])
 
     elif degree == 3:
@@ -249,7 +249,7 @@ def create_quadrature_rule_on_tetrahedron(degree):
                        [1./6., 1./6., 1./2.],
                        [1./6., 1./2., 1./6.],
                        [1./2., 1./6., 1./6.]])
-        
+
         w = np.array([-2/15, 3/40, 3/40, 3/40, 3/40])
 
     elif degree == 4:
@@ -264,12 +264,12 @@ def create_quadrature_rule_on_tetrahedron(degree):
                        [0.399403576166799, 0.100596423833201, 0.100596423833201],
                        [0.100596423833201, 0.399403576166799, 0.100596423833201],
                        [0.100596423833201, 0.100596423833201, 0.399403576166799]])
-        
+
         w = np.array([-0.0131555555555556, 0.00762222222222222, 0.00762222222222222,
                       0.00762222222222222, 0.00762222222222222, 0.0248888888888889,
                       0.0248888888888889, 0.0248888888888889, 0.0248888888888889,
                       0.0248888888888889, 0.0248888888888889])
-    
+
     elif degree == 5:
         xi = np.array([[0.25, 0.25, 0.25],
                        [0, 1./3., 1./3.],
@@ -286,7 +286,7 @@ def create_quadrature_rule_on_tetrahedron(degree):
                        [0.0665501535736643, 0.433449846426336, 0.433449846426336],
                        [0.433449846426336, 0.0665501535736643, 0.433449846426336],
                        [0.433449846426336, 0.433449846426336, 0.0665501535736643]])
-        
+
         w = np.array([0.0302836780970892, 0.00602678571428572, 0.00602678571428572,
                       0.00602678571428572, 0.00602678571428572, 0.011645249086029,
                       0.011645249086029, 0.011645249086029, 0.011645249086029,
@@ -317,14 +317,14 @@ def create_quadrature_rule_on_tetrahedron(degree):
                        [0.0636610018750175,0.603005664791649,0.269672331458316],
                        [0.269672331458316,0.0636610018750175,0.603005664791649],
                        [0.603005664791649,0.269672331458316,0.0636610018750175]])
-        
+
         w = np.array([0.00665379170969465, 0.00665379170969465, 0.00665379170969465,
                       0.00665379170969465, 0.00167953517588678, 0.00167953517588678,
                       0.00167953517588678, 0.00167953517588678, 0.0092261969239424,
                       0.0092261969239424, 0.0092261969239424, 0.0092261969239424,
                       0.00803571428571428, 0.00803571428571428, 0.00803571428571428,
                       0.00803571428571428, 0.00803571428571428, 0.00803571428571428,
-                      0.00803571428571428, 0.00803571428571428, 0.00803571428571428, 
+                      0.00803571428571428, 0.00803571428571428, 0.00803571428571428,
                       0.00803571428571428, 0.00803571428571428, 0.00803571428571428])
     else:
         raise ValueError("Quadrature of precision this high is not implemented.")

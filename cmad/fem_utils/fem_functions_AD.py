@@ -12,7 +12,7 @@ def compute_shape_jacobian(elem_points, dshape_tetra):
     return dv, gradphiXYZ
 
 def interpolate(u, shape_tetra, gradphiXYZ, num_nodes_elem):
-    
+
     ux = u[0:num_nodes_elem]
     uy = u[num_nodes_elem:num_nodes_elem * 2]
     uz = u[num_nodes_elem * 2:num_nodes_elem * 3]
@@ -20,7 +20,7 @@ def interpolate(u, shape_tetra, gradphiXYZ, num_nodes_elem):
     u = jnp.array([jnp.dot(ux, shape_tetra),
                      jnp.dot(uy, shape_tetra),
                      jnp.dot(uz, shape_tetra)])
-    
+
     grad_u = jnp.vstack([gradphiXYZ @ ux,
                            gradphiXYZ @ uy,
                            gradphiXYZ @ uz])
@@ -58,5 +58,5 @@ def elem_residual(u, params, elem_points, num_nodes_elem,
         stress = compute_stress(grad_u_q, params)
 
         residual +=  w_q * gradphiXYZ_q.T @ stress * dv_q
-    
+
     return residual.reshape(-1, order='F')
