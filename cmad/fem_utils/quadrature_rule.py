@@ -1,28 +1,14 @@
-from jax.lax import switch
-from jaxtyping import Array, Float
-import equinox as eqx
-import jax.numpy as np
-import math
-import numpy as onp
+import numpy as np
 import scipy.special
 
-class QuadratureRule(eqx.Module):
-    """
-    Quadrature rule points and weights.
-    An ``equinox`` ``Module`` containing ``xigauss``, a ``jax.numpy`` array of the
-    coordinates of the sample points in the reference domain, and
-    ``wgauss``, a ``jax.numpy`` array with the weights.
-    """
-    xigauss: Float[Array, "nq 2"]
-    wgauss: Float[Array, "nq"]
-
-    def __iter__(self):
-        yield self.xigauss
-        yield self.wgauss
+class QuadratureRule():
+    
+    def __init__(self, xigauss, wgauss):
+        self.xigauss = xigauss
+        self.wgauss = wgauss
 
     def __len__(self):
         return self.xigauss.shape[0]
-
 
 def create_quadrature_rule_1D(degree):
     """Creates a Gauss-Legendre quadrature on the interval [-1, 1].
@@ -40,13 +26,13 @@ def create_quadrature_rule_1D(degree):
     and the weights.
     """
 
-    n = math.ceil((degree + 1)/2)
+    n = np.ceil((degree + 1)/2)
     xi, w = scipy.special.roots_sh_legendre(n)
     xi = -1 + 2 * xi
 
-    xi_matrix = onp.zeros((len(xi), 1))
+    xi_matrix = np.zeros((len(xi), 1))
     xi_matrix[:,0]=xi
-    return QuadratureRule(np.array(xi_matrix), w)
+    return QuadratureRule(xi_matrix, w)
 
 
 def create_quadrature_rule_on_triangle(degree):

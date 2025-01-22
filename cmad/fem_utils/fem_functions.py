@@ -1,28 +1,31 @@
 import numpy as np
 import time
+import jax
 
-def initialize_equation(NUM_NODES, DOF_NODE, disp_node):
+from cmad.fem_utils.fem_functions_AD import elem_residual
 
-    eq_num = np.zeros((NUM_NODES, DOF_NODE), dtype = int)
+def initialize_equation(num_nodes, dof_node, disp_node):
+
+    eq_num = np.zeros((num_nodes, dof_node), dtype=int)
     for i, node in enumerate(disp_node):
         node_number = node[0]
         direction = node[1]
         eq_num[node_number][direction - 1] = -(i + 1)
         
-    NUM_FREE_DOF = 0
+    num_free_dof = 0
     for i in range(len(eq_num)):
         for j in range(len(eq_num[i])):
             if (eq_num[i, j] == 0):
-                NUM_FREE_DOF += 1
-                eq_num[i, j] = NUM_FREE_DOF
-    NUM_PRES_DOF = NUM_NODES * DOF_NODE - NUM_FREE_DOF
+                num_free_dof += 1
+                eq_num[i, j] = num_free_dof
+    num_pres_dof = num_nodes * dof_node - num_free_dof
 
-    return eq_num, NUM_FREE_DOF, NUM_PRES_DOF
+    return eq_num, num_free_dof, num_pres_dof
 
 def assemble_prescribed_displacement(
-        NUM_PRES_DOF, disp_node, disp_val, eq_num):
+        num_pres_dof, disp_node, disp_val, eq_num):
     
-    UP = np.zeros(NUM_PRES_DOF)
+    UP = np.zeros(num_pres_dof)
     for i, row in enumerate(disp_node):
         node_number = row[0]
         dof = row[1]
@@ -33,11 +36,11 @@ def assemble_prescribed_displacement(
     return UP
     
 def calc_element_stiffness_matrix(
-        elem_num, volume_conn, nodal_coords, NUM_NODES_ELE,
-        DOF_NODE, E, nu, quad_rule_3D, shape_func_tetra):
+        elem_points, num_nodes_elem, dof_node,
+        params, gauss_weights_3D, dshape_tetra):
 
-    gauss_weights_3D = quad_rule_3D.wgauss
-    dshape_tetra = shape_func_tetra.gradients
+    E = params[0]
+    nu = params[1]
 
     k = E / (3 * (1 - 2 * nu))
     mu = E / (2 * (1 + nu))
@@ -51,38 +54,37 @@ def calc_element_stiffness_matrix(
                                    [0, 0, 0, 0, mu, 0],
                                    [0, 0, 0, 0, 0, mu]])
 
-    elem_points = nodal_coords[volume_conn[elem_num], :]
-
-    KEL = np.zeros((NUM_NODES_ELE * DOF_NODE, NUM_NODES_ELE * DOF_NODE))
+    KEL = np.zeros((num_nodes_elem * dof_node, num_nodes_elem * dof_node))
 
     for gaussPt3D in range(len(gauss_weights_3D)):
-        Nzeta = dshape_tetra[gaussPt3D, :, :]
+        w_q = gauss_weights_3D[gaussPt3D]
 
-        J = (Nzeta @ elem_points).T
+        dshape_tetra_q = dshape_tetra[gaussPt3D, :, :]
 
-        det_J = np.linalg.det(J)
+        J_q = (dshape_tetra_q @ elem_points).T
 
-        gradphiXYZ = np.linalg.inv(J).T @ Nzeta
+        dv_q = np.linalg.det(J_q)
 
-        D_phi = np.zeros((6, NUM_NODES_ELE * DOF_NODE))
-        D_phi[0, 0:NUM_NODES_ELE] = gradphiXYZ[0, :]
-        D_phi[1, NUM_NODES_ELE:NUM_NODES_ELE * 2] = gradphiXYZ[1, :]
-        D_phi[2, NUM_NODES_ELE * 2:NUM_NODES_ELE * 3] = gradphiXYZ[2, :]
-        D_phi[3, 0:NUM_NODES_ELE * 2] \
-            = np.concatenate((gradphiXYZ[1, :], gradphiXYZ[0, :]))
-        D_phi[4, NUM_NODES_ELE:NUM_NODES_ELE * 3] \
-            = np.concatenate((gradphiXYZ[2, :], gradphiXYZ[1, :]))
-        D_phi[5, 0:NUM_NODES_ELE] = gradphiXYZ[2, :]
-        D_phi[5, NUM_NODES_ELE * 2:NUM_NODES_ELE * 3] = gradphiXYZ[0, :]
+        gradphiXYZ_q = np.linalg.inv(J_q).T @ dshape_tetra_q
+
+        D_phi_q = np.zeros((6, num_nodes_elem * dof_node))
+        D_phi_q[0, 0:num_nodes_elem] = gradphiXYZ_q[0, :]
+        D_phi_q[1, num_nodes_elem:num_nodes_elem * 2] = gradphiXYZ_q[1, :]
+        D_phi_q[2, num_nodes_elem * 2:num_nodes_elem * 3] = gradphiXYZ_q[2, :]
+        D_phi_q[3, 0:num_nodes_elem * 2] \
+            = np.concatenate((gradphiXYZ_q[1, :], gradphiXYZ_q[0, :]))
+        D_phi_q[4, num_nodes_elem:num_nodes_elem * 3] \
+            = np.concatenate((gradphiXYZ_q[2, :], gradphiXYZ_q[1, :]))
+        D_phi_q[5, 0:num_nodes_elem] = gradphiXYZ_q[2, :]
+        D_phi_q[5, num_nodes_elem * 2:num_nodes_elem * 3] = gradphiXYZ_q[0, :]
                                                                                
-        KEL += gauss_weights_3D[gaussPt3D] \
-            * D_phi.T @ material_stiffness @ D_phi * det_J
+        KEL += w_q * D_phi_q.T @ material_stiffness @ D_phi_q * dv_q
         
     return KEL
 
 def calc_element_traction_vector(
-        surf_num, pres_surf, nodal_coords, NUM_NODES_SURF, DOF_NODE,
-        SURF_TRACTION_VECTOR, quad_rule_2D, shape_func_triangle):
+        surf_num, pres_surf, nodal_coords, num_nodes_surf, dof_node,
+        surf_traction_vector, quad_rule_2D, shape_func_triangle):
 
     gauss_weights_2D = quad_rule_2D.wgauss
     shape_triangle = shape_func_triangle.values
@@ -90,26 +92,26 @@ def calc_element_traction_vector(
 
     surf_points = nodal_coords[pres_surf[surf_num], :]
 
-    PEL = np.zeros(NUM_NODES_SURF * DOF_NODE)
+    PEL = np.zeros(num_nodes_surf * dof_node)
 
     for gaussPt2D in range(len(gauss_weights_2D)):
-        N = shape_triangle[gaussPt2D, :]
-        Nzeta = dshape_triangle[gaussPt2D, :, :]
+        shape_tri_q = shape_triangle[gaussPt2D, :]
+        dshape_tri_q = dshape_triangle[gaussPt2D, :, :]
 
-        J = Nzeta @ surf_points
+        J_q = dshape_tri_q @ surf_points
 
-        Js = np.linalg.norm(np.cross(J[0, :], J[1, :]))
+        da_q = np.linalg.norm(np.cross(J_q[0, :], J_q[1, :]))
 
         PEL += gauss_weights_2D[gaussPt2D] \
-            * (np.column_stack([N, N, N]) \
-               * SURF_TRACTION_VECTOR).T.reshape(-1) * Js
+            * (np.column_stack([shape_tri_q, shape_tri_q, shape_tri_q]) \
+               * surf_traction_vector).T.reshape(-1) * da_q
         
     return PEL
 
 def assemble_global_stiffness(
-        KEL, volume_conn, eq_num, ELEM_NUM, KPP, KPF, KFF, KFP):
+        KEL, volume_conn, eq_num, elem_num, KPP, KPF, KFF, KFP):
 
-    elem_conn = volume_conn[ELEM_NUM]
+    elem_conn = volume_conn[elem_num]
     elem_eq_num = eq_num[elem_conn, : ]
     global_indices = elem_eq_num.T.reshape(-1)
 
@@ -147,31 +149,35 @@ def assemble_global_traction_vector(
 
 
 def assemble_module(
-        NUM_PRES_DOF, NUM_FREE_DOF, NUM_ELE, NUM_NODES_ELE, DOF_NODE,
-        NUM_NODES_SURF, SURF_TRACTION_VECTOR, E, nu, disp_node,
+        num_pres_dof, num_free_dof, num_elem, num_nodes_elem, dof_node,
+        num_nodes_surf, surf_traction_vector, params, disp_node,
         disp_val, eq_num, volume_conn, nodal_coords, pres_surf,
         quad_rule_3D, shape_func_tetra, quad_rule_2D, shape_func_triangle):
 
     # Initialize arrays that need to be returned (KPP, KPF, KFF, KFP, PP)
-    KPP = np.zeros((NUM_PRES_DOF, NUM_PRES_DOF))
-    KPF = np.zeros((NUM_PRES_DOF, NUM_FREE_DOF))
-    KFP = np.zeros((NUM_FREE_DOF, NUM_PRES_DOF))
-    KFF = np.zeros((NUM_FREE_DOF, NUM_FREE_DOF))
-    PP = np.zeros(NUM_PRES_DOF)
-    PF = np.zeros(NUM_FREE_DOF)
+    KPP = np.zeros((num_pres_dof, num_pres_dof))
+    KPF = np.zeros((num_pres_dof, num_free_dof))
+    KFP = np.zeros((num_free_dof, num_pres_dof))
+    KFF = np.zeros((num_free_dof, num_free_dof))
+    PP = np.zeros(num_pres_dof)
+    PF = np.zeros(num_free_dof)
                                                                                
     ## Prescribe boundary conditions
-    UP = assemble_prescribed_displacement(NUM_PRES_DOF, disp_node,
+    UP = assemble_prescribed_displacement(num_pres_dof, disp_node,
                                           disp_val, eq_num)
+    
+    gauss_weights_3D = quad_rule_3D.wgauss
+    shape_tetra = shape_func_tetra.values
+    dshape_tetra = shape_func_tetra.gradients
 
     start = time.time()
     # assemble global stiffness and force
-    for elem_num in range(0, NUM_ELE):
+    for elem_num in range(0, num_elem):
 
+        elem_points = nodal_coords[volume_conn[elem_num], :]
         # get element stiffness matrix
-        KEL = calc_element_stiffness_matrix(
-            elem_num, volume_conn, nodal_coords, NUM_NODES_ELE,
-            DOF_NODE, E, nu, quad_rule_3D, shape_func_tetra)
+        KEL = calc_element_stiffness_matrix(elem_points, num_nodes_elem,dof_node,
+                                            params, gauss_weights_3D, dshape_tetra)
 
         # assemble global stiffness
         assemble_global_stiffness(KEL, volume_conn, eq_num, 
@@ -183,9 +189,68 @@ def assemble_module(
     for surf_num in range(len(pres_surf)):
         
         # get local traction vector
-        PEL = calc_element_traction_vector(
-            surf_num, pres_surf, nodal_coords, NUM_NODES_SURF, DOF_NODE,
-            SURF_TRACTION_VECTOR, quad_rule_2D, shape_func_triangle)
+        PEL = calc_element_traction_vector(surf_num, pres_surf, nodal_coords, num_nodes_surf,
+                                           dof_node,surf_traction_vector, quad_rule_2D,
+                                           shape_func_triangle)
+
+        # assemble traction vector
+        assemble_global_traction_vector(PEL, pres_surf,
+                                        surf_num, eq_num, PF, PP)
+    end = time.time()
+    print("Time to assemble load vector: ", end - start)
+
+    return KPP, KPF, KFF, KFP, PF, PP, UP
+
+def assemble_module_AD(
+        num_pres_dof, num_free_dof, num_elem, num_nodes_elem, dof_node,
+        num_nodes_surf, surf_traction_vector, params, disp_node,
+        disp_val, eq_num, volume_conn, nodal_coords, pres_surf,
+        quad_rule_3D, shape_func_tetra, quad_rule_2D, shape_func_triangle):
+
+    # Initialize arrays that need to be returned (KPP, KPF, KFF, KFP, PP)
+    KPP = np.zeros((num_pres_dof, num_pres_dof))
+    KPF = np.zeros((num_pres_dof, num_free_dof))
+    KFP = np.zeros((num_free_dof, num_pres_dof))
+    KFF = np.zeros((num_free_dof, num_free_dof))
+    PP = np.zeros(num_pres_dof)
+    PF = np.zeros(num_free_dof)
+                                                                               
+    ## Prescribe boundary conditions
+    UP = assemble_prescribed_displacement(num_pres_dof, disp_node,
+                                          disp_val, eq_num)
+
+    start = time.time()
+
+    grad_residual = jax.jit(jax.jacfwd(elem_residual),
+                            static_argnames=['num_nodes_elem', 'dof_node'])
+    
+    u_guess = np.ones(num_nodes_elem * dof_node)
+
+    gauss_weights_3D = quad_rule_3D.wgauss
+    shape_tetra = shape_func_tetra.values
+    dshape_tetra = shape_func_tetra.gradients
+
+    # assemble global stiffness and force
+    for elem_num in range(0, num_elem):
+
+        elem_points = nodal_coords[volume_conn[elem_num], :]
+        # get element stiffness matrix
+        KEL = grad_residual(u_guess, params, elem_points, num_nodes_elem, dof_node,
+                            gauss_weights_3D, shape_tetra, dshape_tetra)
+
+        # assemble global stiffness
+        assemble_global_stiffness(np.array(KEL), volume_conn, eq_num, 
+                                  elem_num, KPP, KPF, KFF, KFP)
+    end = time.time()
+    print("Time to assemble stiffness matrix: ", end - start)
+
+    start = time.time()
+    for surf_num in range(len(pres_surf)):
+        
+        # get local traction vector
+        PEL = calc_element_traction_vector(surf_num, pres_surf, nodal_coords, num_nodes_surf,
+                                           dof_node,surf_traction_vector, quad_rule_2D,
+                                           shape_func_triangle)
 
         # assemble traction vector
         assemble_global_traction_vector(PEL, pres_surf,

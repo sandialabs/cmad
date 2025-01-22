@@ -1,57 +1,75 @@
 from cmad.fem_utils.fem_problem import fem_problem
 from cmad.fem_utils.fem_functions import (initialize_equation, 
-                                          assemble_module, 
+                                          assemble_module, assemble_module_AD,
                                           solve_module)
 import time
+import numpy as np
 
 """
 
-DOF_NODE: number of degrees of freedom per node
-NUM_NODES: total number of nodes in the mesh
-NUM_NODE_ELE: number of nodes per element
-NUM_ELE: number of elements
-NUM_NODES_SURF: number of nodes per surface element
-NUM_FREE_DOF: number of free degrees of freedom
-NUM_PRES_DOF: number of prescribed degrees of freedom
-SURF_TRACTION_VECTOR: surface traction vector
+dof_node: number of degrees of freedom per node
+num_nodes: total number of nodes in the mesh
+num_node_elem: number of nodes per element
+num_elem: number of elements
+num_nodes_surf: number of nodes per surface element
+num_free_dof: number of free degrees of freedom
+num_pres_dof: number of prescribed degrees of freedom
+surf_traction_vector: surface traction vector
 E: Youngs Modulus
 nu: Poisson's ratio
-disp_node: (NUM_PRES_DOF x 2) array that specifies 
+disp_node: (num_pres_dof x 2) array that specifies 
     which node and dof is prescribed
 disp_val: (NUM_PRED_DOF x 1) array of values 
     of the prescribed displacements
-eq_num: (NUM_NODES x DOF_NODE) array that specifies where 
+eq_num: (num_nodes x dof_node) array that specifies where 
     each node and its DOFs belong in the global stifness matrix
 volume_conn: connectivity matrix for 3D elements
 pres_surf: connectivity for surfaces that have a prescribed traction
 nodal_coords: spacial coordinates for each node in mesh
-    
+
+In the definitions below, "P" stands for prescribed displacements 
+and "F" stands for free displacments
+
+KPP: (num_pres_dof x num_pres_dof) partion of stiffness matrix with rows 
+    and columns corresponding with prescribed DOFS
+KPF: (num_pres_dof x num_free_dof) partion of stiffness matrix with rows 
+    corresponding with prescribed DOFS and columns corresponding with free DOFS 
+KFF: (num_free_dof x num_free_dof) partion of stiffness matrix with rows and 
+    columns corresponding with free DOFS
+KFP: (num_free_dof x num_free_dof) partion of stiffness matrix with rows 
+    corresponding with free DOFS and columns corresponding with prescribed DOFS
+PF: (num_free_dof, ) RHS vector corresponding with free DOFS
+PP: (num_pres_dof, ) RHS vector corresponding with prescribed DOFS
+UP: (num_pres_dof, ) vector of prescribed displacements 
+UF: (num_free_dof, ) vector of free displacements (the ones that we solve for)
+UUR: (num_nodes x 3) matrix of displacements at all nodes in the mesh
 """
 
 order = 3
-problem = fem_problem("patch_B", order)
+problem = fem_problem("simple_shear", order)
 
-DOF_NODE, NUM_NODES, NUM_NODES_ELE, NUM_ELE, NUM_NODES_SURF, \
+dof_node, num_nodes, num_nodes_ELE, num_elem, num_nodes_surf, \
     nodal_coords, volume_conn = problem.get_mesh_properties()
 
-disp_node, disp_val, pres_surf, SURF_TRACTION_VECTOR \
+disp_node, disp_val, pres_surf, surf_traction_vector \
     = problem.get_boundary_conditions()
 
 quad_rule_3D, shape_func_tetra = problem.get_3D_basis_functions()
 quad_rule_2D, shape_func_triangle = problem.get_2D_basis_functions()
 
 
-print("Number of elements:", NUM_ELE)
+print("Number of elements: ", num_elem)
 
-E = 200
-nu = 0.3
+params = np.array([200, 0.3])
 
-eq_num, NUM_FREE_DOF, NUM_PRES_DOF \
-    = initialize_equation(NUM_NODES, DOF_NODE, disp_node)
+eq_num, num_free_dof, num_pres_dof \
+    = initialize_equation(num_nodes, dof_node, disp_node)
+
+print("Number of free degrees of freedom: ", num_free_dof)
 
 KPP, KPF, KFF, KFP, PF, PP, UP \
-    = assemble_module(NUM_PRES_DOF, NUM_FREE_DOF, NUM_ELE, NUM_NODES_ELE,
-                      DOF_NODE, NUM_NODES_SURF, SURF_TRACTION_VECTOR, E, nu,
+    = assemble_module_AD(num_pres_dof, num_free_dof, num_elem, num_nodes_ELE,
+                      dof_node, num_nodes_surf, surf_traction_vector, params,
                       disp_node, disp_val, eq_num, volume_conn, nodal_coords, 
                       pres_surf, quad_rule_3D, shape_func_tetra, quad_rule_2D,
                       shape_func_triangle)

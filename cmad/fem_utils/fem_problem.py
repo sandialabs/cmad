@@ -7,7 +7,7 @@ class fem_problem():
     def __init__(self, problem_type, order):
 
         # evaluate triangle basis functions at quadrature points
-        self._quad_rule_2D\
+        self._quad_rule_2D \
             = quadrature_rule.create_quadrature_rule_on_triangle(order)
         gauss_pts_2D = self._quad_rule_2D.xigauss
         self._shape_func_triangle = interpolants.shape_triangle(gauss_pts_2D)
@@ -26,30 +26,30 @@ class fem_problem():
             self._colume_conn = self._mesh.get_volume_connectivity()
             self._surface_conn = self._mesh.get_surface_connectivity()
 
-            self._DOF_NODE = 3
-            self._NUM_NODES = len(self._nodal_coords)
-            self._NUM_NODES_ELE = 4
-            self._NUM_ELE = len(self._colume_conn)
-            self._NUM_NODES_SURF = 3
+            self._dof_node = 3
+            self._num_nodes = len(self._nodal_coords)
+            self._num_nodes_elem = 4
+            self._num_elem = len(self._colume_conn)
+            self._num_nodes_surf = 3
 
             # fix all nodes on plane x = 0 
             pres_nodes = []
-            for i in range(self._NUM_NODES):
+            for i in range(self._num_nodes):
                 if self._nodal_coords[i][0] == 0.0:
                     pres_nodes.append(i)
             NUM_PRES_NODES = len(pres_nodes)
 
             self._disp_node = np.zeros((NUM_PRES_NODES \
-                                        * self._DOF_NODE, 2), dtype = int)
+                                        * self._dof_node, 2), dtype = int)
             for i in range(NUM_PRES_NODES):
-                for j in range(self._DOF_NODE):
-                    self._disp_node[i * self._DOF_NODE + j][0] \
+                for j in range(self._dof_node):
+                    self._disp_node[i * self._dof_node + j][0] \
                         = pres_nodes[i]
-                    self._disp_node[i * self._DOF_NODE + j][1] = j+1
-            self._disp_val = np.zeros(NUM_PRES_NODES * self._DOF_NODE)
+                    self._disp_node[i * self._dof_node + j][1] = j + 1
+            self._disp_val = np.zeros(NUM_PRES_NODES * self._dof_node)
 
             # normal traction on plane x = 1
-            self._SURF_TRACTION_VECTOR = np.array([1.0, 0.0, 0.0])
+            self._surf_traction_vector = np.array([1.0, 0.0, 0.0])
             pres_surf = []
             for surface in self._surface_conn:
                 surface_points = self._nodal_coords[surface, :]
@@ -65,15 +65,15 @@ class fem_problem():
             self._colume_conn = self._mesh.get_volume_connectivity()
             self._surface_conn = self._mesh.get_surface_connectivity()
 
-            self._DOF_NODE = 3
-            self._NUM_NODES = len(self._nodal_coords)
-            self._NUM_NODES_ELE = 4
-            self._NUM_ELE = len(self._colume_conn)
-            self._NUM_NODES_SURF = 3
+            self._dof_node = 3
+            self._num_nodes = len(self._nodal_coords)
+            self._num_nodes_elem = 4
+            self._num_elem = len(self._colume_conn)
+            self._num_nodes_surf = 3
 
             # prescribe ux = 0 on x = 0, uy = 0 on y = 0, and uz = 0 on z = 0 
             disp_node = []
-            for i in range(self._NUM_NODES):
+            for i in range(self._num_nodes):
                 if self._nodal_coords[i][0] == 0.0:
                     disp_node.append(np.array([i, 1], dtype = int))
                 if self._nodal_coords[i][1] == 0.0:
@@ -84,7 +84,7 @@ class fem_problem():
             self._disp_val = np.zeros(len(disp_node))
 
             # normal traction on x = 2
-            self._SURF_TRACTION_VECTOR = np.array([1.0, 0.0, 0.0])
+            self._surf_traction_vector = np.array([1.0, 0.0, 0.0])
             pres_surf = []
             for surface in self._surface_conn:
                 surface_points = self._nodal_coords[surface, :]
@@ -101,18 +101,18 @@ class fem_problem():
             self._colume_conn = self._mesh.get_volume_connectivity()
             self._surface_conn = self._mesh.get_surface_connectivity()
 
-            self._DOF_NODE = 3
-            self._NUM_NODES = len(self._nodal_coords)
-            self._NUM_NODES_ELE = 4
-            self._NUM_ELE = len(self._colume_conn)
-            self._NUM_NODES_SURF = 3
+            self._dof_node = 3
+            self._num_nodes = len(self._nodal_coords)
+            self._num_nodes_elem = 4
+            self._num_elem = len(self._colume_conn)
+            self._num_nodes_surf = 3
 
             #impose linear displacement field on the boundary
             disp_node = []
             disp_val = []
-            self.UUR_true = np.zeros((self._NUM_NODES, self._DOF_NODE))
+            self.UUR_true = np.zeros((self._num_nodes, self._dof_node))
 
-            for i in range(self._NUM_NODES):
+            for i in range(self._num_nodes):
                 coord = self._nodal_coords[i]
                 x = coord[0]
                 y = coord[1]
@@ -137,7 +137,7 @@ class fem_problem():
             self._disp_val = np.array(disp_val)
 
             # no surface tractions
-            self._SURF_TRACTION_VECTOR = np.array([0.0, 0.0, 0.0])
+            self._surf_traction_vector = np.array([0.0, 0.0, 0.0])
             self._pres_surf = np.array([])
 
         if problem_type == "simple_shear":
@@ -148,15 +148,15 @@ class fem_problem():
             self._colume_conn = self._mesh.get_volume_connectivity()
             self._surface_conn = self._mesh.get_surface_connectivity()
 
-            self._DOF_NODE = 3
-            self._NUM_NODES = len(self._nodal_coords)
-            self._NUM_NODES_ELE = 4
-            self._NUM_ELE = len(self._colume_conn)
-            self._NUM_NODES_SURF = 3
+            self._dof_node = 3
+            self._num_nodes = len(self._nodal_coords)
+            self._num_nodes_elem = 4
+            self._num_elem = len(self._colume_conn)
+            self._num_nodes_surf = 3
 
             # fix all nodes on plane z = 0, and set uz = 0 on plane z = 2
             disp_node = []
-            for i in range(self._NUM_NODES):
+            for i in range(self._num_nodes):
                 if self._nodal_coords[i][2] == 0.0:
                     disp_node.append(np.array([i, 1], dtype = int))
                     disp_node.append(np.array([i, 2], dtype = int))
@@ -168,7 +168,7 @@ class fem_problem():
             self._disp_val = np.zeros(len(disp_node))
 
             # shear traction in x direction on plane z = 2
-            self._SURF_TRACTION_VECTOR = np.array([1.0, 0.0, 0.0])
+            self._surf_traction_vector = np.array([1.0, 0.0, 0.0])
             pres_surf = []
             for surface in self._surface_conn:
                 surface_points = self._nodal_coords[surface, :]
@@ -183,13 +183,13 @@ class fem_problem():
         return self._quad_rule_3D, self._shape_func_tetra
 
     def get_mesh_properties(self):
-        return self._DOF_NODE, self._NUM_NODES, self._NUM_NODES_ELE, \
-            self._NUM_ELE, self._NUM_NODES_SURF, self._nodal_coords, \
+        return self._dof_node, self._num_nodes, self._num_nodes_elem, \
+            self._num_elem, self._num_nodes_surf, self._nodal_coords, \
             self._colume_conn
 
     def get_boundary_conditions(self):
         return self._disp_node, self._disp_val, \
-            self._pres_surf, self._SURF_TRACTION_VECTOR
+            self._pres_surf, self._surf_traction_vector
     
     def save_data(self, filename, data):
         self._mesh.add_point_data(data)
