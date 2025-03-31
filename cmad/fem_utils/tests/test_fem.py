@@ -33,7 +33,7 @@ class TestFEM(unittest.TestCase):
                             shape_func_triangle)
 
         UUR, UF, R = solve_module(KPP, KPF, KFF, KFP, PP, PF, UP, eq_num)
-
+        print(UUR)
         assert np.allclose(UUR, problem.UUR_true)
 
 if __name__ == "__main__":

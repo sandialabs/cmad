@@ -38,7 +38,7 @@ def shape1d(evaluationPoints):
 
     """
 
-    shape = np.vstack(((1 - evaluationPoints[:,0])/2.0, (1 + evaluationPoints[:,0])/2.0)).T
+    shape = np.vstack(((1 - evaluationPoints[:, 0]) / 2.0, (1 + evaluationPoints[:, 0]) / 2.0)).T
     dshape = np.vstack((-0.5 * np.ones(len(evaluationPoints)), 0.5 * np.ones(len(evaluationPoints)))).T
 
     return ShapeFunctions(shape, dshape)
@@ -63,8 +63,8 @@ def shape_triangle(evaluationPoints):
     dof_node = 2
     num_nodes_elem = 3
 
-    shape = np.vstack((1 - evaluationPoints[:,0] - evaluationPoints[:,1],
-                       evaluationPoints[:,0], evaluationPoints[:,1])).T
+    shape = np.vstack((1 - evaluationPoints[:, 0] - evaluationPoints[:, 1],
+                       evaluationPoints[:, 0], evaluationPoints[:, 1])).T
 
     dshape = np.zeros((num_eval_points, dof_node, num_nodes_elem))
 
@@ -94,10 +94,10 @@ def shape_quad(evaluationPoints):
     dof_node = 2
     num_nodes_elem = 4
 
-    l0x = 1 - evaluationPoints[:,0]
-    l1x = 1 + evaluationPoints[:,0]
-    l0y = 1 - evaluationPoints[:,1]
-    l1y = 1 + evaluationPoints[:,1]
+    l0x = 1 - evaluationPoints[:, 0]
+    l1x = 1 + evaluationPoints[:, 0]
+    l0y = 1 - evaluationPoints[:, 1]
+    l1y = 1 + evaluationPoints[:, 1]
 
     shape = np.vstack((l0x * l0y / 4, l1x * l0y / 4, l1x * l1y / 4, l0x * l1y / 4)).T
     dshape = np.zeros((num_eval_points, dof_node, num_nodes_elem))
@@ -108,7 +108,7 @@ def shape_quad(evaluationPoints):
         l1x = 1 + point[0]
         l0y = 1 - point[1]
         l1y = 1 + point[1]
-        dshape[i, :, :] = np.array([[-l0y, l0y, l1y, -l1y],[-l0x, -l1x, l1x, l0x]])
+        dshape[i, :, :] = np.array([[-l0y, l0y, l1y, -l1y],[-l0x, -l1x, l1x, l0x]]) / 4
 
     return ShapeFunctions(shape, dshape)
 
@@ -133,8 +133,8 @@ def shape_tetrahedron(evaluationPoints):
     dof_node = 3
     num_nodes_elem = 4
 
-    shape = np.vstack((1 - evaluationPoints[:,0] - evaluationPoints[:,1] - evaluationPoints[:,2],
-                       evaluationPoints[:,0], evaluationPoints[:,1], evaluationPoints[:,2])).T
+    shape = np.vstack((1 - evaluationPoints[:, 0] - evaluationPoints[:, 1] - evaluationPoints[:, 2],
+                       evaluationPoints[:, 0], evaluationPoints[:, 1], evaluationPoints[:, 2])).T
 
     dshape = np.zeros((num_eval_points, dof_node, num_nodes_elem))
 
@@ -165,12 +165,12 @@ def shape_brick(evaluationPoints):
     dof_node = 3
     num_nodes_elem = 8
 
-    m1 = 1 - evaluationPoints[:,0]
-    p1 = 1 + evaluationPoints[:,0]
-    m2 = 1 - evaluationPoints[:,1]
-    p2 = 1 + evaluationPoints[:,1]
-    m3 = 1 - evaluationPoints[:,2]
-    p3 = 1 + evaluationPoints[:,3]
+    m1 = 1 - evaluationPoints[:, 0]
+    p1 = 1 + evaluationPoints[:, 0]
+    m2 = 1 - evaluationPoints[:, 1]
+    p2 = 1 + evaluationPoints[:, 1]
+    m3 = 1 - evaluationPoints[:, 2]
+    p3 = 1 + evaluationPoints[:, 3]
 
     shape = np.vstack((m1 * m2 * m3 / 8, p1 * m2 * m3 / 8, p1 * p2 * m3 / 8, m1 * p2 * m3 / 8,
                        m1 * m2 * p3 / 8, p1 * m2 * p3 / 8, p1 * p2 * p3 / 8, m1 * p2 * p3 / 8)).T

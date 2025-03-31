@@ -1,8 +1,6 @@
 from cmad.fem_utils.fem_problem import fem_problem
 from cmad.fem_utils.fem_functions import (initialize_equation,
-                                          assemble_module, assemble_module_AD,
-                                          solve_module)
-import time
+                                          solve_fem_newton)
 import numpy as np
 
 """
@@ -38,17 +36,17 @@ KFF: (num_free_dof x num_free_dof) partion of stiffness matrix with rows and
     columns corresponding with free DOFS
 KFP: (num_free_dof x num_free_dof) partion of stiffness matrix with rows
     corresponding with free DOFS and columns corresponding with prescribed DOFS
-PF: (num_free_dof, ) RHS vector corresponding with free DOFS
-PP: (num_pres_dof, ) RHS vector corresponding with prescribed DOFS
+FF: (num_free_dof, ) RHS vector corresponding with free DOFS
+FP: (num_pres_dof, ) RHS vector corresponding with prescribed DOFS
 UP: (num_pres_dof, ) vector of prescribed displacements
 UF: (num_free_dof, ) vector of free displacements (the ones that we solve for)
 UUR: (num_nodes x 3) matrix of displacements at all nodes in the mesh
 """
 
 order = 3
-problem = fem_problem("simple_shear", order)
+problem = fem_problem("cook_membrane", order)
 
-dof_node, num_nodes, num_nodes_ELE, num_elem, num_nodes_surf, \
+dof_node, num_nodes, num_nodes_elem, num_elem, num_nodes_surf, \
     nodal_coords, volume_conn = problem.get_mesh_properties()
 
 disp_node, disp_val, pres_surf, surf_traction_vector \
@@ -67,22 +65,14 @@ eq_num, num_free_dof, num_pres_dof \
 
 print("Number of free degrees of freedom: ", num_free_dof)
 
-KPP, KPF, KFF, KFP, PF, PP, UP \
-    = assemble_module_AD(num_pres_dof, num_free_dof, num_elem, num_nodes_ELE,
-                      dof_node, num_nodes_surf, surf_traction_vector, params,
-                      disp_node, disp_val, eq_num, volume_conn, nodal_coords,
-                      pres_surf, quad_rule_3D, shape_func_tetra, quad_rule_2D,
-                      shape_func_triangle)
+tol = 5e-12
+max_iters = 10
 
-solve_start = time.time()
-
-UUR, UF, R = solve_module(KPP, KPF, KFF, KFP, PP, PF, UP, eq_num)
+UUR = solve_fem_newton(num_pres_dof, num_free_dof, num_elem, num_nodes_elem, dof_node,
+        num_nodes_surf, surf_traction_vector, params, disp_node,
+        disp_val, eq_num, volume_conn, nodal_coords, pres_surf,
+        quad_rule_3D, shape_func_tetra, quad_rule_2D, shape_func_triangle, tol, max_iters)
 
 print(UUR)
 
-solve_end = time.time()
-
-#problem.save_data("simple_shear", UUR)
-
-print("Solve time: ", solve_end - solve_start)
-
+#problem.save_data("cook_membrane", {"displacement_field": UUR})
