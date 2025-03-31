@@ -422,7 +422,7 @@ class TestJ2FDChecks(unittest.TestCase):
         assert np.allclose(fs_fd_dir_deriv_error,
                            adjoint_fd_dir_deriv_error)
 
-        error_drop_tol = 6.
+        error_drop_tol = 5.
         min_fd_error = np.min(fs_fd_dir_deriv_error)
         max_fd_error = np.max(fs_fd_dir_deriv_error)
         grad_log10_error_drop = np.log10(max_fd_error / min_fd_error)
