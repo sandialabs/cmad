@@ -68,10 +68,11 @@ print("Number of free degrees of freedom: ", num_free_dof)
 tol = 5e-12
 max_iters = 10
 
-UUR = solve_fem_newton(num_pres_dof, num_free_dof, num_elem, num_nodes_elem, dof_node,
-        num_nodes_surf, surf_traction_vector, params, disp_node,
-        disp_val, eq_num, volume_conn, nodal_coords, pres_surf,
-        quad_rule_3D, shape_func_tetra, quad_rule_2D, shape_func_triangle, tol, max_iters)
+UUR = solve_fem_newton(num_pres_dof, num_free_dof, num_elem, num_nodes_elem,
+                       dof_node, num_nodes_surf, surf_traction_vector, params,
+                       disp_node, disp_val, eq_num, volume_conn, nodal_coords,
+                       pres_surf, quad_rule_3D, shape_func_tetra, quad_rule_2D,
+                       shape_func_triangle, tol, max_iters)
 
 print(UUR)
 

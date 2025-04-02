@@ -192,11 +192,14 @@ class fem_problem():
             self._num_nodes_surf = 3
 
             # fix all nodes on plane x = 0
+            # fix z displacments on plane z = 0
             disp_node = []
             for i in range(self._num_nodes):
                 if self._nodal_coords[i][0] == 0.0:
                     disp_node.append(np.array([i, 1], dtype=int))
                     disp_node.append(np.array([i, 2], dtype=int))
+                    disp_node.append(np.array([i, 3], dtype=int))
+                elif self._nodal_coords[i][2] == 0.0:
                     disp_node.append(np.array([i, 3], dtype=int))
             self._disp_node = np.array(disp_node, dtype=int)
             self._disp_val = np.zeros(len(disp_node))
@@ -207,6 +210,39 @@ class fem_problem():
             for surface in self._surface_conn:
                 surface_points = self._nodal_coords[surface, :]
                 if (surface_points[:, 0] == 48 * np.ones(3)).all():
+                    pres_surf.append(surface)
+            self._pres_surf = np.array(pres_surf)
+        
+        if problem_type == "vert_beam":
+
+            self._mesh = Mesh("vert_beam")
+
+            self._nodal_coords = self._mesh.get_nodal_coordinates()
+            self._colume_conn = self._mesh.get_volume_connectivity()
+            self._surface_conn = self._mesh.get_surface_connectivity()
+
+            self._dof_node = 3
+            self._num_nodes = len(self._nodal_coords)
+            self._num_nodes_elem = 4
+            self._num_elem = len(self._colume_conn)
+            self._num_nodes_surf = 3
+
+            # fix all nodes on plane z = 0
+            disp_node = []
+            for i in range(self._num_nodes):
+                if self._nodal_coords[i][2] == 0.0:
+                    disp_node.append(np.array([i, 1], dtype=int))
+                    disp_node.append(np.array([i, 2], dtype=int))
+                    disp_node.append(np.array([i, 3], dtype=int))
+            self._disp_node = np.array(disp_node, dtype=int)
+            self._disp_val = np.zeros(len(disp_node))
+
+            # diagonal traction on z = 5
+            self._surf_traction_vector = np.array([0.2, 0.2, 0.0])
+            pres_surf = []
+            for surface in self._surface_conn:
+                surface_points = self._nodal_coords[surface, :]
+                if (surface_points[:, 2] == 5 * np.ones(3)).all():
                     pres_surf.append(surface)
             self._pres_surf = np.array(pres_surf)
 

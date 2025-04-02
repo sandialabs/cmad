@@ -104,12 +104,12 @@ def interpolate(u, shape_tetra, gradphiXYZ, num_nodes_elem):
     uz = u[num_nodes_elem * 2:num_nodes_elem * 3]
 
     u = jnp.array([jnp.dot(ux, shape_tetra),
-                     jnp.dot(uy, shape_tetra),
-                     jnp.dot(uz, shape_tetra)])
+                   jnp.dot(uy, shape_tetra),
+                   jnp.dot(uz, shape_tetra)])
 
     grad_u = jnp.vstack([gradphiXYZ @ ux,
-                           gradphiXYZ @ uy,
-                           gradphiXYZ @ uz])
+                         gradphiXYZ @ uy,
+                         gradphiXYZ @ uz])
 
     return u, grad_u
 
@@ -143,8 +143,9 @@ def compute_neo_hookean_stress(grad_u, params):
 
     return P
 
-def compute_stress_divergence_vector(u, params, elem_points, num_nodes_elem,
-        dof_node, gauss_weights_3D, shape_tetra, dshape_tetra):
+def compute_stress_divergence_vector(
+        u, params, elem_points, num_nodes_elem, dof_node,
+        gauss_weights_3D, shape_tetra, dshape_tetra):
 
     SD_vec = jnp.zeros((num_nodes_elem, dof_node))
 
@@ -182,15 +183,16 @@ def assemble_residual(KEL, REL, volume_conn, eq_num, elem_num, KPP, KPF, KFF, KF
         += KEL[np.ix_(local_pres_indices, local_free_indices)]
     KPP[np.ix_(global_pres_indices, global_pres_indices)] \
         += KEL[np.ix_(local_pres_indices, local_pres_indices)]
-    
+
     RF[global_free_indices] -= REL[local_free_indices]
     RP[global_pres_indices] -= REL[local_pres_indices]
 
-def solve_fem_newton(num_pres_dof, num_free_dof, num_elem, num_nodes_elem, dof_node,
-        num_nodes_surf, surf_traction_vector, params, disp_node,
-        disp_val, eq_num, volume_conn, nodal_coords, pres_surf,
-        quad_rule_3D, shape_func_tetra, quad_rule_2D, shape_func_triangle, tol, max_iters):
-    
+def solve_fem_newton(
+        num_pres_dof, num_free_dof, num_elem, num_nodes_elem, dof_node,
+        num_nodes_surf, surf_traction_vector, params, disp_node, disp_val,
+        eq_num, volume_conn, nodal_coords, pres_surf, quad_rule_3D,
+        shape_func_tetra, quad_rule_2D, shape_func_triangle, tol, max_iters):
+
     FP = np.zeros(num_pres_dof)
     FF = np.zeros(num_free_dof)
 
@@ -204,7 +206,7 @@ def solve_fem_newton(num_pres_dof, num_free_dof, num_elem, num_nodes_elem, dof_n
         # assemble traction vector
         assemble_global_traction_vector(FEL, pres_surf,
                                         surf_num, eq_num, FF, FP)
-           
+
     grad_SD_res = jax.jit(jax.jacfwd(compute_stress_divergence_vector),
                             static_argnames=['num_nodes_elem', 'dof_node'])
     SD_residual_jit = jax.jit(compute_stress_divergence_vector,static_argnames=['num_nodes_elem', 'dof_node'])
@@ -233,14 +235,14 @@ def solve_fem_newton(num_pres_dof, num_free_dof, num_elem, num_nodes_elem, dof_n
             elem_points = nodal_coords[volume_conn[elem_num], :]
             # get element tangent stiffness matrix
             KEL = grad_SD_res(u_elem, params, elem_points, num_nodes_elem, dof_node,
-                                gauss_weights_3D, shape_tetra, dshape_tetra)
-            
+                              gauss_weights_3D, shape_tetra, dshape_tetra)
+
             REL = SD_residual_jit(u_elem, params, elem_points, num_nodes_elem, dof_node,
-                                gauss_weights_3D, shape_tetra, dshape_tetra)
+                                  gauss_weights_3D, shape_tetra, dshape_tetra)
 
             assemble_residual(np.array(KEL), np.array(REL), volume_conn,
                               eq_num, elem_num, KPP, KPF, KFF, KFP, RF, RP)
-            
+
         print("||R||: ", np.linalg.norm(RF + FF))
 
         if (np.linalg.norm(RF + FF) < tol):
