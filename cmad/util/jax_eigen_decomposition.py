@@ -9,6 +9,12 @@ import jax.numpy as jnp
 from jax.lax import cond
 
 
+# much faster than the implementation in here
+def jax_compute_eigenvalues(A):
+    eigenvalues, _ = jnp.linalg.eigh(A)
+    return eigenvalues
+
+
 def diagonal_differences(A):
     d_12 = A[0, 0] - A[1, 1]
     d_23 = A[1, 1] - A[2, 2]

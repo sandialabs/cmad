@@ -1,8 +1,7 @@
 import numpy as np
 import jax.numpy as jnp
 
-from cmad.util.jax_eigen_decomposition \
-    import compute_eigenvalues as jax_compute_eigenvalues
+from cmad.util.jax_eigen_decomposition import jax_compute_eigenvalues
 
 
 def J2_yield(cauchy):
@@ -62,12 +61,9 @@ def jax_hill_yield(cauchy, hill_params):
     phi = jnp.sqrt(F * (cauchy[1, 1] - cauchy[2, 2])**2
                    + G * (cauchy[2, 2] - cauchy[0, 0])**2
                    + H * (cauchy[0, 0] - cauchy[1, 1])**2
-                   + L * cauchy[1, 2]**2
-                   + M * cauchy[0, 2]**2
-                   + N * cauchy[0, 1]**2
-                   + L * cauchy[2, 1]**2
-                   + M * cauchy[2, 0]**2
-                   + N * cauchy[1, 0]**2)
+                   + L * (cauchy[2, 1]**2 + cauchy[1, 2]**2)
+                   + M * (cauchy[2, 0]**2 + cauchy[0, 2]**2)
+                   + N * (cauchy[1, 0]**2 + cauchy[0, 1]**2))
 
     return phi
 

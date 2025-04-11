@@ -8,7 +8,7 @@ from functools import partial
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.elastic_stress import (isotropic_linear_elastic_stress,
                                         two_mu_scale_factor)
-from cmad.models.effective_stress import effective_stress_fun
+from cmad.models.effective_stress import conventional_effective_stress_fun
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F, off_axis_idx
 from cmad.models.model import Model
@@ -97,6 +97,7 @@ class SmallRateElasticPlastic(Model):
     def __init__(self, parameters: Parameters,
                  def_type=DefType.FULL_3D,
                  elastic_stress_fun=isotropic_linear_elastic_stress,
+                 effective_stress_fun=None,
                  hardening_funs: dict = get_hardening_funs(),
                  yield_tol=1e-14, uniaxial_stress_idx=0, is_complex=False):
 
@@ -170,13 +171,15 @@ class SmallRateElasticPlastic(Model):
         # self._check_params(parameters)
         self.parameters = parameters
 
-        effective_stress_type = \
-            list(parameters.values["plastic"]["effective stress"])[0]
+        if effective_stress_fun is None:
+            effective_stress_type = \
+                list(parameters.values["plastic"]["effective stress"])[0]
+            effective_stress_fun = \
+                conventional_effective_stress_fun(effective_stress_type)
 
         residual = partial(self._residual, def_type=def_type,
                            elastic_stress=elastic_stress_fun,
-                           effective_stress=effective_stress_fun(
-                               effective_stress_type),
+                           effective_stress=effective_stress_fun,
                            hardening=partial(combined_hardening_fun,
                                              hardening_funs=hardening_funs),
                            yield_tol=yield_tol,

@@ -23,6 +23,7 @@ def input_symmetric_forward(x, params):
     symmetric_output = 0.5 * (positive_scaled_output + negative_scaled_output)
     return symmetric_output
 
+
 def input_symmetric_forward_with_offset(x, params, input_scaler, output_scaler):
     xs = input_scaler.scale_ * x + input_scaler.min_
     scaled_output = input_symmetric_forward(xs, params)

@@ -11,11 +11,14 @@ def make_linop(jnp_op, tree_in, tree_out):
         lenA = len(tree_leaves(A))
         len_out = lenA // len_in
         rows = ravel_pytree(A)[0].shape[0] // br.shape[0]
-        leavesA = [jnp.reshape(s, (s.shape[0], -1)) for s in tree_leaves(A)]
-        Ar = jnp.concatenate(
-            [jnp.concatenate(leavesA[j:j + len_in], axis=1)
-            for j in range(0, lenA, len_in)], axis=0
-        )
+        if rows != 1:
+            leavesA = [jnp.reshape(s, (s.shape[0], -1)) for s in tree_leaves(A)]
+            Ar = jnp.concatenate(
+                [jnp.concatenate(leavesA[j:j + len_in], axis=1)
+                for j in range(0, lenA, len_in)], axis=0
+            )
+        else:
+            Ar = jnp.atleast_2d(A)
 
         return tree_out(jnp_op(Ar, br))
 

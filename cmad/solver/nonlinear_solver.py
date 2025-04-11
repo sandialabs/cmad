@@ -9,11 +9,16 @@ from jax.lax import cond, while_loop
 from cmad.util.pytree_linear_algebra import make_linop, make_op
 
 
-def newton_solve(model, max_iters=10, abs_tol=1e-14, rel_tol=1e-14):
+def newton_solve(model, max_iters=10, abs_tol=1e-14, rel_tol=1e-14,
+        max_ls_evals=0):
 
     converged = False
     ii = 0
     C_norm_0 = 1.
+
+    beta = 1e-4
+    eta = 0.5
+
 
     while ii < max_iters and not converged:
         model.seed_none()
@@ -37,10 +42,39 @@ def newton_solve(model, max_iters=10, abs_tol=1e-14, rel_tol=1e-14):
         delta_xi = np.linalg.solve(model.Jac(), -C)
         model.add_to_xi(delta_xi)
 
+        if max_ls_evals > 0:
+            model.seed_none()
+            model.evaluate()
+
+            C_0 = C_norm
+            psi_0 = 0.5 * C_0**2
+            psi_0_deriv = -2. * psi_0
+
+            jj = 1
+            alpha_j = 1.
+            C_j = np.linalg.norm(model.C())
+            psi_j = 0.5 * C_j**2
+
+            while psi_j >= ((1. - 2. * beta * alpha_j) * psi_0):
+                alpha_prev = alpha_j
+                alpha_j = max(eta * alpha_j, -(alpha_j**2 * psi_0_deriv)
+                    / (2. * (psi_j - psi_0 - alpha_j * psi_0_deriv)))
+                if (jj == max_ls_evals):
+                    print("reached max ls evals")
+                    break
+                jj += 1
+                alpha_diff = alpha_j - alpha_prev
+                model.add_to_xi(alpha_diff * delta_xi)
+
+                model.evaluate()
+                C_j = np.linalg.norm(model.C())
+                psi_j = 0.5 * C_j**2
+
         ii += 1
 
 
-def make_newton_solve(residual, x0, max_iters=10, abs_tol=1e-14, rel_tol=1e-14):
+def make_newton_solve(residual, x0, max_iters=10, abs_tol=1e-14, rel_tol=1e-14,
+        max_ls_evals=0):
     _, tree_x = ravel_pytree(x0)
     linsolve = make_linop(jnp.linalg.solve, tree_x, tree_x)
     subtract = make_op(jnp.subtract, tree_x)
