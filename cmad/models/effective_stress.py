@@ -89,13 +89,15 @@ def beta_initial_guess(cauchy, equivalent_stress, tol=1e-14):
     return cond(is_J2_near_zero, lambda x: -1., lambda x: x, initial_guess)
 
 
-def beta_make_newton_solve(effective_stress_fun, equivalent_stress):
+def beta_make_newton_solve(effective_stress_fun, equivalent_stress,
+        max_iters=10, abs_tol=1e-14, rel_tol=1e-14, max_ls_evals=0):
     def residual(beta, initial_guess, cauchy, params):
         scaled_input_effective_stress = \
             effective_stress_fun(beta * cauchy, params)
         return scaled_input_effective_stress / equivalent_stress - 1.
 
-    return make_newton_solve(residual, 1.)
+    return make_newton_solve(residual, 1., max_iters,
+         abs_tol, rel_tol, max_ls_evals)
 
 
 def make_safe_update_fun(initial_guess, cauchy, params, update_fun):
@@ -106,7 +108,6 @@ def make_safe_update_fun(initial_guess, cauchy, params, update_fun):
 def scaled_hybrid_hill_effective_stress(cauchy, params, nn_fun, safe_update):
     Y = params["flow stress"]["initial yield"]["Y"]
     beta = safe_update(beta_initial_guess(cauchy, Y), cauchy, params)
-    jax_print("beta = {x}", x=beta)
     scaled_cauchy = beta * cauchy
     return hybrid_hill_effective_stress(scaled_cauchy, params, nn_fun) / beta
 
