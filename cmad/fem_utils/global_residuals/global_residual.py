@@ -2,10 +2,10 @@ import numpy as np
 import jax.numpy as jnp
 from jax import jit, vmap, jacfwd
 
-from cmad.fem_utils.global_deriv_types import GlobalDerivType
+from cmad.fem_utils.models.global_deriv_types import GlobalDerivType
 
 from abc import ABC
-from cmad.fem_utils.fem_utils import assemble_global_fields, assemble_prescribed
+from cmad.fem_utils.utils.fem_utils import assemble_global_fields, assemble_prescribed
 
 from scipy.sparse import coo_matrix, csc_matrix
 
@@ -182,10 +182,6 @@ class Global_residual(ABC):
     def evaluate_halley_correction(self):
         variables = self._halley_variables()
         halley_batch = np.asarray(self._batch_halley_correction(*variables))
-
-        # compiled = self._batch_halley_correction.lower(*variables).compile()
-        # flops = compiled.cost_analysis()['flops']
-        # print(flops)
 
         halley_global = np.zeros(self._num_free_dof)
         np.add.at(halley_global, self._global_free_indices_vector,

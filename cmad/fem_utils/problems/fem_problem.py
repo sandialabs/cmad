@@ -1,7 +1,7 @@
 import numpy as np
-from cmad.fem_utils.mesh import Mesh
-from cmad.fem_utils import interpolants
-from cmad.fem_utils import quadrature_rule
+from cmad.fem_utils.mesh.mesh import Mesh
+from cmad.fem_utils.interpolants import interpolants
+from cmad.fem_utils.quadrature import quadrature_rule
 import meshio
 
 class fem_problem():
@@ -361,7 +361,7 @@ class fem_problem():
             self._mesh = Mesh("hole_block_half")
 
             self._dt = 1.
-            self._num_steps = 10
+            self._num_steps = 100
             self._times = np.linspace(self._dt,
                                       self._dt * self._num_steps,
                                       self._num_steps)
@@ -379,7 +379,7 @@ class fem_problem():
 
             # fix all nodes on plane x = 0
             # set incremental displacements on plane x = 1
-            increment = 0.0006
+            increment = 0.00004
             disp_node = []
             disp_val = []
             for i in range(self._num_nodes):
@@ -580,7 +580,7 @@ class fem_problem():
 
             # normal traction on plane x = 1
             self._surf_traction_vector = np.zeros((self._num_steps, self._ndim))
-            self._surf_traction_vector[:, 0] = 3.0 * self._dt * np.arange(1, self._num_steps + 1)
+            self._surf_traction_vector[:, 0] = 6.0 * self._dt * np.arange(1, self._num_steps + 1)
             pres_surf_traction = []
             for surface in self._surface_conn:
                 surface_points = self._nodal_coords[surface, :]

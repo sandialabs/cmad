@@ -4,10 +4,10 @@ from jax import jit, vmap, jacfwd
 import pyvista as pv
 import time
 
-from cmad.fem_utils.global_deriv_types import GlobalDerivType
+from cmad.fem_utils.models.global_deriv_types import GlobalDerivType
 
 from abc import ABC
-from cmad.fem_utils.fem_utils import (assemble_global_fields,
+from cmad.fem_utils.utils.fem_utils import (assemble_global_fields,
                                       assemble_prescribed)
 from cmad.models.deformation_types import DefType
 
@@ -233,7 +233,7 @@ class Global_residual_plasticity(ABC):
                                  'pressure_field': pressure_field})
 
         plastic_strain = self.average_plastic_strain()
-        self._cell_data.append({'plastic_strain': plastic_strain})
+        self._cell_data.append({'eq_plastic_strain': plastic_strain})
 
     def get_num_plastic_elements(self):
         plastic_strain = self.average_plastic_strain()
@@ -336,7 +336,7 @@ class Global_residual_plasticity(ABC):
             disp_field = np.append(disp_field, np.zeros((len(self._eq_num), 1)), axis=1)
         pressure_field = UUR[:, -1]
 
-        scale = 50.0
+        scale = 25.0
         deformed_coords = self._nodal_coords + scale * disp_field
         self._grid.points = deformed_coords
 
@@ -437,10 +437,6 @@ class Global_residual_plasticity(ABC):
     def evaluate_halley_correction(self):
         variables = self._halley_variables()
         halley_batch = np.asarray(self._batch_halley_correction(*variables))
-
-        # compiled = self._batch_halley_correction.lower(*variables).compile()
-        # flops = compiled.cost_analysis()['flops']
-        # print(flops)
 
         halley_global = np.zeros(self._num_free_dof)
         np.add.at(halley_global, self._global_free_indices_vector,

@@ -1,8 +1,8 @@
 import numpy as np
 import jax.numpy as jnp
 
-from cmad.fem_utils.global_residual_thermo import Global_residual_thermo
-from cmad.fem_utils.fem_utils import (initialize_equation_thermo,
+from cmad.fem_utils.global_residuals.global_residual_thermo import Global_residual_thermo
+from cmad.fem_utils.utils.fem_utils import (initialize_equation_thermo,
                                       compute_shape_jacobian,
                                       interpolate_vector_3D,
                                       interpolate_scalar,

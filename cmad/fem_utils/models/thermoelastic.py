@@ -1,8 +1,8 @@
 import numpy as np
 import jax.numpy as jnp
 
-from cmad.fem_utils.global_residual_thermomech import Global_residual_thermomech
-from cmad.fem_utils.fem_utils import (initialize_equation,
+from cmad.fem_utils.global_residuals.global_residual_thermomech import Global_residual_thermomech
+from cmad.fem_utils.utils.fem_utils import (initialize_equation,
                                       compute_shape_jacobian,
                                       interpolate_vector_3D,
                                       interpolate_scalar,
@@ -89,8 +89,7 @@ class Thermoelastic(Global_residual_thermomech):
 
     def _compute_momentum_residual(
             self, u, u_prev, v_prev, a_prev, params, elem_points, elem_init_temp,
-            num_nodes_elem, ndim, gauss_weights_3D, shape_3D,
-            dshape_3D, dt):
+            num_nodes_elem, ndim, gauss_weights_3D, shape_3D, dshape_3D, dt):
 
         SD_vec = jnp.zeros((num_nodes_elem, ndim))
         inertial_vec = jnp.zeros((num_nodes_elem, ndim))

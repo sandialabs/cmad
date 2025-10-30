@@ -1,7 +1,8 @@
-from cmad.fem_utils.fem_problem import fem_problem
-from cmad.fem_utils.neo_hookean import Neo_hookean
-from cmad.fem_utils.thermoelastic import Thermoelastic
-from cmad.fem_utils.thermo import Thermo
+from cmad.fem_utils.problems.fem_problem import fem_problem
+from cmad.fem_utils.models.neo_hookean import Neo_hookean
+from cmad.fem_utils.models.mooney_rivlin import Mooney_rivlin
+from cmad.fem_utils.models.thermoelastic import Thermoelastic
+from cmad.fem_utils.models.thermo import Thermo
 import numpy as np
 import scipy.sparse.linalg
 import scipy.sparse as sp
@@ -39,7 +40,7 @@ def newton_solve(model, num_steps, max_iters, tol):
 
             model.add_to_UF(delta)
 
-        # model.save_global_fields()
+        model.save_global_fields()
         model.advance_model()
 
 def halley_solve(model, num_steps, max_iters, tol):
@@ -64,23 +65,17 @@ def halley_solve(model, num_steps, max_iters, tol):
             model.evaluate()
             KFF = model.scatter_lhs()
 
-            t1 = time.perf_counter()
             KFF_factorized = scipy.sparse.linalg.factorized(KFF)
-            t2 = time.perf_counter()
-            # print("Factorize K: ", t2 - t1)
             delta = KFF_factorized(-RF)
 
             if (i > 2):
                 model.set_newton_increment(delta)
-                t1 = time.perf_counter()
                 halley_rhs = model.evaluate_halley_correction()
-                t2 = time.perf_counter()
-                # print("Halley correction: ", t2 - t1)
                 delta = delta ** 2 / (delta + 1 / 2 * KFF_factorized(halley_rhs))
 
             model.add_to_UF(delta)
 
-        # model.save_global_fields()
+        model.save_global_fields()
         model.advance_model()
 
 order = 2
@@ -88,9 +83,9 @@ problem = fem_problem("hole_block_disp_sliding", order, mixed=False)
 num_steps, dt = problem.num_steps()
 
 max_iters = 10
-tol = 5e-12
+tol = 1e-11
 
-model = Neo_hookean(problem)
+model = Mooney_rivlin(problem)
 
 newton_solve(model, num_steps, max_iters, tol)
 # point_data = model.get_data()

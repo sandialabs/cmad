@@ -1,5 +1,5 @@
-from cmad.fem_utils import interpolants
-from cmad.fem_utils import quadrature_rule
+from cmad.fem_utils.interpolants import interpolants
+from cmad.fem_utils.quadrature import quadrature_rule
 import unittest
 import jax.numpy as np
 

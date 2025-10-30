@@ -1,8 +1,8 @@
 import numpy as np
 import jax.numpy as jnp
 
-from cmad.fem_utils.global_residual import Global_residual
-from cmad.fem_utils.fem_utils import (initialize_equation,
+from cmad.fem_utils.global_residuals.global_residual import Global_residual
+from cmad.fem_utils.utils.fem_utils import (initialize_equation,
                                       compute_shape_jacobian,
                                       interpolate_vector_3D,
                                       interpolate_scalar,
@@ -29,6 +29,7 @@ class Neo_hookean(Global_residual):
         print('Number of elements: ', num_elem)
         print('Number of free DOFS: ', num_free_dof)
 
+        # E, nu
         params = np.array([200e3, 0.3])
 
         is_mixed = problem.is_mixed()
@@ -71,7 +72,6 @@ class Neo_hookean(Global_residual):
         E = params[0]
         nu = params[1]
         G_param = E / (2 * (1 + nu))
-        K_param = E / (3 * (1 - 2 * nu))
         alpha = 1.0
 
         # incompressibility residual
@@ -101,14 +101,14 @@ class Neo_hookean(Global_residual):
             # compute incompressibility residual
             F = jnp.eye(3) + grad_u_q
             J = jnp.linalg.det(F)
-            incomp_residual += w_q * shape_3D_q * (1 / 2 * (J ** 2 - 1) / J) * dv_q
+            incomp_residual += w_q * shape_3D_q * (J - 1) * dv_q
 
             # DB contibution (projection onto constant polynomial space)
             H += w_q * 1.0 * dv_q
             G += w_q * shape_3D_q * dv_q
 
             # (N.T)(alpha / G)(N)(p)
-            incomp_residual -= (alpha / G_param + 1 / K_param) * w_q \
+            incomp_residual -= (alpha / G_param) * w_q \
                 * shape_3D_q * jnp.dot(shape_3D_q, p) * dv_q
 
         # alpha / G * (G.T)(H^-1)(G)(p)

@@ -1,5 +1,5 @@
 import numpy as np
-from cmad.fem_utils.fem_problem import fem_problem
+from cmad.fem_utils.problems.fem_problem import fem_problem
 import unittest
 
 class TestFEM(unittest.TestCase):

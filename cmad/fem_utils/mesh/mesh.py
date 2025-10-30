@@ -44,7 +44,7 @@ class Mesh():
                     rectangle,
                     disk
                 )
-                geom.extrude(flat, [0.0, 0.0, 0.0625], num_layers=7)
+                geom.extrude(flat, [0.0, 0.0, 0.0625], num_layers=5)
                 self._mesh = geom.generate_mesh()
 
                 self._points = self._mesh.points
