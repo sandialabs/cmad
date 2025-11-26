@@ -1,5 +1,7 @@
 from cmad.fem_utils.problems.fem_problem import fem_problem
 from cmad.fem_utils.models.elastic_plastic_small import Elastic_plastic_small
+from cmad.fem_utils.models.elastic_plastic_finite import Elastic_plastic_finite
+from cmad.fem_utils.models.thermoplastic_small import Thermoplastic_small
 from cmad.fem_utils.models.elastic_plastic_small_plane_stress import \
     Elastic_plastic_small_plane_stress
 import numpy as np
@@ -8,6 +10,7 @@ import time
 
 def newton_solve(model, num_steps, max_iters, tol):
     # model.initialize_plot()
+    model.initialize_variables()
     for step in range(num_steps):
         print('Step: ', step)
         model.set_prescribed_dofs(step)
@@ -42,6 +45,7 @@ def newton_solve(model, num_steps, max_iters, tol):
 
 def newton_solve_line_search(model, num_steps, max_iters, tol, s=0.8, m=8):
     # model.initialize_plot()
+    model.initialize_variables()
     for step in range(num_steps):
         print('Timestep', step)
         # set displacement BCs
@@ -69,6 +73,10 @@ def newton_solve_line_search(model, num_steps, max_iters, tol, s=0.8, m=8):
 
             model.evaluate_tang()
             KFF = model.scatter_lhs()
+            # KFF_array = KFF.toarray()
+            # print("converted")
+            # cond = np.linalg.cond(KFF_array)
+            # print(cond)
             KFF_factorized = scipy.sparse.linalg.factorized(KFF)
             delta = KFF_factorized(-RF)
 
@@ -91,17 +99,17 @@ def newton_solve_line_search(model, num_steps, max_iters, tol, s=0.8, m=8):
             else:
                 print('Performing line search')
                 for j in range(1, m + 1):
-                    print("Line search iteration: ", j)
+                    # print("Line search iteration: ", j)
                     eta = (m - j + 1) / (m + 1)
                     UF_new = UF_curr + eta * delta
                     model.set_UF(UF_new)
                     model.set_global_fields()
 
                     model.reset_xi()
-                    print("Computing local state variables...")
+                    # print("Computing local state variables...")
                     model.compute_local_state_variables()
                     model.evaluate_local()
-                    print("||C|| = ", np.max(np.abs(model.C())))
+                    # print("||C|| = ", np.max(np.abs(model.C())))
 
                     model.evaluate_global()
                     RF_new = model.scatter_rhs()
@@ -115,6 +123,7 @@ def newton_solve_line_search(model, num_steps, max_iters, tol, s=0.8, m=8):
 
 def halley_solve(model, num_steps, max_iters, tol, halley_threshold):
     # model.initialize_plot()
+    model.initialize_variables()
     for step in range(num_steps):
         print('Timestep', step)
         # set displacement BCs
@@ -181,17 +190,23 @@ def halley_solve(model, num_steps, max_iters, tol, halley_threshold):
                     RF = model.scatter_rhs()
         model.advance_model()
 
-order = 2
-problem = fem_problem("hole_block_traction", order, mixed=True)
+order = 1
+problem = fem_problem("hole_block_disp_sliding", order, mixed=True)
 num_steps, dt = problem.num_steps()
 
 max_iters = 20
-tol = 1e-12
-halley_threshold = 3.0
+tol = 1e-10
 
-model = Elastic_plastic_small(problem)
-halley_solve(model, num_steps, max_iters, tol, halley_threshold)
-
-# # Save results as .xdmf file
+model = Elastic_plastic_finite(problem)
+newton_solve_line_search(model, num_steps, max_iters, tol)
 point_data, cell_data = model.get_data()
-problem.save_data("hole_block_traction.xdmf", point_data, cell_data)
+problem.save_data("test_1.xdmf", point_data, cell_data)
+
+# halley_threshold = 3.0
+
+# model = Elastic_plastic_small(problem)
+# halley_solve(model, num_steps, max_iters, tol, halley_threshold)
+
+# # # Save results as .xdmf file
+# point_data, cell_data = model.get_data()
+# problem.save_data("hole_block_traction.xdmf", point_data, cell_data)

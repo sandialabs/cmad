@@ -17,8 +17,8 @@ from jax.lax import while_loop
 class Global_residual_plasticity(ABC):
     def __init__(
             self, global_resid_fun, local_resid_fun, elem_surf_traction, volume_conn,
-            nodal_coords, eq_num, params, num_nodes_elem, dof_node, num_local_resid_dofs,
-            num_quad_pts, num_free_dof, num_pres_dof, num_elem, disp_node, disp_val,
+            nodal_coords, eq_num, params, num_nodes_elem, dof_node, num_quad_pts, 
+            num_free_dof, num_pres_dof, num_elem, disp_node, disp_val, init_xi,
             pres_surf_traction_points, pres_surf_traction, surf_traction_vector, def_type):
 
         mapped_axes = [0, 0, None, 0, 0, 0]
@@ -99,16 +99,10 @@ class Global_residual_plasticity(ABC):
         self._params = params
         self._eq_num = eq_num
         self._num_quad_pts = num_quad_pts
-
-        self._UF = np.zeros(num_free_dof)
-        self._UF_prev = np.zeros(num_free_dof)
-        self._UP_prev = np.zeros(num_pres_dof)
-        self._xi_elem = np.zeros((num_elem, num_local_resid_dofs * num_quad_pts))
-        self._xi_elem_prev = np.zeros((num_elem, num_local_resid_dofs * num_quad_pts))
+        self._init_xi = init_xi
+        self._num_elem = num_elem
 
         if (def_type == DefType.PLANE_STRESS):
-            self._xi_elem[:, -2 * num_quad_pts: -num_quad_pts] = np.ones((num_elem, num_quad_pts))
-            self._xi_elem_prev[:, -2 * num_quad_pts: -num_quad_pts] = np.ones((num_elem, num_quad_pts))
             self._elem_points = nodal_coords[:, :-1][volume_conn, :]
 
         # displacement and pressure boundary conditions
@@ -159,6 +153,13 @@ class Global_residual_plasticity(ABC):
         # data storage
         self._point_data = []
         self._cell_data = []
+        
+    def initialize_variables(self):
+        self._UF = np.zeros(self._num_free_dof)
+        self._UF_prev = np.zeros(self._num_free_dof)
+        self._UP_prev = np.zeros(self._num_pres_dof)
+        self._xi_elem_prev = np.tile(self._init_xi, (self._num_elem, 1))
+        self._xi_elem = self._xi_elem_prev.copy()
 
     def reset_xi(self):
         self._xi_elem = self._xi_elem_prev.copy()
@@ -336,7 +337,7 @@ class Global_residual_plasticity(ABC):
             disp_field = np.append(disp_field, np.zeros((len(self._eq_num), 1)), axis=1)
         pressure_field = UUR[:, -1]
 
-        scale = 25.0
+        scale = 5.0
         deformed_coords = self._nodal_coords + scale * disp_field
         self._grid.points = deformed_coords
 

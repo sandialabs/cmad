@@ -278,7 +278,7 @@ class fem_problem():
             self._disp_val = np.array(disp_val)
 
             # diagonal traction on z = 5
-            trac_increment = 5.0
+            trac_increment = 1.0
             self._surf_traction_vector = np.zeros((self._num_steps, self._ndim))
             self._surf_traction_vector[:, 0] = trac_increment * self._dt * np.arange(1, self._num_steps + 1)
             self._surf_traction_vector[:, 1] = trac_increment * self._dt * np.arange(1, self._num_steps + 1)
@@ -358,10 +358,10 @@ class fem_problem():
             self._shape_func_2D = shape_func_tri
 
             self._ndim = 3
-            self._mesh = Mesh("hole_block_half")
+            self._mesh = Mesh("hole_block_quarter")
 
             self._dt = 1.
-            self._num_steps = 100
+            self._num_steps = 50
             self._times = np.linspace(self._dt,
                                       self._dt * self._num_steps,
                                       self._num_steps)
@@ -379,7 +379,7 @@ class fem_problem():
 
             # fix all nodes on plane x = 0
             # set incremental displacements on plane x = 1
-            increment = 0.00004
+            increment = 0.0005
             disp_node = []
             disp_val = []
             for i in range(self._num_nodes):
@@ -387,19 +387,19 @@ class fem_problem():
                     disp_node.append(np.array([i, 2], dtype=int))
                     disp_val.append(np.zeros(self._num_steps))
 
-                if self._nodal_coords[i][0] == 0.0:
+                if np.abs(self._nodal_coords[i][0]) < 1.e-5:
                     disp_node.append(np.array([i, 1], dtype=int))
-                    disp_node.append(np.array([i, 3], dtype=int))
                     disp_val.append(np.zeros(self._num_steps))
+                
+                if self._nodal_coords[i][2] == 0.0:
+                    disp_node.append(np.array([i, 3], dtype=int))
                     disp_val.append(np.zeros(self._num_steps))
 
-                if self._nodal_coords[i][0] == 1.0:
+                if self._nodal_coords[i][0] == 0.5:
                     disp_node.append(np.array([i, 1], dtype=int))
-                    disp_node.append(np.array([i, 3], dtype=int))
                     disp_val.append(np.linspace(increment * self._dt,
                                                 increment * self._dt * self._num_steps,
                                                 self._num_steps))
-                    disp_val.append(np.zeros(self._num_steps))
 
             if mixed:
                 disp_node.append(np.array([0, 4], dtype = int))
@@ -540,7 +540,7 @@ class fem_problem():
             self._mesh = Mesh("hole_block_half")
 
             self._dt = 1.
-            self._num_steps = 60
+            self._num_steps = 40
             self._times = np.linspace(self._dt,
                                       self._dt * self._num_steps,
                                       self._num_steps)
@@ -580,7 +580,7 @@ class fem_problem():
 
             # normal traction on plane x = 1
             self._surf_traction_vector = np.zeros((self._num_steps, self._ndim))
-            self._surf_traction_vector[:, 0] = 6.0 * self._dt * np.arange(1, self._num_steps + 1)
+            self._surf_traction_vector[:, 0] = 4.5 * self._dt * np.arange(1, self._num_steps + 1)
             pres_surf_traction = []
             for surface in self._surface_conn:
                 surface_points = self._nodal_coords[surface, :]
@@ -641,7 +641,66 @@ class fem_problem():
                     pres_surf_traction.append(surface)
             self._pres_surf_traction = np.array(pres_surf_traction, dtype=int)
 
-        # Thermoelastic problems
+        if problem_type == "boat_fender":
+
+            self._quad_rule_3D = quad_rule_tetra
+            self._quad_rule_2D = quad_rule_tri
+            self._shape_func_3D = shape_func_tetra
+            self._shape_func_2D = shape_func_tri
+
+            self._ndim = 3
+            self._mesh = Mesh("boat_fender")
+
+            self._dt = 1.
+            self._num_steps = 29
+            self._times = np.linspace(self._dt,
+                                      self._dt * self._num_steps,
+                                      self._num_steps)
+
+            self._nodal_coords = self._mesh.get_nodal_coordinates()
+            self._volume_conn = self._mesh.get_volume_connectivity()
+            self._surface_conn = self._mesh.get_surface_connectivity()
+
+            # 4 dofs per node if there are pressure dofs
+            self._dof_node = 3 + mixed
+            self._num_nodes = len(self._nodal_coords)
+            self._num_nodes_elem = 4
+            self._num_elem = len(self._volume_conn)
+            self._num_nodes_surf = 3
+
+            # fix all nodes on plane x = 0
+            # set incremental displacements on plane x = 1
+            disp_node = []
+            disp_val = []
+            for i in range(self._num_nodes):
+                if self._nodal_coords[i][1] == 0.0:
+                    disp_node.append(np.array([i, 1], dtype=int))
+                    disp_node.append(np.array([i, 2], dtype=int))
+                    disp_node.append(np.array([i, 3], dtype=int))
+                    disp_val.append(np.zeros(self._num_steps))
+                    disp_val.append(np.zeros(self._num_steps))
+                    disp_val.append(np.zeros(self._num_steps))
+
+            if mixed:
+                disp_node.append(np.array([0, 4], dtype = int))
+                disp_val.append(np.zeros(self._num_steps))
+
+            self._disp_node = np.array(disp_node, dtype=int)
+            self._disp_val = np.array(disp_val)
+
+            # normal traction on plane x = 1
+            increment = 0.001
+            self._surf_traction_vector = np.zeros((self._num_steps, self._ndim))
+            self._surf_traction_vector[:, 0] = increment * self._dt * np.arange(1, self._num_steps + 1)
+            self._surf_traction_vector[:, 1] = -2 * increment * self._dt * np.arange(1, self._num_steps + 1)
+            pres_surf_traction = []
+            for surface in self._surface_conn:
+                surface_points = self._nodal_coords[surface, :]
+                if (surface_points[:, 1] == 0.5 * np.ones(3)).all():
+                    pres_surf_traction.append(surface)
+            self._pres_surf_traction = np.array(pres_surf_traction, dtype=int)
+
+        # Thermomechanical problems
         if problem_type == "rectangular_wall":
             self._quad_rule_3D = quad_rule_tetra
             self._quad_rule_2D = quad_rule_tri
@@ -791,6 +850,202 @@ class fem_problem():
             # no tractions
             self._surf_traction_vector = None
             self._pres_surf_traction = None
+
+        if problem_type == "hole_block_traction_thermoplastic":
+            self._quad_rule_3D = quad_rule_tetra
+            self._quad_rule_2D = quad_rule_tri
+            self._shape_func_3D = shape_func_tetra
+            self._shape_func_2D = shape_func_tri
+
+            self._ndim = 3
+            self._mesh = Mesh("hole_block_half")
+
+            self._dt = 0.05
+            self._num_steps = 36
+            self._times = np.linspace(self._dt,
+                                      self._dt * self._num_steps,
+                                      self._num_steps)
+
+            self._nodal_coords = self._mesh.get_nodal_coordinates()
+            self._volume_conn = self._mesh.get_volume_connectivity()
+            self._surface_conn = self._mesh.get_surface_connectivity()
+
+            # 4 dofs per node if there are pressure dofs
+            self._dof_node = 4 + mixed
+            self._num_nodes = len(self._nodal_coords)
+            self._num_nodes_elem = 4
+            self._num_elem = len(self._volume_conn)
+            self._num_nodes_surf = 3
+
+            # uy = 0 on plane y = 0 
+            # ux = uz = 0 on plane x = 0
+            disp_node = []
+            disp_val = []
+            for i in range(self._num_nodes):
+                if self._nodal_coords[i][1] == 0.0:
+                    disp_node.append(np.array([i, 2], dtype=int))
+                    disp_val.append(np.zeros(self._num_steps))
+
+                if self._nodal_coords[i][0] == 0.0:
+                    disp_node.append(np.array([i, 1], dtype=int))
+                    disp_node.append(np.array([i, 3], dtype=int))
+                    disp_val.append(np.zeros(self._num_steps))
+                    disp_val.append(np.zeros(self._num_steps))
+
+            if mixed:
+                disp_node.append(np.array([0, 5], dtype = int))
+                disp_val.append(np.zeros(self._num_steps))
+
+            self._disp_node = np.array(disp_node, dtype=int)
+            self._disp_val = np.array(disp_val)
+
+            # normal traction on plane x = 1
+            self._surf_traction_vector = np.zeros((self._num_steps, self._ndim))
+            self._surf_traction_vector[:, 0] = 5.0 * np.arange(1, self._num_steps + 1)
+            pres_surf_traction = []
+            for surface in self._surface_conn:
+                surface_points = self._nodal_coords[surface, :]
+                if (surface_points[:, 0] == 1 * np.ones(3)).all():
+                    pres_surf_traction.append(surface)
+            self._pres_surf_traction = np.array(pres_surf_traction, dtype=int)
+
+            # prescribe initial conditions
+            self._init_temp = 300.0 * np.ones(self._num_nodes)
+
+            # no convection BC
+            self._pres_surf_flux = None
+        
+        if problem_type == "hole_block_disp_thermoplastic":
+            self._quad_rule_3D = quad_rule_tetra
+            self._quad_rule_2D = quad_rule_tri
+            self._shape_func_3D = shape_func_tetra
+            self._shape_func_2D = shape_func_tri
+
+            self._ndim = 3
+            self._mesh = Mesh("hole_block_half")
+
+            self._dt = 0.01
+            self._num_steps = 80
+            self._times = np.linspace(self._dt,
+                                      self._dt * self._num_steps,
+                                      self._num_steps)
+
+            self._nodal_coords = self._mesh.get_nodal_coordinates()
+            self._volume_conn = self._mesh.get_volume_connectivity()
+            self._surface_conn = self._mesh.get_surface_connectivity()
+
+            # 4 dofs per node if there are pressure dofs
+            self._dof_node = 4 + mixed
+            self._num_nodes = len(self._nodal_coords)
+            self._num_nodes_elem = 4
+            self._num_elem = len(self._volume_conn)
+            self._num_nodes_surf = 3
+
+            # uy = 0 on plane y = 0 
+            # ux = uz = 0 on plane x = 0
+            # set incremental displacements on plane x = 1
+            increment = 0.00025
+            disp_node = []
+            disp_val = []
+            for i in range(self._num_nodes):
+                if self._nodal_coords[i][1] == 0.0:
+                    disp_node.append(np.array([i, 2], dtype=int))
+                    disp_val.append(np.zeros(self._num_steps))
+
+                if self._nodal_coords[i][0] == 0.0:
+                    disp_node.append(np.array([i, 1], dtype=int))
+                    disp_node.append(np.array([i, 3], dtype=int))
+                    disp_val.append(np.zeros(self._num_steps))
+                    disp_val.append(np.zeros(self._num_steps))
+
+                if self._nodal_coords[i][0] == 1.0:
+                    disp_node.append(np.array([i, 1], dtype=int))
+                    disp_node.append(np.array([i, 3], dtype=int))
+                    disp_val.append(np.linspace(increment,
+                                                increment * self._num_steps,
+                                                self._num_steps))
+                    disp_val.append(np.zeros(self._num_steps))
+
+            if mixed:
+                disp_node.append(np.array([0, 5], dtype = int))
+                disp_val.append(np.zeros(self._num_steps))
+
+            self._disp_node = np.array(disp_node, dtype=int)
+            self._disp_val = np.array(disp_val)
+
+            # no tractions
+            self._surf_traction_vector = None
+            self._pres_surf_traction = None
+
+            # prescribe initial conditions
+            self._init_temp = 300.0 * np.ones(self._num_nodes)
+
+            # no convection BC
+            self._pres_surf_flux = None
+        
+        if problem_type == "uniaxial_stress_thermoplastic":
+            self._quad_rule_3D = quad_rule_tetra
+            self._quad_rule_2D = quad_rule_tri
+            self._shape_func_3D = shape_func_tetra
+            self._shape_func_2D = shape_func_tri
+
+            self._ndim = 3
+            self._mesh = Mesh("dogbone")
+
+            self._nodal_coords = self._mesh.get_nodal_coordinates()
+            self._volume_conn = self._mesh.get_volume_connectivity()
+            self._surface_conn = self._mesh.get_surface_connectivity()
+
+            self._dt = 0.001
+            self._num_steps = 40
+            self._times = np.linspace(self._dt,
+                                      self._dt * self._num_steps,
+                                      self._num_steps)
+
+            # 4 dofs per node if there are pressure dofs
+            self._dof_node = 4 + mixed
+            self._num_nodes = len(self._nodal_coords)
+            self._num_nodes_elem = 4
+            self._num_elem = len(self._volume_conn)
+            self._num_nodes_surf = 3
+
+            # prescribe ux = 0 on x = 0, uy = 0 on y = 0, and uz = 0 on z = 0
+            increment = 0.0005
+            disp_node = []
+            disp_val = []
+            for i in range(self._num_nodes):
+                if self._nodal_coords[i][1] == 0.0:
+                    disp_node.append(np.array([i, 1], dtype=int))
+                    disp_node.append(np.array([i, 2], dtype=int))
+                    disp_node.append(np.array([i, 3], dtype=int))
+                    disp_val.append(np.zeros(self._num_steps))
+                    disp_val.append(np.zeros(self._num_steps))
+                    disp_val.append(np.zeros(self._num_steps))
+                if self._nodal_coords[i][1] == 1.0:
+                    disp_node.append(np.array([i, 1], dtype=int))
+                    disp_node.append(np.array([i, 2], dtype=int))
+                    disp_node.append(np.array([i, 3], dtype=int))
+                    disp_val.append(np.zeros(self._num_steps))
+                    disp_val.append(np.linspace(increment,
+                                                increment * self._num_steps,
+                                                self._num_steps))
+                    disp_val.append(np.zeros(self._num_steps))
+            if mixed:
+                disp_node.append(np.array([0, 5], dtype = int))
+                disp_val.append(np.zeros(self._num_steps))
+
+            self._disp_node = np.array(disp_node, dtype=int)
+            self._disp_val = np.array(disp_val)
+
+            # no tractions
+            self._surf_traction_vector = None
+            self._pres_surf_traction = None
+
+            # prescribe initial conditions
+            self._init_temp = 300.0 * np.ones(self._num_nodes)
+
+            # no convection BC
+            self._pres_surf_flux = None
 
         # Thermo only problems
         if problem_type == "rectangular_wall_thermo":

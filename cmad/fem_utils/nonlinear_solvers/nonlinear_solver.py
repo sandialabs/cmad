@@ -43,53 +43,78 @@ def newton_solve(model, num_steps, max_iters, tol):
         model.save_global_fields()
         model.advance_model()
 
-def halley_solve(model, num_steps, max_iters, tol):
+def halley_solve(model, num_steps, max_iters, tol, halley_threshold):
     model.initialize_variables()
     for step in range(num_steps):
-        print('Step: ', step)
-        model.compute_surf_tractions(step)
+        print('Timestep', step)
+        # set displacement BCs
         model.set_prescribed_dofs(step)
+        model.set_global_fields()
+
+        #set traction BCs
+        model.compute_surf_tractions(step)
+
+        model.seed_none()
+        model.evaluate()
+        RF = model.scatter_rhs()
+        norm_resid_0 = np.linalg.norm(RF)
+
         for i in range(max_iters):
-
-            model.set_global_fields()
-
-            model.seed_none()
-            model.evaluate()
-            RF = model.scatter_rhs()
-
-            print("||R||: ", np.linalg.norm(RF))
-            if (np.linalg.norm(RF) < tol):
+            norm_resid = np.linalg.norm(RF)
+            print("||R|| = ", norm_resid)
+            if (norm_resid < tol):
                 break
 
             model.seed_U()
             model.evaluate()
             KFF = model.scatter_lhs()
-
             KFF_factorized = scipy.sparse.linalg.factorized(KFF)
             delta = KFF_factorized(-RF)
 
-            if (i > 2):
-                model.set_newton_increment(delta)
-                halley_rhs = model.evaluate_halley_correction()
-                delta = delta ** 2 / (delta + 1 / 2 * KFF_factorized(halley_rhs))
+            UF_curr = model.get_UF()
+            UF_new = UF_curr + delta
+            model.set_UF(UF_new)
+            model.set_global_fields()
 
-            model.add_to_UF(delta)
+            model.seed_none()
+            model.evaluate()
+            RF_new = model.scatter_rhs()
+            norm_resid_new = np.linalg.norm(RF_new)
+            S = np.log10(norm_resid_0 / norm_resid)
 
-        model.save_global_fields()
+            if S < halley_threshold:
+                RF = RF_new.copy()
+            else:
+                if norm_resid_new < tol:
+                    RF = RF_new.copy()
+                else:
+                    print("Computing Halley correction...")
+                    model.set_newton_increment(delta)
+                    halley_rhs = model.evaluate_halley_correction()
+                    halley_delta = delta ** 2 / (delta + 1 / 2 * KFF_factorized(halley_rhs))
+
+                    UF_new = UF_curr + halley_delta
+                    model.set_UF(UF_new)
+                    model.set_global_fields()
+
+                    model.seed_none()
+                    model.evaluate()
+                    RF = model.scatter_rhs()
         model.advance_model()
 
 order = 2
-problem = fem_problem("hole_block_disp_sliding", order, mixed=False)
+problem = fem_problem("boat_fender", order, mixed=False)
 num_steps, dt = problem.num_steps()
 
 max_iters = 10
-tol = 1e-11
+tol = 1e-12
+halley_threshold = 1.5
 
 model = Mooney_rivlin(problem)
 
-newton_solve(model, num_steps, max_iters, tol)
-# point_data = model.get_data()
-# problem.save_data("rect_prism_thermoelastic_1.xdmf", point_data)
+halley_solve(model, num_steps, max_iters, tol, halley_threshold)
+point_data = model.get_data()
+problem.save_data("boat_fender.xdmf", point_data)
 
 
 

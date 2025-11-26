@@ -89,6 +89,8 @@ class Elastic_plastic_small(Global_residual_plasticity):
         self._cauchy_fun = mat_point_model.get_cauchy()
         num_local_resid_dofs = mat_point_model.num_dofs
 
+        init_xi = np.zeros(num_local_resid_dofs * num_quad_pts)
+
         elem_local_resid = partial(self._elem_local_resid,
                                    num_nodes_elem=num_nodes_elem,
                                    ndim=ndim,
@@ -113,9 +115,10 @@ class Elastic_plastic_small(Global_residual_plasticity):
                                      dshape_2D=shape_func_2D.gradients)
 
         super().__init__(elem_global_resid, elem_local_resid, elem_surf_traction, volume_conn,
-                         nodal_coords, eq_num, params, num_nodes_elem, dof_node, num_local_resid_dofs,
-                         num_quad_pts, num_free_dof, num_pres_dof, num_elem, disp_node, disp_val,
-                         pres_surf_traction_points, pres_surf_traction, surf_traction_vector, def_type)
+                         nodal_coords, eq_num, params, num_nodes_elem, dof_node, num_quad_pts, 
+                         num_free_dof, num_pres_dof, num_elem, disp_node, disp_val, init_xi,
+                         pres_surf_traction_points, pres_surf_traction, surf_traction_vector, 
+                         def_type)
 
     def _elem_local_resid(
             self, u, u_prev, params, xi, xi_prev, elem_points, num_nodes_elem,

@@ -147,6 +147,12 @@ class Global_residual(ABC):
     def add_to_UF(self, delta):
         self._UF += delta
 
+    def set_UF(self, UF):
+        self._UF = UF.copy()
+
+    def get_UF(self):
+        return self._UF.copy()
+
     def scatter_rhs(self):
         RF_global = np.zeros(self._num_free_dof)
         np.add.at(RF_global, self._global_free_indices_vector,

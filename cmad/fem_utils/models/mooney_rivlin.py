@@ -30,7 +30,7 @@ class Mooney_rivlin(Global_residual):
         print('Number of free DOFS: ', num_free_dof)
 
         # C01 (MPa), C10 (MPa), D1 (MPa^-1)
-        params = np.array([0.7, -0.45, 0.001])
+        params = np.array([0.0035972, 0.186438, 0.004])
 
         is_mixed = problem.is_mixed()
 
