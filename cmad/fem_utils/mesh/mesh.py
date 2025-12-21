@@ -66,7 +66,7 @@ class Mesh():
                     rectangle,
                     disk
                 )
-                geom.extrude(flat, [0.0, 0.0, 0.03125], num_layers=3)
+                geom.extrude(flat, [0.0, 0.0, 0.03125], num_layers=2)
                 self._mesh = geom.generate_mesh()
 
                 self._points = self._mesh.points
@@ -182,7 +182,7 @@ class Mesh():
                 self._mesh.cells = [self._cells[2]]
 
             if self._mesh_type == "boat_fender":
-
+                
                 geom.characteristic_length_min = 0.03
                 geom.characteristic_length_max = 0.03
 
@@ -325,8 +325,8 @@ class Mesh():
                 self._mesh.cells = [self._cells[2]]
 
             if self._mesh_type == "dogbone":
-                geom.characteristic_length_min = 0.015
-                geom.characteristic_length_max = 0.015
+                geom.characteristic_length_min = 0.02
+                geom.characteristic_length_max = 0.02
 
                 dogbone = geom.add_polygon([[0.0, 0.0],
                                             [0.285, 0.0],
@@ -348,7 +348,56 @@ class Mesh():
 
                 dogbone = geom.boolean_difference(dogbone, [disk_1, disk_2, disk_3, disk_4])
                 
-                geom.extrude(dogbone, [0.0, 0.0, 0.04], num_layers=3)
+                geom.extrude(dogbone, [0.0, 0.0, 0.04], num_layers=2)
+                self._mesh = geom.generate_mesh()
+
+                self._points = self._mesh.points
+                self._cells = self._mesh.cells
+                self._volume_conn = self._cells[2].data
+                self._surface_conn = self._cells[1].data
+                self._mesh.cells = [self._cells[2]]
+
+            if self._mesh_type == "dogbone_quarter":
+                geom.characteristic_length_min = 0.015
+                geom.characteristic_length_max = 0.015
+
+                dogbone = geom.add_polygon([[0.0, 0.0],
+                                            [0.1425, 0.0],
+                                            [0.1425, 1.0],
+                                            [0.0, 1.0],
+                                            [0.0, 0.668],
+                                            [0.0975, 0.668],
+                                            [0.0975, 0.331],
+                                            [0.0, 0.331]])
+                
+                disk_1 = geom.add_disk([0.0, 0.331, 0.0], 0.0975)
+                disk_2 = geom.add_disk([0.0, 0.668, 0.0], 0.0975)
+
+                dogbone = geom.boolean_difference(dogbone, [disk_1, disk_2])
+                
+                geom.extrude(dogbone, [0.0, 0.0, 0.04], num_layers=2)
+                self._mesh = geom.generate_mesh()
+
+                self._points = self._mesh.points
+                self._cells = self._mesh.cells
+                self._volume_conn = self._cells[2].data
+                self._surface_conn = self._cells[1].data
+                self._mesh.cells = [self._cells[2]]
+
+            if self._mesh_type == "rect_sheet_defect":
+                
+                L = 0.015
+                geom.characteristic_length_min = L
+                geom.characteristic_length_max = L
+
+                R = 0.119
+                sheet = geom.add_polygon([[-0.5, 0.0],
+                                          [0.5, 0.0],
+                                          [0.5, 1.01 * R],
+                                          [0.0, R],
+                                          [-0.5, 1.01 * R]])
+                
+                geom.extrude(sheet, [0.0, 0.0, L], num_layers=1)
                 self._mesh = geom.generate_mesh()
 
                 self._points = self._mesh.points

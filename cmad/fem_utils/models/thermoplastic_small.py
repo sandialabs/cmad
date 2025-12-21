@@ -266,8 +266,7 @@ class Thermoplastic_small(Global_residual_thermoplastic):
 
             elastic_stress = self._cauchy_fun(xi_recast, xi_prev_recast, params, F_q, F_prev_q)
             dev_elastic_stress = elastic_stress - 1 / ndim * jnp.trace(elastic_stress) * jnp.eye(ndim) 
-            thermal_stress = K_param * alpha_0 * (theta_q - theta_0) / (1 + jnp.trace(grad_u_q)) * jnp.eye(ndim)
-            stress = dev_elastic_stress + thermal_stress + p_q * jnp.eye(ndim)
+            stress = dev_elastic_stress + p_q * jnp.eye(ndim)
 
             #stress divergence term
             S_D_vec += w_q * gradphiXYZ_q.T @ stress.T * dv_q
@@ -279,13 +278,17 @@ class Thermoplastic_small(Global_residual_thermoplastic):
             ndim, gauss_weights_3D, shape_3D, dshape_3D):
         
         elem_disp = u[0:num_nodes_elem * ndim]
+        elem_theta = u[num_nodes_elem * ndim:num_nodes_elem * (ndim + 1)]
         p = u[-num_nodes_elem:]
+
+        alpha_0 = params['thermal']['alpha_0']
+        theta_0 = 300.
 
         E = params['elastic']['E']
         nu = params['elastic']['nu']
         G_param = E / (2 * (1 + nu))
         K_param = E / (3 * (1 - 2 * nu))
-        alpha = 0.1
+        alpha = 100.
 
         # incompressibility residual
         H = 0
@@ -303,8 +306,10 @@ class Thermoplastic_small(Global_residual_thermoplastic):
             dv_q, gradphiXYZ_q = compute_shape_jacobian(elem_points, dshape_3D_q)
             u_q, grad_u_q = interpolate_vector_3D(elem_disp, shape_3D_q, gradphiXYZ_q, num_nodes_elem)
             p_q = interpolate_scalar(p, shape_3D_q)
+            theta_q = interpolate_scalar(elem_theta, shape_3D_q)
 
-            DB_residual += w_q *  shape_3D_q * (jnp.trace(grad_u_q)) * dv_q
+            DB_residual += w_q *  shape_3D_q * (jnp.trace(grad_u_q) \
+                - alpha_0 * (theta_q - theta_0) / (1 + jnp.trace(grad_u_q))) * dv_q
 
             # DB contibution (projection onto constant polynomial space)
             H += w_q * 1.0 * dv_q
@@ -394,7 +399,7 @@ class Thermoplastic_small(Global_residual_thermoplastic):
             e_prev_q = 1 / 2 * (grad_u_prev_q + grad_u_prev_q.T)
             e_dot_q = (e_q - e_prev_q) / dt
             ee_dot_q = e_dot_q - ep_dot_q
-            M_q = K_param * alpha_0 * 1 / (1 + jnp.trace(grad_u_q)) * jnp.eye(ndim)
+            M_q = -K_param * alpha_0 * 1 / (1 + jnp.trace(grad_u_q)) * jnp.eye(ndim)
             thermal_resid -= w_q * shape_3D_q * theta_q * jnp.sum(M_q * ee_dot_q) * 1.e6 * dv_q
 
         return thermal_resid * 1.e-4

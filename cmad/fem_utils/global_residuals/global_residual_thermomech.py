@@ -6,7 +6,7 @@ from cmad.fem_utils.models.global_deriv_types import GlobalDerivType
 from abc import ABC
 from cmad.fem_utils.utils.fem_utils import assemble_global_fields, assemble_prescribed
 
-from scipy.sparse import coo_matrix, csr_matrix
+from scipy.sparse import coo_matrix, csc_matrix
 
 class Global_residual_thermomech(ABC):
     def __init__(
@@ -196,7 +196,7 @@ class Global_residual_thermomech(ABC):
                                     (self._row_f_flux, self._col_f_flux)),
                                    shape=(self._num_free_dof, self._num_free_dof))
 
-        return csr_matrix(KFF)
+        return csc_matrix(KFF)
 
     def compute_surf_tractions(self, step):
         self._FF = np.zeros(self._num_free_dof)

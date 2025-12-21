@@ -1,12 +1,5 @@
-from cmad.fem_utils.problems.fem_problem import fem_problem
-from cmad.fem_utils.models.elastic_plastic_small import Elastic_plastic_small
-from cmad.fem_utils.models.elastic_plastic_finite import Elastic_plastic_finite
-from cmad.fem_utils.models.thermoplastic_small import Thermoplastic_small
-from cmad.fem_utils.models.elastic_plastic_small_plane_stress import \
-    Elastic_plastic_small_plane_stress
 import numpy as np
 import scipy.sparse.linalg
-import time
 
 def newton_solve(model, num_steps, max_iters, tol):
     # model.initialize_plot()
@@ -189,24 +182,3 @@ def halley_solve(model, num_steps, max_iters, tol, halley_threshold):
                     model.evaluate_global()
                     RF = model.scatter_rhs()
         model.advance_model()
-
-order = 1
-problem = fem_problem("hole_block_disp_sliding", order, mixed=True)
-num_steps, dt = problem.num_steps()
-
-max_iters = 20
-tol = 1e-10
-
-model = Elastic_plastic_finite(problem)
-newton_solve_line_search(model, num_steps, max_iters, tol)
-point_data, cell_data = model.get_data()
-problem.save_data("test_1.xdmf", point_data, cell_data)
-
-# halley_threshold = 3.0
-
-# model = Elastic_plastic_small(problem)
-# halley_solve(model, num_steps, max_iters, tol, halley_threshold)
-
-# # # Save results as .xdmf file
-# point_data, cell_data = model.get_data()
-# problem.save_data("hole_block_traction.xdmf", point_data, cell_data)

@@ -1,8 +1,3 @@
-from cmad.fem_utils.problems.fem_problem import fem_problem
-from cmad.fem_utils.models.neo_hookean import Neo_hookean
-from cmad.fem_utils.models.mooney_rivlin import Mooney_rivlin
-from cmad.fem_utils.models.thermoelastic import Thermoelastic
-from cmad.fem_utils.models.thermo import Thermo
 import numpy as np
 import scipy.sparse.linalg
 import scipy.sparse as sp
@@ -101,20 +96,6 @@ def halley_solve(model, num_steps, max_iters, tol, halley_threshold):
                     model.evaluate()
                     RF = model.scatter_rhs()
         model.advance_model()
-
-order = 2
-problem = fem_problem("boat_fender", order, mixed=False)
-num_steps, dt = problem.num_steps()
-
-max_iters = 10
-tol = 1e-12
-halley_threshold = 1.5
-
-model = Mooney_rivlin(problem)
-
-halley_solve(model, num_steps, max_iters, tol, halley_threshold)
-point_data = model.get_data()
-problem.save_data("boat_fender.xdmf", point_data)
 
 
 
