@@ -4,9 +4,9 @@ from numpy import ndarray
 from functools import partial
 
 import jax.numpy as jnp
-from jax import tree_map, jit
+from jax import jit
 from jax.flatten_util import ravel_pytree
-from jax.tree_util import tree_flatten, tree_flatten_with_path, tree_reduce
+from jax.tree_util import tree_flatten, tree_flatten_with_path, tree_reduce, tree_map
 
 
 def bounds_transform(value, bounds, transform_from_canonical=True):

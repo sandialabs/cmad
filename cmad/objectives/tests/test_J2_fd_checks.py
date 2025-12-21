@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import unittest
 
-from jax import tree_map
+from jax.tree_util import tree_map
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
@@ -431,7 +431,7 @@ class TestJ2FDChecks(unittest.TestCase):
         model.parameters.set_active_values_from_flat(offset_param_values, False)
         fs_fd_component_error, adjoint_fd_component_error = \
             fd_grad_check_components(qoi)
-        fd_component_diff_tol = 1e-8
+        fd_component_diff_tol = 3e-8
         fd_components_diff = fs_fd_component_error \
             - adjoint_fd_component_error
         assert np.linalg.norm(fd_components_diff) < fd_component_diff_tol

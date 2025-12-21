@@ -7,7 +7,7 @@ import numpy as np
 
 import jax.numpy as jnp
 
-from jax import tree_map
+from jax.tree_util import tree_map
 
 from cmad.parameters.parameters import Parameters
 

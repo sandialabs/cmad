@@ -64,6 +64,12 @@ class Model(ABC):
         No side effects allowed!
         """
         raise NotImplementedError
+    
+    def get_cauchy(self):
+        return self.cauchy
+    
+    def get_local_residual(self):
+        return self._residual
 
     def evaluate(self):
         """

@@ -18,6 +18,10 @@ dependencies:
   # documentation
   - sphinx
   - sphinx-gallery
+  - pyvista
+  - h5py
+  - meshio
+  - pygmsh
   - pip:
     - sphinx_copybutton
     - sphinx_rtd_theme
