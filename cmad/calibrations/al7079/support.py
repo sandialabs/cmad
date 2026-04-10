@@ -22,8 +22,8 @@ def compute_R(orig_basis):
 
 
 def compute_rotation_A(alpha):
-    basis_A = np.array([[1., 0., 0.],
-        [0., -np.sin(alpha), -np.cos(alpha)],
+    basis_A = np.array([[-1., 0., 0.],
+        [0., np.sin(alpha), np.cos(alpha)],
         [0., np.cos(alpha), -np.sin(alpha)]])
     return compute_R(basis_A)
 
@@ -37,7 +37,7 @@ def compute_rotation_B(beta):
 
 def compute_rotation_C(gamma):
     basis_C = np.array([[np.cos(gamma), np.sin(gamma), 0.],
-        [np.sin(gamma), -np.cos(gamma), 0.],
+        [-np.sin(gamma), np.cos(gamma), 0.],
         [0., 0., 1.]])
     return compute_R(basis_C)
 
