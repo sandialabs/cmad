@@ -10,10 +10,10 @@ import jax.numpy as jnp
 
 from functools import partial
 
-from jax import jit, grad, tree_map
+from jax import jit, grad
 from jax.nn import relu, sigmoid, softplus
 from jax.flatten_util import ravel_pytree
-from jax.tree_util import tree_unflatten, tree_flatten
+from jax.tree_util import tree_flatten, tree_map, tree_unflatten
 
 
 def forward_with_offset(x, params, input_scale, output_scale):

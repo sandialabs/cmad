@@ -1,7 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from jax import jit, value_and_grad, hessian, tree_map
+from jax import jit, value_and_grad, hessian
+from jax.tree_util import tree_map
 from jax.lax import fori_loop, while_loop
 
 from functools import partial

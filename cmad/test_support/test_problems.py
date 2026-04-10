@@ -1,6 +1,6 @@
 import numpy as np
 
-from jax import tree_map
+from jax.tree_util import tree_map
 
 from cmad.parameters.parameters import Parameters
 from cmad.verification.functions import J2_yield, J2_yield_normal

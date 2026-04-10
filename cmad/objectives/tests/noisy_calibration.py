@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from jax import tree_map
+from jax.tree_util import tree_map
 
 from scipy.optimize import fmin_l_bfgs_b
 
