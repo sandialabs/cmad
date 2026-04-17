@@ -1,15 +1,33 @@
+from collections.abc import Callable
+from functools import partial
+from typing import TypeVar
+
 import numpy as np
 from numpy import ndarray
-
-from functools import partial
+from numpy.typing import NDArray
 
 import jax.numpy as jnp
 from jax import jit
 from jax.flatten_util import ravel_pytree
 from jax.tree_util import tree_flatten, tree_flatten_with_path, tree_map, tree_reduce
 
+from cmad.typing import (
+    ActiveFlags,
+    JaxArray,
+    Params,
+    PyTree,
+    Transform,
+    Transforms,
+)
 
-def bounds_transform(value, bounds, transform_from_canonical=True):
+
+T = TypeVar("T")
+
+
+def bounds_transform(
+        value: float, bounds: list[float],
+        transform_from_canonical: bool = True,
+) -> float:
     span = 0.5 * (bounds[1] - bounds[0])
     mean = 0.5 * (bounds[0] + bounds[1])
     if transform_from_canonical:
@@ -24,7 +42,10 @@ def bounds_transform(value, bounds, transform_from_canonical=True):
     return transformed_value
 
 
-def log_transform(value, ref_value, transform_from_canonical=True):
+def log_transform(
+        value: float, ref_value: list[float],
+        transform_from_canonical: bool = True,
+) -> float:
     if transform_from_canonical:
         transformed_value = ref_value[0] * jnp.exp(value)
     else:
@@ -33,7 +54,7 @@ def log_transform(value, ref_value, transform_from_canonical=True):
     return transformed_value
 
 
-def get_size(x):
+def get_size(x: float | NDArray[np.floating]) -> int:
     if isinstance(x, np.float64) or isinstance(x, float):
         return 1
     elif isinstance(x, ndarray):
@@ -42,7 +63,9 @@ def get_size(x):
         raise TypeError
 
 
-def expand_leaf_by_value_size(value, leaf):
+def expand_leaf_by_value_size(
+        value: float | NDArray[np.floating], leaf: T,
+) -> list[T]:
     if isinstance(value, np.float64) or isinstance(value, float):
         return [leaf]
     elif isinstance(value, ndarray):
@@ -50,7 +73,7 @@ def expand_leaf_by_value_size(value, leaf):
         return [leaf] * num_params
 
 
-def flatten_by_value_size(values, pytree):
+def flatten_by_value_size(values: PyTree, pytree: PyTree) -> list[object]:
     leaf_values, _ = tree_flatten(values)
     leaves, _ = tree_flatten(pytree, is_leaf=lambda x: x is None)
 
@@ -61,12 +84,12 @@ def flatten_by_value_size(values, pytree):
     return flat_pytree
 
 
-def grad_transform(grad, value, transform):
+def grad_transform(grad: float, value: float, transform: Transform) -> float:
 
     return first_deriv_transform(value, transform) * grad
 
 
-def first_deriv_transform(value, transform):
+def first_deriv_transform(value: float, transform: Transform) -> float:
     if transform is None:
         return 1.
     if len(transform) == 2:
@@ -75,7 +98,7 @@ def first_deriv_transform(value, transform):
         return value
 
 
-def second_deriv_transform(value, transform):
+def second_deriv_transform(value: float, transform: Transform) -> float:
     if transform is None:
         return 0.
     if len(transform) == 2:
@@ -84,7 +107,9 @@ def second_deriv_transform(value, transform):
         return value
 
 
-def diagonal_hessian_transform(hessian, grad, value, transform):
+def diagonal_hessian_transform(
+        hessian: float, grad: float, value: float, transform: Transform,
+) -> float:
 
     transformed_hessian = hessian * first_deriv_transform(value, transform)**2 \
         + grad * second_deriv_transform(value, transform)
@@ -92,8 +117,10 @@ def diagonal_hessian_transform(hessian, grad, value, transform):
     return transformed_hessian
 
 
-def off_diagonal_hessian_transform(hessian, value_ii, value_jj,
-        transform_ii, transform_jj):
+def off_diagonal_hessian_transform(
+        hessian: float, value_ii: float, value_jj: float,
+        transform_ii: Transform, transform_jj: Transform,
+) -> float:
 
     transformed_hessian = hessian \
         * first_deriv_transform(value_ii, transform_ii) \
@@ -102,14 +129,16 @@ def off_diagonal_hessian_transform(hessian, value_ii, value_jj,
     return transformed_hessian
 
 
-def get_opt_bounds(transform):
+def get_opt_bounds(transform: Transform) -> list[float | None]:
     if transform is None or len(transform) == 1:
         return [None, None]
     else:
         return [-1., 1.]
 
 
-def transform_from_canonical(value, active_flag, transform):
+def transform_from_canonical(
+        value: float, active_flag: bool, transform: Transform,
+) -> float:
     if active_flag and transform is not None:
         if len(transform) == 2:
             transform_fun = bounds_transform
@@ -120,7 +149,9 @@ def transform_from_canonical(value, active_flag, transform):
         return value
 
 
-def transform_to_canonical(value, active_flag, transform):
+def transform_to_canonical(
+        value: float, active_flag: bool, transform: Transform,
+) -> float:
     if active_flag and transform is not None:
         if len(transform) == 2:
             transform_fun = \
@@ -133,7 +164,7 @@ def transform_to_canonical(value, active_flag, transform):
         return value
 
 
-def unpack_elastic_params(params):
+def unpack_elastic_params(params: Params) -> tuple[float, float]:
     elastic_params = params["elastic"]
     E, nu = elastic_params["E"], elastic_params["nu"]
 
@@ -143,7 +174,37 @@ def unpack_elastic_params(params):
 class Parameters():
     """ Handle constitutive model parameters with Pytrees """
 
-    def __init__(self, values, active_flags=None, transforms=None):
+    # ---- always set in __init__ ----
+    values: PyTree
+    _active_flags: ActiveFlags | None
+    _transforms: Transforms | None
+    _flat_values: NDArray[np.number]
+    reconstruct_from_flat: Callable[..., PyTree]
+    num_params: int
+    _names: list[str]
+    flat_param_sizes: list[int]
+    block_shapes: list[tuple[int, int]]
+    num_active_params: int
+
+    # ---- set only when active_flags is not None ----
+    _flat_active_flags: NDArray[np.bool_]
+    active_idx: NDArray[np.intp]
+    model_active_params_jacobian: Callable[..., JaxArray]
+    qoi_active_params_jacobian: Callable[..., JaxArray]
+    _expanded_flat_transforms: list[object]
+    _flat_transforms: list[Transform]
+    _flat_active_transforms: list[Transform]
+    opt_bounds: NDArray[np.floating]
+    get_params_pytree_from_flat_canonical_active: Callable[..., PyTree]
+
+    # ---- set later by compute_mixed_block_shapes() ----
+    mixed_block_shapes: list[tuple[int, int]]
+
+    def __init__(
+            self, values: PyTree,
+            active_flags: ActiveFlags | None = None,
+            transforms: Transforms | None = None,
+    ) -> None:
         self.values = values
         self._active_flags = active_flags
         self._transforms = transforms
@@ -203,12 +264,16 @@ class Parameters():
             self.num_active_params = 0
 
 
-    def set_rotation_matrix(self, rotation_matrix):
+    def set_rotation_matrix(
+            self, rotation_matrix: NDArray[np.floating],
+    ) -> None:
         self.values["rotation matrix"] = rotation_matrix
         self._flat_values, _  = ravel_pytree(self.values)
 
 
-    def set_active_values(self, values, are_canonical=True):
+    def set_active_values(
+            self, values: PyTree, are_canonical: bool = True,
+    ) -> None:
         if are_canonical:
             self.values = \
                 tree_map(lambda v, a, t: transform_from_canonical(v, a, t),
@@ -217,8 +282,10 @@ class Parameters():
             self.values = values
 
 
-    def set_active_values_from_flat(self, flat_active_values,
-                                    are_canonical=True, is_complex=False):
+    def set_active_values_from_flat(
+            self, flat_active_values: NDArray[np.number],
+            are_canonical: bool = True, is_complex: bool = False,
+    ) -> None:
         if is_complex:
             updated_flat_values = np.array(self._flat_values, dtype=complex)
         else:
@@ -228,7 +295,9 @@ class Parameters():
         self.set_active_values(updated_values, are_canonical)
 
 
-    def flat_active_values(self, return_canonical=False):
+    def flat_active_values(
+            self, return_canonical: bool = False,
+    ) -> NDArray[np.floating]:
         flat_values, _ = ravel_pytree(self.values)
         if return_canonical:
             active_flat_values = np.array([
@@ -242,12 +311,12 @@ class Parameters():
         return active_flat_values
 
 
-    def get_active_from_flat(self, pytree):
+    def get_active_from_flat(self, pytree: PyTree) -> NDArray[np.floating]:
         flat, _ = ravel_pytree(pytree)
         return flat[self.active_idx]
 
 
-    def transform_grad(self, grad):
+    def transform_grad(self, grad: NDArray[np.floating]) -> None:
         active_flat_values = self.get_active_from_flat(self.values)
         for ii in range(self.num_active_params):
             value = active_flat_values[ii]
@@ -255,7 +324,10 @@ class Parameters():
             grad[ii] = grad_transform(grad[ii], value, transform)
 
 
-    def transform_hessian(self, hessian, grad):
+    def transform_hessian(
+            self, hessian: NDArray[np.floating],
+            grad: NDArray[np.floating],
+    ) -> None:
         active_flat_values = self.get_active_from_flat(self.values)
         for ii in range(self.num_active_params):
             for jj in range(self.num_active_params):
@@ -278,14 +350,19 @@ class Parameters():
                     hessian[ii, jj] = hessian[jj, ii]
 
 
-    def compute_mixed_block_shapes(self, num_eqs):
+    def compute_mixed_block_shapes(
+            self, num_eqs: NDArray[np.intp],
+    ) -> None:
         self.mixed_block_shapes = [(x, y)
                                   for x in num_eqs
                                   for y in self.flat_param_sizes]
 
 
     @staticmethod
-    def _active_params_jacobian(jacobian, num_eqns, active_idx):
+    def _active_params_jacobian(
+            jacobian: PyTree, num_eqns: int,
+            active_idx: NDArray[np.intp],
+    ) -> JaxArray:
         reshaped_jacobian = \
             tree_map(lambda x: x.reshape(num_eqns, -1), jacobian)
         flat_jac, _ = tree_flatten(reshaped_jacobian)
@@ -293,14 +370,19 @@ class Parameters():
         return array_jac[:, active_idx]
 
 
-    def scalar_active_params_jacobian(self, jacobian):
+    def scalar_active_params_jacobian(self, jacobian: PyTree) -> JaxArray:
         return self._active_params_jacobian(jacobian, 1, self.active_idx)
 
 
     @staticmethod
-    def _get_params_pytree_from_flat_canonical_active(flat_canonical_active,
-            flat_values, reconstruct_from_flat,
-            active_idx, active_flags, transforms):
+    def _get_params_pytree_from_flat_canonical_active(
+            flat_canonical_active: NDArray[np.floating],
+            flat_values: NDArray[np.floating],
+            reconstruct_from_flat: Callable[..., PyTree],
+            active_idx: NDArray[np.intp],
+            active_flags: ActiveFlags,
+            transforms: Transforms,
+    ) -> PyTree:
 
         for active_idx, active_value in zip(active_idx, flat_canonical_active):
             flat_values = flat_values.at[active_idx].set(active_value)
