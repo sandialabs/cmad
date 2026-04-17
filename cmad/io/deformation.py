@@ -6,13 +6,15 @@ float64 array. Two input modes are supported:
 
 - ``history_file: <path>`` — a file on disk. The extension dispatches the
   reader; ``.npy`` is implemented today. ``.csv`` / ``.txt`` are a
-  near-future additive branch (see ``_load_from_file``).
+  near-future additive branch (see ``_load_from_file``). File arrays are
+  canonicalized from either ``(3, 3, N)`` (preferred, matches the CMAD
+  save convention) or ``(N, 3, 3)`` to ``(3, 3, N)``. When ``N == 3``
+  the two layouts are indistinguishable; the loader treats the file as
+  the preferred ``(3, 3, N)``.
 - ``inline: [[[...], ...], ...]`` — an inline list of 3x3 matrices for
-  small test cases.
-
-The returned array is always canonicalized to shape ``(3, 3, N)`` (the
-convention used by the primal loop); inputs in ``(N, 3, 3)`` are
-transposed.
+  small test cases. The natural YAML reading is step-first
+  ``(N, 3, 3)``; the loader always transposes to ``(3, 3, N)``. No
+  ambiguity at ``N == 3``.
 """
 
 from __future__ import annotations
@@ -36,7 +38,12 @@ def load_history(
         return _load_from_file(path)
     if "inline" in deformation_section:
         arr = np.asarray(deformation_section["inline"], dtype=np.float64)
-        return _canonicalize_shape(arr)
+        if arr.ndim != 3 or arr.shape[1:] != (3, 3):
+            raise ValueError(
+                f"deformation.inline: expected a list of 3x3 matrices "
+                f"yielding shape (N, 3, 3); got {arr.shape}",
+            )
+        return np.ascontiguousarray(arr.transpose(1, 2, 0))
     raise ValueError(
         "deformation: must contain either 'history_file' or 'inline'",
     )
@@ -57,10 +64,12 @@ def _load_from_file(path: Path) -> NDArray[np.float64]:
             f"deformation.history_file: unsupported extension '{ext}' "
             f"(path: {path}); supported: .npy",
         )
-    return _canonicalize_shape(arr)
+    return _canonicalize_file_shape(arr)
 
 
-def _canonicalize_shape(arr: NDArray[np.float64]) -> NDArray[np.float64]:
+def _canonicalize_file_shape(arr: NDArray[np.float64]) -> NDArray[np.float64]:
+    # (3, 3, N) is preferred and wins at N=3 ambiguity; (N, 3, 3) is
+    # accepted and transposed.
     if arr.ndim == 3 and arr.shape[:2] == (3, 3):
         return arr
     if arr.ndim == 3 and arr.shape[1:] == (3, 3):
