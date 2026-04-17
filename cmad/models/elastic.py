@@ -5,8 +5,10 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 
+from cmad.io.registry import register_model
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.elastic_stress import (
+    conventional_elastic_stress_fun,
     isotropic_linear_elastic_cauchy_stress,
     two_mu_scale_factor,
 )
@@ -22,6 +24,7 @@ from cmad.parameters.parameters import Parameters
 from cmad.typing import GlobalList, JaxArray, StateList
 
 
+@register_model("elastic")
 class Elastic(Model):
     """
     General elastic model
@@ -102,6 +105,20 @@ class Elastic(Model):
         cauchy = partial(self._cauchy_fn, def_type=def_type)
 
         super().__init__(residual, cauchy)
+
+    @classmethod
+    def from_deck(
+            cls,
+            model_section: dict[str, Any],
+            parameters: Parameters,
+    ) -> "Elastic":
+        return cls(
+            parameters=parameters,
+            def_type=DefType[model_section["def_type"].upper()],
+            elastic_stress_fun=conventional_elastic_stress_fun(
+                model_section.get("elastic_stress", "isotropic_linear"),
+            ),
+        )
 
     @staticmethod
     def _residual_fn(

@@ -1,6 +1,7 @@
 """
 These all use 3D tensors
 """
+from collections.abc import Callable
 from typing import Any
 
 import jax.numpy as jnp
@@ -54,6 +55,19 @@ def compressible_neohookean_cauchy_stress(
     mu = params["elastic"]["mu"]
 
     return J**-1 * (0.5 * kappa * (J**2 - 1.) * I + mu * dev_bbar)
+
+
+def conventional_elastic_stress_fun(
+        elastic_stress_type: str,
+) -> Callable[..., JaxArray]:
+    if elastic_stress_type == "isotropic_linear":
+        return isotropic_linear_elastic_cauchy_stress
+    elif elastic_stress_type == "neohookean":
+        return compressible_neohookean_cauchy_stress
+    else:
+        raise NotImplementedError(
+            f"unknown elastic_stress type: '{elastic_stress_type}'",
+        )
 
 
 def two_mu_scale_factor(params: dict[str, Any]) -> float | JaxArray:
