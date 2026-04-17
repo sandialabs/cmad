@@ -1,17 +1,16 @@
 from collections.abc import Callable
 from functools import partial
 
-from numpy.typing import NDArray
 import numpy as np
-
-from jax import jit, value_and_grad, hessian
+from jax import hessian, jit, value_and_grad
 from jax.lax import fori_loop
+from numpy.typing import NDArray
 
 from cmad.qois.qoi import QoI
 from cmad.typing import JaxArray, StateList
 
 
-class JVPObjective():
+class JVPObjective:
 
     evaluate_objective: Callable[..., JaxArray]
     evaluate_objective_and_grad: Callable[..., tuple[JaxArray, JaxArray]]

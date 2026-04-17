@@ -1,10 +1,8 @@
 from collections.abc import Callable
 
-import numpy as np
-
 import jax.numpy as jnp
-
-from jax import jvp, custom_jvp, jacfwd
+import numpy as np
+from jax import custom_jvp, jacfwd, jvp
 from jax.flatten_util import ravel_pytree
 from jax.lax import cond, while_loop
 

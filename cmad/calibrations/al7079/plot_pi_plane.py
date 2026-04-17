@@ -1,43 +1,30 @@
-import numpy as np
 import pickle
+from functools import partial
 
+import numpy as np
+from jax import jit
 from matplotlib import pyplot as plt
 
-from functools import partial
-from jax import jit
-
-from cmad.calibrations.al7079.support import (
-    slab_data,
-    calibration_weights,
-    calibrated_hill_coefficients,
-    params_hill_voce,
-    params_icnn_hybrid_hill_voce
-)
 from cmad.calibrations.al7079.support import (
     calibrated_barlat_coefficients,
-    calibrated_hill_coefficients
+    calibrated_hill_coefficients,
+    slab_data,
 )
-from cmad.models.effective_stress import(
+from cmad.models.effective_stress import (
+    J2_effective_stress,
     beta_initial_guess,
     beta_make_newton_solve,
-    J2_effective_stress,
     hybrid_hill_effective_stress,
-    hill_effective_stress,
     make_safe_update_fun,
     scaled_effective_stress,
 )
-from cmad.neural_networks.input_convex_neural_network \
-    import InputConvexNeuralNetwork
-from cmad.parameters.parameters import Parameters
+from cmad.neural_networks.input_convex_neural_network import InputConvexNeuralNetwork
 from cmad.util.dev_plane_transformations import (
     compute_forward_and_backward_matrices,
     compute_matrix_from_projection,
-    setup_dev_plane_plot
+    setup_dev_plane_plot,
 )
-from cmad.verification.functions import (
-    jax_barlat_yield,
-    jax_hill_yield
-)
+from cmad.verification.functions import jax_barlat_yield, jax_hill_yield
 
 
 def compute_phi_and_dev_coords(effective_stress_fun, betas,

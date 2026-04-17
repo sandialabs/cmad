@@ -1,9 +1,8 @@
-import numpy as np
 import unittest
 
-from cmad.util.dev_plane_transformations import (
-    compute_forward_and_backward_matrices
-)
+import numpy as np
+
+from cmad.util.dev_plane_transformations import compute_forward_and_backward_matrices
 
 
 class TestDevPlane(unittest.TestCase):

@@ -1,8 +1,6 @@
 from collections.abc import Callable
-from functools import partial
 from typing import Any
 
-import numpy as np
 import jax.numpy as jnp
 
 from cmad.typing import JaxArray

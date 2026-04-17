@@ -1,5 +1,4 @@
 import jax.numpy as jnp
-
 from jax.flatten_util import ravel_pytree
 from jax.tree_util import tree_leaves
 

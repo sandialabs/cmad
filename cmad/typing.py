@@ -7,9 +7,8 @@ from collections.abc import Callable
 from typing import NamedTuple, Protocol, TypeAlias
 
 import numpy as np
-from numpy.typing import NDArray
 from jax import Array as JaxArray
-
+from numpy.typing import NDArray
 
 # ----- Pytree types -----
 

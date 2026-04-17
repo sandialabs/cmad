@@ -3,17 +3,11 @@ Adapted from the jax tutorial:
 https://jax.readthedocs.io/en/latest/jax-101/05.1-pytrees.html
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
-
-import jax.numpy as jnp
-
 from functools import partial
 
-from jax import jit, grad
-from jax.nn import relu, sigmoid, softplus
-from jax.flatten_util import ravel_pytree
-from jax.tree_util import tree_flatten, tree_map, tree_unflatten
+import jax.numpy as jnp
+import numpy as np
+from jax.nn import softplus
 
 
 def input_symmetric_forward(x, params):
@@ -52,7 +46,7 @@ def forward(x, params):
            + x_last["biases"]
 
 
-class InputConvexNeuralNetwork():
+class InputConvexNeuralNetwork:
 
     def __init__(self, layer_widths: list,
                  input_scaler, output_scaler,

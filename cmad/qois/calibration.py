@@ -1,12 +1,10 @@
 from functools import partial
 
-import numpy as np
 import jax.numpy as jnp
-
+import numpy as np
 from numpy.typing import NDArray
 
 from cmad.models.model import Model
-from cmad.models.var_types import get_sym_tensor_from_vector
 from cmad.qois.qoi import QoI
 from cmad.typing import (
     CauchyFn,

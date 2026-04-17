@@ -1,20 +1,15 @@
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 from cmad.calibrations.al7079.support import (
-    slab_data,
-    calibration_weights,
     calibrated_hill_coefficients,
     params_hill_voce,
-    params_hybrid_hill_voce
+    slab_data,
 )
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
-from cmad.models.var_types import get_sym_tensor_from_vector
-from cmad.qois.calibration import Calibration
 from cmad.solver.nonlinear_solver import newton_solve
-
 
 # need to work out how compute global strain for each model
 

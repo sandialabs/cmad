@@ -1,31 +1,30 @@
 from collections.abc import Callable
+from functools import partial
 from typing import Any, cast
 
-import numpy as np
 import jax.numpy as jnp
-
+import numpy as np
 from jax import grad
 
-from functools import partial
-
 from cmad.models.deformation_types import DefType, def_type_ndims
-from cmad.models.elastic_stress import (isotropic_linear_elastic_stress,
-                                        two_mu_scale_factor)
 from cmad.models.effective_stress import conventional_effective_stress_fun
+from cmad.models.elastic_stress import (
+    isotropic_linear_elastic_stress,
+    two_mu_scale_factor,
+)
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F, off_axis_idx
 from cmad.models.model import Model
-from cmad.parameters.parameters import Parameters
 from cmad.models.paths import cond_residual
-from cmad.typing import GlobalList, JaxArray, StateList
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
     get_scalar,
-    get_vector,
     get_sym_tensor_from_vector,
     get_vector_from_sym_tensor,
-    get_tensor_from_vector)
+)
+from cmad.parameters.parameters import Parameters
+from cmad.typing import GlobalList, JaxArray, StateList
 
 
 def compute_elastic_strain(

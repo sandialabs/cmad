@@ -5,7 +5,6 @@ and Scherzinger and Dohrmann -- 2008 10.1016/j.cma.2008.03.031
 """
 
 import jax.numpy as jnp
-
 from jax.lax import cond
 
 

@@ -1,24 +1,23 @@
-import numpy as np
-import matplotlib.pyplot as plt
+from functools import partial
 
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import numpy as np
+from jax import grad, jit
+from scipy.optimize import fmin_l_bfgs_b
 
 from cmad.calibrations.al7079.support import (
-    slab_data,
-    calibration_weights,
     calibrated_barlat_coefficients,
-    calibrated_hill_coefficients
+    calibrated_hill_coefficients,
+    calibration_weights,
+    slab_data,
 )
 from cmad.verification.functions import (
-    jax_barlat_yield,
-    jax_hill_yield,
     hill_yield,
     hill_yield_normal,
+    jax_barlat_yield,
+    jax_hill_yield,
 )
-
-from functools import partial
-from jax import jit, grad
-from scipy.optimize import fmin_l_bfgs_b
 
 
 def hill_analytic_compute_yield_and_normal(R_matrices, sigma_values, params):

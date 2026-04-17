@@ -1,14 +1,18 @@
-import numpy as np
 import unittest
-
 from functools import partial
+
+import numpy as np
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.elastic import Elastic
-from cmad.models.elastic_potential import (compute_cauchy_from_psi_b,
-                                           compressible_neohookean_potential)
-from cmad.models.elastic_stress import (compressible_neohookean_cauchy_stress,
-                                        isotropic_linear_elastic_cauchy_stress)
+from cmad.models.elastic_potential import (
+    compressible_neohookean_potential,
+    compute_cauchy_from_psi_b,
+)
+from cmad.models.elastic_stress import (
+    compressible_neohookean_cauchy_stress,
+    isotropic_linear_elastic_cauchy_stress,
+)
 from cmad.solver.nonlinear_solver import newton_solve
 from tests.support.test_problems import params_hyperelastic
 

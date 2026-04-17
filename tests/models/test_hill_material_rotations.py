@@ -1,25 +1,22 @@
-import numpy as np
 #import matplotlib.pyplot as plt
 import unittest
-
 from functools import partial
 
+import numpy as np
+
 from cmad.calibrations.al7079.support import (
-    slab_data,
-    calibration_weights,
     calibrated_hill_coefficients,
+    calibration_weights,
     params_hill_voce,
-    params_hybrid_hill_voce
+    params_hybrid_hill_voce,
+    slab_data,
 )
 from cmad.models.deformation_types import DefType
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.solver.nonlinear_solver import newton_solve
 from cmad.verification.functions import hill_yield, hill_yield_normal
-from cmad.verification.solutions import (
-    compute_elastic_fields,
-    compute_plastic_fields
-)
+from cmad.verification.solutions import compute_elastic_fields, compute_plastic_fields
 
 
 class TestHillMaterialRotations(unittest.TestCase):

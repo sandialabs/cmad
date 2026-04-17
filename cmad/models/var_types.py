@@ -1,11 +1,11 @@
 """
 State variable types and sizes
 """
-import jax.numpy as jnp
-
 from enum import IntEnum
 
-from cmad.models.deformation_types import (DefType, def_type_ndims)
+import jax.numpy as jnp
+
+from cmad.models.deformation_types import DefType
 from cmad.typing import JaxArray, StateBlock
 
 

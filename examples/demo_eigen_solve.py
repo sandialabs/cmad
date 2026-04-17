@@ -1,16 +1,17 @@
-import numpy as np
+from functools import partial
 
 import jax.numpy as jnp
-
+import numpy as np
 from jax import jit
-from functools import partial
+from jax.numpy.linalg import eigh as built_in_jax_eigen_decomp
 from scipy.stats import special_ortho_group, uniform
 
-from cmad.util.numpy_eigen_decomposition \
-    import compute_eigen_decomposition as np_eigen_decomp
-from cmad.util.jax_eigen_decomposition \
-    import compute_eigen_decomposition as jax_eigen_decomp
-from jax.numpy.linalg import eigh as built_in_jax_eigen_decomp
+from cmad.util.jax_eigen_decomposition import (
+    compute_eigen_decomposition as jax_eigen_decomp,
+)
+from cmad.util.numpy_eigen_decomposition import (
+    compute_eigen_decomposition as np_eigen_decomp,
+)
 
 
 def generate_test_matrix(test_case, distribution, perturb=1.,

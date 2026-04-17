@@ -1,11 +1,10 @@
-import numpy as np
-import matplotlib.pyplot as plt
-
-from jax import jit, value_and_grad, hessian
-from jax.tree_util import tree_map
-from jax.lax import fori_loop, while_loop
-
 from functools import partial
+
+import matplotlib.pyplot as plt
+import numpy as np
+from jax import hessian, jit, value_and_grad
+from jax.lax import fori_loop, while_loop
+from jax.tree_util import tree_map
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
@@ -17,7 +16,7 @@ from cmad.objectives.objective import (
 )
 from cmad.parameters.parameters import Parameters
 from cmad.qois.calibration import Calibration
-from cmad.solver.nonlinear_solver import newton_solve, make_newton_solve
+from cmad.solver.nonlinear_solver import make_newton_solve, newton_solve
 
 
 def get_xis(update_fun, model, F, parameters):

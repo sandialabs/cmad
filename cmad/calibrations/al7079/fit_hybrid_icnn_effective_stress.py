@@ -1,28 +1,25 @@
-import numpy as np
-import matplotlib.pyplot as plt
 import pickle
+from functools import partial
 
 import jax.numpy as jnp
-
-from functools import partial
-from jax import jit, grad, jacrev
-from sklearn.preprocessing import MinMaxScaler
+import matplotlib.pyplot as plt
+import numpy as np
+from jax import grad, jacrev, jit
 from scipy.optimize import fmin_l_bfgs_b
+from sklearn.preprocessing import MinMaxScaler
 
 from cmad.calibrations.al7079.support import (
-    slab_data,
-    calibration_weights,
     calibrated_hill_coefficients,
+    calibration_weights,
     params_hill_voce,
-    params_icnn_hybrid_hill_voce
+    params_icnn_hybrid_hill_voce,
+    slab_data,
 )
 from cmad.models.effective_stress import (
     hill_effective_stress,
-    hybrid_hill_effective_stress
+    hybrid_hill_effective_stress,
 )
-from cmad.neural_networks.input_convex_neural_network \
-    import InputConvexNeuralNetwork
-from cmad.parameters.parameters import Parameters
+from cmad.neural_networks.input_convex_neural_network import InputConvexNeuralNetwork
 
 
 def l1_penalty(x, alpha, beta):
@@ -64,7 +61,7 @@ def make_output_scaler(sigma_c_values, Scaler=MinMaxScaler):
     return output_scaler
 
 
-class EffectiveStressObjective():
+class EffectiveStressObjective:
     def __init__(self, parameters, sigma_c_values, ratio_c_values, rotations,
             weights, yield_and_normal_fun, regularization_fun):
 

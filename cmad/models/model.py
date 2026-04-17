@@ -1,14 +1,10 @@
-import numpy as np
-
-import jax.numpy as jnp
-from jax import hessian, jit, jacfwd, jacrev, Array
-from jax.tree_util import tree_flatten
-
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections.abc import Callable, Sequence
-from functools import partial
 from typing import cast
 
+import numpy as np
+from jax import hessian, jacfwd, jacrev, jit
+from jax.tree_util import tree_flatten
 from numpy.typing import NDArray
 
 from cmad.models.deriv_types import DerivType

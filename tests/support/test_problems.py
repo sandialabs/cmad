@@ -1,5 +1,4 @@
 import numpy as np
-
 from jax.tree_util import tree_map
 
 from cmad.parameters.parameters import Parameters
@@ -140,7 +139,7 @@ def params_hyperelastic(flat_param_values):
     return hyperelastic_parameters
 
 
-class J2AnalyticalProblem():
+class J2AnalyticalProblem:
     """
     Effective stress: J2 or J2 equivalent Hill
     Hardening: Voce

@@ -4,9 +4,6 @@ Data and fits from https://doi.org/10.1016/j.ijsolstr.2020.11.030
 """
 
 import numpy as np
-
-import jax.numpy as jnp
-
 from jax.tree_util import tree_map
 
 from cmad.parameters.parameters import Parameters

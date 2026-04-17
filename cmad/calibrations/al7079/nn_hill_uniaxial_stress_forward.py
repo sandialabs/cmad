@@ -1,41 +1,26 @@
-import numpy as np
-import matplotlib.pyplot as plt
 import pickle
 from functools import partial
+
+import matplotlib.pyplot as plt
+import numpy as np
 from jax import jit
 
 from cmad.calibrations.al7079.support import (
-    slab_data,
-    calibration_weights,
     calibrated_barlat_coefficients,
     calibrated_hill_coefficients,
     params_hill_voce,
-    params_hybrid_hill_voce
+    slab_data,
 )
 from cmad.models.deformation_types import DefType, def_type_ndims
-from cmad.models.small_elastic_plastic import SmallElasticPlastic
-from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
-from cmad.models.var_types import get_sym_tensor_from_vector
-from cmad.qois.calibration import Calibration
-from cmad.solver.nonlinear_solver import newton_solve
-
-from cmad.neural_networks.input_convex_neural_network \
-    import InputConvexNeuralNetwork
-
-from cmad.models.effective_stress import(
-    beta_initial_guess,
+from cmad.models.effective_stress import (
     beta_make_newton_solve,
-    J2_effective_stress,
     hybrid_hill_effective_stress,
-    hill_effective_stress,
-    make_safe_update_fun,
     scaled_effective_stress,
 )
-
-from cmad.verification.functions import (
-    jax_barlat_yield,
-    jax_hill_yield
-)
+from cmad.models.small_elastic_plastic import SmallElasticPlastic
+from cmad.neural_networks.input_convex_neural_network import InputConvexNeuralNetwork
+from cmad.solver.nonlinear_solver import newton_solve
+from cmad.verification.functions import jax_barlat_yield
 
 
 def pack_barlat_params(barlat_coeffs):

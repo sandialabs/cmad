@@ -1,5 +1,5 @@
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 
 from cmad.util.jax_eigen_decomposition import jax_compute_eigenvalues
 

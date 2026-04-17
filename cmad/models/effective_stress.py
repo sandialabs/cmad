@@ -2,19 +2,13 @@
 These all assume 3D cauchy stress inputs
 """
 from collections.abc import Callable
-from functools import partial
 from typing import Any
 
 import jax.numpy as jnp
+from jax.lax import cond
 
-from jax import grad
-from jax.lax import cond, fori_loop
-
-from cmad.models.elastic_constants import compute_mu
-from cmad.parameters.parameters import unpack_elastic_params
 from cmad.solver.nonlinear_solver import make_newton_solve
 from cmad.typing import JaxArray, PyTree
-from cmad.util.jax_eigen_decomposition import jax_compute_eigenvalues
 from cmad.verification.functions import jax_barlat_yield
 
 

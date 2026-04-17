@@ -3,17 +3,11 @@ Adapted from the jax tutorial:
 https://jax.readthedocs.io/en/latest/jax-101/05.1-pytrees.html
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
-
-import jax.numpy as jnp
-
 from functools import partial
 
-from jax import jit, grad
-from jax.nn import relu, sigmoid, softplus
-from jax.flatten_util import ravel_pytree
-from jax.tree_util import tree_flatten, tree_map, tree_unflatten
+import jax.numpy as jnp
+import numpy as np
+from jax.nn import sigmoid
 
 
 def forward_with_offset(x, params, input_scale, output_scale):
@@ -29,7 +23,7 @@ def forward(x, params):
     return x @ last["weights"] + last["biases"]
 
 
-class SimpleNeuralNetwork():
+class SimpleNeuralNetwork:
 
     def __init__(self, layer_widths: list,
                  input_scale: float = 1., output_scale: float = 1.):

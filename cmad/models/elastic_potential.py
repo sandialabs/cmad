@@ -2,7 +2,6 @@ from collections.abc import Callable
 from typing import Any
 
 import jax.numpy as jnp
-
 from jax import grad
 
 from cmad.models.kinematics import compute_invariants

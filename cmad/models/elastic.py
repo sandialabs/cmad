@@ -1,23 +1,25 @@
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
-import numpy as np
 import jax.numpy as jnp
-
-from functools import partial
+import numpy as np
 
 from cmad.models.deformation_types import DefType, def_type_ndims
-from cmad.models.elastic_stress import (isotropic_linear_elastic_cauchy_stress,
-                                        two_mu_scale_factor)
+from cmad.models.elastic_stress import (
+    isotropic_linear_elastic_cauchy_stress,
+    two_mu_scale_factor,
+)
 from cmad.models.kinematics import gather_F
 from cmad.models.model import Model
-from cmad.parameters.parameters import Parameters
-from cmad.typing import GlobalList, JaxArray, StateList
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
     get_sym_tensor_from_vector,
-    get_vector_from_sym_tensor)
+    get_vector_from_sym_tensor,
+)
+from cmad.parameters.parameters import Parameters
+from cmad.typing import GlobalList, JaxArray, StateList
 
 
 class Elastic(Model):

@@ -1,8 +1,8 @@
 # https://doi.org/10.1007/978-3-642-38547-6
 # See Section 3.2 of Plasticity by Ronaldo I. Borja
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 def compute_forward_and_backward_matrices(use_scaling=False):

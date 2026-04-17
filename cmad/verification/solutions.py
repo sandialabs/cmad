@@ -1,7 +1,5 @@
 import numpy as np
 
-from jax import jit
-
 
 def compute_elastic_fields(
         stress_tensor_at_yield,

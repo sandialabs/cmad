@@ -1,27 +1,23 @@
 from collections.abc import Callable
 from functools import partial
-from typing import TypeVar
-
-import numpy as np
-from numpy import ndarray
-from numpy.typing import NDArray
+from typing import TypeVar, cast
 
 import jax.numpy as jnp
+import numpy as np
 from jax import jit
 from jax.flatten_util import ravel_pytree
-from jax.tree_util import tree_flatten, tree_flatten_with_path, tree_map, tree_reduce
+from jax.tree_util import tree_flatten, tree_flatten_with_path, tree_map
+from numpy import ndarray
+from numpy.typing import NDArray
 
 from cmad.typing import (
     ActiveFlags,
     JaxArray,
     Params,
     PyTree,
-    PyTreeDict,
     Transform,
     Transforms,
 )
-from typing import cast
-
 
 T = TypeVar("T")
 
@@ -175,7 +171,7 @@ def unpack_elastic_params(params: Params) -> tuple[float, float]:
     return E, nu
 
 
-class Parameters():
+class Parameters:
     """ Handle constitutive model parameters with Pytrees """
 
     # ---- always set in __init__ ----

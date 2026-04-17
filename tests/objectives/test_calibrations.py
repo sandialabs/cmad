@@ -1,7 +1,7 @@
-import numpy as np
-import matplotlib.pyplot as plt
 import unittest
 
+import matplotlib.pyplot as plt
+import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
 
 from cmad.models.deformation_types import DefType, def_type_ndims
