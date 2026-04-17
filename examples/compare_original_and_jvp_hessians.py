@@ -1,5 +1,6 @@
 from functools import partial
 
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 from jax import hessian, jit, value_and_grad

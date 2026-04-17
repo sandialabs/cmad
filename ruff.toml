@@ -13,8 +13,11 @@ select = [
 ]
 ignore = [
     "E501",  # line-too-long; codebase has long lines, handle separately if at all
+    "E741",  # ambiguous-variable-name; `I` (identity matrix) etc. are
+             # established math notation in scientific code
 ]
 
 [lint.per-file-ignores]
-"examples/*" = ["F401"]  # scripts may have unused imports demonstrating API
-"tests/*" = ["F401"]
+"examples/*" = ["F401", "B008"]  # scripts may have unused imports / shared
+                                 # numpy-array defaults (FD step sizes, etc.)
+"tests/*" = ["F401", "B008"]

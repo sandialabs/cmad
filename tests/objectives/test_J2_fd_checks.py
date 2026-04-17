@@ -342,9 +342,9 @@ class TestJ2FDChecks(unittest.TestCase):
 
     def test_J2_finite_difference_checks(self):
         Models = [SmallElasticPlastic, SmallRateElasticPlastic]
-        scale_params = [False, True]
+        scale_params_list = [False, True]
 
-        for Model, scale_params in zip(Models, scale_params):
+        for Model, scale_params in zip(Models, scale_params_list, strict=True):
             self.plane_stress_fd_checks(Model, scale_params)
 
 

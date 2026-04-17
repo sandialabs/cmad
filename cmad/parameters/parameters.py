@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from functools import partial
+from itertools import chain
 from typing import TypeVar, cast
 
 import jax.numpy as jnp
@@ -78,7 +79,7 @@ def flatten_by_value_size(values: PyTree, pytree: PyTree) -> list[object]:
     expanded_leaves = [expand_leaf_by_value_size(value, leaf)
                        for value, leaf in zip(leaf_values, leaves)]
 
-    flat_pytree = sum(expanded_leaves, [])
+    flat_pytree = list(chain.from_iterable(expanded_leaves))
     return flat_pytree
 
 
@@ -389,8 +390,9 @@ class Parameters:
             transforms: Transforms,
     ) -> PyTree:
 
-        for active_idx, active_value in zip(active_idx, flat_canonical_active):
-            flat_values = flat_values.at[active_idx].set(active_value)
+        for idx, active_value in zip(active_idx, flat_canonical_active,
+                                     strict=True):
+            flat_values = flat_values.at[idx].set(active_value)
         pytree = reconstruct_from_flat(flat_values)
         pytree = tree_map(lambda v, a, t: transform_from_canonical(v, a, t),
             pytree, active_flags, transforms)

@@ -113,11 +113,14 @@ class SmallRateElasticPlastic(Model):
             elastic_stress_fun: Callable[
                 ..., JaxArray] = isotropic_linear_elastic_stress,
             effective_stress_fun: Callable[..., JaxArray] | None = None,
-            hardening_funs: dict = get_hardening_funs(),
+            hardening_funs: dict | None = None,
             yield_tol: float = 1e-14,
             uniaxial_stress_idx: int = 0,
             is_complex: bool = False,
     ) -> None:
+
+        if hardening_funs is None:
+            hardening_funs = get_hardening_funs()
 
         self._is_complex = is_complex
         self.dtype = float
@@ -178,8 +181,8 @@ class SmallRateElasticPlastic(Model):
             self._num_eqs[3] = get_num_eqs(VarType.VECTOR, 3)
             init_off_axis_delta_strains = np.zeros(self._num_eqs[3])
 
-            self._init_xi += [init_off_axis_stretches] \
-                           + [init_off_axis_delta_strains]
+            self._init_xi += [init_off_axis_stretches,
+                              init_off_axis_delta_strains]
 
         # set the initial values for xi and xi_prev
         self._init_state_variables()
