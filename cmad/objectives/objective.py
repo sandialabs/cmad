@@ -6,12 +6,16 @@ end-to-end JAX-traced sibling; it is structurally distinct and does
 not subclass Objective.
 """
 from abc import ABC, abstractmethod
+from typing import cast
 
 import numpy as np
 from numpy.typing import NDArray
 
+from cmad.models.model import Model
+from cmad.parameters.parameters import Parameters
+from cmad.qois.qoi import QoI
 from cmad.solver.nonlinear_solver import newton_solve
-from cmad.typing import GradientResult, HessianResult
+from cmad.typing import GradientResult, HessianResult, StateList
 
 
 class Objective(ABC):
@@ -22,15 +26,25 @@ class Objective(ABC):
     by AdjointObjective and DirectAdjointObjective.
     """
 
-    def __init__(self, qoi):
+    _qoi: QoI
+    _model: Model
+    _parameters: Parameters
+    _global_state: NDArray[np.floating]
+    _num_steps: int
+    _xi_at_step: list[StateList]
+
+    def __init__(self, qoi: QoI) -> None:
         self._qoi = qoi
         self._model = qoi.model()
         self._parameters = qoi.model().parameters
         self._global_state = qoi.global_state()
 
         self._num_steps = qoi.data().shape[-1] - 1
-        self._xi_at_step = [[None] * self._model.num_residuals
-                            for ii in range(self._num_steps + 1)]
+        self._xi_at_step = cast(
+            list[StateList],
+            [[None] * self._model.num_residuals
+             for ii in range(self._num_steps + 1)],
+        )
         self._model.store_xi(self._xi_at_step, self._model.xi(), 0)
 
     def evaluate(

@@ -1,14 +1,26 @@
+from collections.abc import Callable
 from functools import partial
 
-from jax import jit, value_and_grad, hessian
+from numpy.typing import NDArray
+import numpy as np
 
+from jax import jit, value_and_grad, hessian
 from jax.lax import fori_loop
+
+from cmad.qois.qoi import QoI
+from cmad.typing import JaxArray, StateList
 
 
 class JVPObjective():
 
+    evaluate_objective: Callable[..., JaxArray]
+    evaluate_objective_and_grad: Callable[..., tuple[JaxArray, JaxArray]]
+    evaluate_hessian: Callable[..., JaxArray]
 
-    def __init__(self, qoi, update_fun):
+    def __init__(
+            self, qoi: QoI,
+            update_fun: Callable[..., StateList],
+    ) -> None:
 
         pt_compute_objective = partial(self._compute_objective_fun,
             qoi=qoi, update_fun=update_fun
@@ -26,7 +38,11 @@ class JVPObjective():
 
 
     @staticmethod
-    def _compute_objective_fun(flat_active_values, qoi, update_fun):
+    def _compute_objective_fun(
+            flat_active_values: NDArray[np.floating],
+            qoi: QoI,
+            update_fun: Callable[..., StateList],
+    ) -> JaxArray:
 
         # consider renaming these for public access
         model = qoi._model
