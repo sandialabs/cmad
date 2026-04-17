@@ -33,3 +33,6 @@ dependencies = [
 [project.optional-dependencies]
 docs = ["numpydoc", "sphinx", "sphinx_automodapi", "sphinx_rtd_theme",
         "sphinx-gallery", "jupyter"]
+
+[project.scripts]
+cmad = "cmad.cli.main:main"

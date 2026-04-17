@@ -1,6 +1,6 @@
 from abc import ABC
 from collections.abc import Callable, Sequence
-from typing import ClassVar, cast
+from typing import Any, ClassVar, cast
 
 import numpy as np
 from jax import hessian, jacfwd, jacrev, jit
@@ -80,6 +80,21 @@ class Model(ABC):
     d2C_dparams2: NDArray[np.floating]
     d2C_dxi_dparams: NDArray[np.floating]
     d2C_dxi_prev_dparams: NDArray[np.floating]
+
+    @classmethod
+    def from_deck(
+            cls,
+            model_section: dict[str, Any],
+            parameters: Parameters,
+    ) -> "Model":
+        """Build a :class:`Model` instance from the deck's ``model:`` section.
+
+        Concrete subclasses translate deck fields (``def_type``,
+        ``effective_stress``, etc.) into constructor kwargs. The base stub
+        exists so the registry's ``type[Model]`` return is statically
+        callable via ``cls.from_deck(...)``; subclasses must override.
+        """
+        raise NotImplementedError
 
     def __init__(
             self, residual_fun: ResidualFn, cauchy_fun: CauchyFn,

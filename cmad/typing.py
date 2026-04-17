@@ -3,7 +3,7 @@
 This module is the single source of truth for cross-module type names.
 It imports from typing, collections.abc, jax, and numpy only.
 """
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import NamedTuple, Protocol, TypeAlias
 
 import numpy as np
@@ -122,3 +122,22 @@ class SupportsNewton(Protocol):
     def add_to_xi(self, delta: NDArray[np.floating]) -> None: ...
     def seed_none(self) -> None: ...
     def seed_xi(self) -> None: ...
+
+
+class SupportsPrimalLoop(SupportsNewton, Protocol):
+    """Minimum surface area for the MP forward-solve loop.
+
+    Extends SupportsNewton with the state-advancing and stress-extraction
+    operations that the ``cmad primal`` driver invokes around each
+    Newton solve.
+    """
+    def set_xi_to_init_vals(self) -> None: ...
+    def gather_global(
+        self,
+        u: Sequence[GlobalField],
+        u_prev: Sequence[GlobalField],
+    ) -> None: ...
+    def advance_xi(self) -> None: ...
+    def evaluate_cauchy(self) -> None: ...
+    def xi(self) -> StateList: ...
+    def Sigma(self) -> NDArray[np.floating]: ...

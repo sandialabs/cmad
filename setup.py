@@ -41,5 +41,8 @@ setup(
     extras_require={
         "docs": ["numpydoc", "sphinx", "sphinx_automodapi", "sphinx_rtd_theme",
                  "sphinx-gallery", "jupyter"]
-    }
+    },
+    entry_points={
+        "console_scripts": ["cmad = cmad.cli.main:main"],
+    },
 )
