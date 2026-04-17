@@ -6,6 +6,7 @@ import jax.numpy as jnp
 from enum import IntEnum
 
 from cmad.models.deformation_types import (DefType, def_type_ndims)
+from cmad.typing import JaxArray
 
 
 class VarType(IntEnum):
@@ -17,29 +18,29 @@ class VarType(IntEnum):
 # vector <-> var_type conversions act on jax arrays
 
 
-def get_num_eqs(var_type, ndims):
+def get_num_eqs(var_type: int, ndims: int) -> int:
     if var_type == VarType.SCALAR:
-        neqs = 1
-    if var_type == VarType.VECTOR:
-        neqs = ndims
-    if var_type == VarType.SYM_TENSOR:
-        neqs = (ndims + 1) * ndims // 2
-    if var_type == VarType.TENSOR:
-        neqs = ndims**2
-    return neqs
+        return 1
+    elif var_type == VarType.VECTOR:
+        return ndims
+    elif var_type == VarType.SYM_TENSOR:
+        return (ndims + 1) * ndims // 2
+    elif var_type == VarType.TENSOR:
+        return ndims**2
+    raise ValueError(f"Unknown var_type: {var_type}")
 
 
-def get_scalar(var):
+def get_scalar(var: JaxArray) -> JaxArray:
     assert len(var) == 1
     return var
 
 
-def get_vector(var, ndims):
+def get_vector(var: JaxArray, ndims: int) -> JaxArray:
     assert len(var) == ndims
     return var
 
 
-def get_sym_tensor_from_vector(vec, ndims):
+def get_sym_tensor_from_vector(vec: JaxArray, ndims: int) -> JaxArray:
     if ndims == 3:
         tensor = jnp.array([[vec[0], vec[1], vec[2]],
                             [vec[1], vec[3], vec[4]],
@@ -54,7 +55,7 @@ def get_sym_tensor_from_vector(vec, ndims):
     return tensor
 
 
-def get_tensor_from_vector(vec, ndims):
+def get_tensor_from_vector(vec: JaxArray, ndims: int) -> JaxArray:
     if ndims == 3:
         tensor = jnp.array([[vec[0], vec[1], vec[2]],
                             [vec[3], vec[4], vec[5]],
@@ -69,7 +70,7 @@ def get_tensor_from_vector(vec, ndims):
     return tensor
 
 
-def get_vector_from_sym_tensor(tensor, ndims):
+def get_vector_from_sym_tensor(tensor: JaxArray, ndims: int) -> JaxArray:
     if ndims == 3:
         vec = jnp.array([tensor[0, 0], tensor[0, 1], tensor[0, 2],
                          tensor[1, 1], tensor[1, 2], tensor[2, 2]])
@@ -83,7 +84,7 @@ def get_vector_from_sym_tensor(tensor, ndims):
     return vec
 
 
-def get_vector_from_tensor(tensor, ndims):
+def get_vector_from_tensor(tensor: JaxArray, ndims: int) -> JaxArray:
     if ndims == 3:
         vec = jnp.array([tensor[0, 0], tensor[0, 1], tensor[0, 2],
                          tensor[1, 0], tensor[1, 1], tensor[1, 2],
@@ -99,7 +100,7 @@ def get_vector_from_tensor(tensor, ndims):
     return vec
 
 
-def put_2D_tensor_into_3D(tensor_2D):
+def put_2D_tensor_into_3D(tensor_2D: JaxArray) -> JaxArray:
     assert tensor_2D.shape == (2, 2)
     tensor_3D = jnp.array([[tensor_2D[0, 0], tensor_2D[0, 1], 0.],
                            [tensor_2D[1, 0], tensor_2D[1, 1], 0.],
@@ -108,14 +109,14 @@ def put_2D_tensor_into_3D(tensor_2D):
     return tensor_3D
 
 
-def get_2D_tensor_from_3D(tensor_3D):
+def get_2D_tensor_from_3D(tensor_3D: JaxArray) -> JaxArray:
     assert tensor_3D.shape == (3, 3)
     tensor_2D = tensor_3D[:2, :2]
 
     return tensor_2D
 
 
-def put_tensor_into_3D(tensor, def_type):
+def put_tensor_into_3D(tensor: JaxArray, def_type: int) -> JaxArray:
     if def_type == DefType.FULL_3D:
         tensor_3D = tensor
     elif def_type == DefType.PLANE_STRAIN or def_type == DefType.PLANE_STRESS:
@@ -130,11 +131,13 @@ def put_tensor_into_3D(tensor, def_type):
         tensor_3D = jnp.array([[0., tensor[0, 0], 0.],
                                [tensor[0, 0], 0., 0.],
                                [0., 0., 0.]])
+    else:
+        raise ValueError(f"Unknown def_type: {def_type}")
 
     return tensor_3D
 
 
-def get_tensor_from_3D(tensor_3D, def_type):
+def get_tensor_from_3D(tensor_3D: JaxArray, def_type: int) -> JaxArray:
     assert tensor_3D.shape == (3, 3)
     if def_type == DefType.FULL_3D:
         return tensor_3D
@@ -144,3 +147,5 @@ def get_tensor_from_3D(tensor_3D, def_type):
         return tensor_3D[0, 0]
     elif def_type == DefType.PURE_SHEAR:
         return tensor_3D[0, 1]
+    else:
+        raise ValueError(f"Unknown def_type: {def_type}")

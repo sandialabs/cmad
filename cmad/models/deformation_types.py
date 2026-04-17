@@ -9,7 +9,7 @@ class DefType(IntEnum):
     PURE_SHEAR = 4
 
 
-def def_type_ndims(def_type):
+def def_type_ndims(def_type: int) -> int:
     if def_type == DefType.FULL_3D:
         return 3
     elif def_type == DefType.PLANE_STRAIN or def_type == DefType.PLANE_STRESS:

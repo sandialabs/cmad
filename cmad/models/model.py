@@ -5,14 +5,76 @@ from jax import hessian, jit, jacfwd, jacrev, Array
 from jax.tree_util import tree_flatten
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from functools import partial
+from typing import cast
+
+from numpy.typing import NDArray
 
 from cmad.models.deriv_types import DerivType
 from cmad.models.var_types import VarType
+from cmad.parameters.parameters import Parameters
+from cmad.typing import (
+    CauchyFn,
+    GlobalList,
+    JaxArray,
+    Params,
+    PyTree,
+    ResidualFn,
+    StateBlock,
+    StateList,
+)
 
 
 class Model(ABC):
-    def __init__(self, residual_fun, cauchy_fun):
+    # ---- attributes the subclass must set before super().__init__() ----
+    parameters: Parameters
+    dtype: type
+    _is_complex: bool
+    _num_eqs: NDArray[np.intp]
+    _var_types: NDArray[np.intp]
+    _init_xi: StateList
+
+    # ---- attributes set by self._init_residuals() ----
+    num_residuals: int
+    resid_names: list[str | None]
+
+    # ---- attributes set by self._init_state_variables() ----
+    _xi: StateList
+    _xi_prev: StateList
+    num_dofs: int
+    _delta_xi_offsets: NDArray[np.intp]
+
+    # ---- attributes set by self.gather_global() / self.gather_xi() ----
+    _u: GlobalList
+    _u_prev: GlobalList
+
+    # ---- attributes set by Model.__init__() ----
+    _residual: Callable[..., JaxArray]
+    _jacobian: list[Callable[..., PyTree]]
+    _hessian_states: Callable[..., PyTree]
+    _hessian_xi_params: Callable[..., PyTree]
+    _hessian_xi_prev_params: Callable[..., PyTree]
+    _hessian_params_params: Callable[..., PyTree]
+    cauchy: Callable[..., JaxArray]
+    dcauchy: list[Callable[..., PyTree]]
+    _deriv_mode: int  # backed by DerivType
+
+    # ---- attributes populated by evaluate* methods ----
+    _C: NDArray[np.floating]
+    _Jac: NDArray[np.floating] | None
+    _Sigma: NDArray[np.floating]
+    _dSigma: NDArray[np.floating] | None
+    d2C_dxi2: NDArray[np.floating]
+    d2C_dxi_dxi_prev: NDArray[np.floating]
+    d2C_dxi_prev2: NDArray[np.floating]
+    d2C_dparams2: NDArray[np.floating]
+    d2C_dxi_dparams: NDArray[np.floating]
+    d2C_dxi_prev_dparams: NDArray[np.floating]
+
+    def __init__(
+            self, residual_fun: ResidualFn, cauchy_fun: CauchyFn,
+    ) -> None:
         self._residual = jit(residual_fun)
         self._jacobian = [jit(jacfwd(residual_fun, argnums=DerivType.DXI,
                           holomorphic=self._is_complex)),
@@ -50,7 +112,10 @@ class Model(ABC):
         self.parameters.compute_mixed_block_shapes(self._num_eqs)
 
     @staticmethod
-    def _residual(xi, xi_prev, params, u, u_prev) -> Array:
+    def _residual(
+            xi: StateList, xi_prev: StateList, params: Params,
+            u: GlobalList, u_prev: GlobalList,
+    ) -> JaxArray:
         """
         The residual function.
         No side effects allowed!
@@ -58,14 +123,17 @@ class Model(ABC):
         raise NotImplementedError
 
     @staticmethod
-    def cauchy(xi, xi_prev, params, u, u_prev) -> Array:
+    def cauchy(
+            xi: StateList, xi_prev: StateList, params: Params,
+            u: GlobalList, u_prev: GlobalList,
+    ) -> JaxArray:
         """
         The cauchy stress function.
         No side effects allowed!
         """
         raise NotImplementedError
 
-    def evaluate(self):
+    def evaluate(self) -> None:
         """
         Evaluate the residual (C) or its jacobian (Jac).
         """
@@ -86,10 +154,12 @@ class Model(ABC):
 
 
     # consider jitting
-    def unpack_state_hessian(self,
-            pytree_hessian,
-            first_deriv_type,
-            second_deriv_type):
+    def unpack_state_hessian(
+            self,
+            pytree_hessian: PyTree,
+            first_deriv_type: int,
+            second_deriv_type: int,
+    ) -> NDArray[np.floating]:
 
         num_residuals = self.num_residuals
         hessian = np.block([[np.asarray(
@@ -103,9 +173,11 @@ class Model(ABC):
 
 
     # consider jitting
-    def unpack_params_hessian(self,
-            pytree_hessian,
-            first_deriv_type):
+    def unpack_params_hessian(
+            self,
+            pytree_hessian: PyTree,
+            first_deriv_type: int,
+    ) -> NDArray[np.floating]:
 
         num_dofs = self.num_dofs
         num_param_names = len(self.parameters._names)
@@ -131,7 +203,7 @@ class Model(ABC):
             return hessian
 
 
-    def evaluate_hessians(self):
+    def evaluate_hessians(self) -> None:
         """
         Evaluate the Hessians of the residual
         """
@@ -159,7 +231,7 @@ class Model(ABC):
             DerivType.DXI_PREV)
 
 
-    def evaluate_cauchy(self):
+    def evaluate_cauchy(self) -> None:
         """
         Evaluate the cauchy stress (Sigma) or its derivatives (dSigma).
         """
@@ -178,41 +250,44 @@ class Model(ABC):
         else:
             self._dSigma = np.dstack(self.dcauchy[deriv_mode](*variables))
 
-    def set_xi_to_init_vals(self):
+    def set_xi_to_init_vals(self) -> None:
         for ii in range(self.num_residuals):
             self._xi[ii] = self._init_xi[ii].copy().astype(self.dtype)
             self._xi_prev[ii] = self._init_xi[ii].copy().astype(self.dtype)
 
-    def C(self):
+    def C(self) -> NDArray[np.floating]:
         return self._C
 
-    def Jac(self):
+    def Jac(self) -> NDArray[np.floating] | None:
         return self._Jac
 
-    def Sigma(self):
+    def Sigma(self) -> NDArray[np.floating]:
         return self._Sigma
 
-    def dSigma(self):
+    def dSigma(self) -> NDArray[np.floating] | None:
         return self._dSigma
 
-    def variables(self):
+    def variables(
+            self,
+    ) -> tuple[StateList, StateList, Params, GlobalList, GlobalList]:
         return self._xi, self._xi_prev, self.parameters.values, \
             self._u, self._u_prev
 
-    def _init_residuals(self, num_residuals: int):
+    def _init_residuals(self, num_residuals: int) -> None:
         self.num_residuals = num_residuals
         self._num_eqs = np.zeros(num_residuals, dtype=int)
         self._var_types = np.zeros(num_residuals, dtype=int)
         self.resid_names = [None] * num_residuals
 
-    def _init_state_variables(self):
+    def _init_state_variables(self) -> None:
         """
         Initialize the list for the state variables xi and xi_prev
         and the offsets for derivative array indexing.
         """
         num_residuals = self.num_residuals
-        self._xi = [None] * num_residuals
-        self._xi_prev = [None] * num_residuals
+        # slots are populated by subclass setup or set_xi_to_init_vals
+        self._xi = cast(StateList, [None] * num_residuals)
+        self._xi_prev = cast(StateList, [None] * num_residuals)
 
         self.num_dofs = 0
         self._delta_xi_offsets = np.zeros(num_residuals, dtype=int)
@@ -226,49 +301,49 @@ class Model(ABC):
     def var_type(self, residual: int) -> int:
         return self._var_types[residual]
 
-    def resid_name(self, residual: int) -> str:
+    def resid_name(self, residual: int) -> str | None:
         return self.resid_names[residual]
 
-    def gather_global(self, u, u_prev):
+    def gather_global(self, u: GlobalList, u_prev: GlobalList) -> None:
         self._u = u.copy()
         self._u_prev = u_prev.copy()
 
-    def gather_xi(self, xi, xi_prev):
+    def gather_xi(self, xi: StateList, xi_prev: StateList) -> None:
         self._xi = xi.copy()
         self._xi_prev = xi_prev.copy()
 
-    def seed_xi(self):
+    def seed_xi(self) -> None:
         self._deriv_mode = DerivType.DXI
 
-    def seed_xi_prev(self):
+    def seed_xi_prev(self) -> None:
         self._deriv_mode = DerivType.DXI_PREV
 
-    def seed_params(self):
+    def seed_params(self) -> None:
         self._deriv_mode = DerivType.DPARAMS
 
-    def seed_none(self):
+    def seed_none(self) -> None:
         self._deriv_mode = DerivType.DNONE
 
-    def deriv_mode(self):
+    def deriv_mode(self) -> int:
         return self._deriv_mode
 
-    def xi(self) -> list:
+    def xi(self) -> StateList:
         return self._xi
 
-    def xi_prev(self) -> list:
+    def xi_prev(self) -> StateList:
         return self._xi_prev
 
-    def advance_xi(self):
+    def advance_xi(self) -> None:
         for ii in range(self.num_residuals):
             self._xi_prev[ii] = self._xi[ii].copy()
 
-    def set_scalar_xi(self, idx, xi):
+    def set_scalar_xi(self, idx: int, xi: JaxArray) -> None:
         self._xi[idx] = xi.copy()
 
-    def set_vector_xi(self, idx, xi):
+    def set_vector_xi(self, idx: int, xi: JaxArray) -> None:
         self._xi[idx] = xi.copy()
 
-    def set_sym_tensor_xi(self, idx, xi):
+    def set_sym_tensor_xi(self, idx: int, xi: JaxArray) -> None:
         if self._num_eqs[idx] == 6:
             self._xi[idx][0] = xi[0, 0]
             self._xi[idx][1] = xi[0, 1]
@@ -283,25 +358,25 @@ class Model(ABC):
         elif self._num_eqs[idx] == 1:
             self._xi[idx][0] = xi[0, 0]
 
-    def get_tensor_ndim(num_eqs):
-        if self._num_eqs[idx] == 9:
-            ndim = 3
-        elif self._num_eqs[idx] == 4:
-            ndim = 2
-        elif self._num_eqs[idx] == 1:
-            ndim = 1
+    @staticmethod
+    def get_tensor_ndim(num_eqs: int) -> int:
+        if num_eqs == 9:
+            return 3
+        elif num_eqs == 4:
+            return 2
+        elif num_eqs == 1:
+            return 1
+        raise ValueError(f"Unknown num_eqs for tensor variable: {num_eqs}")
 
-        return ndim
-
-    def set_tensor_xi(self, idx, xi):
-        ndim = get_tensor_ndim(self._num_eqs[idx])
+    def set_tensor_xi(self, idx: int, xi: JaxArray) -> None:
+        ndim = Model.get_tensor_ndim(self._num_eqs[idx])
         eq = 0
         for ii in range(ndim):
             for jj in range(ndim):
                 self._xi[idx][eq] = xi[ii, jj]
                 eq += 1
 
-    def add_to_xi(self, delta_xi):
+    def add_to_xi(self, delta_xi: NDArray[np.floating]) -> None:
         for idx in range(self.num_residuals):
             var_type = self._var_types[idx]
             if var_type != VarType.SCALAR:
@@ -312,13 +387,13 @@ class Model(ABC):
                 offset = self.delta_xi_offset(idx, 0)
                 self._xi[idx] += delta_xi[offset]
 
-    def set_scalar_xi_prev(self, idx, xi_prev):
+    def set_scalar_xi_prev(self, idx: int, xi_prev: JaxArray) -> None:
         self._xi_prev[idx] = xi_prev.copy()
 
-    def set_vector_xi_prev(self, idx, xi_prev):
+    def set_vector_xi_prev(self, idx: int, xi_prev: JaxArray) -> None:
         self._xi_prev[idx] = xi_prev.copy()
 
-    def set_sym_tensor_xi_prev(self, idx, xi_prev):
+    def set_sym_tensor_xi_prev(self, idx: int, xi_prev: JaxArray) -> None:
         if self._num_eqs[idx] == 6:
             self._xi_prev[idx][0] = xi_prev[0, 0]
             self._xi_prev[idx][1] = xi_prev[0, 1]
@@ -333,21 +408,21 @@ class Model(ABC):
         elif self._num_eqs[idx] == 1:
             self._xi_prev[idx][0] = xi_prev[0, 0]
 
-    def set_tensor_xi_prev(self, idx, xi_prev):
-        ndim = get_tensor_ndim(self._num_eqs[idx])
+    def set_tensor_xi_prev(self, idx: int, xi_prev: JaxArray) -> None:
+        ndim = Model.get_tensor_ndim(self._num_eqs[idx])
         eq = 0
         for ii in range(ndim):
             for jj in range(ndim):
                 self._xi_prev[idx][eq] = xi_prev[ii, jj]
                 eq += 1
 
-    def set_scalar_u(self, idx, u):
+    def set_scalar_u(self, idx: int, u: JaxArray) -> None:
         self._u[idx] = u.copy()
 
-    def set_vector_u(self, idx, u):
+    def set_vector_u(self, idx: int, u: JaxArray) -> None:
         self._u[idx] = u.copy()
 
-    def set_sym_tensor_u(self, idx, u):
+    def set_sym_tensor_u(self, idx: int, u: JaxArray) -> None:
         if self._num_eqs[idx] == 6:
             self._u[idx][0] = u[0, 0]
             self._u[idx][1] = u[0, 1]
@@ -362,21 +437,21 @@ class Model(ABC):
         elif self._num_eqs[idx] == 1:
             self._u[idx][0] = u[0, 0]
 
-    def set_tensor_u(self, idx, u):
-        ndim = get_tensor_ndim(self._num_eqs[idx])
+    def set_tensor_u(self, idx: int, u: JaxArray) -> None:
+        ndim = Model.get_tensor_ndim(self._num_eqs[idx])
         eq = 0
         for ii in range(ndim):
             for jj in range(ndim):
                 self._u[idx][eq] = u[ii, jj]
                 eq += 1
 
-    def set_scalar_u_prev(self, idx, u_prev):
+    def set_scalar_u_prev(self, idx: int, u_prev: JaxArray) -> None:
         self._u_prev[idx] = u_prev.copy()
 
-    def set_vector_u_prev(self, idx, u_prev):
+    def set_vector_u_prev(self, idx: int, u_prev: JaxArray) -> None:
         self._u_prev[idx] = u_prev.copy()
 
-    def set_sym_tensor_u_prev(self, idx, u_prev):
+    def set_sym_tensor_u_prev(self, idx: int, u_prev: JaxArray) -> None:
         if self._num_eqs[idx] == 6:
             self._u_prev[idx][0] = u_prev[0, 0]
             self._u_prev[idx][1] = u_prev[0, 1]
@@ -391,8 +466,8 @@ class Model(ABC):
         elif self._num_eqs[idx] == 1:
             self._u_prev[idx][0] = u_prev[0, 0]
 
-    def set_tensor_u_prev(self, idx, u_prev):
-        ndim = get_tensor_ndim(self._num_eqs[idx])
+    def set_tensor_u_prev(self, idx: int, u_prev: JaxArray) -> None:
+        ndim = Model.get_tensor_ndim(self._num_eqs[idx])
         eq = 0
         for ii in range(ndim):
             for jj in range(ndim):
@@ -400,6 +475,10 @@ class Model(ABC):
                 eq += 1
 
     @staticmethod
-    def store_xi(xi_list, xi_val, step):
+    def store_xi(
+            xi_list: list[StateList],
+            xi_val: StateList,
+            step: int,
+    ) -> None:
         for idx in range(len(xi_list[step])):
             xi_list[step][idx] = xi_val[idx].copy()
