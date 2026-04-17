@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import grad
 
+from cmad.io.registry import register_model
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.effective_stress import conventional_effective_stress_fun
 from cmad.models.elastic_stress import (
@@ -97,6 +98,7 @@ def compute_yield_fun_and_normal(
     return yield_fun, yield_normal
 
 
+@register_model("small_rate_elastic_plastic")
 class SmallRateElasticPlastic(Model):
     """
     Small strain rate form elastic-plastic model:
@@ -210,6 +212,21 @@ class SmallRateElasticPlastic(Model):
         cauchy = partial(self._cauchy_fn, def_type=def_type)
 
         super().__init__(residual, cauchy)
+
+    @classmethod
+    def from_deck(
+            cls,
+            model_section: dict[str, Any],
+            parameters: Parameters,
+    ) -> "SmallRateElasticPlastic":
+        return cls(
+            parameters=parameters,
+            def_type=DefType[model_section["def_type"].upper()],
+            effective_stress_fun=conventional_effective_stress_fun(
+                model_section["effective_stress"],
+            ),
+            uniaxial_stress_idx=model_section.get("uniaxial_stress_idx", 0),
+        )
 
     @staticmethod
     def _residual_fn(

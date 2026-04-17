@@ -1,0 +1,15 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+required: [name, def_type, effective_stress]
+additionalProperties: false
+properties:
+  name:
+    const: small_elastic_plastic
+  def_type:
+    enum: [full_3d, plane_stress, uniaxial_stress]
+  effective_stress:
+    enum: [J2, hill, barlat, hosford]
+  uniaxial_stress_idx:
+    type: integer
+    minimum: 0
+    default: 0
