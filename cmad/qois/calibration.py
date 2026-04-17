@@ -1,16 +1,28 @@
-import numpy as np
 from functools import partial
 
+import numpy as np
 import jax.numpy as jnp
-from jax import Array
 
-from cmad.qois.qoi import QoI
+from numpy.typing import NDArray
 
+from cmad.models.model import Model
 from cmad.models.var_types import get_sym_tensor_from_vector
+from cmad.qois.qoi import QoI
+from cmad.typing import (
+    CauchyFn,
+    GlobalList,
+    JaxArray,
+    Params,
+    StateList,
+    Step,
+)
 
 
 class Calibration(QoI):
-    def __init__(self, model, global_state, data, weight):
+    def __init__(
+            self, model: Model, global_state: NDArray[np.floating],
+            data: NDArray[np.floating], weight: NDArray[np.floating],
+    ) -> None:
         self._model = model
         assert global_state.shape[-1] == data.shape[-1]
         self._global_state = global_state
@@ -22,19 +34,22 @@ class Calibration(QoI):
         super().__init__(partial_qoi)
 
 
-    def data_at_step(self, step):
+    def data_at_step(self, step: Step) -> NDArray[np.floating]:
         return self._data[..., step]
 
 
-    def weight_at_step(self, step):
+    def weight_at_step(self, step: Step) -> NDArray[np.floating]:
         return self._weight
 
 
     # _qoi not an abstract class, as signatures may be class-specific
     @staticmethod
-    def _qoi(xi, xi_prev, params, u, u_prev,
-             data_at_step, weight_at_step,
-             cauchy_fun) -> Array:
+    def _qoi(
+            xi: StateList, xi_prev: StateList, params: Params,
+            u: GlobalList, u_prev: GlobalList,
+            data_at_step: JaxArray, weight_at_step: JaxArray,
+            cauchy_fun: CauchyFn,
+    ) -> JaxArray:
 
         cauchy = cauchy_fun(xi, xi_prev, params, u, u_prev)
         mismatch = weight_at_step * (cauchy - data_at_step)
@@ -42,8 +57,11 @@ class Calibration(QoI):
 
 
 class UniaxialCalibration(QoI):
-    def __init__(self, model, global_state, data, weight,
-            uniaxial_stress_idx, stretch_var_idx):
+    def __init__(
+            self, model: Model, global_state: NDArray[np.floating],
+            data: NDArray[np.floating], weight: NDArray[np.floating],
+            uniaxial_stress_idx: int, stretch_var_idx: int,
+    ) -> None:
         self._model = model
         assert global_state.shape[-1] == data.shape[-1]
         assert data.shape == weight.shape
@@ -57,24 +75,28 @@ class UniaxialCalibration(QoI):
         super().__init__(partial_qoi)
 
 
-    def update_data(self, data):
+    def update_data(self, data: NDArray[np.floating]) -> None:
         old_shape = self._data.shape
         assert data.shape == old_shape
         self._data = data
 
 
-    def data_at_step(self, step):
+    def data_at_step(self, step: Step) -> NDArray[np.floating]:
         return self._data[..., step]
 
 
-    def weight_at_step(self, step):
+    def weight_at_step(self, step: Step) -> NDArray[np.floating]:
         return self._weight[:, step]
 
 
     @staticmethod
-    def _qoi(xi, xi_prev, params, u, u_prev,
-             data_at_step, weight_at_step, cauchy_fun,
-             uniaxial_stress_idx, stretch_var_idx) -> Array:
+    def _qoi(
+            xi: StateList, xi_prev: StateList, params: Params,
+            u: GlobalList, u_prev: GlobalList,
+            data_at_step: JaxArray, weight_at_step: JaxArray,
+            cauchy_fun: CauchyFn,
+            uniaxial_stress_idx: int, stretch_var_idx: int,
+    ) -> JaxArray:
 
         sigma = cauchy_fun(xi, xi_prev, params, u, u_prev)
         uniaxial_sigma = sigma[uniaxial_stress_idx, uniaxial_stress_idx]
@@ -83,4 +105,3 @@ class UniaxialCalibration(QoI):
         pred = jnp.r_[uniaxial_sigma, off_axis_strains]
         mismatch = (pred - data_at_step) * weight_at_step
         return 0.5 * jnp.sum(mismatch * mismatch)
-
