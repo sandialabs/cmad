@@ -34,6 +34,8 @@ setup(
         "setuptools",
         "scikit-learn",
         "sympy",
+        "jsonschema",
+        "pyyaml",
         "jax[cpu]>=0.4.20",
     ],
     extras_require={
