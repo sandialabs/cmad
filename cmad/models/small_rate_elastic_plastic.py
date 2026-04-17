@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import numpy as np
 import jax.numpy as jnp
 
@@ -14,6 +16,7 @@ from cmad.models.kinematics import gather_F, off_axis_idx
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
 from cmad.models.paths import cond_residual
+from cmad.typing import GlobalList, JaxArray, Params, StateList
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -25,8 +28,11 @@ from cmad.models.var_types import (
 )
 
 
-def compute_delta_strain(xi, xi_prev, params, u, u_prev, def_type,
-        uniaxial_stress_idx):
+def compute_delta_strain(
+        xi: StateList, xi_prev: StateList, params: Params,
+        u: GlobalList, u_prev: GlobalList,
+        def_type: int, uniaxial_stress_idx: int,
+) -> JaxArray:
 
     local_var_idx = 2
     F = gather_F(xi, u, def_type, local_var_idx, uniaxial_stress_idx)
@@ -66,8 +72,12 @@ def compute_delta_strain(xi, xi_prev, params, u, u_prev, def_type,
     return material_delta_epsilon
 
 
-def compute_yield_fun_and_normal(xi, params, def_type,
-                                 effective_stress, hardening, is_complex):
+def compute_yield_fun_and_normal(
+        xi: StateList, params: Params, def_type: int,
+        effective_stress: Callable[..., JaxArray],
+        hardening: Callable[..., JaxArray],
+        is_complex: bool,
+) -> tuple[JaxArray, JaxArray]:
 
     ndims = def_type_ndims(def_type)
 
@@ -94,12 +104,20 @@ class SmallRateElasticPlastic(Model):
     Plastic: Modular effective stress and hardening
     """
 
-    def __init__(self, parameters: Parameters,
-                 def_type=DefType.FULL_3D,
-                 elastic_stress_fun=isotropic_linear_elastic_stress,
-                 effective_stress_fun=None,
-                 hardening_funs: dict = get_hardening_funs(),
-                 yield_tol=1e-14, uniaxial_stress_idx=0, is_complex=False):
+    _def_type: int
+    _ndims: int
+
+    def __init__(
+            self, parameters: Parameters,
+            def_type: int = DefType.FULL_3D,
+            elastic_stress_fun: Callable[
+                ..., JaxArray] = isotropic_linear_elastic_stress,
+            effective_stress_fun: Callable[..., JaxArray] | None = None,
+            hardening_funs: dict = get_hardening_funs(),
+            yield_tol: float = 1e-14,
+            uniaxial_stress_idx: int = 0,
+            is_complex: bool = False,
+    ) -> None:
 
         self._is_complex = is_complex
         self.dtype = float
@@ -190,9 +208,15 @@ class SmallRateElasticPlastic(Model):
         super().__init__(residual, cauchy)
 
     @staticmethod
-    def _residual(xi, xi_prev, params, u, u_prev,
-                  def_type, elastic_stress, effective_stress, hardening,
-                  yield_tol, uniaxial_stress_idx, is_complex) -> jnp.array:
+    def _residual(
+            xi: StateList, xi_prev: StateList, params: Params,
+            u: GlobalList, u_prev: GlobalList,
+            def_type: int,
+            elastic_stress: Callable[..., JaxArray],
+            effective_stress: Callable[..., JaxArray],
+            hardening: Callable[..., JaxArray],
+            yield_tol: float, uniaxial_stress_idx: int, is_complex: bool,
+    ) -> JaxArray:
 
         # state variables for the model
         cauchy = get_sym_tensor_from_vector(xi[0], 3)
@@ -282,11 +306,14 @@ class SmallRateElasticPlastic(Model):
 
         return cond_residual(yield_fun, C_elastic, C_plastic, yield_tol)
 
-    def _check_params(self, parameters):
+    def _check_params(self, parameters: Parameters) -> None:
         raise NotImplementedError
 
     @staticmethod
-    def cauchy(xi, xi_prev, params, u, u_prev, def_type) -> jnp.array:
+    def cauchy(
+            xi: StateList, xi_prev: StateList, params: Params,
+            u: GlobalList, u_prev: GlobalList, def_type: int,
+    ) -> JaxArray:
 
         Q = params["rotation matrix"]
         global_cauchy = Q @ get_sym_tensor_from_vector(xi[0], 3) @ Q.T

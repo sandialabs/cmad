@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import numpy as np
 import jax.numpy as jnp
 
@@ -9,6 +11,7 @@ from cmad.models.elastic_stress import (isotropic_linear_elastic_cauchy_stress,
 from cmad.models.kinematics import gather_F
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
+from cmad.typing import GlobalList, JaxArray, Params, StateList
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -21,9 +24,16 @@ class Elastic(Model):
     General elastic model
     """
 
-    def __init__(self, parameters: Parameters,
-                 elastic_stress_fun=isotropic_linear_elastic_cauchy_stress,
-                 def_type=DefType.FULL_3D, is_complex=False):
+    _def_type: int
+    _ndims: int
+
+    def __init__(
+            self, parameters: Parameters,
+            elastic_stress_fun: Callable[
+                ..., JaxArray] = isotropic_linear_elastic_cauchy_stress,
+            def_type: int = DefType.FULL_3D,
+            is_complex: bool = False,
+    ) -> None:
 
         self._is_complex = is_complex
         self.dtype = float
@@ -91,8 +101,11 @@ class Elastic(Model):
         super().__init__(residual, cauchy)
 
     @staticmethod
-    def _residual(xi, xi_prev, params, u, u_prev,
-                  def_type, elastic_stress) -> jnp.array:
+    def _residual(
+            xi: StateList, xi_prev: StateList, params: Params,
+            u: GlobalList, u_prev: GlobalList,
+            def_type: int, elastic_stress: Callable[..., JaxArray],
+    ) -> JaxArray:
 
         # state variables for the model
         cauchy = get_sym_tensor_from_vector(xi[0], 3)
@@ -125,11 +138,14 @@ class Elastic(Model):
 
         return C_elastic
 
-    def _check_params(self, parameters):
+    def _check_params(self, parameters: Parameters) -> None:
         raise NotImplementedError
 
     @staticmethod
-    def cauchy(xi, xi_prev, params, u, u_prev,
-               def_type) -> jnp.array:
+    def cauchy(
+            xi: StateList, xi_prev: StateList, params: Params,
+            u: GlobalList, u_prev: GlobalList,
+            def_type: int,
+    ) -> JaxArray:
 
         return get_sym_tensor_from_vector(xi[0], 3)
