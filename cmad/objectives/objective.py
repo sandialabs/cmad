@@ -1,11 +1,28 @@
+"""Sensitivity-providing objectives for material-point calibration.
+
+Three sibling classes share an Objective ABC, each implementing one
+sensitivity strategy. JVPObjective in jvp_objective.py is a fourth
+end-to-end JAX-traced sibling; it is structurally distinct and does
+not subclass Objective.
+"""
+from abc import ABC, abstractmethod
+
 import numpy as np
+from numpy.typing import NDArray
 
 from cmad.solver.nonlinear_solver import newton_solve
+from cmad.typing import GradientResult, HessianResult
 
 
-class Objective():
+class Objective(ABC):
+    """Base class for sensitivity-providing objectives.
 
-    def __init__(self, qoi, sensitivity_type):
+    Owns time-step loop scaffolding, parameter injection, forward-pass
+    state storage, and the shared forward-pass-with-storage helper used
+    by AdjointObjective and DirectAdjointObjective.
+    """
+
+    def __init__(self, qoi):
         self._qoi = qoi
         self._model = qoi.model()
         self._parameters = qoi.model().parameters
@@ -16,38 +33,26 @@ class Objective():
                             for ii in range(self._num_steps + 1)]
         self._model.store_xi(self._xi_at_step, self._model.xi(), 0)
 
-        if sensitivity_type == "adjoint gradient":
-            self._evaluate = self._compute_adjoint_sens_fun_and_grad
-        elif sensitivity_type == "direct gradient":
-            self._evaluate = self._compute_forward_sens_fun_and_grad
-        elif sensitivity_type == "direct-adjoint hessian":
-            self._evaluate = self._compute_direct_adjoint_sens_fun_grad_hessian
-        else:
-            raise NotImplementedError
-
-
-    def evaluate(self, flat_active_values):
-
+    def evaluate(
+        self, flat_active_values: NDArray[np.floating]
+    ) -> GradientResult | HessianResult:
         self._parameters.set_active_values_from_flat(flat_active_values)
-
         return self._evaluate()
 
-    def _compute_adjoint_sens_fun_and_grad(self):
+    @abstractmethod
+    def _evaluate(self) -> GradientResult | HessianResult: ...
 
+    def _forward_pass_with_storage(self) -> float:
+        """Forward time-step loop with xi_at_step storage. Returns J."""
         qoi = self._qoi
         model = self._model
         F = self._global_state
-
         xi_at_step = self._xi_at_step
         model.set_xi_to_init_vals()
 
         J = 0.
-        num_active_params = model.parameters.num_active_params
-        grad = np.zeros((1, num_active_params))
-
         num_steps = self._num_steps
 
-        # forward pass
         for step in range(1, num_steps + 1):
 
             u = [F[:, :, step]]
@@ -62,6 +67,25 @@ class Objective():
             J += qoi.J()
 
             model.advance_xi()
+
+        return float(J)
+
+
+class AdjointObjective(Objective):
+    """Gradient via reverse-time adjoint pass after a forward pass."""
+
+    def _evaluate(self) -> GradientResult:
+
+        qoi = self._qoi
+        model = self._model
+        F = self._global_state
+        xi_at_step = self._xi_at_step
+        num_steps = self._num_steps
+
+        J = self._forward_pass_with_storage()
+
+        num_active_params = model.parameters.num_active_params
+        grad = np.zeros((1, num_active_params))
 
         # adjoint pass
         num_dofs = model.num_dofs
@@ -101,15 +125,22 @@ class Objective():
         grad = grad.squeeze()
         model.parameters.transform_grad(grad)
 
-        return J, grad
+        return GradientResult(J=J, grad=grad)
 
-    def _compute_forward_sens_fun_and_grad(self):
+
+class DirectObjective(Objective):
+    """Gradient via forward sensitivity (tangent) pass.
+
+    Forward loop is inlined rather than reusing _forward_pass_with_storage
+    because the gradient work is interleaved into the loop body and past
+    states are not needed (so xi_at_step is never populated).
+    """
+
+    def _evaluate(self) -> GradientResult:
 
         qoi = self._qoi
         model = self._model
         F = self._global_state
-
-        xi_at_step = self._xi_at_step
         model.set_xi_to_init_vals()
 
         num_active_params = model.parameters.num_active_params
@@ -161,38 +192,24 @@ class Objective():
         grad = grad.squeeze()
         model.parameters.transform_grad(grad)
 
-        return J, grad
+        return GradientResult(J=float(J), grad=grad)
 
-    def _compute_direct_adjoint_sens_fun_grad_hessian(self):
+
+class DirectAdjointObjective(Objective):
+    """Gradient + Hessian via direct-adjoint method (arXiv:2501.04584)."""
+
+    def _evaluate(self) -> HessianResult:
 
         qoi = self._qoi
         model = self._model
         F = self._global_state
-
         xi_at_step = self._xi_at_step
-        model.set_xi_to_init_vals()
-
-        J = 0.
-        num_active_params = model.parameters.num_active_params
-        grad = np.zeros((1, num_active_params))
-
         num_steps = self._num_steps
 
-        # forward pass
-        for step in range(1, num_steps + 1):
+        J = self._forward_pass_with_storage()
 
-            u = [F[:, :, step]]
-            u_prev = [F[:, :, step - 1]]
-            model.gather_global(u, u_prev)
-
-            newton_solve(model)
-            model.store_xi(xi_at_step, model.xi(), step)
-
-            model.seed_none()
-            qoi.evaluate(step)
-            J += qoi.J()
-
-            model.advance_xi()
+        num_active_params = model.parameters.num_active_params
+        grad = np.zeros((1, num_active_params))
 
         # adjoint pass
         num_dofs = model.num_dofs
@@ -303,4 +320,4 @@ class Objective():
 
         model.parameters.transform_hessian(hessian, untransformed_grad)
 
-        return J, grad, hessian
+        return HessianResult(J=J, grad=grad, hessian=hessian)

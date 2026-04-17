@@ -18,7 +18,7 @@ from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.qois.calibration import UniaxialCalibration
 from cmad.solver.nonlinear_solver import newton_solve
 from cmad.models.var_types import get_sym_tensor_from_vector
-from cmad.objectives.objective import Objective
+from cmad.objectives.objective import AdjointObjective
 
 
 def multiobjective(x, objective, Rmats, data):
@@ -109,7 +109,7 @@ weights = np.atleast_2d([2e-3, 2e1, 2e1]).T @ np.ones((1, num_steps + 1))
 weights[:, :10] = 0.
 qoi = UniaxialCalibration(model, F, data[0], weights,
     uniaxial_stress_idx, stretch_var_idx)
-objective = Objective(qoi, sensitivity_type="adjoint gradient")
+objective = AdjointObjective(qoi)
 
 opt_obj = partial(multiobjective, objective=objective,
     Rmats=Rmats, data=data)

@@ -8,7 +8,11 @@ from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.parameters.parameters import Parameters
-from cmad.objectives.objective import Objective
+from cmad.objectives.objective import (
+    AdjointObjective,
+    DirectAdjointObjective,
+    DirectObjective,
+)
 from cmad.qois.calibration import Calibration
 from cmad.solver.nonlinear_solver import newton_solve
 from cmad.test_support.test_problems import J2AnalyticalProblem
@@ -45,7 +49,7 @@ def fd_hessian_check_components(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
-    hessian_obj = Objective(qoi, "direct-adjoint hessian")
+    hessian_obj = DirectAdjointObjective(qoi)
 
     J_ref, grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
 
@@ -115,7 +119,7 @@ def fd_hessian_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
-    hessian_obj = Objective(qoi, "direct-adjoint hessian")
+    hessian_obj = DirectAdjointObjective(qoi)
 
     J_ref, grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
 
@@ -155,8 +159,8 @@ def fd_grad_check_components(qoi, hs=np.logspace(-2, -10, 9)):
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    direct_obj = Objective(qoi, sensitivity_type="direct gradient")
-    adjoint_obj = Objective(qoi, sensitivity_type="adjoint gradient")
+    direct_obj = DirectObjective(qoi)
+    adjoint_obj = AdjointObjective(qoi)
 
     J_ref, direct_grad_ref = \
         direct_obj.evaluate(flat_active_values)
@@ -193,8 +197,8 @@ def fd_grad_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    direct_obj = Objective(qoi, sensitivity_type="direct gradient")
-    adjoint_obj = Objective(qoi, sensitivity_type="adjoint gradient")
+    direct_obj = DirectObjective(qoi)
+    adjoint_obj = AdjointObjective(qoi)
 
     J_ref, direct_grad_ref = \
         direct_obj.evaluate(flat_active_values)
@@ -235,8 +239,8 @@ def complex_step_grad_check(qoi, qoi_complex, hs=np.logspace(-2, -10, 9),
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    direct_obj = Objective(qoi, sensitivity_type="direct gradient")
-    adjoint_obj = Objective(qoi, sensitivity_type="adjoint gradient")
+    direct_obj = DirectObjective(qoi)
+    adjoint_obj = AdjointObjective(qoi)
 
     J_ref, direct_grad_ref = \
         direct_obj.evaluate(flat_active_values)
@@ -271,7 +275,7 @@ def complex_step_hessian_check(qoi, qoi_complex, hs=np.logspace(-2, -10, 9), see
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
-    hessian_obj = Objective(qoi, "direct-adjoint hessian")
+    hessian_obj = DirectAdjointObjective(qoi)
 
     J_ref, grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
 

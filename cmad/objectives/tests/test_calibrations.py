@@ -6,7 +6,7 @@ from scipy.optimize import fmin_l_bfgs_b
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
-from cmad.objectives.objective import Objective
+from cmad.objectives.objective import AdjointObjective, DirectObjective
 from cmad.qois.calibration import Calibration
 from cmad.solver.nonlinear_solver import newton_solve
 from cmad.test_support.test_problems import J2AnalyticalProblem
@@ -94,8 +94,8 @@ class TestJ2Calibrations(unittest.TestCase):
         # cauchy_fig = plot_cauchy(cauchy)
 
         qoi = Calibration(model, F, cauchy, weight)
-        objectives = [Objective(qoi, sensitivity_type="adjoint gradient"),
-                      Objective(qoi, sensitivity_type="direct gradient")]
+        objectives = [AdjointObjective(qoi),
+                      DirectObjective(qoi)]
 
         for objective in objectives:
 
