@@ -27,6 +27,8 @@ dependencies = [
     "coverage>=6.4",
     "pytest-cov",
     "pytest>=4.6",
+    "jsonschema",
+    "pyyaml",
     "jax[cpu]>=0.4.20",
 ]
 
