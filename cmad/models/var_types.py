@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from enum import IntEnum
 
 from cmad.models.deformation_types import (DefType, def_type_ndims)
-from cmad.typing import JaxArray
+from cmad.typing import JaxArray, StateBlock
 
 
 class VarType(IntEnum):
@@ -30,17 +30,17 @@ def get_num_eqs(var_type: int, ndims: int) -> int:
     raise ValueError(f"Unknown var_type: {var_type}")
 
 
-def get_scalar(var: JaxArray) -> JaxArray:
+def get_scalar(var: StateBlock) -> StateBlock:
     assert len(var) == 1
     return var
 
 
-def get_vector(var: JaxArray, ndims: int) -> JaxArray:
+def get_vector(var: StateBlock, ndims: int) -> StateBlock:
     assert len(var) == ndims
     return var
 
 
-def get_sym_tensor_from_vector(vec: JaxArray, ndims: int) -> JaxArray:
+def get_sym_tensor_from_vector(vec: StateBlock, ndims: int) -> JaxArray:
     if ndims == 3:
         tensor = jnp.array([[vec[0], vec[1], vec[2]],
                             [vec[1], vec[3], vec[4]],
@@ -55,7 +55,7 @@ def get_sym_tensor_from_vector(vec: JaxArray, ndims: int) -> JaxArray:
     return tensor
 
 
-def get_tensor_from_vector(vec: JaxArray, ndims: int) -> JaxArray:
+def get_tensor_from_vector(vec: StateBlock, ndims: int) -> JaxArray:
     if ndims == 3:
         tensor = jnp.array([[vec[0], vec[1], vec[2]],
                             [vec[3], vec[4], vec[5]],

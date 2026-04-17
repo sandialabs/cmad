@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import jax.numpy as jnp
@@ -11,7 +12,7 @@ from cmad.models.elastic_stress import (isotropic_linear_elastic_cauchy_stress,
 from cmad.models.kinematics import gather_F
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
-from cmad.typing import GlobalList, JaxArray, Params, StateList
+from cmad.typing import GlobalList, JaxArray, StateList
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -92,17 +93,17 @@ class Elastic(Model):
         # self._check_params(parameters)
         self.parameters = parameters
 
-        residual = partial(self._residual,
+        residual = partial(self._residual_fn,
                            def_type=def_type,
                            elastic_stress=elastic_stress_fun)
 
-        cauchy = partial(self.cauchy, def_type=def_type)
+        cauchy = partial(self._cauchy_fn, def_type=def_type)
 
         super().__init__(residual, cauchy)
 
     @staticmethod
-    def _residual(
-            xi: StateList, xi_prev: StateList, params: Params,
+    def _residual_fn(
+            xi: StateList, xi_prev: StateList, params: dict[str, Any],
             u: GlobalList, u_prev: GlobalList,
             def_type: int, elastic_stress: Callable[..., JaxArray],
     ) -> JaxArray:
@@ -121,16 +122,16 @@ class Elastic(Model):
             get_vector_from_sym_tensor(C_elastic_cauchy_tensor, 3) \
             / scale_factor
 
-        if def_type == def_type.FULL_3D:
+        if def_type == DefType.FULL_3D:
             C_elastic = C_elastic_cauchy
 
-        elif def_type == def_type.PLANE_STRESS or \
-                def_type == def_type.UNIAXIAL_STRESS:
+        elif def_type == DefType.PLANE_STRESS or \
+                def_type == DefType.UNIAXIAL_STRESS:
 
-            if def_type == def_type.PLANE_STRESS:
+            if def_type == DefType.PLANE_STRESS:
                 C_stretch = cauchy[2, 2] / scale_factor
 
-            elif def_type == def_type.UNIAXIAL_STRESS:
+            elif def_type == DefType.UNIAXIAL_STRESS:
                 C_stretch = jnp.r_[cauchy[1, 1], cauchy[2, 2]] \
                     / scale_factor
 
@@ -142,8 +143,8 @@ class Elastic(Model):
         raise NotImplementedError
 
     @staticmethod
-    def cauchy(
-            xi: StateList, xi_prev: StateList, params: Params,
+    def _cauchy_fn(
+            xi: StateList, xi_prev: StateList, params: dict[str, Any],
             u: GlobalList, u_prev: GlobalList,
             def_type: int,
     ) -> JaxArray:

@@ -1,14 +1,19 @@
 """
 These all use 3D tensors
 """
+from typing import Any
+
 import jax.numpy as jnp
 
 from cmad.models.elastic_constants import compute_lambda, compute_mu
 from cmad.parameters.parameters import unpack_elastic_params
+from cmad.typing import GlobalList, JaxArray
 
 
 # form used by elastic-plastic models
-def isotropic_linear_elastic_stress(elastic_strain, params):
+def isotropic_linear_elastic_stress(
+        elastic_strain: JaxArray, params: dict[str, Any],
+) -> JaxArray:
     E, nu = unpack_elastic_params(params)
     lame_lambda = compute_lambda(E, nu)
     lame_mu = compute_mu(E, nu)
@@ -20,7 +25,9 @@ def isotropic_linear_elastic_stress(elastic_strain, params):
 
 
 # alternative form used by elasticity-only models
-def isotropic_linear_elastic_cauchy_stress(F, u, params):
+def isotropic_linear_elastic_cauchy_stress(
+        F: JaxArray, u: GlobalList, params: dict[str, Any],
+) -> JaxArray:
     I = jnp.eye(3)
     grad_u = F - I
     epsilon = 0.5 * (grad_u + grad_u.T)
@@ -33,7 +40,9 @@ def isotropic_linear_elastic_cauchy_stress(F, u, params):
     return kappa * trace_epsilon * I + 2. * mu * dev_epsilon
 
 
-def compressible_neohookean_cauchy_stress(F, u, params):
+def compressible_neohookean_cauchy_stress(
+        F: JaxArray, u: GlobalList, params: dict[str, Any],
+) -> JaxArray:
     J = jnp.linalg.det(F)
     Jm23 = jnp.cbrt(J)**-2
 
@@ -47,7 +56,7 @@ def compressible_neohookean_cauchy_stress(F, u, params):
     return J**-1 * (0.5 * kappa * (J**2 - 1.) * I + mu * dev_bbar)
 
 
-def two_mu_scale_factor(params):
+def two_mu_scale_factor(params: dict[str, Any]) -> float | JaxArray:
     elastic_params_keys = params["elastic"].keys()
     if "mu" in elastic_params_keys:
         return 2. * params["elastic"]["mu"]

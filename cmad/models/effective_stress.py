@@ -1,20 +1,26 @@
 """
 These all assume 3D cauchy stress inputs
 """
+from collections.abc import Callable
+from functools import partial
+from typing import Any
+
 import jax.numpy as jnp
 
-from functools import partial
 from jax import grad
 from jax.lax import cond, fori_loop
 
 from cmad.models.elastic_constants import compute_mu
 from cmad.parameters.parameters import unpack_elastic_params
 from cmad.solver.nonlinear_solver import make_newton_solve
+from cmad.typing import JaxArray, PyTree
 from cmad.util.jax_eigen_decomposition import jax_compute_eigenvalues
 from cmad.verification.functions import jax_barlat_yield
 
 
-def conventional_effective_stress_fun(effective_stress_type):
+def conventional_effective_stress_fun(
+        effective_stress_type: str,
+) -> Callable[..., JaxArray]:
     if effective_stress_type == "J2":
         return J2_effective_stress
     elif effective_stress_type == "hill":
@@ -27,7 +33,9 @@ def conventional_effective_stress_fun(effective_stress_type):
         raise NotImplementedError
 
 
-def J2_effective_stress(cauchy, params):
+def J2_effective_stress(
+        cauchy: JaxArray, params: dict[str, Any] | None,
+) -> JaxArray:
     hydro_cauchy = jnp.trace(cauchy) / 3.
     s = cauchy - hydro_cauchy * jnp.eye(3)
     snorm = jnp.sqrt(jnp.sum(s * s))
@@ -35,7 +43,7 @@ def J2_effective_stress(cauchy, params):
     return phi
 
 
-def hill_effective_stress(cauchy, params):
+def hill_effective_stress(cauchy: JaxArray, params: dict[str, Any]) -> JaxArray:
     hill_coeffs = params["effective stress"]["hill"]
     F, G, H = hill_coeffs["F"], hill_coeffs["G"], hill_coeffs["H"]
     L, M, N = hill_coeffs["L"], hill_coeffs["M"], hill_coeffs["N"]
@@ -50,7 +58,7 @@ def hill_effective_stress(cauchy, params):
     return phi
 
 
-def flatten_barlat_params(params):
+def flatten_barlat_params(params: dict[str, Any]) -> JaxArray:
     barlat_coeffs = params["effective stress"]["barlat"]
 
     sp_12, sp_13 = barlat_coeffs["sp_12"], barlat_coeffs["sp_13"]
@@ -76,21 +84,28 @@ def flatten_barlat_params(params):
     return flat_barlat_coeffs
 
 
-def barlat_effective_stress(cauchy, params):
+def barlat_effective_stress(cauchy: JaxArray, params: dict[str, Any]) -> JaxArray:
     flat_barlat_coeffs = flatten_barlat_params(params)
 
     return jax_barlat_yield(cauchy, flat_barlat_coeffs)
 
 
-def beta_initial_guess(cauchy, equivalent_stress, tol=1e-14):
+def beta_initial_guess(
+        cauchy: JaxArray, equivalent_stress: float | JaxArray,
+        tol: float = 1e-14,
+) -> JaxArray:
     phi_J2 = J2_effective_stress(cauchy, None)
     is_J2_near_zero = jnp.isclose(phi_J2, 0., tol, tol)
     initial_guess = equivalent_stress / phi_J2
     return cond(is_J2_near_zero, lambda x: -1., lambda x: x, initial_guess)
 
 
-def beta_make_newton_solve(effective_stress_fun, equivalent_stress,
-        max_iters=10, abs_tol=1e-14, rel_tol=1e-14, max_ls_evals=0):
+def beta_make_newton_solve(
+        effective_stress_fun: Callable[..., JaxArray],
+        equivalent_stress: float | JaxArray,
+        max_iters: int = 10, abs_tol: float = 1e-14,
+        rel_tol: float = 1e-14, max_ls_evals: int = 0,
+) -> Callable[..., PyTree]:
     def residual(beta, initial_guess, cauchy, params):
         scaled_input_effective_stress = \
             effective_stress_fun(beta * cauchy, params)
@@ -100,20 +115,31 @@ def beta_make_newton_solve(effective_stress_fun, equivalent_stress,
          abs_tol, rel_tol, max_ls_evals)
 
 
-def make_safe_update_fun(initial_guess, cauchy, params, update_fun):
+def make_safe_update_fun(
+        initial_guess: JaxArray, cauchy: JaxArray, params: dict[str, Any],
+        update_fun: Callable[..., JaxArray],
+) -> JaxArray:
     return cond(initial_guess < 0., lambda *args: 1., update_fun,
                 initial_guess, cauchy, params)
 
 
-def scaled_hybrid_hill_effective_stress(cauchy, params, nn_fun, safe_update):
+def scaled_hybrid_hill_effective_stress(
+        cauchy: JaxArray, params: dict[str, Any],
+        nn_fun: Callable[..., JaxArray],
+        safe_update: Callable[..., JaxArray],
+) -> JaxArray:
     Y = params["flow stress"]["initial yield"]["Y"]
     beta = safe_update(beta_initial_guess(cauchy, Y), cauchy, params)
     scaled_cauchy = beta * cauchy
     return hybrid_hill_effective_stress(scaled_cauchy, params, nn_fun) / beta
 
 
-def scaled_effective_stress(cauchy, params,
-        effective_stress_fun, update_fun, tol=1e-14):
+def scaled_effective_stress(
+        cauchy: JaxArray, params: dict[str, Any],
+        effective_stress_fun: Callable[..., JaxArray],
+        update_fun: Callable[..., JaxArray],
+        tol: float = 1e-14,
+) -> JaxArray:
 
     def beta_effective_stress(cauchy, params, beta):
         return effective_stress_fun(beta * cauchy, params) / beta
@@ -127,7 +153,10 @@ def scaled_effective_stress(cauchy, params,
         cauchy, params, beta)
 
 
-def hybrid_hill_effective_stress(cauchy, params, nn_fun):
+def hybrid_hill_effective_stress(
+        cauchy: JaxArray, params: dict[str, Any],
+        nn_fun: Callable[..., JaxArray],
+) -> JaxArray:
     phi_hill = hill_effective_stress(cauchy, params)
     hydro_cauchy = jnp.trace(cauchy) / 3.
     dev_cauchy = cauchy - hydro_cauchy * jnp.eye(3)
@@ -143,7 +172,7 @@ def hybrid_hill_effective_stress(cauchy, params, nn_fun):
 
 
 # only working for diagonal cauchy stress now
-def hosford_effective_stress(cauchy, params):
+def hosford_effective_stress(cauchy: JaxArray, params: dict[str, Any]) -> JaxArray:
     vm_stress = J2_effective_stress(cauchy, params)
     a = params["effective stress"]["hosford"]["a"]
     scaled_cauchy = cauchy / vm_stress

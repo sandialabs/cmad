@@ -1,11 +1,18 @@
+from collections.abc import Callable
+from typing import Any
+
 import jax.numpy as jnp
 
 from jax import grad
 
 from cmad.models.kinematics import compute_invariants
+from cmad.typing import GlobalList, JaxArray
 
 
-def compute_cauchy_from_psi_b(F, u, params, psi_b_fun):
+def compute_cauchy_from_psi_b(
+        F: JaxArray, u: GlobalList, params: dict[str, Any],
+        psi_b_fun: Callable[..., JaxArray],
+) -> JaxArray:
     b = F @ F.T
     invariants_b = compute_invariants(b)
     I1, I2, I3 = invariants_b
@@ -20,7 +27,9 @@ def compute_cauchy_from_psi_b(F, u, params, psi_b_fun):
     return cauchy
 
 
-def compressible_neohookean_potential(invariants, params):
+def compressible_neohookean_potential(
+        invariants: tuple[JaxArray, JaxArray, JaxArray], params: dict[str, Any],
+) -> JaxArray:
     """ From Computational Plasticity by Simo and Hughes"""
 
     I1, I2, I3 = invariants

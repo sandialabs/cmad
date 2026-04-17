@@ -33,7 +33,16 @@ PyTreeDict: TypeAlias = dict[str, "PyTreeDict | PyTreeLeaf | Transform"]
 active-flag, and transform trees in CMAD, which are always dict-shaped."""
 
 Params: TypeAlias = PyTreeDict
-"""Constitutive-model parameter values."""
+"""Constitutive-model parameter values.
+
+Used as a strict alias for storage on Parameters and at the public API
+boundary. Helper functions that traverse `params["X"]["Y"]`-style chains
+internally (effective_stress, hardening, elastic_stress, etc.) instead
+take `dict[str, Any]` because mypy cannot narrow the recursive PyTreeDict
+union at each chain step. A future commit could replace the looseness
+with TypedDicts per parameter shape (J2EffectiveStressParams,
+HillCoeffs, VoceParams, etc.) for full strict typing.
+"""
 
 ActiveFlags: TypeAlias = PyTreeDict
 """Pytree parallel to a Params tree; each leaf is a bool (covered by

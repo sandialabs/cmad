@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from typing import Any, cast
 
 import numpy as np
 import jax.numpy as jnp
@@ -16,7 +17,7 @@ from cmad.models.kinematics import gather_F, off_axis_idx
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
 from cmad.models.paths import cond_residual
-from cmad.typing import GlobalList, JaxArray, Params, StateList
+from cmad.typing import GlobalList, JaxArray, StateList
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -29,7 +30,7 @@ from cmad.models.var_types import (
 
 
 def compute_delta_strain(
-        xi: StateList, xi_prev: StateList, params: Params,
+        xi: StateList, xi_prev: StateList, params: dict[str, Any],
         u: GlobalList, u_prev: GlobalList,
         def_type: int, uniaxial_stress_idx: int,
 ) -> JaxArray:
@@ -73,7 +74,7 @@ def compute_delta_strain(
 
 
 def compute_yield_fun_and_normal(
-        xi: StateList, params: Params, def_type: int,
+        xi: StateList, params: dict[str, Any], def_type: int,
         effective_stress: Callable[..., JaxArray],
         hardening: Callable[..., JaxArray],
         is_complex: bool,
@@ -190,12 +191,13 @@ class SmallRateElasticPlastic(Model):
         self.parameters = parameters
 
         if effective_stress_fun is None:
+            plastic_subtree = cast(dict[str, Any], parameters.values["plastic"])
             effective_stress_type = \
-                list(parameters.values["plastic"]["effective stress"])[0]
+                list(plastic_subtree["effective stress"])[0]
             effective_stress_fun = \
                 conventional_effective_stress_fun(effective_stress_type)
 
-        residual = partial(self._residual, def_type=def_type,
+        residual = partial(self._residual_fn, def_type=def_type,
                            elastic_stress=elastic_stress_fun,
                            effective_stress=effective_stress_fun,
                            hardening=partial(combined_hardening_fun,
@@ -203,13 +205,13 @@ class SmallRateElasticPlastic(Model):
                            yield_tol=yield_tol,
                            uniaxial_stress_idx=uniaxial_stress_idx, is_complex=is_complex)
 
-        cauchy = partial(self.cauchy, def_type=def_type)
+        cauchy = partial(self._cauchy_fn, def_type=def_type)
 
         super().__init__(residual, cauchy)
 
     @staticmethod
-    def _residual(
-            xi: StateList, xi_prev: StateList, params: Params,
+    def _residual_fn(
+            xi: StateList, xi_prev: StateList, params: dict[str, Any],
             u: GlobalList, u_prev: GlobalList,
             def_type: int,
             elastic_stress: Callable[..., JaxArray],
@@ -254,18 +256,18 @@ class SmallRateElasticPlastic(Model):
             / scale_factor
         C_plastic_alpha = yield_fun
 
-        if def_type == def_type.FULL_3D:
+        if def_type == DefType.FULL_3D:
             C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha]
             C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha]
 
-        elif def_type == def_type.PLANE_STRESS or \
-                def_type == def_type.UNIAXIAL_STRESS:
+        elif def_type == DefType.PLANE_STRESS or \
+                def_type == DefType.UNIAXIAL_STRESS:
 
             Q = params["rotation matrix"]
             global_trial_delta_cauchy = Q @ trial_delta_cauchy @ Q.T
             global_delta_cauchy = Q @ delta_cauchy @ Q.T
 
-            if def_type == def_type.PLANE_STRESS:
+            if def_type == DefType.PLANE_STRESS:
                 C_elastic_stretch = global_trial_delta_cauchy[2, 2] \
                     / scale_factor
                 C_plastic_stretch = global_delta_cauchy[2, 2] / scale_factor
@@ -275,7 +277,7 @@ class SmallRateElasticPlastic(Model):
                 C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha,
                                    C_plastic_stretch]
 
-            elif def_type == def_type.UNIAXIAL_STRESS:
+            elif def_type == DefType.UNIAXIAL_STRESS:
                 off_axis_stress_idx = off_axis_idx(uniaxial_stress_idx)
                 first_idx = off_axis_stress_idx[0]
                 second_idx = off_axis_stress_idx[1]
@@ -310,8 +312,8 @@ class SmallRateElasticPlastic(Model):
         raise NotImplementedError
 
     @staticmethod
-    def cauchy(
-            xi: StateList, xi_prev: StateList, params: Params,
+    def _cauchy_fn(
+            xi: StateList, xi_prev: StateList, params: dict[str, Any],
             u: GlobalList, u_prev: GlobalList, def_type: int,
     ) -> JaxArray:
 
