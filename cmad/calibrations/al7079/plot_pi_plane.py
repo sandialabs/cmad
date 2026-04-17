@@ -30,11 +30,11 @@ from cmad.verification.functions import jax_barlat_yield, jax_hill_yield
 def compute_phi_and_dev_coords(effective_stress_fun, betas,
         cauchys, dev_principal_stresses):
     phi = np.array([effective_stress_fun(beta * cauchy)
-        for beta, cauchy in zip(betas, cauchys)
+        for beta, cauchy in zip(betas, cauchys, strict=False)
     ])
     dev_coords = np.vstack([
         beta * F @ dev_projection_values
-        for beta, dev_projection_values in zip(betas, dev_principal_stresses)
+        for beta, dev_projection_values in zip(betas, dev_principal_stresses, strict=False)
     ])
 
     return phi, dev_coords
@@ -83,7 +83,8 @@ jit_barlat_effective_stress = jit(partial(jax_barlat_yield,
 ))
 
 # ICNN + Hill
-nn_props = pickle.load(open("nn_props_16.p", "rb"))
+with open("nn_props_16.p", "rb") as f:
+    nn_props = pickle.load(f)
 hybrid_model_params = nn_props["params"]
 input_scaler = nn_props["input scaler"]
 output_scaler = nn_props["output scaler"]
@@ -159,18 +160,18 @@ for specimen_idx in specimen_indices:
     ])
     nn_phi = np.array([jit_hybrid_effective_stress(beta * cauchy,
         hybrid_model_params["plastic"])
-        for beta, cauchy in zip(nn_betas, cauchys)
+        for beta, cauchy in zip(nn_betas, cauchys, strict=False)
     ])
     assert np.linalg.norm(nn_phi - Y) / num_angles < yield_surface_tol
 
     # not supposed to be equal to Y --- don't panic
     scaled_nn_phi = np.array([scaled_hybrid_effective_stress(cauchy,
         hybrid_model_params["plastic"])
-        for beta, cauchy in zip(nn_betas, cauchys)
+        for beta, cauchy in zip(nn_betas, cauchys, strict=False)
     ])
     nn_dev_coords = np.vstack([
         beta * F @ dev_projection_values
-        for beta, dev_projection_values in zip(nn_betas, dev_principal_stresses)
+        for beta, dev_projection_values in zip(nn_betas, dev_principal_stresses, strict=False)
     ])
 
     # check that this is zero (safe)

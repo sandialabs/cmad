@@ -14,7 +14,7 @@ def compute_cauchy_from_psi_b(
 ) -> JaxArray:
     b = F @ F.T
     invariants_b = compute_invariants(b)
-    I1, I2, I3 = invariants_b
+    I1, _I2, I3 = invariants_b
     J = jnp.sqrt(I3)
 
     dpsi_dIs = grad(psi_b_fun)(invariants_b, params)
@@ -31,7 +31,7 @@ def compressible_neohookean_potential(
 ) -> JaxArray:
     """ From Computational Plasticity by Simo and Hughes"""
 
-    I1, I2, I3 = invariants
+    I1, _I2, I3 = invariants
     J = jnp.sqrt(I3)
     Jm23 = jnp.cbrt(J)**-2
 

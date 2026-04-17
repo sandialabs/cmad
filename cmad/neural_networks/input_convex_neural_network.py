@@ -38,7 +38,7 @@ def forward(x, params):
     *z_hidden, z_last = params["z params"]
 
     z = activation(x @ x_hidden[0]["weights"] + x_hidden[0]["biases"])
-    for x_layer, z_layer in zip(x_hidden[1:], z_hidden):
+    for x_layer, z_layer in zip(x_hidden[1:], z_hidden, strict=False):
         z = activation(z @ z_layer["weights"] + x @ x_layer["weights"] \
           + x_layer["biases"])
 
@@ -68,8 +68,8 @@ class InputConvexNeuralNetwork:
         x_params = [None] * num_x_trainable_layers
         x_input_widths = [layer_widths[0]] * num_x_trainable_layers
         z_params = [None] * num_z_trainable_layers
-        x_layer_props = zip(x_layers_idx, x_input_widths, layer_widths[1:])
-        z_layer_props = zip(z_layers_idx, layer_widths[1:-1], layer_widths[2:])
+        x_layer_props = zip(x_layers_idx, x_input_widths, layer_widths[1:], strict=False)
+        z_layer_props = zip(z_layers_idx, layer_widths[1:-1], layer_widths[2:], strict=False)
 
         for idx, num_in, num_out in x_layer_props:
             x_params[idx] = dict(weights=np.random.normal(

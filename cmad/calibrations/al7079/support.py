@@ -94,7 +94,6 @@ def params_hill_voce(p_elastic, p_hill, p_voce):
     S, D = p_voce
 
     elastic_params = {"E": E, "nu": nu}
-    J2_effective_stress_params = {"J2": 0.}
     initial_yield_params = {"Y": Y}
     voce_params = {"S": S, "D": D}
     hardening_params = {"voce": voce_params}
@@ -140,8 +139,7 @@ def params_hybrid_hill_voce(p_elastic, p_hill, p_voce, nn_params):
     hardening_params = {"voce": voce_params}
 
     hill_coefficients = {"F": F, "G": G, "H": H, "L": L, "M": M, "N": N}
-    hill_effective_stress_params = {"hill": hill_coefficients}
-    hill_coefficients_bounds = np.array([0.1, 3.])
+    np.array([0.1, 3.])
 
     hybrid_hill_values = {
         "rotation matrix": np.eye(3),
@@ -191,7 +189,6 @@ def params_icnn_hybrid_hill_voce(p_elastic, p_hill, p_voce, icnn_params):
     hardening_params = {"voce": voce_params}
 
     hill_coefficients = {"F": F, "G": G, "H": H, "L": L, "M": M, "N": N}
-    hill_effective_stress_params = {"hill": hill_coefficients}
     hill_coefficients_bounds = np.array([0.1, 3.])
 
     hybrid_hill_values = {

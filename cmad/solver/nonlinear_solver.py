@@ -103,12 +103,12 @@ def make_newton_solve(
 
 
         def true_fun(carry):
-            ii, converged, x, C, C_norm = carry
+            ii, _converged, x, C, C_norm = carry
             return ii, True, x, C, C_norm
 
 
         def false_fun(carry):
-            ii, converged, x, C, C_norm = carry
+            ii, _converged, x, C, _C_norm = carry
 
             jac = jacfwd(residual, 0)(x, *args)
             delta_x = linsolve(jac, C)
@@ -121,12 +121,12 @@ def make_newton_solve(
 
 
         def cond_fun(carry):
-            ii, converged, x, C, C_norm = carry
+            ii, converged, _x, _C, _C_norm = carry
             return jnp.logical_and(ii < max_iters, jnp.logical_not(converged))
 
 
         def body_fun(carry):
-            ii, converged, x, C, C_norm = carry
+            _ii, _converged, _x, _C, C_norm = carry
             C_norm_rel = C_norm / C_norm_0
             pred = jnp.logical_or(C_norm_rel < rel_tol, C_norm < abs_tol)
             return cond(pred, true_fun, false_fun, carry)

@@ -26,7 +26,7 @@ def hill_analytic_compute_yield_and_normal(R_matrices, sigma_values, params):
     yield_values = np.zeros_like(sigma_values)
     ratio_values = np.zeros_like(sigma_values)
 
-    for idx, (R, sigma_c) in enumerate(zip(R_matrices, sigma_values)):
+    for idx, (R, sigma_c) in enumerate(zip(R_matrices, sigma_values, strict=False)):
         sigma = sigma_c * unit_sigma
         sigma_mat = R.T @ sigma @ R
         phi = hill_yield(sigma_mat, params)
@@ -56,7 +56,7 @@ def jax_compute_yield_and_normal(R, sigma_c, params,
 def compute_all_yields_and_normals(params, rotations, sigma_values,
         jax_compute_yield_and_normal_fun):
     vals = jnp.hstack([jax_compute_yield_and_normal_fun(R, sigma_c, params)
-        for R, sigma_c in zip(rotations, sigma_values)])
+        for R, sigma_c in zip(rotations, sigma_values, strict=False)])
     return vals
 
 
@@ -67,7 +67,7 @@ def objective(params, rotations, sigma_values, ratio_values, Y, weights,
     obj_sigma = w_sigma * jnp.sum(jnp.array([(sigma / Y - 1.)**2 \
         for sigma in vals[0, :]]))
     obj_ratio = w_ratio * jnp.sum(jnp.array([(pred_ratio / meas_ratio - 1.)**2 \
-        for pred_ratio, meas_ratio in zip(vals[1, :], ratio_values)]))
+        for pred_ratio, meas_ratio in zip(vals[1, :], ratio_values, strict=False)]))
     return obj_sigma + obj_ratio
 
 

@@ -33,7 +33,7 @@ def extract_material_dev_cauchy_vector(sigma_c, rotation):
     sigma = sigma_c * unit_sigma
     sigma_mat = rotation.T @ sigma @ rotation
     dev_sigma_mat = sigma_mat - np.trace(sigma_mat) / 3. * np.eye(3)
-    dev_sigma_norm = np.linalg.norm(dev_sigma_mat)
+    np.linalg.norm(dev_sigma_mat)
     vec_dev_sigma_mat = np.array([dev_sigma_mat[0, 0], dev_sigma_mat[1, 1],
         dev_sigma_mat[2, 2], dev_sigma_mat[0, 1], dev_sigma_mat[0, 2],
         dev_sigma_mat[1, 2]])
@@ -46,7 +46,7 @@ def make_input_scaler(sigma_c_values, rotations, Scaler=MinMaxScaler):
 
     unscaled_features = np.vstack([
          extract_material_dev_cauchy_vector(sigma_c, rotation)
-         for sigma_c, rotation in zip(sigma_c_values, rotations)
+         for sigma_c, rotation in zip(sigma_c_values, rotations, strict=False)
     ])
 
     input_scaler.fit(unscaled_features)
@@ -92,7 +92,7 @@ class EffectiveStressObjective:
         Y = float(param_values["plastic"]["flow stress"]["initial yield"]["Y"])
 
         zip_data = zip(self._sigma_c_values, self._ratio_c_values,
-            self._rotations)
+            self._rotations, strict=False)
 
         J = 0.
         dJ_dp = np.zeros((1, self.parameters.num_active_params))
@@ -148,7 +148,7 @@ def calibrate_hill(params, train_data, val_data, weights,
     params.set_active_values_from_flat(opt_params)
     unscaled_opt_params = params.flat_active_values()
 
-    for idx, (sigma_c, R) in enumerate(zip(val_sigma_c_values, val_R_matrices)):
+    for idx, (sigma_c, R) in enumerate(zip(val_sigma_c_values, val_R_matrices, strict=False)):
         phi, ratio = yield_and_normal_fun(params.values, sigma_c, R)
         val_phi[idx] = phi
         val_ratio[idx] = ratio
@@ -163,7 +163,7 @@ def run_hill(params, val_data, yield_and_normal_fun):
     val_phi = np.zeros(num_val_idx)
     val_ratio = np.zeros(num_val_idx)
 
-    for idx, (sigma_c, R) in enumerate(zip(val_sigma_c_values, val_R_matrices)):
+    for idx, (sigma_c, R) in enumerate(zip(val_sigma_c_values, val_R_matrices, strict=False)):
         phi, ratio = yield_and_normal_fun(params.values, sigma_c, R)
         val_phi[idx] = phi
         val_ratio[idx] = ratio
@@ -230,10 +230,7 @@ data_type = "tension"
 #data_type = "both"
 
 if data_type == "tension" or data_type == "compression":
-    if data_type == "tension":
-        sign = 1.
-    else:
-        sign = -1.
+    sign = 1.0 if data_type == "tension" else -1.0
     total_val_sigma_c_values = sign * val_sigma_c_values
     total_train_sigma_c_values = sign * train_sigma_c_values
     train_data = (total_train_sigma_c_values, train_ratio_c_values,
@@ -296,7 +293,8 @@ nn_props["params"] = hybrid_params.values
 nn_props["input scaler"] = input_scaler
 nn_props["output scaler"] = output_scaler
 nn_props["layer widths"] = layer_widths
-pickle.dump(nn_props, open("nn_props_16.p", "wb"))
+with open("nn_props_16.p", "wb") as f:
+    pickle.dump(nn_props, f)
 
 if False:
     trad_hold_out_obj = 0.5 * (weights[0] * np.sum((paper_phi[hold_out_idx] / Y \

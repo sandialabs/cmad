@@ -79,7 +79,7 @@ def compute_yield_fun_and_normal(
         is_complex: bool,
 ) -> tuple[JaxArray, JaxArray]:
 
-    ndims = def_type_ndims(def_type)
+    def_type_ndims(def_type)
 
     plastic_params = params["plastic"]
     Y = plastic_params["flow stress"]["initial yield"]["Y"]
@@ -195,7 +195,7 @@ class SmallRateElasticPlastic(Model):
         if effective_stress_fun is None:
             plastic_subtree = cast(dict[str, Any], parameters.values["plastic"])
             effective_stress_type = \
-                list(plastic_subtree["effective stress"])[0]
+                next(iter(plastic_subtree["effective stress"]))
             effective_stress_fun = \
                 conventional_effective_stress_fun(effective_stress_type)
 

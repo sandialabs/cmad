@@ -180,7 +180,7 @@ class SmallElasticPlastic(Model):
         if effective_stress_fun is None:
             plastic_subtree = cast(dict[str, Any], parameters.values["plastic"])
             effective_stress_type = \
-                list(plastic_subtree["effective stress"])[0]
+                next(iter(plastic_subtree["effective stress"]))
             effective_stress_fun = \
                 conventional_effective_stress_fun(effective_stress_type)
 

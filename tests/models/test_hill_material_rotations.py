@@ -21,11 +21,11 @@ from cmad.verification.solutions import compute_elastic_fields, compute_plastic_
 
 class TestHillMaterialRotations(unittest.TestCase):
     def test_hill_rotations(self):
-        alpha_angles, alpha_sigma_c_values, alpha_ratio_c_values, R_alphas = \
+        _alpha_angles, alpha_sigma_c_values, _alpha_ratio_c_values, R_alphas = \
             slab_data("alpha")
-        beta_angles, beta_sigma_c_values, beta_ratio_c_values, R_betas = \
+        _beta_angles, _beta_sigma_c_values, _beta_ratio_c_values, R_betas = \
             slab_data("beta")
-        gamma_angles, gamma_sigma_c_values, gamma_ratio_c_values, R_gammas = \
+        _gamma_angles, _gamma_sigma_c_values, _gamma_ratio_c_values, R_gammas = \
             slab_data("gamma")
 
         Y = alpha_sigma_c_values[0]
@@ -39,7 +39,7 @@ class TestHillMaterialRotations(unittest.TestCase):
 def run_test(R_matrices, Y, diff_tol):
     ndims = 3
     fit_params = calibrated_hill_coefficients()
-    weights = calibration_weights()
+    calibration_weights()
 
     p_elastic = np.array([70.22857142857143e3, 0.33396551724137924]) # not being optimized
     p_hill = np.r_[np.array(Y), fit_params]
@@ -74,7 +74,7 @@ def run_test(R_matrices, Y, diff_tol):
         # rotate to material coordinate system
         mat_stress_mask = R_matrix.T @ stress_mask @ R_matrix
 
-        mat_plastic_stress, mat_plastic_strain, alpha = compute_plastic_fields(
+        mat_plastic_stress, mat_plastic_strain, _alpha = compute_plastic_fields(
             mat_stress_mask,
             pt_hill_yield, pt_hill_yield_normal, isotropic_param_values, max_alpha,
             num_plastic_steps

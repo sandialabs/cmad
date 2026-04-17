@@ -68,7 +68,7 @@ class TestHyperelasticModels(unittest.TestCase):
         cauchys = [linear_elastic_cauchy, potential_cauchy, analytic_cauchy]
         Js = [linear_elastic_J, potential_J, analytic_J]
 
-        for model, cauchy, J in zip(models, cauchys, Js):
+        for model, cauchy, J in zip(models, cauchys, Js, strict=False):
 
             for step in range(1, num_steps + 1):
 
@@ -125,7 +125,7 @@ class TestHyperelasticModels(unittest.TestCase):
         models = [potential_model_3D, analytic_model_3D]
         cauchys = [potential_cauchy_3D, analytic_cauchy_3D]
 
-        for model, cauchy in zip(models, cauchys):
+        for model, cauchy in zip(models, cauchys, strict=False):
 
             for step in range(1, num_steps + 1):
 

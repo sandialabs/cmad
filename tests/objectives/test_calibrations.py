@@ -99,7 +99,7 @@ class TestJ2Calibrations(unittest.TestCase):
 
         for objective in objectives:
 
-            opt_params, fun_vals, cvg_dict = fmin_l_bfgs_b(
+            opt_params, _fun_vals, _cvg_dict = fmin_l_bfgs_b(
                 objective.evaluate, initial_guess, bounds=opt_bounds, factr=10)
             model.parameters.set_active_values_from_flat(opt_params)
             unscaled_opt_params = model.parameters.flat_active_values()

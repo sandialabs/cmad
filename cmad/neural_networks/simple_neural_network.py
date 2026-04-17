@@ -36,7 +36,7 @@ class SimpleNeuralNetwork:
         num_trainable_layers = len(layer_widths) - 1
         layers_idx = np.arange(num_trainable_layers, dtype=int)
         params = [None] * num_trainable_layers
-        layer_props = zip(layers_idx, layer_widths[:-1], layer_widths[1:])
+        layer_props = zip(layers_idx, layer_widths[:-1], layer_widths[1:], strict=False)
 
         # abs initialization for monotonic networks
         for idx, num_in, num_out in layer_props:

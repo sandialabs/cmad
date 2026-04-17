@@ -8,7 +8,7 @@ def make_linop(jnp_op, tree_in, tree_out):
         br = ravel_pytree(b)[0]
         len_in = tree_in.args[0].num_leaves
         lenA = len(tree_leaves(A))
-        len_out = lenA // len_in
+        lenA // len_in
         rows = ravel_pytree(A)[0].shape[0] // br.shape[0]
         if rows != 1:
             leavesA = [jnp.reshape(s, (s.shape[0], -1)) for s in tree_leaves(A)]

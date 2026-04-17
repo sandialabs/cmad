@@ -18,10 +18,7 @@ def generate_test_matrix(test_case, distribution, perturb=1.,
                          test_eigenvalues_scale=5.):
 
     random_numbers = distribution.rvs(3)
-    if test_case == "diagonal":
-        Q = np.eye(3)
-    else:
-        Q = special_ortho_group.rvs(3)
+    Q = np.eye(3) if test_case == "diagonal" else special_ortho_group.rvs(3)
 
     if test_case == "diagonal" or test_case == "completely random":
         exact_eigenvalues = test_eigenvalues_scale * random_numbers

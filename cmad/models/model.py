@@ -1,6 +1,6 @@
 from abc import ABC
 from collections.abc import Callable, Sequence
-from typing import cast
+from typing import ClassVar, cast
 
 import numpy as np
 from jax import hessian, jacfwd, jacrev, jit
@@ -363,15 +363,16 @@ class Model(ABC):
         elif self._num_eqs[idx] == 1:
             self._xi[idx][0] = xi[0, 0]
 
+    _NDIM_BY_NUM_EQS: ClassVar[dict[int, int]] = {9: 3, 4: 2, 1: 1}
+
     @staticmethod
     def get_tensor_ndim(num_eqs: int) -> int:
-        if num_eqs == 9:
-            return 3
-        elif num_eqs == 4:
-            return 2
-        elif num_eqs == 1:
-            return 1
-        raise ValueError(f"Unknown num_eqs for tensor variable: {num_eqs}")
+        try:
+            return Model._NDIM_BY_NUM_EQS[num_eqs]
+        except KeyError as e:
+            raise ValueError(
+                f"Unknown num_eqs for tensor variable: {num_eqs}"
+            ) from e
 
     def set_tensor_xi(self, idx: int, xi: JaxArray) -> None:
         ndim = Model.get_tensor_ndim(self._num_eqs[idx])

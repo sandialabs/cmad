@@ -85,7 +85,7 @@ def compute_deviator_eigenvalues(A):
         SA_12, SA_23, SA_31)
 
     sd = np.sign(J3)
-    C3 = (J3 / 2.) * (3. / J2)**(1.5)
+    (J3 / 2.) * (3. / J2)**(1.5)
     alpha = 2. / 3. * np.arctan(np.sqrt(Delta) / (2. * J2**(1.5) \
         + 3. * np.sqrt(3) * sd * J3))
 
@@ -112,7 +112,7 @@ def compute_eigen_decomposition(A):
 
 def non_diagonal_decomposition(A):
     deviator_eigenvalues = compute_deviator_eigenvalues(A)
-    eta_1, eta_2, eta_3 = deviator_eigenvalues
+    eta_1, eta_2, _eta_3 = deviator_eigenvalues
 
     A_spherical = np.trace(A) / 3.
     I = np.eye(3)

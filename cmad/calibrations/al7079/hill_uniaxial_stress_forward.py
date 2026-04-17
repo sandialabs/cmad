@@ -91,7 +91,7 @@ models = [SmallElasticPlastic(params, def_type, uniaxial_stress_idx=1),
 
 Rmats = R_alphas + R_betas + R_gammas
 
-for rr, Rmat in enumerate(Rmats):
+for _rr, Rmat in enumerate(Rmats):
     for model in models:
     #for model, compute_strain_fun in zip(models, compute_strain_funs):
 

@@ -41,7 +41,6 @@ def create_J2_parameters():
     E = 70e3
     nu = 0.3
     Y = 200.
-    K = 0e3
     S = 200.
     D = 20.
 

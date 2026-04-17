@@ -95,7 +95,7 @@ def compute_deviator_eigenvalues(A):
     J2_32 = jnp.sqrt(J2) * J2
 
     sd = jnp.sign(J3)
-    C3 = (J3 / 2.) * 3.**(1.5) / J2_32
+    (J3 / 2.) * 3.**(1.5) / J2_32
     alpha = 2. / 3. * jnp.arctan(jnp.sqrt(Delta) / (2. * J2_32 \
         + 3. * jnp.sqrt(3) * sd * J3))
 
@@ -125,7 +125,7 @@ def compute_eigen_decomposition(A):
 
 def non_diagonal_decomposition(A):
     deviator_eigenvalues = compute_deviator_eigenvalues(A)
-    eta_1, eta_2, eta_3 = deviator_eigenvalues
+    eta_1, eta_2, _eta_3 = deviator_eigenvalues
 
     A_spherical = jnp.trace(A) / 3.
     I = jnp.eye(3)

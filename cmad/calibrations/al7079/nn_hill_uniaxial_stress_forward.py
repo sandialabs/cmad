@@ -51,7 +51,8 @@ jit_jax_barlat_yield = jit(partial(jax_barlat_yield,
     barlat_params=barlat_coeffs
 ))
 
-nn_props = pickle.load(open("nn_props_16.p", "rb"))
+with open("nn_props_16.p", "rb") as f:
+    nn_props = pickle.load(f)
 hybrid_model_params = nn_props["params"]
 input_scaler = nn_props["input scaler"]
 output_scaler = nn_props["output scaler"]

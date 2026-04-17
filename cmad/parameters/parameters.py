@@ -54,7 +54,7 @@ def log_transform(
 
 
 def get_size(x: float | NDArray[np.floating]) -> int:
-    if isinstance(x, np.float64) or isinstance(x, float):
+    if isinstance(x, (np.float64, float)):
         return 1
     elif isinstance(x, ndarray):
         return np.size(x)
@@ -65,7 +65,7 @@ def get_size(x: float | NDArray[np.floating]) -> int:
 def expand_leaf_by_value_size(
         value: float | NDArray[np.floating], leaf: T,
 ) -> list[T]:
-    if isinstance(value, np.float64) or isinstance(value, float):
+    if isinstance(value, (np.float64, float)):
         return [leaf]
     elif isinstance(value, ndarray):
         num_params = np.size(value)
@@ -77,7 +77,7 @@ def flatten_by_value_size(values: PyTree, pytree: PyTree) -> list[object]:
     leaves, _ = tree_flatten(pytree, is_leaf=lambda x: x is None)
 
     expanded_leaves = [expand_leaf_by_value_size(value, leaf)
-                       for value, leaf in zip(leaf_values, leaves)]
+                       for value, leaf in zip(leaf_values, leaves, strict=False)]
 
     flat_pytree = list(chain.from_iterable(expanded_leaves))
     return flat_pytree
@@ -216,7 +216,7 @@ class Parameters:
 
         self._names = []
         flattened, _ = tree_flatten_with_path(values)
-        for key_path, value in flattened:
+        for key_path, _value in flattened:
             self._names.append(str(key_path[-1]))
 
         param_sizes = tree_map(lambda x: get_size(x), self.values)
@@ -310,7 +310,7 @@ class Parameters:
             active_flat_values = np.array([
                 transform_to_canonical(v, a, t) for v, a, t in
                 zip(flat_values, self._flat_active_flags,
-                    self._flat_transforms)])[self.active_idx]
+                    self._flat_transforms, strict=False)])[self.active_idx]
         else:
             active_flat_values = np.asarray(flat_values[self.active_idx])
 

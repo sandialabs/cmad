@@ -75,7 +75,6 @@ def create_J2_parameters():
     E = 70e3
     nu = 0.3
     Y = 200.
-    K = 0e3
     S = 200.
     D = 20.
 
@@ -125,10 +124,8 @@ def fd_grad_check_components(qoi, hs=np.logspace(-2, -10, 9)):
     direct_obj = DirectObjective(qoi)
     adjoint_obj = AdjointObjective(qoi)
 
-    J_ref, direct_grad_ref = \
-        direct_obj.evaluate(flat_active_values)
-    J_ref, adjoint_grad_ref = \
-        adjoint_obj.evaluate(flat_active_values)
+    _, direct_grad_ref = direct_obj.evaluate(flat_active_values)
+    _, adjoint_grad_ref = adjoint_obj.evaluate(flat_active_values)
 
     fs_fd_error = np.zeros((num_active_params, len(hs)))
     adjoint_fd_error = np.zeros((num_active_params, len(hs)))
@@ -163,10 +160,8 @@ def fd_grad_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     direct_obj = DirectObjective(qoi)
     adjoint_obj = AdjointObjective(qoi)
 
-    J_ref, direct_grad_ref = \
-        direct_obj.evaluate(flat_active_values)
-    J_ref, adjoint_grad_ref = \
-        adjoint_obj.evaluate(flat_active_values)
+    _, direct_grad_ref = direct_obj.evaluate(flat_active_values)
+    _, adjoint_grad_ref = adjoint_obj.evaluate(flat_active_values)
 
     np.random.seed(seed)
     d = np.random.uniform(low=-1.0, size=num_active_params)
@@ -203,7 +198,7 @@ def jvp_fd_grad_check_components(qoi, update_fun, hs=np.logspace(-2, -10, 9)):
 
     obj = JVPObjective(qoi, update_fun)
 
-    J_ref, grad_ref = \
+    _J_ref, grad_ref = \
         obj.evaluate_objective_and_grad(flat_active_values)
 
     fd_error = np.zeros((num_active_params, len(hs)))
@@ -235,7 +230,7 @@ def jvp_fd_grad_check(qoi, update_fun, hs=np.logspace(-2, -10, 9), seed=22):
 
     obj = JVPObjective(qoi, update_fun)
 
-    J_ref, grad_ref = \
+    _J_ref, grad_ref = \
         obj.evaluate_objective_and_grad(flat_active_values)
 
     np.random.seed(seed)
@@ -268,7 +263,7 @@ def fd_hessian_check_components(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     num_active_params = model.parameters.num_active_params
     hessian_obj = DirectAdjointObjective(qoi)
 
-    J_ref, grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
+    J_ref, _grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
 
     unique_idx = np.triu_indices(num_active_params)
     num_unique_entries = len(unique_idx[0])
