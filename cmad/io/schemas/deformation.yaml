@@ -1,0 +1,21 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+additionalProperties: false
+properties:
+  history_file:
+    type: string
+  inline:
+    type: array
+    minItems: 2
+    items:
+      type: array
+      minItems: 3
+      maxItems: 3
+      items:
+        type: array
+        minItems: 3
+        maxItems: 3
+        items: {type: number}
+oneOf:
+  - required: [history_file]
+  - required: [inline]

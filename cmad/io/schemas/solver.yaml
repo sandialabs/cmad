@@ -1,0 +1,13 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+additionalProperties: false
+required: [newton]
+properties:
+  newton:
+    type: object
+    additionalProperties: false
+    properties:
+      max_iters: {type: integer, minimum: 1, default: 10}
+      abs_tol: {type: number, exclusiveMinimum: 0, default: 1.0e-14}
+      rel_tol: {type: number, exclusiveMinimum: 0, default: 1.0e-14}
+      max_ls_evals: {type: integer, minimum: 0, default: 0}
