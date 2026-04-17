@@ -11,6 +11,8 @@ dependencies:
   - pytest
   - coverage>=6.4
   - pytest-cov
+  - mypy
+  - ruff
   - pip
   - setuptools
   - scikit-learn
