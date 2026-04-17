@@ -6,8 +6,8 @@ from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.qois.calibration import Calibration
 from cmad.solver.nonlinear_solver import newton_solve
-from cmad.test_support.plotting import plot_uniaxial_cauchy
-from cmad.test_support.test_problems import J2AnalyticalProblem
+from tests.support.plotting import plot_uniaxial_cauchy
+from tests.support.test_problems import J2AnalyticalProblem
 
 
 def run_test(model_type, def_type, num_steps=100, max_alpha=0.5):

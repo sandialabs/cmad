@@ -15,7 +15,7 @@ from cmad.objectives.objective import (
 )
 from cmad.qois.calibration import Calibration
 from cmad.solver.nonlinear_solver import newton_solve
-from cmad.test_support.test_problems import J2AnalyticalProblem
+from tests.support.test_problems import J2AnalyticalProblem
 
 
 def compute_cauchy(model, F):

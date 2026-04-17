@@ -10,7 +10,7 @@ from cmad.models.elastic_potential import (compute_cauchy_from_psi_b,
 from cmad.models.elastic_stress import (compressible_neohookean_cauchy_stress,
                                         isotropic_linear_elastic_cauchy_stress)
 from cmad.solver.nonlinear_solver import newton_solve
-from cmad.test_support.test_problems import params_hyperelastic
+from tests.support.test_problems import params_hyperelastic
 
 
 class TestHyperelasticModels(unittest.TestCase):
