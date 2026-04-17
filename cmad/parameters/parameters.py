@@ -16,9 +16,11 @@ from cmad.typing import (
     JaxArray,
     Params,
     PyTree,
+    PyTreeDict,
     Transform,
     Transforms,
 )
+from typing import cast
 
 
 T = TypeVar("T")
@@ -27,7 +29,7 @@ T = TypeVar("T")
 def bounds_transform(
         value: float, bounds: list[float],
         transform_from_canonical: bool = True,
-) -> float:
+) -> float | JaxArray:
     span = 0.5 * (bounds[1] - bounds[0])
     mean = 0.5 * (bounds[0] + bounds[1])
     if transform_from_canonical:
@@ -45,7 +47,7 @@ def bounds_transform(
 def log_transform(
         value: float, ref_value: list[float],
         transform_from_canonical: bool = True,
-) -> float:
+) -> float | JaxArray:
     if transform_from_canonical:
         transformed_value = ref_value[0] * jnp.exp(value)
     else:
@@ -96,6 +98,7 @@ def first_deriv_transform(value: float, transform: Transform) -> float:
         return 0.5 * (transform[1] - transform[0])
     if len(transform) == 1:
         return value
+    raise ValueError(f"Unexpected transform shape: {transform}")
 
 
 def second_deriv_transform(value: float, transform: Transform) -> float:
@@ -105,6 +108,7 @@ def second_deriv_transform(value: float, transform: Transform) -> float:
         return 0.
     if len(transform) == 1:
         return value
+    raise ValueError(f"Unexpected transform shape: {transform}")
 
 
 def diagonal_hessian_transform(
@@ -138,34 +142,34 @@ def get_opt_bounds(transform: Transform) -> list[float | None]:
 
 def transform_from_canonical(
         value: float, active_flag: bool, transform: Transform,
-) -> float:
+) -> float | JaxArray:
     if active_flag and transform is not None:
         if len(transform) == 2:
-            transform_fun = bounds_transform
+            return bounds_transform(value, transform)
         elif len(transform) == 1:
-            transform_fun = log_transform
-        return transform_fun(value, transform)
+            return log_transform(value, transform)
+        raise ValueError(f"Unexpected transform shape: {transform}")
     else:
         return value
 
 
 def transform_to_canonical(
         value: float, active_flag: bool, transform: Transform,
-) -> float:
+) -> float | JaxArray:
     if active_flag and transform is not None:
         if len(transform) == 2:
-            transform_fun = \
-                partial(bounds_transform, transform_from_canonical=False)
+            return bounds_transform(value, transform,
+                                    transform_from_canonical=False)
         elif len(transform) == 1:
-            transform_fun = \
-                partial(log_transform, transform_from_canonical=False)
-        return transform_fun(value, transform)
+            return log_transform(value, transform,
+                                 transform_from_canonical=False)
+        raise ValueError(f"Unexpected transform shape: {transform}")
     else:
         return value
 
 
 def unpack_elastic_params(params: Params) -> tuple[float, float]:
-    elastic_params = params["elastic"]
+    elastic_params = cast(dict[str, float], params["elastic"])
     E, nu = elastic_params["E"], elastic_params["nu"]
 
     return E, nu
@@ -175,10 +179,10 @@ class Parameters():
     """ Handle constitutive model parameters with Pytrees """
 
     # ---- always set in __init__ ----
-    values: PyTree
+    values: Params
     _active_flags: ActiveFlags | None
     _transforms: Transforms | None
-    _flat_values: NDArray[np.number]
+    _flat_values: NDArray[np.number] | JaxArray
     reconstruct_from_flat: Callable[..., PyTree]
     num_params: int
     _names: list[str]
@@ -201,7 +205,7 @@ class Parameters():
     mixed_block_shapes: list[tuple[int, int]]
 
     def __init__(
-            self, values: PyTree,
+            self, values: Params,
             active_flags: ActiveFlags | None = None,
             transforms: Transforms | None = None,
     ) -> None:
@@ -226,9 +230,14 @@ class Parameters():
 
         if active_flags is not None:
 
-            self._flat_active_flags = \
-                np.array(flatten_by_value_size(values, active_flags)).squeeze()
-            self.num_active_params = np.sum(self._flat_active_flags)
+            assert transforms is not None, \
+                "transforms must be supplied when active_flags is set"
+            self._flat_active_flags = np.array(cast(
+                list[bool],
+                flatten_by_value_size(cast(PyTree, values),
+                                      cast(PyTree, active_flags)),
+            )).squeeze()
+            self.num_active_params = int(np.sum(self._flat_active_flags))
             self.active_idx = \
                 np.arange(self.num_params)[self._flat_active_flags]
             self.model_active_params_jacobian = \
@@ -240,7 +249,8 @@ class Parameters():
                             active_idx=self.active_idx))
 
             self._expanded_flat_transforms = \
-                flatten_by_value_size(values, transforms)
+                flatten_by_value_size(cast(PyTree, values),
+                                      cast(PyTree, transforms))
             self._flat_transforms, _ = \
                 tree_flatten(self._expanded_flat_transforms,
                              is_leaf=lambda x: x is None)
@@ -254,8 +264,8 @@ class Parameters():
                 flat_values=self._flat_values,
                 reconstruct_from_flat=self.reconstruct_from_flat,
                 active_idx=self.active_idx,
-                active_flags=self._active_flags,
-                transforms=self._transforms
+                active_flags=active_flags,
+                transforms=transforms,
             )
 
 
@@ -272,7 +282,7 @@ class Parameters():
 
 
     def set_active_values(
-            self, values: PyTree, are_canonical: bool = True,
+            self, values: Params, are_canonical: bool = True,
     ) -> None:
         if are_canonical:
             self.values = \
@@ -292,7 +302,7 @@ class Parameters():
             updated_flat_values = np.array(self._flat_values)
         updated_flat_values[self.active_idx] = flat_active_values
         updated_values = self.reconstruct_from_flat(updated_flat_values)
-        self.set_active_values(updated_values, are_canonical)
+        self.set_active_values(cast(Params, updated_values), are_canonical)
 
 
     def flat_active_values(
@@ -305,19 +315,18 @@ class Parameters():
                 zip(flat_values, self._flat_active_flags,
                     self._flat_transforms)])[self.active_idx]
         else:
-            active_flat_values = \
-                np.array(flat_values[self.active_idx])
+            active_flat_values = np.asarray(flat_values[self.active_idx])
 
-        return active_flat_values
+        return cast(NDArray[np.floating], active_flat_values)
 
 
     def get_active_from_flat(self, pytree: PyTree) -> NDArray[np.floating]:
         flat, _ = ravel_pytree(pytree)
-        return flat[self.active_idx]
+        return cast(NDArray[np.floating], flat[self.active_idx])
 
 
     def transform_grad(self, grad: NDArray[np.floating]) -> None:
-        active_flat_values = self.get_active_from_flat(self.values)
+        active_flat_values = self.get_active_from_flat(cast(PyTree, self.values))
         for ii in range(self.num_active_params):
             value = active_flat_values[ii]
             transform = self._flat_active_transforms[ii]
@@ -328,7 +337,7 @@ class Parameters():
             self, hessian: NDArray[np.floating],
             grad: NDArray[np.floating],
     ) -> None:
-        active_flat_values = self.get_active_from_flat(self.values)
+        active_flat_values = self.get_active_from_flat(cast(PyTree, self.values))
         for ii in range(self.num_active_params):
             for jj in range(self.num_active_params):
                 if ii == jj:
@@ -377,7 +386,7 @@ class Parameters():
     @staticmethod
     def _get_params_pytree_from_flat_canonical_active(
             flat_canonical_active: NDArray[np.floating],
-            flat_values: NDArray[np.floating],
+            flat_values: JaxArray,
             reconstruct_from_flat: Callable[..., PyTree],
             active_idx: NDArray[np.intp],
             active_flags: ActiveFlags,

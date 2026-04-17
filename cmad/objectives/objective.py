@@ -64,7 +64,7 @@ class Objective(ABC):
         xi_at_step = self._xi_at_step
         model.set_xi_to_init_vals()
 
-        J = 0.
+        J: float | NDArray[np.number] = 0.
         num_steps = self._num_steps
 
         for step in range(1, num_steps + 1):
@@ -160,7 +160,7 @@ class DirectObjective(Objective):
         num_active_params = model.parameters.num_active_params
         num_dofs = model.num_dofs
 
-        J = 0.
+        J: float | NDArray[np.number] = 0.
         grad = np.zeros((1, num_active_params))
         dxi_dp = np.zeros((num_dofs, num_active_params))
 

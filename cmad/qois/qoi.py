@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from typing import cast
 
 import numpy as np
 import jax.numpy as jnp
@@ -30,7 +31,7 @@ class QoI(ABC):
     _weight: NDArray[np.floating]
 
     # ---- populated by evaluate() / evaluate_hessians() ----
-    _J: NDArray[np.floating]
+    _J: NDArray[np.number]
     _dJ: NDArray[np.floating] | None
     d2J_dxi2: NDArray[np.floating]
     d2J_dparams2: NDArray[np.floating]
@@ -79,19 +80,22 @@ class QoI(ABC):
                     self._model.parameters.qoi_active_params_jacobian(dJ),
                     dtype=np.float64)
         else:
-            self._dJ = \
-                np.atleast_2d(np.hstack(self._dqoi[deriv_mode](*variables,
-                                                               data_at_step,
-                                                               weight_at_step)))
+            dJ_pytree = cast(
+                list[JaxArray],
+                self._dqoi[deriv_mode](*variables, data_at_step,
+                                       weight_at_step),
+            )
+            self._dJ = np.atleast_2d(np.hstack(dJ_pytree))
 
     # consider jitting
     def unpack_state_hessian(
             self, pytree_hessian: PyTree,
     ) -> NDArray[np.floating]:
 
+        # JAX hessian-of-residual returns nested list/list/array
+        ph = cast(list[list[JaxArray]], pytree_hessian)
         num_residuals = self._model.num_residuals
-        hessian = np.block([[np.asarray(
-            pytree_hessian[row_res_idx][col_res_idx])
+        hessian = np.block([[np.asarray(ph[row_res_idx][col_res_idx])
             for col_res_idx in range(num_residuals)]
             for row_res_idx in range(num_residuals)]
         )
@@ -153,10 +157,12 @@ class QoI(ABC):
             DerivType.DXI)
         self.d2J_dxi2 = self.unpack_state_hessian(hessian_xi_xi)
 
-    def J(self) -> NDArray[np.floating]:
+    def J(self) -> NDArray[np.number]:
         return self._J
 
-    def dJ(self) -> NDArray[np.floating] | None:
+    def dJ(self) -> NDArray[np.floating]:
+        assert self._dJ is not None, \
+            "dJ() requires a non-DNONE deriv mode (seed_xi/xi_prev/params)"
         return self._dJ
 
     def model(self) -> Model:

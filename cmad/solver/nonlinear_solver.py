@@ -22,7 +22,7 @@ def newton_solve(
 
     converged = False
     ii = 0
-    C_norm_0 = 1.
+    C_norm_0: np.floating | float = 1.
 
     beta = 1e-4
     eta = 0.5
@@ -47,7 +47,9 @@ def newton_solve(
         model.seed_xi()
         model.evaluate()
 
-        delta_xi = np.linalg.solve(model.Jac(), -C)
+        Jac = model.Jac()
+        assert Jac is not None  # seed_xi() above ensures Jac is populated
+        delta_xi = np.linalg.solve(Jac, -C)
         model.add_to_xi(delta_xi)
 
         if max_ls_evals > 0:

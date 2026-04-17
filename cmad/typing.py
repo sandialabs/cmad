@@ -16,37 +16,45 @@ from jax import Array as JaxArray
 PyTreeLeaf: TypeAlias = JaxArray | NDArray[np.floating] | float | int | bool | None
 """A leaf in a pytree: numeric scalar, array, bool, or None."""
 
+Transform: TypeAlias = list[float] | None
+"""None (identity), [lo, hi] (bounds), or [ref] (log)."""
+
 PyTree: TypeAlias = (
     PyTreeLeaf
     | dict[str, "PyTree"]
     | list["PyTree"]
     | tuple["PyTree", ...]
 )
-"""A nested mapping/list/tuple of PyTreeLeafs."""
+"""A nested mapping/list/tuple of PyTreeLeafs (the loose, fully-general
+pytree)."""
 
-Params: TypeAlias = PyTree
+PyTreeDict: TypeAlias = dict[str, "PyTreeDict | PyTreeLeaf | Transform"]
+"""A pytree restricted to nested dicts of leaves; used for parameter,
+active-flag, and transform trees in CMAD, which are always dict-shaped."""
+
+Params: TypeAlias = PyTreeDict
 """Constitutive-model parameter values."""
 
-ActiveFlags: TypeAlias = PyTree
-"""Pytree parallel to a Params tree; each leaf is a bool."""
+ActiveFlags: TypeAlias = PyTreeDict
+"""Pytree parallel to a Params tree; each leaf is a bool (covered by
+PyTreeLeaf)."""
 
-Transform: TypeAlias = list[float] | None
-"""None (identity), [lo, hi] (bounds), or [ref] (log)."""
-
-Transforms: TypeAlias = PyTree
+Transforms: TypeAlias = PyTreeDict
 """Pytree parallel to a Params tree; each leaf is a Transform."""
 
 
 # ----- Material-point state -----
 
-StateBlock: TypeAlias = JaxArray
-"""One residual block's state vector (xi or xi_prev)."""
+StateBlock: TypeAlias = NDArray[np.floating] | JaxArray
+"""One residual block's state vector (xi or xi_prev). Either numpy or
+jax-typed; the framework navigates between them freely."""
 
 StateList: TypeAlias = list[StateBlock]
 """All residual blocks' state vectors, indexed by residual index."""
 
-GlobalField: TypeAlias = JaxArray
-"""One block of prescribed global data (u or u_prev) at this material point."""
+GlobalField: TypeAlias = NDArray[np.floating] | JaxArray
+"""One block of prescribed global data (u or u_prev) at this material
+point. Same numpy-or-jax convention as StateBlock."""
 
 GlobalList: TypeAlias = list[GlobalField]
 """All global-field blocks, indexed by residual index."""

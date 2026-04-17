@@ -5,7 +5,7 @@ from jax import hessian, jit, jacfwd, jacrev, Array
 from jax.tree_util import tree_flatten
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 from typing import cast
 
@@ -16,6 +16,7 @@ from cmad.models.var_types import VarType
 from cmad.parameters.parameters import Parameters
 from cmad.typing import (
     CauchyFn,
+    GlobalField,
     GlobalList,
     JaxArray,
     Params,
@@ -27,6 +28,18 @@ from cmad.typing import (
 
 
 class Model(ABC):
+    """Material-point constitutive model contract.
+
+    Subclasses set up a residual function and a Cauchy stress function
+    (both pure, no side effects) and pass them to super().__init__().
+    See ResidualFn and CauchyFn in cmad.typing for the required callable
+    signatures.
+
+    Both functions take (xi, xi_prev, params, u, u_prev) and return a
+    JaxArray. They are jit-compiled and AD-derivative-cached at
+    construction; access via self._residual / self.cauchy.
+    """
+
     # ---- attributes the subclass must set before super().__init__() ----
     parameters: Parameters
     dtype: type
@@ -50,13 +63,13 @@ class Model(ABC):
     _u_prev: GlobalList
 
     # ---- attributes set by Model.__init__() ----
-    _residual: Callable[..., JaxArray]
+    # _residual and cauchy are documented in the class docstring; their
+    # types come from ResidualFn / CauchyFn in cmad.typing.
     _jacobian: list[Callable[..., PyTree]]
     _hessian_states: Callable[..., PyTree]
     _hessian_xi_params: Callable[..., PyTree]
     _hessian_xi_prev_params: Callable[..., PyTree]
     _hessian_params_params: Callable[..., PyTree]
-    cauchy: Callable[..., JaxArray]
     dcauchy: list[Callable[..., PyTree]]
     _deriv_mode: int  # backed by DerivType
 
@@ -111,28 +124,6 @@ class Model(ABC):
 
         self.parameters.compute_mixed_block_shapes(self._num_eqs)
 
-    @staticmethod
-    def _residual(
-            xi: StateList, xi_prev: StateList, params: Params,
-            u: GlobalList, u_prev: GlobalList,
-    ) -> JaxArray:
-        """
-        The residual function.
-        No side effects allowed!
-        """
-        raise NotImplementedError
-
-    @staticmethod
-    def cauchy(
-            xi: StateList, xi_prev: StateList, params: Params,
-            u: GlobalList, u_prev: GlobalList,
-    ) -> JaxArray:
-        """
-        The cauchy stress function.
-        No side effects allowed!
-        """
-        raise NotImplementedError
-
     def evaluate(self) -> None:
         """
         Evaluate the residual (C) or its jacobian (Jac).
@@ -150,7 +141,11 @@ class Model(ABC):
                 self.parameters.model_active_params_jacobian(
                     Jac, self.num_dofs), dtype=np.float64)
         else:
-            self._Jac = np.hstack(self._jacobian[deriv_mode](*variables))
+            jac_pytree = cast(
+                list[JaxArray],
+                self._jacobian[deriv_mode](*variables),
+            )
+            self._Jac = np.hstack(jac_pytree)
 
 
     # consider jitting
@@ -161,10 +156,13 @@ class Model(ABC):
             second_deriv_type: int,
     ) -> NDArray[np.floating]:
 
+        # JAX block-Hessian over multiple argnums returns nested
+        # tuple/list/list/array-of-array structure
+        ph = cast(list[list[list[list[JaxArray]]]], pytree_hessian)
         num_residuals = self.num_residuals
         hessian = np.block([[np.asarray(
-            pytree_hessian[first_deriv_type][row_res_idx]
-                          [second_deriv_type][col_res_idx])
+            ph[first_deriv_type][row_res_idx]
+              [second_deriv_type][col_res_idx])
             for col_res_idx in range(num_residuals)]
             for row_res_idx in range(num_residuals)]
         )
@@ -243,12 +241,15 @@ class Model(ABC):
             self._Sigma = np.asarray(self.cauchy(*variables), dtype=np.float64)
             self._dSigma = None
         elif deriv_mode == DerivType.DPARAMS:
-            dSigma = self._jacobian[deriv_mode](*variables)
-            self._dSigma = \
-                np.asarray(self.parameters.active_params_jacobian(dSigma),
-                           dtype=np.float64)
+            dSigma = self.dcauchy[deriv_mode](*variables)
+            self._dSigma = np.asarray(
+                self.parameters.model_active_params_jacobian(dSigma, 9),
+                dtype=np.float64)
         else:
-            self._dSigma = np.dstack(self.dcauchy[deriv_mode](*variables))
+            dsigma_pytree = cast(
+                list[JaxArray], self.dcauchy[deriv_mode](*variables),
+            )
+            self._dSigma = np.dstack(dsigma_pytree)
 
     def set_xi_to_init_vals(self) -> None:
         for ii in range(self.num_residuals):
@@ -258,13 +259,17 @@ class Model(ABC):
     def C(self) -> NDArray[np.floating]:
         return self._C
 
-    def Jac(self) -> NDArray[np.floating] | None:
+    def Jac(self) -> NDArray[np.floating]:
+        assert self._Jac is not None, \
+            "Jac() requires a non-DNONE deriv mode (seed_xi/xi_prev/params)"
         return self._Jac
 
     def Sigma(self) -> NDArray[np.floating]:
         return self._Sigma
 
-    def dSigma(self) -> NDArray[np.floating] | None:
+    def dSigma(self) -> NDArray[np.floating]:
+        assert self._dSigma is not None, \
+            "dSigma() requires a non-DNONE deriv mode (seed_xi/xi_prev/params)"
         return self._dSigma
 
     def variables(
@@ -304,13 +309,17 @@ class Model(ABC):
     def resid_name(self, residual: int) -> str | None:
         return self.resid_names[residual]
 
-    def gather_global(self, u: GlobalList, u_prev: GlobalList) -> None:
-        self._u = u.copy()
-        self._u_prev = u_prev.copy()
+    def gather_global(
+            self, u: Sequence[GlobalField], u_prev: Sequence[GlobalField],
+    ) -> None:
+        self._u = list(u)
+        self._u_prev = list(u_prev)
 
-    def gather_xi(self, xi: StateList, xi_prev: StateList) -> None:
-        self._xi = xi.copy()
-        self._xi_prev = xi_prev.copy()
+    def gather_xi(
+            self, xi: Sequence[StateBlock], xi_prev: Sequence[StateBlock],
+    ) -> None:
+        self._xi = list(xi)
+        self._xi_prev = list(xi_prev)
 
     def seed_xi(self) -> None:
         self._deriv_mode = DerivType.DXI
