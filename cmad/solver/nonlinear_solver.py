@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import numpy as np
 
 import jax.numpy as jnp
@@ -6,11 +8,17 @@ from jax import jvp, custom_jvp, jacfwd
 from jax.flatten_util import ravel_pytree
 from jax.lax import cond, while_loop
 
+from cmad.typing import JaxArray, PyTree, SupportsNewton
 from cmad.util.pytree_linear_algebra import make_linop, make_op
 
 
-def newton_solve(model, max_iters=10, abs_tol=1e-14, rel_tol=1e-14,
-        max_ls_evals=0):
+def newton_solve(
+        model: SupportsNewton,
+        max_iters: int = 10,
+        abs_tol: float = 1e-14,
+        rel_tol: float = 1e-14,
+        max_ls_evals: int = 0,
+) -> None:
 
     converged = False
     ii = 0
@@ -73,8 +81,14 @@ def newton_solve(model, max_iters=10, abs_tol=1e-14, rel_tol=1e-14,
         ii += 1
 
 
-def make_newton_solve(residual, x0, max_iters=10, abs_tol=1e-14, rel_tol=1e-14,
-        max_ls_evals=0):
+def make_newton_solve(
+        residual: Callable[..., JaxArray],
+        x0: PyTree,
+        max_iters: int = 10,
+        abs_tol: float = 1e-14,
+        rel_tol: float = 1e-14,
+        max_ls_evals: int = 0,
+) -> Callable[..., PyTree]:
     _, tree_x = ravel_pytree(x0)
     linsolve = make_linop(jnp.linalg.solve, tree_x, tree_x)
     subtract = make_op(jnp.subtract, tree_x)
