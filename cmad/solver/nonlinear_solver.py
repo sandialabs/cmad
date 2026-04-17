@@ -16,11 +16,12 @@ def newton_solve(
         abs_tol: float = 1e-14,
         rel_tol: float = 1e-14,
         max_ls_evals: int = 0,
-) -> None:
+) -> tuple[int, float]:
 
     converged = False
     ii = 0
     C_norm_0: np.floating | float = 1.
+    C_norm: np.floating | float = 0.
 
     beta = 1e-4
     eta = 0.5
@@ -79,6 +80,8 @@ def newton_solve(
                 psi_j = 0.5 * C_j**2
 
         ii += 1
+
+    return ii, float(C_norm)
 
 
 def make_newton_solve(
