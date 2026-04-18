@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from cmad.cli.gradient import run_gradient
+from cmad.cli.hessian import run_hessian
 from cmad.cli.objective import run_objective
 from cmad.cli.primal import run_primal
 
@@ -35,6 +36,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     gradient.add_argument("deck", type=Path, help="Path to the YAML deck.")
 
+    hessian = sub.add_parser(
+        "hessian",
+        help="Compute (J, grad, hess) via direct_adjoint or jvp.",
+    )
+    hessian.add_argument("deck", type=Path, help="Path to the YAML deck.")
+
     args = parser.parse_args(argv)
 
     if args.subcommand == "primal":
@@ -43,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_objective(args.deck)
     if args.subcommand == "gradient":
         return run_gradient(args.deck)
+    if args.subcommand == "hessian":
+        return run_hessian(args.deck)
     return 2
 
 

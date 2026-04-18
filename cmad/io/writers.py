@@ -120,6 +120,27 @@ def write_grad(
         )
 
 
+def write_hessian(
+        out_dir: Path,
+        prefix: str,
+        hessian: NDArray[np.floating],
+        fmt: str,
+) -> None:
+    """Write the Hessian matrix of shape ``(num_active_params, num_active_params)``.
+
+    Canonical-coordinate values; the parameter transforms in the
+    resolved deck carry the mapping back to raw coordinates.
+    """
+    if fmt == "npy":
+        np.save(out_dir / f"{prefix}hess.npy", hessian)
+    elif fmt == "text":
+        np.savetxt(out_dir / f"{prefix}hess.csv", hessian)
+    else:
+        raise ValueError(
+            f"output.format: expected 'npy' or 'text', got {fmt!r}",
+        )
+
+
 def write_resolved_deck(
         out_dir: Path,
         prefix: str,
