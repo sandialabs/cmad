@@ -144,6 +144,15 @@ def build_sensitivity_driver(
             f"sensitivity.type: 'cmad hessian' requires "
             f"'direct_adjoint' or 'jvp'; got {stype!r}",
         )
+    if subcommand == "calibrate" and stype == "direct_adjoint":
+        # calibrate wires only first-order scipy methods (jac=True), so
+        # direct_adjoint — which returns a Hessian — would compute work
+        # nothing consumes.
+        raise ValueError(
+            f"sensitivity.type: 'cmad calibrate' accepts "
+            f"'adjoint', 'direct', or 'jvp' (first-order only); "
+            f"got {stype!r}",
+        )
     if subcommand == "gradient" and stype == "direct_adjoint":
         print(
             "warning: sensitivity.type=direct_adjoint computes a Hessian "
