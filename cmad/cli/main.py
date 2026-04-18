@@ -11,6 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from cmad.cli.calibrate import run_calibrate
 from cmad.cli.gradient import run_gradient
 from cmad.cli.hessian import run_hessian
 from cmad.cli.objective import run_objective
@@ -42,6 +43,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     hessian.add_argument("deck", type=Path, help="Path to the YAML deck.")
 
+    calibrate = sub.add_parser(
+        "calibrate",
+        help="Optimize active parameters against the QoI via scipy.",
+    )
+    calibrate.add_argument("deck", type=Path, help="Path to the YAML deck.")
+
     args = parser.parse_args(argv)
 
     if args.subcommand == "primal":
@@ -52,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_gradient(args.deck)
     if args.subcommand == "hessian":
         return run_hessian(args.deck)
+    if args.subcommand == "calibrate":
+        return run_calibrate(args.deck)
     return 2
 
 
