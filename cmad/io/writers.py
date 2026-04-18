@@ -93,6 +93,12 @@ def write_solver_log(
         json.dump(solver_log, f, indent=2)
 
 
+def write_J(out_dir: Path, prefix: str, J: float) -> None:
+    """Write the scalar QoI value as JSON."""
+    with (out_dir / f"{prefix}J.json").open("w") as f:
+        json.dump({"J": J}, f, indent=2)
+
+
 def write_resolved_deck(
         out_dir: Path,
         prefix: str,
