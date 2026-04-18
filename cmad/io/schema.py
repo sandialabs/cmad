@@ -38,6 +38,9 @@ _SUBCOMMAND_SECTIONS: dict[str, list[str]] = {
     "hessian": ["problem", "model", "parameters",
                 "deformation", "qoi", "sensitivity",
                 "solver", "output"],
+    "calibrate": ["problem", "model", "parameters",
+                  "deformation", "qoi", "sensitivity",
+                  "solver", "optimizer", "output"],
 }
 
 

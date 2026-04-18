@@ -27,6 +27,11 @@ _SOLVER_DEFAULTS: dict[str, dict[str, Any]] = {
     },
 }
 _OUTPUT_DEFAULTS: dict[str, Any] = {"prefix": "", "format": "npy"}
+_OPTIMIZER_DEFAULTS: dict[str, Any] = {
+    "initial_guess": "from_deck",
+    "options": {},
+    "log_params": True,
+}
 
 
 def load_deck(path: Path) -> dict[str, Any]:
@@ -66,4 +71,8 @@ def apply_deck_defaults(deck: dict[str, Any]) -> dict[str, Any]:
     output_in = resolved.setdefault("output", {})
     for k, v in _OUTPUT_DEFAULTS.items():
         output_in.setdefault(k, v)
+    if "optimizer" in resolved:
+        optimizer_in = resolved["optimizer"]
+        for k, v in _OPTIMIZER_DEFAULTS.items():
+            optimizer_in.setdefault(k, v)
     return resolved

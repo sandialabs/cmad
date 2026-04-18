@@ -1,0 +1,15 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+additionalProperties: false
+required: [algorithm]
+properties:
+  algorithm: {type: string}
+  initial_guess:
+    oneOf:
+      - {type: string, enum: [from_deck]}
+      - {type: array, items: {type: number}}
+    default: from_deck
+  options:
+    type: object
+    default: {}
+  log_params: {type: boolean, default: true}
