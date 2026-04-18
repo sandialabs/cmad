@@ -99,6 +99,27 @@ def write_J(out_dir: Path, prefix: str, J: float) -> None:
         json.dump({"J": J}, f, indent=2)
 
 
+def write_grad(
+        out_dir: Path,
+        prefix: str,
+        grad: NDArray[np.floating],
+        fmt: str,
+) -> None:
+    """Write the gradient vector of shape ``(num_active_params,)``.
+
+    Canonical-coordinate values; the parameter transforms in the
+    resolved deck carry the mapping back to raw coordinates.
+    """
+    if fmt == "npy":
+        np.save(out_dir / f"{prefix}grad.npy", grad)
+    elif fmt == "text":
+        np.savetxt(out_dir / f"{prefix}grad.csv", grad)
+    else:
+        raise ValueError(
+            f"output.format: expected 'npy' or 'text', got {fmt!r}",
+        )
+
+
 def write_resolved_deck(
         out_dir: Path,
         prefix: str,

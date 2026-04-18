@@ -11,6 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from cmad.cli.gradient import run_gradient
 from cmad.cli.objective import run_objective
 from cmad.cli.primal import run_primal
 
@@ -28,12 +29,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     objective.add_argument("deck", type=Path, help="Path to the YAML deck.")
 
+    gradient = sub.add_parser(
+        "gradient",
+        help="Compute (J, grad) via the chosen sensitivity strategy.",
+    )
+    gradient.add_argument("deck", type=Path, help="Path to the YAML deck.")
+
     args = parser.parse_args(argv)
 
     if args.subcommand == "primal":
         return run_primal(args.deck)
     if args.subcommand == "objective":
         return run_objective(args.deck)
+    if args.subcommand == "gradient":
+        return run_gradient(args.deck)
     return 2
 
 
