@@ -1,6 +1,6 @@
 from abc import ABC
 from collections.abc import Callable
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 from jax import hessian, jacfwd, jacrev, jit
@@ -51,6 +51,27 @@ class QoI(ABC):
 
         self._hessian_params_params = jit(hessian(qoi_fun,
                                           argnums=DerivType.DPARAMS))
+
+    @classmethod
+    def from_deck(
+            cls,
+            qoi_section: dict[str, Any],
+            model: Model,
+            global_state: NDArray[np.floating],
+            data: NDArray[np.floating],
+            weight: NDArray[np.floating],
+    ) -> "QoI":
+        """Build a QoI instance from a parsed deck's ``qoi:`` section.
+
+        The driver resolves ``data_file`` / ``weight`` / ``weight_file``
+        relative to the deck and passes the loaded arrays in; the
+        classmethod translates any subclass-specific extras from
+        ``qoi_section`` (e.g. ``uniaxial_stress_idx``) into constructor
+        kwargs. The base stub exists so the registry's ``type[QoI]``
+        return is statically callable via ``cls.from_deck(...)``;
+        subclasses must override.
+        """
+        raise NotImplementedError
 
     def evaluate(self, step: Step) -> None:
         """

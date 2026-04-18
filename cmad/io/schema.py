@@ -2,12 +2,16 @@
 
 Loads YAML-encoded JSON Schema fragments from ``cmad/io/schemas/``,
 composes the subcommand-specific schema (stitching in the registered
-model's fragment), and validates a parsed deck with aggregated errors
-formatted as ``path: reason`` lines per the driver error-reporting convention.
+model's fragment and, for subcommands that have a ``qoi`` section, the
+registered QoI's fragment), and validates a parsed deck with aggregated
+errors formatted as ``path: reason`` lines per the driver
+error-reporting convention.
 
-Callers must ensure the relevant concrete model modules have been
-imported before calling :func:`validate_deck`, so that the registry is
-populated (see ``cmad/io/registry.py``).
+Callers do not need to eagerly import the concrete model / QoI
+modules: lazy resolution happens in :mod:`cmad.io.registry`. The
+``registered_*`` helpers used by the pre-flight checks here discover
+names from the schema-fragment directories without triggering any
+user-code imports.
 """
 
 from __future__ import annotations
@@ -19,13 +23,21 @@ import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from cmad.io.registry import registered_models
+from cmad.io.registry import registered_models, registered_qois
 
 _SCHEMAS_DIR = Path(__file__).parent / "schemas"
 
 _SUBCOMMAND_SECTIONS: dict[str, list[str]] = {
     "primal": ["problem", "model", "parameters",
                "deformation", "solver", "output"],
+    "objective": ["problem", "model", "parameters",
+                  "deformation", "qoi", "solver", "output"],
+    "gradient": ["problem", "model", "parameters",
+                 "deformation", "qoi", "sensitivity",
+                 "solver", "output"],
+    "hessian": ["problem", "model", "parameters",
+                "deformation", "qoi", "sensitivity",
+                "solver", "output"],
 }
 
 
@@ -36,8 +48,13 @@ def validate_deck(deck: dict[str, Any], subcommand: str) -> None:
             f"unknown subcommand '{subcommand}'; valid: "
             f"{sorted(_SUBCOMMAND_SECTIONS)}",
         )
+    sections = _SUBCOMMAND_SECTIONS[subcommand]
     _check_model_registered(deck)
-    composed = _compose_schema(subcommand, deck["model"]["name"])
+    qoi_name: str | None = None
+    if "qoi" in sections:
+        _check_qoi_registered(deck)
+        qoi_name = deck["qoi"]["name"]
+    composed = _compose_schema(subcommand, deck["model"]["name"], qoi_name)
     errors = list(Draft202012Validator(composed).iter_errors(deck))
     if errors:
         joined = "\n".join(_format_error(e) for e in errors)
@@ -57,13 +74,31 @@ def _check_model_registered(deck: dict[str, Any]) -> None:
         )
 
 
-def _compose_schema(subcommand: str, model_name: str) -> dict[str, Any]:
+def _check_qoi_registered(deck: dict[str, Any]) -> None:
+    qoi_section = deck.get("qoi")
+    if not isinstance(qoi_section, dict) or "name" not in qoi_section:
+        raise ValueError("qoi: missing 'name' field")
+    known = registered_qois()
+    if qoi_section["name"] not in known:
+        listing = ", ".join(known) if known else "(none)"
+        raise ValueError(
+            f"qoi.name: '{qoi_section['name']}' is not registered. "
+            f"Registered qoi names: {listing}",
+        )
+
+
+def _compose_schema(
+        subcommand: str, model_name: str, qoi_name: str | None = None,
+) -> dict[str, Any]:
     sections = _SUBCOMMAND_SECTIONS[subcommand]
     properties: dict[str, Any] = {}
     merged_defs: dict[str, Any] = {}
     for section in sections:
         if section == "model":
             fragment = _load_fragment(f"models/{model_name}.yaml")
+        elif section == "qoi":
+            assert qoi_name is not None  # guaranteed by validate_deck
+            fragment = _load_fragment(f"qois/{qoi_name}.yaml")
         else:
             fragment = _load_fragment(f"{section}.yaml")
         defs = fragment.pop("$defs", None)

@@ -1,0 +1,7 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+required: [type]
+additionalProperties: false
+properties:
+  type:
+    enum: [adjoint, direct, direct_adjoint, jvp]

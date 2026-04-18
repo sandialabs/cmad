@@ -1,0 +1,23 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+required: [name, data_file]
+additionalProperties: false
+properties:
+  name:
+    const: calibration
+  data_file:
+    type: string
+  weight:
+    type: array
+    minItems: 3
+    maxItems: 3
+    items:
+      type: array
+      minItems: 3
+      maxItems: 3
+      items: {type: number}
+  weight_file:
+    type: string
+oneOf:
+  - required: [weight]
+  - required: [weight_file]

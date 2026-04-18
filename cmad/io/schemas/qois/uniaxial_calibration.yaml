@@ -1,0 +1,27 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+required: [name, data_file, uniaxial_stress_idx, stretch_var_idx]
+additionalProperties: false
+properties:
+  name:
+    const: uniaxial_calibration
+  data_file:
+    type: string
+  uniaxial_stress_idx:
+    type: integer
+    minimum: 0
+  stretch_var_idx:
+    type: integer
+    minimum: 0
+  weight:
+    type: array
+    minItems: 3
+    maxItems: 3
+    items:
+      type: array
+      items: {type: number}
+  weight_file:
+    type: string
+oneOf:
+  - required: [weight]
+  - required: [weight_file]

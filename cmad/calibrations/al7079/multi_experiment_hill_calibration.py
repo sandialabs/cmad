@@ -12,7 +12,7 @@ from cmad.calibrations.al7079.support import (
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.objectives.objective import AdjointObjective
-from cmad.qois.calibration import UniaxialCalibration
+from cmad.qois.uniaxial_calibration import UniaxialCalibration
 from cmad.solver.nonlinear_solver import newton_solve
 
 
