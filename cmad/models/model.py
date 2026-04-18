@@ -43,6 +43,7 @@ class Model(ABC):
     _num_eqs: NDArray[np.intp]
     _var_types: NDArray[np.intp]
     _init_xi: StateList
+    _ndims: int
 
     # ---- attributes set by self._init_residuals() ----
     num_residuals: int

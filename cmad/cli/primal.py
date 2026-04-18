@@ -40,7 +40,10 @@ def run_primal(deck_path: Path) -> int:
     parameters = build_parameters(resolved["parameters"])
     model = cls.from_deck(resolved["model"], parameters)
 
-    F = load_history(resolved["deformation"], deck_path.parent)
+    F = load_history(
+        resolved["deformation"], deck_path.parent,
+        expected_ndims=model._ndims,
+    )
     num_steps = F.shape[2] - 1
 
     newton_kwargs = resolved["solver"]["newton"]
