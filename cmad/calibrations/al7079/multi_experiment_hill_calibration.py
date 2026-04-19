@@ -11,7 +11,7 @@ from cmad.calibrations.al7079.support import (
 )
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
-from cmad.objectives.objective import AdjointObjective
+from cmad.objectives.mp_objective import MPAdjointObjective
 from cmad.qois.uniaxial_calibration import UniaxialCalibration
 from cmad.solver.nonlinear_solver import newton_solve
 
@@ -104,7 +104,7 @@ weights = np.atleast_2d([2e-3, 2e1, 2e1]).T @ np.ones((1, num_steps + 1))
 weights[:, :10] = 0.
 qoi = UniaxialCalibration(model, data[0], weights,
     uniaxial_stress_idx, stretch_var_idx)
-objective = AdjointObjective(qoi, F)
+objective = MPAdjointObjective(qoi, F)
 
 opt_obj = partial(multiobjective, objective=objective,
     Rmats=Rmats, data=data)

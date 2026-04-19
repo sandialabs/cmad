@@ -93,7 +93,7 @@ Step: TypeAlias = int
 """A time-step index (0-based)."""
 
 
-# ----- Objective.evaluate() result types -----
+# ----- MPObjective.evaluate() result types -----
 
 class GradientResult(NamedTuple):
     """Result of a gradient-only sensitivity evaluation."""

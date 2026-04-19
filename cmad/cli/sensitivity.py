@@ -1,9 +1,9 @@
 """Sensitivity-strategy dispatcher for ``cmad gradient`` / ``cmad hessian``.
 
 Presents a uniform driver-facing surface across the two structurally
-different objective families: :mod:`cmad.objectives.objective` (subclass
-of ``Objective`` ABC, numpy-einsum adjoint / direct / direct-adjoint
-implementations) and :class:`cmad.objectives.jvp_objective.JVPObjective`
+different objective families: :mod:`cmad.objectives.mp_objective` (subclass
+of ``MPObjective`` ABC, numpy-einsum adjoint / direct / direct-adjoint
+implementations) and :class:`cmad.objectives.mp_jvp_objective.MPJVPObjective`
 (end-to-end JAX-traced).
 
 The per-subcommand restriction (``cmad hessian`` requires
@@ -20,12 +20,12 @@ from typing import Any, Protocol, cast
 import numpy as np
 from numpy.typing import NDArray
 
-from cmad.objectives.jvp_objective import JVPObjective
-from cmad.objectives.objective import (
-    AdjointObjective,
-    DirectAdjointObjective,
-    DirectObjective,
-    Objective,
+from cmad.objectives.mp_jvp_objective import MPJVPObjective
+from cmad.objectives.mp_objective import (
+    MPAdjointObjective,
+    MPDirectAdjointObjective,
+    MPDirectObjective,
+    MPObjective,
 )
 from cmad.qois.qoi import QoI
 from cmad.solver.nonlinear_solver import make_newton_solve
@@ -45,15 +45,15 @@ class SensitivityDriver(Protocol):
 
 
 class _ObjectiveFamilyDriver:
-    """Wraps an ``Objective`` ABC subclass into the ``SensitivityDriver`` surface.
+    """Wraps an ``MPObjective`` ABC subclass into the ``SensitivityDriver`` surface.
 
-    ``AdjointObjective`` / ``DirectObjective`` return ``GradientResult``;
-    ``DirectAdjointObjective`` returns ``HessianResult``. Attempting
+    ``MPAdjointObjective`` / ``MPDirectObjective`` return ``GradientResult``;
+    ``MPDirectAdjointObjective`` returns ``HessianResult``. Attempting
     ``evaluate_hess`` against a gradient-only variant is a factory-time
     error, not a runtime one — the assert here is defensive backstop.
     """
 
-    def __init__(self, objective: Objective) -> None:
+    def __init__(self, objective: MPObjective) -> None:
         self._obj = objective
 
     def evaluate_grad(
@@ -77,7 +77,7 @@ class _ObjectiveFamilyDriver:
 
 
 class _JVPDriver:
-    """Wraps :class:`JVPObjective` into the ``SensitivityDriver`` surface.
+    """Wraps :class:`MPJVPObjective` into the ``SensitivityDriver`` surface.
 
     Constructs the model-specific Newton solver helper
     (``make_newton_solve(model._residual, model._init_xi, **newton_kwargs)``)
@@ -92,7 +92,7 @@ class _JVPDriver:
         model = qoi.model()
         # ``list`` invariance on the PyTree union means StateList is not
         # directly a PyTree to mypy; make_newton_solve returns the loose
-        # ``Callable[..., PyTree]`` while JVPObjective declares the
+        # ``Callable[..., PyTree]`` while MPJVPObjective declares the
         # tighter ``Callable[..., StateList]``. Both coincide at
         # runtime; casts narrow the static types.
         x0 = cast(PyTree, model._init_xi)
@@ -100,7 +100,7 @@ class _JVPDriver:
             Callable[..., StateList],
             make_newton_solve(model._residual, x0, **newton_kwargs),
         )
-        self._jvp_obj = JVPObjective(qoi, global_state, update_fun)
+        self._jvp_obj = MPJVPObjective(qoi, global_state, update_fun)
 
     def evaluate_grad(
             self, x: NDArray[np.floating],
@@ -164,12 +164,12 @@ def build_sensitivity_driver(
         )
 
     if stype == "adjoint":
-        return _ObjectiveFamilyDriver(AdjointObjective(qoi, global_state))
+        return _ObjectiveFamilyDriver(MPAdjointObjective(qoi, global_state))
     if stype == "direct":
-        return _ObjectiveFamilyDriver(DirectObjective(qoi, global_state))
+        return _ObjectiveFamilyDriver(MPDirectObjective(qoi, global_state))
     if stype == "direct_adjoint":
         return _ObjectiveFamilyDriver(
-            DirectAdjointObjective(qoi, global_state),
+            MPDirectAdjointObjective(qoi, global_state),
         )
     if stype == "jvp":
         return _JVPDriver(qoi, global_state, newton_kwargs)

@@ -1,5 +1,5 @@
 """
-Verify DirectAdjointObjective and JVPObjective produce consistent J,
+Verify MPDirectAdjointObjective and MPJVPObjective produce consistent J,
 gradient, and Hessian on a J2 plane-stress calibration problem.
 
 The two methods compute the same quantity by structurally different
@@ -13,8 +13,8 @@ import numpy as np
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
-from cmad.objectives.jvp_objective import JVPObjective
-from cmad.objectives.objective import DirectAdjointObjective
+from cmad.objectives.mp_jvp_objective import MPJVPObjective
+from cmad.objectives.mp_objective import MPDirectAdjointObjective
 from cmad.qois.calibration import Calibration
 from cmad.solver.nonlinear_solver import make_newton_solve, newton_solve
 from tests.support.test_problems import J2AnalyticalProblem
@@ -76,14 +76,14 @@ class TestJVPvsOriginal(unittest.TestCase):
         orig_problem = J2AnalyticalProblem(scale_params=True)
         orig_model = SmallElasticPlastic(orig_problem.J2_parameters, def_type)
         orig_qoi = Calibration(orig_model, cauchy_data, weight)
-        orig_obj = DirectAdjointObjective(orig_qoi, F)
+        orig_obj = MPDirectAdjointObjective(orig_qoi, F)
 
         jvp_problem = J2AnalyticalProblem(scale_params=True)
         jvp_model = SmallElasticPlastic(jvp_problem.J2_parameters, def_type)
         jvp_qoi = Calibration(jvp_model, cauchy_data, weight)
         update_fun = make_newton_solve(jvp_model._residual,
                                        jvp_model._init_xi)
-        jvp_obj = JVPObjective(jvp_qoi, F, update_fun)
+        jvp_obj = MPJVPObjective(jvp_qoi, F, update_fun)
 
         # Evaluate.
         J_orig, grad_orig, hess_orig = orig_obj.evaluate(initial_guess)

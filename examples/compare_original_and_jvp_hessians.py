@@ -9,11 +9,11 @@ from jax.tree_util import tree_map
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
-from cmad.objectives.jvp_objective import JVPObjective
-from cmad.objectives.objective import (
-    AdjointObjective,
-    DirectAdjointObjective,
-    DirectObjective,
+from cmad.objectives.mp_jvp_objective import MPJVPObjective
+from cmad.objectives.mp_objective import (
+    MPAdjointObjective,
+    MPDirectAdjointObjective,
+    MPDirectObjective,
 )
 from cmad.parameters.parameters import Parameters
 from cmad.qois.calibration import Calibration
@@ -121,8 +121,8 @@ def fd_grad_check_components(qoi, F, hs=np.logspace(-2, -10, 9)):
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    direct_obj = DirectObjective(qoi, F)
-    adjoint_obj = AdjointObjective(qoi, F)
+    direct_obj = MPDirectObjective(qoi, F)
+    adjoint_obj = MPAdjointObjective(qoi, F)
 
     _, direct_grad_ref = direct_obj.evaluate(flat_active_values)
     _, adjoint_grad_ref = adjoint_obj.evaluate(flat_active_values)
@@ -157,8 +157,8 @@ def fd_grad_check(qoi, F, hs=np.logspace(-2, -10, 9), seed=22):
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    direct_obj = DirectObjective(qoi, F)
-    adjoint_obj = AdjointObjective(qoi, F)
+    direct_obj = MPDirectObjective(qoi, F)
+    adjoint_obj = MPAdjointObjective(qoi, F)
 
     _, direct_grad_ref = direct_obj.evaluate(flat_active_values)
     _, adjoint_grad_ref = adjoint_obj.evaluate(flat_active_values)
@@ -196,7 +196,7 @@ def jvp_fd_grad_check_components(qoi, F, update_fun, hs=np.logspace(-2, -10, 9))
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    obj = JVPObjective(qoi, F, update_fun)
+    obj = MPJVPObjective(qoi, F, update_fun)
 
     _J_ref, grad_ref = \
         obj.evaluate_objective_and_grad(flat_active_values)
@@ -228,7 +228,7 @@ def jvp_fd_grad_check(qoi, F, update_fun, hs=np.logspace(-2, -10, 9), seed=22):
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    obj = JVPObjective(qoi, F, update_fun)
+    obj = MPJVPObjective(qoi, F, update_fun)
 
     _J_ref, grad_ref = \
         obj.evaluate_objective_and_grad(flat_active_values)
@@ -261,7 +261,7 @@ def fd_hessian_check_components(qoi, F, hs=np.logspace(-2, -10, 9), seed=22):
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
-    hessian_obj = DirectAdjointObjective(qoi, F)
+    hessian_obj = MPDirectAdjointObjective(qoi, F)
 
     J_ref, _grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
 
@@ -331,7 +331,7 @@ def fd_hessian_check(qoi, F, hs=np.logspace(-2, -10, 9), seed=22):
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
-    hessian_obj = DirectAdjointObjective(qoi, F)
+    hessian_obj = MPDirectAdjointObjective(qoi, F)
 
     J_ref, grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
     print(f"original J ref = {J_ref}")
@@ -396,7 +396,7 @@ def jvp_fd_hessian_check_components(qoi, F, update_fun,
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    hessian_obj = JVPObjective(qoi, F, update_fun)
+    hessian_obj = MPJVPObjective(qoi, F, update_fun)
 
     J_ref = hessian_obj.evaluate_objective(flat_active_values)
     hessian_ref = hessian_obj.evaluate_hessian(flat_active_values)
@@ -467,7 +467,7 @@ def jvp_fd_hessian_check(qoi, F, update_fun, hs=np.logspace(-2, -10, 9), seed=22
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
-    hessian_obj = JVPObjective(qoi, F, update_fun)
+    hessian_obj = MPJVPObjective(qoi, F, update_fun)
 
     J_ref, grad_ref = hessian_obj.evaluate_objective_and_grad(flat_active_values)
     hessian_ref = hessian_obj.evaluate_hessian(flat_active_values)

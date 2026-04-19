@@ -10,7 +10,7 @@ from cmad.qois.qoi import QoI
 from cmad.typing import JaxArray, StateList
 
 
-class JVPObjective:
+class MPJVPObjective:
 
     evaluate_objective: Callable[..., JaxArray]
     evaluate_objective_and_grad: Callable[..., tuple[JaxArray, JaxArray]]

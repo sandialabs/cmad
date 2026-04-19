@@ -1,9 +1,9 @@
 """Sensitivity-providing objectives for material-point calibration.
 
-Three sibling classes share an Objective ABC, each implementing one
-sensitivity strategy. JVPObjective in jvp_objective.py is a fourth
+Three sibling classes share an MPObjective ABC, each implementing one
+sensitivity strategy. MPJVPObjective in jvp_objective.py is a fourth
 end-to-end JAX-traced sibling; it is structurally distinct and does
-not subclass Objective.
+not subclass MPObjective.
 """
 from abc import ABC, abstractmethod
 from typing import cast
@@ -18,12 +18,12 @@ from cmad.solver.nonlinear_solver import newton_solve
 from cmad.typing import GradientResult, HessianResult, StateList
 
 
-class Objective(ABC):
+class MPObjective(ABC):
     """Base class for sensitivity-providing objectives.
 
     Owns time-step loop scaffolding, parameter injection, forward-pass
     state storage, and the shared forward-pass-with-storage helper used
-    by AdjointObjective and DirectAdjointObjective.
+    by MPAdjointObjective and MPDirectAdjointObjective.
     """
 
     _qoi: QoI
@@ -87,7 +87,7 @@ class Objective(ABC):
         return float(J)
 
 
-class AdjointObjective(Objective):
+class MPAdjointObjective(MPObjective):
     """Gradient via reverse-time adjoint pass after a forward pass."""
 
     def _evaluate(self) -> GradientResult:
@@ -144,7 +144,7 @@ class AdjointObjective(Objective):
         return GradientResult(J=J, grad=grad)
 
 
-class DirectObjective(Objective):
+class MPDirectObjective(MPObjective):
     """Gradient via forward sensitivity (tangent) pass.
 
     Forward loop is inlined rather than reusing _forward_pass_with_storage
@@ -211,7 +211,7 @@ class DirectObjective(Objective):
         return GradientResult(J=float(J), grad=grad)
 
 
-class DirectAdjointObjective(Objective):
+class MPDirectAdjointObjective(MPObjective):
     """Gradient + Hessian via direct-adjoint method (arXiv:2501.04584)."""
 
     def _evaluate(self) -> HessianResult:

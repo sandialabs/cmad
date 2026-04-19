@@ -7,7 +7,7 @@ from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.neural_networks.simple_neural_network import SimpleNeuralNetwork
-from cmad.objectives.objective import AdjointObjective, DirectAdjointObjective
+from cmad.objectives.mp_objective import MPAdjointObjective, MPDirectAdjointObjective
 from cmad.parameters.parameters import Parameters
 from cmad.qois.calibration import Calibration
 from cmad.solver.nonlinear_solver import newton_solve
@@ -260,7 +260,7 @@ cauchy = compute_cauchy(model_true, F)
 data = cauchy + rng.normal(0., noise_std, cauchy.shape)
 
 qoi = Calibration(model, data, weight)
-objective = AdjointObjective(qoi, F)
+objective = MPAdjointObjective(qoi, F)
 
 minimize_lbfgs = True
 minimize_newton = True
@@ -274,7 +274,7 @@ if minimize_lbfgs:
 
 if minimize_newton:
     print("\n")
-    objective = DirectAdjointObjective(qoi, F)
+    objective = MPDirectAdjointObjective(qoi, F)
     opt_params = newton_optimization(initial_guess, objective)
 
 model.parameters.set_active_values_from_flat(opt_params)
