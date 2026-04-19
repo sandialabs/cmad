@@ -102,9 +102,9 @@ opt_bounds = params.opt_bounds
 
 weights = np.atleast_2d([2e-3, 2e1, 2e1]).T @ np.ones((1, num_steps + 1))
 weights[:, :10] = 0.
-qoi = UniaxialCalibration(model, F, data[0], weights,
+qoi = UniaxialCalibration(model, data[0], weights,
     uniaxial_stress_idx, stretch_var_idx)
-objective = AdjointObjective(qoi)
+objective = AdjointObjective(qoi, F)
 
 opt_obj = partial(multiobjective, objective=objective,
     Rmats=Rmats, data=data)

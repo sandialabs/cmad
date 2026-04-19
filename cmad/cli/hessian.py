@@ -45,11 +45,12 @@ def run_hessian(deck_path: Path) -> int:
         expected_ndims=model._ndims,
     )
     data, weight = load_qoi_data(resolved["qoi"], deck_path.parent)
-    qoi = qoi_cls.from_deck(resolved["qoi"], model, F, data, weight)
+    qoi = qoi_cls.from_deck(resolved["qoi"], model, data, weight)
 
     newton_kwargs = resolved["solver"]["newton"]
     driver = build_sensitivity_driver(
-        resolved["sensitivity"], qoi, newton_kwargs, subcommand="hessian",
+        resolved["sensitivity"], qoi, F, newton_kwargs,
+        subcommand="hessian",
     )
     x = parameters.flat_active_values(return_canonical=True)
     result = driver.evaluate_hess(x)

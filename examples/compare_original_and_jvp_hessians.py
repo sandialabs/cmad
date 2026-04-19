@@ -115,14 +115,14 @@ def create_J2_parameters():
     return J2_parameters
 
 
-def fd_grad_check_components(qoi, hs=np.logspace(-2, -10, 9)):
+def fd_grad_check_components(qoi, F, hs=np.logspace(-2, -10, 9)):
 
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    direct_obj = DirectObjective(qoi)
-    adjoint_obj = AdjointObjective(qoi)
+    direct_obj = DirectObjective(qoi, F)
+    adjoint_obj = AdjointObjective(qoi, F)
 
     _, direct_grad_ref = direct_obj.evaluate(flat_active_values)
     _, adjoint_grad_ref = adjoint_obj.evaluate(flat_active_values)
@@ -135,12 +135,12 @@ def fd_grad_check_components(qoi, hs=np.logspace(-2, -10, 9)):
             params_plus = flat_active_values.copy()
             params_plus[kk] += h
             model.parameters.set_active_values_from_flat(params_plus)
-            J_plus = compute_fun(qoi)
+            J_plus = compute_fun(qoi, F)
 
             params_minus = flat_active_values.copy()
             params_minus[kk] -= h
             model.parameters.set_active_values_from_flat(params_minus)
-            J_minus = compute_fun(qoi)
+            J_minus = compute_fun(qoi, F)
 
             fs_fd_error[kk, ii] = np.abs((J_plus - J_minus) / (2. * h)
                                          - direct_grad_ref[kk])
@@ -151,14 +151,14 @@ def fd_grad_check_components(qoi, hs=np.logspace(-2, -10, 9)):
     return fs_fd_error, adjoint_fd_error
 
 
-def fd_grad_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
+def fd_grad_check(qoi, F, hs=np.logspace(-2, -10, 9), seed=22):
 
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    direct_obj = DirectObjective(qoi)
-    adjoint_obj = AdjointObjective(qoi)
+    direct_obj = DirectObjective(qoi, F)
+    adjoint_obj = AdjointObjective(qoi, F)
 
     _, direct_grad_ref = direct_obj.evaluate(flat_active_values)
     _, adjoint_grad_ref = adjoint_obj.evaluate(flat_active_values)
@@ -176,12 +176,12 @@ def fd_grad_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
         params_plus = flat_active_values.copy()
         params_plus += h * d
         model.parameters.set_active_values_from_flat(params_plus)
-        J_plus = compute_fun(qoi)
+        J_plus = compute_fun(qoi, F)
 
         params_minus = flat_active_values.copy()
         params_minus -= h * d
         model.parameters.set_active_values_from_flat(params_minus)
-        J_minus = compute_fun(qoi)
+        J_minus = compute_fun(qoi, F)
 
         fd_dir_deriv = (J_plus - J_minus) / (2. * h)
         fs_fd_error[ii] = np.abs(fd_dir_deriv - fs_dir_deriv_ref)
@@ -190,13 +190,13 @@ def fd_grad_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     return fs_fd_error, adjoint_fd_error
 
 
-def jvp_fd_grad_check_components(qoi, update_fun, hs=np.logspace(-2, -10, 9)):
+def jvp_fd_grad_check_components(qoi, F, update_fun, hs=np.logspace(-2, -10, 9)):
 
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    obj = JVPObjective(qoi, update_fun)
+    obj = JVPObjective(qoi, F, update_fun)
 
     _J_ref, grad_ref = \
         obj.evaluate_objective_and_grad(flat_active_values)
@@ -208,12 +208,12 @@ def jvp_fd_grad_check_components(qoi, update_fun, hs=np.logspace(-2, -10, 9)):
             params_plus = flat_active_values.copy()
             params_plus[kk] += h
             model.parameters.set_active_values_from_flat(params_plus)
-            J_plus = compute_fun(qoi)
+            J_plus = compute_fun(qoi, F)
 
             params_minus = flat_active_values.copy()
             params_minus[kk] -= h
             model.parameters.set_active_values_from_flat(params_minus)
-            J_minus = compute_fun(qoi)
+            J_minus = compute_fun(qoi, F)
 
             fd_error[kk, ii] = np.abs((J_plus - J_minus) / (2. * h)
                 - grad_ref[kk])
@@ -222,13 +222,13 @@ def jvp_fd_grad_check_components(qoi, update_fun, hs=np.logspace(-2, -10, 9)):
     return fd_error
 
 
-def jvp_fd_grad_check(qoi, update_fun, hs=np.logspace(-2, -10, 9), seed=22):
+def jvp_fd_grad_check(qoi, F, update_fun, hs=np.logspace(-2, -10, 9), seed=22):
 
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    obj = JVPObjective(qoi, update_fun)
+    obj = JVPObjective(qoi, F, update_fun)
 
     _J_ref, grad_ref = \
         obj.evaluate_objective_and_grad(flat_active_values)
@@ -244,12 +244,12 @@ def jvp_fd_grad_check(qoi, update_fun, hs=np.logspace(-2, -10, 9), seed=22):
         params_plus = flat_active_values.copy()
         params_plus += h * d
         model.parameters.set_active_values_from_flat(params_plus)
-        J_plus = compute_fun(qoi)
+        J_plus = compute_fun(qoi, F)
 
         params_minus = flat_active_values.copy()
         params_minus -= h * d
         model.parameters.set_active_values_from_flat(params_minus)
-        J_minus = compute_fun(qoi)
+        J_minus = compute_fun(qoi, F)
 
         fd_dir_deriv = (J_plus - J_minus) / (2. * h)
         fd_error[ii] = np.abs(fd_dir_deriv - dir_deriv_ref)
@@ -257,11 +257,11 @@ def jvp_fd_grad_check(qoi, update_fun, hs=np.logspace(-2, -10, 9), seed=22):
     return fd_error
 
 
-def fd_hessian_check_components(qoi, hs=np.logspace(-2, -10, 9), seed=22):
+def fd_hessian_check_components(qoi, F, hs=np.logspace(-2, -10, 9), seed=22):
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
-    hessian_obj = DirectAdjointObjective(qoi)
+    hessian_obj = DirectAdjointObjective(qoi, F)
 
     J_ref, _grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
 
@@ -279,12 +279,12 @@ def fd_hessian_check_components(qoi, hs=np.logspace(-2, -10, 9), seed=22):
                     params_plus = flat_active_values.copy()
                     params_plus[ii] += h
                     model.parameters.set_active_values_from_flat(params_plus)
-                    J_plus = compute_fun(qoi)
+                    J_plus = compute_fun(qoi, F)
 
                     params_minus = flat_active_values.copy()
                     params_minus[ii] -= h
                     model.parameters.set_active_values_from_flat(params_minus)
-                    J_minus = compute_fun(qoi)
+                    J_minus = compute_fun(qoi, F)
 
                     fd_hessian[ii, ii] = (J_plus + J_minus - 2. * J_ref) \
                         / h**2
@@ -295,25 +295,25 @@ def fd_hessian_check_components(qoi, hs=np.logspace(-2, -10, 9), seed=22):
                     params_pp[ii] += h
                     params_pp[jj] += h
                     model.parameters.set_active_values_from_flat(params_pp)
-                    J_pp = compute_fun(qoi)
+                    J_pp = compute_fun(qoi, F)
 
                     params_mm = flat_active_values.copy()
                     params_mm[ii] -= h
                     params_mm[jj] -= h
                     model.parameters.set_active_values_from_flat(params_mm)
-                    J_mm = compute_fun(qoi)
+                    J_mm = compute_fun(qoi, F)
 
                     params_pm = flat_active_values.copy()
                     params_pm[ii] += h
                     params_pm[jj] -= h
                     model.parameters.set_active_values_from_flat(params_pm)
-                    J_pm = compute_fun(qoi)
+                    J_pm = compute_fun(qoi, F)
 
                     params_mp = flat_active_values.copy()
                     params_mp[ii] -= h
                     params_mp[jj] += h
                     model.parameters.set_active_values_from_flat(params_mp)
-                    J_mp = compute_fun(qoi)
+                    J_mp = compute_fun(qoi, F)
 
                     fd_hessian[ii, jj] = (J_pp + J_mm - J_pm - J_mp) \
                         / (4. * h**2)
@@ -327,11 +327,11 @@ def fd_hessian_check_components(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     return fd_error
 
 
-def fd_hessian_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
+def fd_hessian_check(qoi, F, hs=np.logspace(-2, -10, 9), seed=22):
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
-    hessian_obj = DirectAdjointObjective(qoi)
+    hessian_obj = DirectAdjointObjective(qoi, F)
 
     J_ref, grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
     print(f"original J ref = {J_ref}")
@@ -349,12 +349,12 @@ def fd_hessian_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
         params_plus = flat_active_values.copy()
         params_plus += h * d
         model.parameters.set_active_values_from_flat(params_plus)
-        J_plus = compute_fun(qoi)
+        J_plus = compute_fun(qoi, F)
 
         params_minus = flat_active_values.copy()
         params_minus -= h * d
         model.parameters.set_active_values_from_flat(params_minus)
-        J_minus = compute_fun(qoi)
+        J_minus = compute_fun(qoi, F)
 
         dir_deriv = (J_plus + J_minus - 2. * J_ref) / h**2
         fd_error[ii] = np.abs(dir_deriv - dir_deriv_ref)
@@ -362,10 +362,9 @@ def fd_hessian_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     return fd_error
 
 
-def compute_fun(qoi):
+def compute_fun(qoi, F):
 
     model = qoi.model()
-    F = qoi.global_state()
 
     num_steps = F.shape[2] - 1
     model.set_xi_to_init_vals()
@@ -390,14 +389,14 @@ def compute_fun(qoi):
     return J
 
 
-def jvp_fd_hessian_check_components(qoi, update_fun,
+def jvp_fd_hessian_check_components(qoi, F, update_fun,
         hs=np.logspace(-2, -10, 9), seed=22):
 
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    hessian_obj = JVPObjective(qoi, update_fun)
+    hessian_obj = JVPObjective(qoi, F, update_fun)
 
     J_ref = hessian_obj.evaluate_objective(flat_active_values)
     hessian_ref = hessian_obj.evaluate_hessian(flat_active_values)
@@ -416,12 +415,12 @@ def jvp_fd_hessian_check_components(qoi, update_fun,
                     params_plus = flat_active_values.copy()
                     params_plus[ii] += h
                     model.parameters.set_active_values_from_flat(params_plus)
-                    J_plus = compute_fun(qoi)
+                    J_plus = compute_fun(qoi, F)
 
                     params_minus = flat_active_values.copy()
                     params_minus[ii] -= h
                     model.parameters.set_active_values_from_flat(params_minus)
-                    J_minus = compute_fun(qoi)
+                    J_minus = compute_fun(qoi, F)
 
                     fd_hessian[ii, ii] = (J_plus + J_minus - 2. * J_ref) \
                         / h**2
@@ -432,25 +431,25 @@ def jvp_fd_hessian_check_components(qoi, update_fun,
                     params_pp[ii] += h
                     params_pp[jj] += h
                     model.parameters.set_active_values_from_flat(params_pp)
-                    J_pp = compute_fun(qoi)
+                    J_pp = compute_fun(qoi, F)
 
                     params_mm = flat_active_values.copy()
                     params_mm[ii] -= h
                     params_mm[jj] -= h
                     model.parameters.set_active_values_from_flat(params_mm)
-                    J_mm = compute_fun(qoi)
+                    J_mm = compute_fun(qoi, F)
 
                     params_pm = flat_active_values.copy()
                     params_pm[ii] += h
                     params_pm[jj] -= h
                     model.parameters.set_active_values_from_flat(params_pm)
-                    J_pm = compute_fun(qoi)
+                    J_pm = compute_fun(qoi, F)
 
                     params_mp = flat_active_values.copy()
                     params_mp[ii] -= h
                     params_mp[jj] += h
                     model.parameters.set_active_values_from_flat(params_mp)
-                    J_mp = compute_fun(qoi)
+                    J_mp = compute_fun(qoi, F)
 
                     fd_hessian[ii, jj] = (J_pp + J_mm - J_pm - J_mp) \
                         / (4. * h**2)
@@ -464,11 +463,11 @@ def jvp_fd_hessian_check_components(qoi, update_fun,
     return fd_error
 
 
-def jvp_fd_hessian_check(qoi, update_fun, hs=np.logspace(-2, -10, 9), seed=22):
+def jvp_fd_hessian_check(qoi, F, update_fun, hs=np.logspace(-2, -10, 9), seed=22):
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
-    hessian_obj = JVPObjective(qoi, update_fun)
+    hessian_obj = JVPObjective(qoi, F, update_fun)
 
     J_ref, grad_ref = hessian_obj.evaluate_objective_and_grad(flat_active_values)
     hessian_ref = hessian_obj.evaluate_hessian(flat_active_values)
@@ -487,12 +486,12 @@ def jvp_fd_hessian_check(qoi, update_fun, hs=np.logspace(-2, -10, 9), seed=22):
         params_plus = flat_active_values.copy()
         params_plus += h * d
         model.parameters.set_active_values_from_flat(params_plus)
-        J_plus = compute_fun(qoi)
+        J_plus = compute_fun(qoi, F)
 
         params_minus = flat_active_values.copy()
         params_minus -= h * d
         model.parameters.set_active_values_from_flat(params_minus)
-        J_minus = compute_fun(qoi)
+        J_minus = compute_fun(qoi, F)
 
         dir_deriv = (J_plus + J_minus - 2. * J_ref) / h**2
         fd_error[ii] = np.abs(dir_deriv - dir_deriv_ref)
@@ -540,37 +539,37 @@ if __name__ == "__main__":
     # test original hessian
     true_active_param_values = model.parameters.flat_active_values(False)
     initial_guess = 1.1 * true_active_param_values
-    qoi = Calibration(model, F, data, weight)
+    qoi = Calibration(model, data, weight)
 
     model.parameters.set_active_values_from_flat(initial_guess, False)
-    grad_fd_error = fd_grad_check(qoi, h)[0]
+    grad_fd_error = fd_grad_check(qoi, F, h)[0]
 
     model.parameters.set_active_values_from_flat(initial_guess, False)
-    hessian_fd_error = fd_hessian_check(qoi, h)
+    hessian_fd_error = fd_hessian_check(qoi, F, h)
 
     model.parameters.set_active_values_from_flat(initial_guess, False)
-    grad_fd_component_error = fd_grad_check_components(qoi, h)
+    grad_fd_component_error = fd_grad_check_components(qoi, F, h)
 
     model.parameters.set_active_values_from_flat(initial_guess, False)
-    hessian_fd_component_error = fd_hessian_check_components(qoi, h)
+    hessian_fd_component_error = fd_hessian_check_components(qoi, F, h)
 
     # test jvp hessian
     jvp_J2_parameters = create_J2_parameters()
     jvp_model = SmallElasticPlastic(jvp_J2_parameters, def_type)
-    jvp_qoi = Calibration(jvp_model, F, data, weight)
+    jvp_qoi = Calibration(jvp_model, data, weight)
     update = make_newton_solve(jvp_model._residual, jvp_model._init_xi)
 
     jvp_true_active_param_values = jvp_model.parameters.flat_active_values(False)
     jvp_initial_guess = 1.1 * jvp_true_active_param_values
 
     jvp_model.parameters.set_active_values_from_flat(jvp_initial_guess, False)
-    jvp_grad_fd_error = jvp_fd_grad_check(qoi, update, h)
+    jvp_grad_fd_error = jvp_fd_grad_check(qoi, F, update, h)
 
     jvp_model.parameters.set_active_values_from_flat(jvp_initial_guess, False)
-    jvp_hessian_fd_error = jvp_fd_hessian_check(jvp_qoi, update, h)
+    jvp_hessian_fd_error = jvp_fd_hessian_check(jvp_qoi, F, update, h)
 
     jvp_model.parameters.set_active_values_from_flat(jvp_initial_guess, False)
-    jvp_grad_fd_component_error = jvp_fd_grad_check_components(qoi, update, h)
+    jvp_grad_fd_component_error = jvp_fd_grad_check_components(qoi, F, update, h)
 
     jvp_model.parameters.set_active_values_from_flat(jvp_initial_guess, False)
-    jvp_hessian_fd_component_error = jvp_fd_hessian_check_components(jvp_qoi, update, h)
+    jvp_hessian_fd_component_error = jvp_fd_hessian_check_components(jvp_qoi, F, update, h)

@@ -75,15 +75,15 @@ class TestJVPvsOriginal(unittest.TestCase):
         # Build the two objectives on independent models.
         orig_problem = J2AnalyticalProblem(scale_params=True)
         orig_model = SmallElasticPlastic(orig_problem.J2_parameters, def_type)
-        orig_qoi = Calibration(orig_model, F, cauchy_data, weight)
-        orig_obj = DirectAdjointObjective(orig_qoi)
+        orig_qoi = Calibration(orig_model, cauchy_data, weight)
+        orig_obj = DirectAdjointObjective(orig_qoi, F)
 
         jvp_problem = J2AnalyticalProblem(scale_params=True)
         jvp_model = SmallElasticPlastic(jvp_problem.J2_parameters, def_type)
-        jvp_qoi = Calibration(jvp_model, F, cauchy_data, weight)
+        jvp_qoi = Calibration(jvp_model, cauchy_data, weight)
         update_fun = make_newton_solve(jvp_model._residual,
                                        jvp_model._init_xi)
-        jvp_obj = JVPObjective(jvp_qoi, update_fun)
+        jvp_obj = JVPObjective(jvp_qoi, F, update_fun)
 
         # Evaluate.
         J_orig, grad_orig, hess_orig = orig_obj.evaluate(initial_guess)

@@ -45,11 +45,11 @@ def compute_cauchy(model, F):
     return cauchy
 
 
-def fd_hessian_check_components(qoi, hs=np.logspace(-2, -10, 9), seed=22):
+def fd_hessian_check_components(qoi, F, hs=np.logspace(-2, -10, 9), seed=22):
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
-    hessian_obj = DirectAdjointObjective(qoi)
+    hessian_obj = DirectAdjointObjective(qoi, F)
 
     J_ref, _grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
 
@@ -67,12 +67,12 @@ def fd_hessian_check_components(qoi, hs=np.logspace(-2, -10, 9), seed=22):
                     params_plus = flat_active_values.copy()
                     params_plus[ii] += h
                     model.parameters.set_active_values_from_flat(params_plus)
-                    J_plus = compute_fun(qoi)
+                    J_plus = compute_fun(qoi, F)
 
                     params_minus = flat_active_values.copy()
                     params_minus[ii] -= h
                     model.parameters.set_active_values_from_flat(params_minus)
-                    J_minus = compute_fun(qoi)
+                    J_minus = compute_fun(qoi, F)
 
                     fd_hessian[ii, ii] = (J_plus + J_minus - 2. * J_ref) \
                         / h**2
@@ -83,25 +83,25 @@ def fd_hessian_check_components(qoi, hs=np.logspace(-2, -10, 9), seed=22):
                     params_pp[ii] += h
                     params_pp[jj] += h
                     model.parameters.set_active_values_from_flat(params_pp)
-                    J_pp = compute_fun(qoi)
+                    J_pp = compute_fun(qoi, F)
 
                     params_mm = flat_active_values.copy()
                     params_mm[ii] -= h
                     params_mm[jj] -= h
                     model.parameters.set_active_values_from_flat(params_mm)
-                    J_mm = compute_fun(qoi)
+                    J_mm = compute_fun(qoi, F)
 
                     params_pm = flat_active_values.copy()
                     params_pm[ii] += h
                     params_pm[jj] -= h
                     model.parameters.set_active_values_from_flat(params_pm)
-                    J_pm = compute_fun(qoi)
+                    J_pm = compute_fun(qoi, F)
 
                     params_mp = flat_active_values.copy()
                     params_mp[ii] -= h
                     params_mp[jj] += h
                     model.parameters.set_active_values_from_flat(params_mp)
-                    J_mp = compute_fun(qoi)
+                    J_mp = compute_fun(qoi, F)
 
                     fd_hessian[ii, jj] = (J_pp + J_mm - J_pm - J_mp) \
                         / (4. * h**2)
@@ -115,11 +115,11 @@ def fd_hessian_check_components(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     return fd_error
 
 
-def fd_hessian_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
+def fd_hessian_check(qoi, F, hs=np.logspace(-2, -10, 9), seed=22):
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
-    hessian_obj = DirectAdjointObjective(qoi)
+    hessian_obj = DirectAdjointObjective(qoi, F)
 
     J_ref, _grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
 
@@ -139,12 +139,12 @@ def fd_hessian_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
         params_plus = flat_active_values.copy()
         params_plus += h * d
         model.parameters.set_active_values_from_flat(params_plus)
-        J_plus = compute_fun(qoi)
+        J_plus = compute_fun(qoi, F)
 
         params_minus = flat_active_values.copy()
         params_minus -= h * d
         model.parameters.set_active_values_from_flat(params_minus)
-        J_minus = compute_fun(qoi)
+        J_minus = compute_fun(qoi, F)
 
         dir_deriv = (J_plus + J_minus - 2. * J_ref) / h**2
         fd_error[ii] = np.abs(dir_deriv - dir_deriv_ref)
@@ -153,14 +153,14 @@ def fd_hessian_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     return fd_error
 
 
-def fd_grad_check_components(qoi, hs=np.logspace(-2, -10, 9)):
+def fd_grad_check_components(qoi, F, hs=np.logspace(-2, -10, 9)):
 
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    direct_obj = DirectObjective(qoi)
-    adjoint_obj = AdjointObjective(qoi)
+    direct_obj = DirectObjective(qoi, F)
+    adjoint_obj = AdjointObjective(qoi, F)
 
     _, direct_grad_ref = direct_obj.evaluate(flat_active_values)
     _, adjoint_grad_ref = adjoint_obj.evaluate(flat_active_values)
@@ -173,12 +173,12 @@ def fd_grad_check_components(qoi, hs=np.logspace(-2, -10, 9)):
             params_plus = flat_active_values.copy()
             params_plus[kk] += h
             model.parameters.set_active_values_from_flat(params_plus)
-            J_plus = compute_fun(qoi)
+            J_plus = compute_fun(qoi, F)
 
             params_minus = flat_active_values.copy()
             params_minus[kk] -= h
             model.parameters.set_active_values_from_flat(params_minus)
-            J_minus = compute_fun(qoi)
+            J_minus = compute_fun(qoi, F)
 
             fs_fd_error[kk, ii] = np.abs((J_plus - J_minus) / (2. * h)
                                          - direct_grad_ref[kk])
@@ -189,14 +189,14 @@ def fd_grad_check_components(qoi, hs=np.logspace(-2, -10, 9)):
     return fs_fd_error, adjoint_fd_error
 
 
-def fd_grad_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
+def fd_grad_check(qoi, F, hs=np.logspace(-2, -10, 9), seed=22):
 
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    direct_obj = DirectObjective(qoi)
-    adjoint_obj = AdjointObjective(qoi)
+    direct_obj = DirectObjective(qoi, F)
+    adjoint_obj = AdjointObjective(qoi, F)
 
     _, direct_grad_ref = direct_obj.evaluate(flat_active_values)
     _, adjoint_grad_ref = adjoint_obj.evaluate(flat_active_values)
@@ -214,12 +214,12 @@ def fd_grad_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
         params_plus = flat_active_values.copy()
         params_plus += h * d
         model.parameters.set_active_values_from_flat(params_plus)
-        J_plus = compute_fun(qoi)
+        J_plus = compute_fun(qoi, F)
 
         params_minus = flat_active_values.copy()
         params_minus -= h * d
         model.parameters.set_active_values_from_flat(params_minus)
-        J_minus = compute_fun(qoi)
+        J_minus = compute_fun(qoi, F)
 
         fd_dir_deriv = (J_plus - J_minus) / (2. * h)
         fs_fd_error[ii] = np.abs(fd_dir_deriv - fs_dir_deriv_ref)
@@ -228,15 +228,15 @@ def fd_grad_check(qoi, hs=np.logspace(-2, -10, 9), seed=22):
     return fs_fd_error, adjoint_fd_error
 
 
-def complex_step_grad_check(qoi, qoi_complex, hs=np.logspace(-2, -10, 9),
+def complex_step_grad_check(qoi, qoi_complex, F, hs=np.logspace(-2, -10, 9),
         seed=22):
 
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
 
-    direct_obj = DirectObjective(qoi)
-    adjoint_obj = AdjointObjective(qoi)
+    direct_obj = DirectObjective(qoi, F)
+    adjoint_obj = AdjointObjective(qoi, F)
 
     _, direct_grad_ref = direct_obj.evaluate(flat_active_values)
     _, adjoint_grad_ref = adjoint_obj.evaluate(flat_active_values)
@@ -258,18 +258,18 @@ def complex_step_grad_check(qoi, qoi_complex, hs=np.logspace(-2, -10, 9),
         params_plus_complex += complex(0, 1) * h * d
         model_complex.parameters.set_active_values_from_flat(params_plus_complex,
             is_complex=True)
-        complex_dir_deriv = compute_fun(qoi_complex).imag / h
+        complex_dir_deriv = compute_fun(qoi_complex, F).imag / h
         fs_fd_error[ii] = np.abs(complex_dir_deriv - fs_dir_deriv_ref)
         adjoint_fd_error[ii] = np.abs(complex_dir_deriv - adjoint_dir_deriv_ref)
 
     return fs_fd_error, adjoint_fd_error
 
 
-def complex_step_hessian_check(qoi, qoi_complex, hs=np.logspace(-2, -10, 9), seed=22):
+def complex_step_hessian_check(qoi, qoi_complex, F, hs=np.logspace(-2, -10, 9), seed=22):
     model = qoi.model()
     flat_active_values = model.parameters.flat_active_values(True)
     num_active_params = model.parameters.num_active_params
-    hessian_obj = DirectAdjointObjective(qoi)
+    hessian_obj = DirectAdjointObjective(qoi, F)
 
     _J_ref, _grad_ref, hessian_ref = hessian_obj.evaluate(flat_active_values)
 
@@ -289,13 +289,13 @@ def complex_step_hessian_check(qoi, qoi_complex, hs=np.logspace(-2, -10, 9), see
         params_plus_complex += complex(0.5, np.sqrt(3.) / 2.) * h * d
         model_complex.parameters.set_active_values_from_flat(params_plus_complex,
             is_complex=True)
-        J_1 = compute_fun(qoi_complex)
+        J_1 = compute_fun(qoi_complex, F)
 
         params_plus_complex = flat_active_values_complex.copy()
         params_plus_complex += complex(-0.5, -np.sqrt(3.) / 2.) * h * d
         model_complex.parameters.set_active_values_from_flat(params_plus_complex,
             is_complex=True)
-        J_2 = compute_fun(qoi_complex)
+        J_2 = compute_fun(qoi_complex, F)
 
         dir_deriv = (J_1 + J_2).imag / (np.sqrt(3.) / 2. * h**2)
         fd_error[ii] = np.abs(dir_deriv - dir_deriv_ref)
@@ -303,10 +303,9 @@ def complex_step_hessian_check(qoi, qoi_complex, hs=np.logspace(-2, -10, 9), see
     return fd_error
 
 
-def compute_fun(qoi):
+def compute_fun(qoi, F):
 
     model = qoi.model()
-    F = qoi.global_state()
 
     num_steps = F.shape[2] - 1
     model.set_xi_to_init_vals()
@@ -397,7 +396,7 @@ class TestJ2FDChecks(unittest.TestCase):
 
         # create the real qoi
         data, weight = TestJ2FDChecks.get_plane_stress_data_and_weight(cauchy)
-        qoi = Calibration(model, F, data, weight)
+        qoi = Calibration(model, data, weight)
 
         # evaluate FD tests at values that are offset
         # from those used to generate the calibration data
@@ -408,7 +407,7 @@ class TestJ2FDChecks(unittest.TestCase):
         # instantiate complex model and qoi
         model_complex = Model(J2_parameters_complex,
             def_type=DefType.PLANE_STRESS, is_complex=True)
-        qoi_complex = Calibration(model_complex, F, data.astype(complex),
+        qoi_complex = Calibration(model_complex, data.astype(complex),
             weight)
 
         # FD perturbations
@@ -416,7 +415,7 @@ class TestJ2FDChecks(unittest.TestCase):
 
         model.parameters.set_active_values_from_flat(offset_param_values, False)
         fs_fd_dir_deriv_error, adjoint_fd_dir_deriv_error = \
-            fd_grad_check(qoi, h)
+            fd_grad_check(qoi, F, h)
         assert np.allclose(fs_fd_dir_deriv_error,
                            adjoint_fd_dir_deriv_error)
 
@@ -428,7 +427,7 @@ class TestJ2FDChecks(unittest.TestCase):
 
         model.parameters.set_active_values_from_flat(offset_param_values, False)
         fs_fd_component_error, adjoint_fd_component_error = \
-            fd_grad_check_components(qoi)
+            fd_grad_check_components(qoi, F)
         fd_component_diff_tol = 5e-8
         fd_components_diff = fs_fd_component_error \
             - adjoint_fd_component_error
@@ -438,7 +437,7 @@ class TestJ2FDChecks(unittest.TestCase):
             complex_offset_param_values, False, is_complex=True
         )
         fs_complex_step_dir_deriv_error, adjoint_complex_step_dir_deriv_error = \
-            complex_step_grad_check(qoi, qoi_complex, h)
+            complex_step_grad_check(qoi, qoi_complex, F, h)
         assert np.allclose(fs_complex_step_dir_deriv_error,
                            adjoint_complex_step_dir_deriv_error)
 
@@ -449,7 +448,7 @@ class TestJ2FDChecks(unittest.TestCase):
         assert complex_grad_log10_error_drop > error_drop_tol
 
         model.parameters.set_active_values_from_flat(offset_param_values, False)
-        hessian_fd_dir_deriv_error = fd_hessian_check(qoi, h)
+        hessian_fd_dir_deriv_error = fd_hessian_check(qoi, F, h)
         min_fd_error = np.min(hessian_fd_dir_deriv_error)
         max_fd_error = np.max(hessian_fd_dir_deriv_error)
         hessian_log10_error_drop = np.log10(max_fd_error / min_fd_error)
@@ -458,7 +457,7 @@ class TestJ2FDChecks(unittest.TestCase):
         model_complex.parameters.set_active_values_from_flat(
             complex_offset_param_values, False, is_complex=True)
         hessian_complex_step_dir_deriv_error = complex_step_hessian_check(
-            qoi, qoi_complex, h)
+            qoi, qoi_complex, F, h)
         min_complex_step_error = np.min(hessian_complex_step_dir_deriv_error)
         max_complex_step_error = np.max(hessian_complex_step_dir_deriv_error)
         complex_hessian_log10_error_drop = \
@@ -466,7 +465,7 @@ class TestJ2FDChecks(unittest.TestCase):
         assert complex_hessian_log10_error_drop > error_drop_tol
 
         model.parameters.set_active_values_from_flat(offset_param_values, False)
-        fd_hessian_check_components(qoi, h)
+        fd_hessian_check_components(qoi, F, h)
 
 if __name__ == "__main__":
     J2_FD_checks_test_suite = unittest.TestLoader().loadTestsFromTestCase(

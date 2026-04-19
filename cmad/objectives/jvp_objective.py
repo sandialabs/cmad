@@ -17,12 +17,12 @@ class JVPObjective:
     evaluate_hessian: Callable[..., JaxArray]
 
     def __init__(
-            self, qoi: QoI,
+            self, qoi: QoI, global_state: NDArray[np.floating],
             update_fun: Callable[..., StateList],
     ) -> None:
 
         pt_compute_objective = partial(self._compute_objective_fun,
-            qoi=qoi, update_fun=update_fun
+            qoi=qoi, F=global_state, update_fun=update_fun
         )
 
         self.evaluate_objective = jit(pt_compute_objective)
@@ -40,13 +40,13 @@ class JVPObjective:
     def _compute_objective_fun(
             flat_active_values: NDArray[np.floating],
             qoi: QoI,
+            F: NDArray[np.floating],
             update_fun: Callable[..., StateList],
     ) -> JaxArray:
 
         # consider renaming these for public access
         model = qoi._model
         parameters = model.parameters
-        F = qoi._global_state
         data = qoi._data
         weight = qoi._weight
 

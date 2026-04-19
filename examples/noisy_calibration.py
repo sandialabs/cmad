@@ -259,8 +259,8 @@ noise_std = 5.
 cauchy = compute_cauchy(model_true, F)
 data = cauchy + rng.normal(0., noise_std, cauchy.shape)
 
-qoi = Calibration(model, F, data, weight)
-objective = AdjointObjective(qoi)
+qoi = Calibration(model, data, weight)
+objective = AdjointObjective(qoi, F)
 
 minimize_lbfgs = True
 minimize_newton = True
@@ -274,7 +274,7 @@ if minimize_lbfgs:
 
 if minimize_newton:
     print("\n")
-    objective = DirectAdjointObjective(qoi)
+    objective = DirectAdjointObjective(qoi, F)
     opt_params = newton_optimization(initial_guess, objective)
 
 model.parameters.set_active_values_from_flat(opt_params)

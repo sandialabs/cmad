@@ -93,9 +93,9 @@ class TestJ2Calibrations(unittest.TestCase):
         cauchy = compute_cauchy(model, F)
         # cauchy_fig = plot_cauchy(cauchy)
 
-        qoi = Calibration(model, F, cauchy, weight)
-        objectives = [AdjointObjective(qoi),
-                      DirectObjective(qoi)]
+        qoi = Calibration(model, cauchy, weight)
+        objectives = [AdjointObjective(qoi, F),
+                      DirectObjective(qoi, F)]
 
         for objective in objectives:
 

@@ -86,7 +86,8 @@ class _JVPDriver:
     """
 
     def __init__(
-            self, qoi: QoI, newton_kwargs: dict[str, Any],
+            self, qoi: QoI, global_state: NDArray[np.floating],
+            newton_kwargs: dict[str, Any],
     ) -> None:
         model = qoi.model()
         # ``list`` invariance on the PyTree union means StateList is not
@@ -99,7 +100,7 @@ class _JVPDriver:
             Callable[..., StateList],
             make_newton_solve(model._residual, x0, **newton_kwargs),
         )
-        self._jvp_obj = JVPObjective(qoi, update_fun)
+        self._jvp_obj = JVPObjective(qoi, global_state, update_fun)
 
     def evaluate_grad(
             self, x: NDArray[np.floating],
@@ -125,6 +126,7 @@ class _JVPDriver:
 def build_sensitivity_driver(
         sensitivity_section: dict[str, Any],
         qoi: QoI,
+        global_state: NDArray[np.floating],
         newton_kwargs: dict[str, Any],
         subcommand: str,
 ) -> SensitivityDriver:
@@ -162,11 +164,13 @@ def build_sensitivity_driver(
         )
 
     if stype == "adjoint":
-        return _ObjectiveFamilyDriver(AdjointObjective(qoi))
+        return _ObjectiveFamilyDriver(AdjointObjective(qoi, global_state))
     if stype == "direct":
-        return _ObjectiveFamilyDriver(DirectObjective(qoi))
+        return _ObjectiveFamilyDriver(DirectObjective(qoi, global_state))
     if stype == "direct_adjoint":
-        return _ObjectiveFamilyDriver(DirectAdjointObjective(qoi))
+        return _ObjectiveFamilyDriver(
+            DirectAdjointObjective(qoi, global_state),
+        )
     if stype == "jvp":
-        return _JVPDriver(qoi, newton_kwargs)
+        return _JVPDriver(qoi, global_state, newton_kwargs)
     raise ValueError(f"sensitivity.type: unknown value {stype!r}")

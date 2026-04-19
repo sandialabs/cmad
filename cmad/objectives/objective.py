@@ -33,11 +33,13 @@ class Objective(ABC):
     _num_steps: int
     _xi_at_step: list[StateList]
 
-    def __init__(self, qoi: QoI) -> None:
+    def __init__(
+            self, qoi: QoI, global_state: NDArray[np.floating],
+    ) -> None:
         self._qoi = qoi
         self._model = qoi.model()
         self._parameters = qoi.model().parameters
-        self._global_state = qoi.global_state()
+        self._global_state = global_state
 
         self._num_steps = qoi.data().shape[-1] - 1
         self._xi_at_step = cast(

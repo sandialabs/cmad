@@ -55,11 +55,12 @@ def run_calibrate(deck_path: Path) -> int:
         expected_ndims=model._ndims,
     )
     data, weight = load_qoi_data(resolved["qoi"], deck_path.parent)
-    qoi = qoi_cls.from_deck(resolved["qoi"], model, F, data, weight)
+    qoi = qoi_cls.from_deck(resolved["qoi"], model, data, weight)
 
     newton_kwargs = resolved["solver"]["newton"]
     driver = build_sensitivity_driver(
-        resolved["sensitivity"], qoi, newton_kwargs, subcommand="calibrate",
+        resolved["sensitivity"], qoi, F, newton_kwargs,
+        subcommand="calibrate",
     )
 
     optimizer_section = resolved["optimizer"]

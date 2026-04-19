@@ -89,7 +89,7 @@ def run_model_and_compare(model, F, weight, alpha, stress):
     model.store_xi(xi_at_step, model.xi_prev(), 0)
 
     cauchy = np.zeros((3, 3, num_steps + 1))
-    qoi = Calibration(model, F, cauchy.copy(), weight)
+    qoi = Calibration(model, cauchy.copy(), weight)
     J = 0.
 
     for step in range(1, num_steps + 1):

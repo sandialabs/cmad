@@ -21,14 +21,12 @@ from cmad.typing import (
 @register_qoi("uniaxial_calibration")
 class UniaxialCalibration(QoI):
     def __init__(
-            self, model: Model, global_state: NDArray[np.floating],
+            self, model: Model,
             data: NDArray[np.floating], weight: NDArray[np.floating],
             uniaxial_stress_idx: int, stretch_var_idx: int,
     ) -> None:
         self._model = model
-        assert global_state.shape[-1] == data.shape[-1]
         assert data.shape == weight.shape
-        self._global_state = global_state
         self._data = data
         self._weight = weight
         partial_qoi = partial(self._qoi,
@@ -43,13 +41,11 @@ class UniaxialCalibration(QoI):
             cls,
             qoi_section: dict[str, Any],
             model: Model,
-            global_state: NDArray[np.floating],
             data: NDArray[np.floating],
             weight: NDArray[np.floating],
     ) -> "UniaxialCalibration":
         return cls(
             model=model,
-            global_state=global_state,
             data=data,
             weight=weight,
             uniaxial_stress_idx=qoi_section["uniaxial_stress_idx"],

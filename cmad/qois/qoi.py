@@ -23,7 +23,6 @@ class QoI(ABC):
 
     # ---- expected to be set by subclass before super().__init__() ----
     _model: Model
-    _global_state: NDArray[np.floating]
     _data: NDArray[np.floating]
     _weight: NDArray[np.floating]
 
@@ -57,7 +56,6 @@ class QoI(ABC):
             cls,
             qoi_section: dict[str, Any],
             model: Model,
-            global_state: NDArray[np.floating],
             data: NDArray[np.floating],
             weight: NDArray[np.floating],
     ) -> "QoI":
@@ -185,9 +183,6 @@ class QoI(ABC):
 
     def model(self) -> Model:
         return self._model
-
-    def global_state(self) -> NDArray[np.floating]:
-        return self._global_state
 
     def data(self) -> NDArray[np.floating]:
         return self._data

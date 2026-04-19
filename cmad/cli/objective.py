@@ -46,7 +46,7 @@ def run_objective(deck_path: Path) -> int:
     num_steps = F.shape[2] - 1
 
     data, weight = load_qoi_data(resolved["qoi"], deck_path.parent)
-    qoi = qoi_cls.from_deck(resolved["qoi"], model, F, data, weight)
+    qoi = qoi_cls.from_deck(resolved["qoi"], model, data, weight)
 
     newton_kwargs = resolved["solver"]["newton"]
     cauchy, xi_trajectory, solver_log, J = run_primal_pass(

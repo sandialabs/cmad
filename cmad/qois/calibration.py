@@ -21,12 +21,10 @@ from cmad.typing import (
 @register_qoi("calibration")
 class Calibration(QoI):
     def __init__(
-            self, model: Model, global_state: NDArray[np.floating],
+            self, model: Model,
             data: NDArray[np.floating], weight: NDArray[np.floating],
     ) -> None:
         self._model = model
-        assert global_state.shape[-1] == data.shape[-1]
-        self._global_state = global_state
         self._data = data
         # assume weight constant and same shape as cauchy stress
         assert weight.shape == (3, 3)
@@ -40,11 +38,10 @@ class Calibration(QoI):
             cls,
             qoi_section: dict[str, Any],
             model: Model,
-            global_state: NDArray[np.floating],
             data: NDArray[np.floating],
             weight: NDArray[np.floating],
     ) -> "Calibration":
-        return cls(model, global_state, data, weight)
+        return cls(model, data, weight)
 
 
     def data_at_step(self, step: Step) -> NDArray[np.floating]:
