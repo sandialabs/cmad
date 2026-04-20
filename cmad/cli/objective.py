@@ -41,7 +41,7 @@ def run_objective(deck_path: Path) -> int:
 
     F = load_history(
         resolved["deformation"], deck_path.parent,
-        expected_ndims=model._ndims,
+        expected_ndims=model.ndims,
     )
     num_steps = F.shape[2] - 1
 

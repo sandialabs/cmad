@@ -23,7 +23,7 @@ Two input modes are supported:
   ``(N, n, n)``; the loader always transposes to ``(n, n, N)``. No
   ambiguity at ``N == n``.
 
-``expected_ndims`` is the model's ``_ndims`` attribute (populated from
+``expected_ndims`` is the model's ``ndims`` attribute (populated from
 ``def_type_ndims`` in every registered model's ``__init__``). Any shape
 mismatch raises with the expected ``n`` and the loaded ``n`` both named,
 before the array is handed to the primal or sensitivity loop.
@@ -45,7 +45,7 @@ def load_history(
 ) -> NDArray[np.float64]:
     """Load the deformation-gradient history into shape ``(n, n, N)``.
 
-    ``expected_ndims`` comes from the model's ``_ndims`` attribute; the
+    ``expected_ndims`` comes from the model's ``ndims`` attribute; the
     loaded array's spatial dimensions must match.
     """
     if "history_file" in deformation_section:

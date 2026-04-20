@@ -321,6 +321,10 @@ class Model(ABC):
     def resid_name(self, residual: int) -> str | None:
         return self.resid_names[residual]
 
+    @property
+    def ndims(self) -> int:
+        return self._ndims
+
     def gather_global(
             self, u: Sequence[GlobalField], u_prev: Sequence[GlobalField],
     ) -> None:

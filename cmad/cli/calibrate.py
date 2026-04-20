@@ -52,7 +52,7 @@ def run_calibrate(deck_path: Path) -> int:
 
     F = load_history(
         resolved["deformation"], deck_path.parent,
-        expected_ndims=model._ndims,
+        expected_ndims=model.ndims,
     )
     data, weight = load_qoi_data(resolved["qoi"], deck_path.parent)
     qoi = qoi_cls.from_deck(resolved["qoi"], model, data, weight)
