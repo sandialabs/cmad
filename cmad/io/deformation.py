@@ -12,12 +12,16 @@ dimensions match the model's ``DefType``:
 Two input modes are supported:
 
 - ``history_file: <path>`` — a file on disk. The extension dispatches the
-  reader; ``.npy`` is implemented today. ``.csv`` / ``.txt`` are a
-  near-future additive branch (see ``_load_from_file``). File arrays are
-  canonicalized from either ``(n, n, N)`` (preferred, matches the CMAD
-  save convention) or ``(N, n, n)`` to ``(n, n, N)``. When ``N == n``
-  the two layouts are indistinguishable; the loader treats the file as
-  the preferred ``(n, n, N)``.
+  reader; ``.npy``, ``.csv``, and ``.txt`` are supported. ``.npy`` arrays
+  are canonicalized from either ``(n, n, N)`` (preferred, matches the
+  CMAD save convention) or ``(N, n, n)`` to ``(n, n, N)``; when
+  ``N == n`` the two layouts are indistinguishable and the loader treats
+  the file as the preferred ``(n, n, N)``. ``.csv`` / ``.txt`` files
+  contain one row per step with a flattened row-major n-by-n matrix
+  (``n*n`` columns per row); ``.csv`` is comma-delimited, ``.txt`` is
+  whitespace-delimited. ``n`` is inferred from the column count and
+  validated as a perfect square. Text files are always ``(N, n, n)`` —
+  no N==n ambiguity.
 - ``inline: [[[...], ...], ...]`` — an inline list of n-by-n matrices for
   small test cases. The natural YAML reading is step-first
   ``(N, n, n)``; the loader always transposes to ``(n, n, N)``. No
@@ -77,12 +81,21 @@ def _load_from_file(path: Path) -> NDArray[np.float64]:
     ext = path.suffix.lower()
     if ext == ".npy":
         arr: NDArray[np.float64] = np.load(path).astype(np.float64)
-    # elif ext in {".csv", ".txt"}:
-    #     arr = np.loadtxt(path).reshape(-1, n, n).astype(np.float64)
+    elif ext in {".csv", ".txt"}:
+        delimiter = "," if ext == ".csv" else None
+        raw = np.loadtxt(path, delimiter=delimiter, ndmin=2).astype(np.float64)
+        cols = raw.shape[1]
+        n = int(np.sqrt(cols))
+        if n * n != cols:
+            raise ValueError(
+                f"deformation.history_file: expected n*n columns per row "
+                f"(flattened n-by-n matrix); got {cols} columns in {path}",
+            )
+        arr = raw.reshape(raw.shape[0], n, n)
     else:
         raise ValueError(
             f"deformation.history_file: unsupported extension '{ext}' "
-            f"(path: {path}); supported: .npy",
+            f"(path: {path}); supported: .npy, .csv, .txt",
         )
     return _canonicalize_file_shape(arr)
 
