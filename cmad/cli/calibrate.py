@@ -22,13 +22,8 @@ from jax.tree_util import tree_flatten_with_path
 from numpy.typing import NDArray
 from scipy.optimize import minimize
 
+from cmad.cli.common import build_mp_object_graph, resolve_output
 from cmad.cli.sensitivity import build_sensitivity_driver
-from cmad.io.deck import apply_deck_defaults, load_deck
-from cmad.io.deformation import load_history
-from cmad.io.params_builder import build_parameters
-from cmad.io.qoi_data import load_qoi_data
-from cmad.io.registry import resolve_model, resolve_qoi
-from cmad.io.schema import validate_deck
 from cmad.io.writers import (
     write_opt_history,
     write_opt_params,
@@ -40,30 +35,18 @@ from cmad.parameters.parameters import Parameters
 
 def run_calibrate(deck_path: Path) -> int:
     """Execute the calibrate subcommand on ``deck_path``. Returns an exit code."""
-    deck = load_deck(deck_path)
-    resolved = apply_deck_defaults(deck)
-    validate_deck(resolved, "calibrate")
+    graph = build_mp_object_graph(deck_path, "calibrate")
+    qoi = graph.qoi
+    assert qoi is not None
+    parameters = graph.parameters
 
-    model_cls = resolve_model(resolved["model"]["name"])
-    qoi_cls = resolve_qoi(resolved["qoi"]["name"])
-
-    parameters = build_parameters(resolved["parameters"])
-    model = model_cls.from_deck(resolved["model"], parameters)
-
-    F = load_history(
-        resolved["deformation"], deck_path.parent,
-        expected_ndims=model.ndims,
-    )
-    data, weight = load_qoi_data(resolved["qoi"], deck_path.parent)
-    qoi = qoi_cls.from_deck(resolved["qoi"], model, data, weight)
-
-    newton_kwargs = resolved["solver"]["newton"]
+    newton_kwargs = graph.resolved["solver"]["newton"]
     driver = build_sensitivity_driver(
-        resolved["sensitivity"], qoi, F, newton_kwargs,
+        graph.resolved["sensitivity"], qoi, graph.F, newton_kwargs,
         subcommand="calibrate",
     )
 
-    optimizer_section = resolved["optimizer"]
+    optimizer_section = graph.resolved["optimizer"]
     x0 = _resolve_initial_guess(optimizer_section["initial_guess"], parameters)
     bounds = parameters.opt_bounds
     log_params = optimizer_section["log_params"]
@@ -95,16 +78,11 @@ def run_calibrate(deck_path: Path) -> int:
 
     parameters.set_active_values_from_flat(result.x, are_canonical=True)
 
-    out_dir = Path(resolved["output"]["path"])
-    if not out_dir.is_absolute():
-        out_dir = deck_path.parent / out_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
-    prefix = resolved["output"]["prefix"]
-
-    write_resolved_deck(out_dir, prefix, resolved)
+    out_dir, prefix, _ = resolve_output(graph.resolved, deck_path)
+    write_resolved_deck(out_dir, prefix, graph.resolved)
     write_opt_history(out_dir, prefix, history, active_param_paths)
     write_opt_params(
-        out_dir, prefix, resolved["parameters"], parameters.values,
+        out_dir, prefix, graph.resolved["parameters"], parameters.values,
     )
     write_opt_status(out_dir, prefix, {
         "success": bool(result.success),

@@ -14,11 +14,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from cmad.io.deck import apply_deck_defaults, load_deck
-from cmad.io.deformation import load_history
-from cmad.io.params_builder import build_parameters
-from cmad.io.registry import resolve_model
-from cmad.io.schema import validate_deck
+from cmad.cli.common import build_mp_object_graph, resolve_output
 from cmad.io.writers import (
     write_cauchy,
     write_resolved_deck,
@@ -32,36 +28,19 @@ from cmad.typing import SupportsPrimalLoop
 
 def run_primal(deck_path: Path) -> int:
     """Execute the primal subcommand on ``deck_path``. Returns an exit code."""
-    deck = load_deck(deck_path)
-    resolved = apply_deck_defaults(deck)
-    validate_deck(resolved, "primal")
+    graph = build_mp_object_graph(deck_path, "primal")
+    num_steps = graph.F.shape[2] - 1
 
-    cls = resolve_model(resolved["model"]["name"])
-    parameters = build_parameters(resolved["parameters"])
-    model = cls.from_deck(resolved["model"], parameters)
-
-    F = load_history(
-        resolved["deformation"], deck_path.parent,
-        expected_ndims=model.ndims,
-    )
-    num_steps = F.shape[2] - 1
-
-    newton_kwargs = resolved["solver"]["newton"]
+    newton_kwargs = graph.resolved["solver"]["newton"]
     cauchy, xi_trajectory, solver_log, _ = run_primal_pass(
-        model, F, num_steps, newton_kwargs,
+        graph.model, graph.F, num_steps, newton_kwargs,
     )
 
-    out_dir = Path(resolved["output"]["path"])
-    if not out_dir.is_absolute():
-        out_dir = deck_path.parent / out_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
-    prefix = resolved["output"]["prefix"]
-    fmt = resolved["output"]["format"]
-
+    out_dir, prefix, fmt = resolve_output(graph.resolved, deck_path)
     write_cauchy(out_dir, prefix, cauchy, fmt)
     write_xi(out_dir, prefix, xi_trajectory, fmt)
     write_solver_log(out_dir, prefix, solver_log)
-    write_resolved_deck(out_dir, prefix, resolved)
+    write_resolved_deck(out_dir, prefix, graph.resolved)
     return 0
 
 
