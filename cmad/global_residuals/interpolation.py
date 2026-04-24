@@ -21,6 +21,11 @@ def interpolate_global_fields_at_ip(
     Each ``U[i]`` has shape ``(num_basis_fns[i], num_eqs[i])``; each
     ``shapes_ip[i].N`` has shape ``(num_basis_fns[i],)`` and
     ``shapes_ip[i].grad_N`` has shape ``(num_basis_fns[i], ndims)``.
+
+    Output convention: ``fields[name]`` has shape ``(num_eqs[i],)``;
+    ``grad_fields[name]`` has shape ``(num_eqs[i], ndims)`` with
+    ``grad_fields[name][k, j] = ∂u_k/∂x_j`` (component-outer,
+    spatial-inner). Matches :func:`cmad.models.global_fields.mp_U_from_F`.
     """
     if any(name is None for name in resid_names):
         raise ValueError(
@@ -35,5 +40,5 @@ def interpolate_global_fields_at_ip(
     for name, U_i, shapes_i in zip(resid_names, U, shapes_ip, strict=True):
         assert name is not None  # narrowed by the check above
         fields[name] = shapes_i.N @ U_i
-        grad_fields[name] = shapes_i.grad_N.T @ U_i
+        grad_fields[name] = U_i.T @ shapes_i.grad_N
     return GlobalFieldsAtPoint(fields=fields, grad_fields=grad_fields)
