@@ -1,5 +1,5 @@
 from abc import ABC
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import Any, ClassVar, cast
 
 import numpy as np
@@ -8,12 +8,11 @@ from jax.tree_util import tree_flatten
 from numpy.typing import NDArray
 
 from cmad.models.deriv_types import DerivType
+from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.var_types import VarType
 from cmad.parameters.parameters import Parameters
 from cmad.typing import (
     CauchyFn,
-    GlobalField,
-    GlobalList,
     JaxArray,
     Params,
     PyTree,
@@ -31,10 +30,13 @@ class Model(ABC):
     See ResidualFn and CauchyFn in cmad.typing for the required callable
     signatures.
 
-    Both functions take (xi, xi_prev, params, u, u_prev) and return a
+    Both functions take (xi, xi_prev, params, U, U_prev) and return a
     JaxArray. They are jit-compiled and AD-derivative-cached at
     construction; access via self._residual / self.cauchy.
     """
+
+    # ---- class configuration (subclasses may override) ----
+    supports_closed_form_cauchy: ClassVar[bool] = False
 
     # ---- attributes the subclass must set before super().__init__() ----
     parameters: Parameters
@@ -56,8 +58,8 @@ class Model(ABC):
     _delta_xi_offsets: NDArray[np.intp]
 
     # ---- attributes set by self.gather_global() / self.gather_xi() ----
-    _u: GlobalList
-    _u_prev: GlobalList
+    _U: GlobalFieldsAtPoint
+    _U_prev: GlobalFieldsAtPoint
 
     # ---- attributes set by Model.__init__() ----
     # _residual and cauchy are documented in the class docstring; their
@@ -68,6 +70,7 @@ class Model(ABC):
     _hessian_xi_prev_params: Callable[..., PyTree]
     _hessian_params_params: Callable[..., PyTree]
     dcauchy: list[Callable[..., PyTree]]
+    cauchy_closed_form: Callable[..., JaxArray] | None
     _deriv_mode: int  # backed by DerivType
 
     # ---- attributes populated by evaluate* methods ----
@@ -99,6 +102,7 @@ class Model(ABC):
 
     def __init__(
             self, residual_fun: ResidualFn, cauchy_fun: CauchyFn,
+            cauchy_closed_form_fun: Callable[..., JaxArray] | None = None,
     ) -> None:
         self._residual = jit(residual_fun)
         self._jacobian = [jit(jacfwd(residual_fun, argnums=DerivType.DXI,
@@ -127,6 +131,11 @@ class Model(ABC):
         self.dcauchy = [jit(jacfwd(cauchy_fun, argnums=DerivType.DXI)),
                         jit(jacfwd(cauchy_fun, argnums=DerivType.DXI_PREV)),
                         jit(jacrev(cauchy_fun, argnums=DerivType.DPARAMS))]
+
+        self.cauchy_closed_form = (
+            jit(cauchy_closed_form_fun)
+            if cauchy_closed_form_fun is not None else None
+        )
 
         self._deriv_mode = DerivType.DNONE
 
@@ -286,9 +295,10 @@ class Model(ABC):
 
     def variables(
             self,
-    ) -> tuple[StateList, StateList, Params, GlobalList, GlobalList]:
-        return self._xi, self._xi_prev, self.parameters.values, \
-            self._u, self._u_prev
+    ) -> tuple[StateList, StateList, Params,
+               GlobalFieldsAtPoint, GlobalFieldsAtPoint]:
+        return (self._xi, self._xi_prev, self.parameters.values,
+                self._U, self._U_prev)
 
     def _init_residuals(self, num_residuals: int) -> None:
         self.num_residuals = num_residuals
@@ -326,10 +336,10 @@ class Model(ABC):
         return self._ndims
 
     def gather_global(
-            self, u: Sequence[GlobalField], u_prev: Sequence[GlobalField],
+            self, U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
     ) -> None:
-        self._u = list(u)
-        self._u_prev = list(u_prev)
+        self._U = U
+        self._U_prev = U_prev
 
     def gather_xi(
             self, xi: Sequence[StateBlock], xi_prev: Sequence[StateBlock],

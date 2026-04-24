@@ -1,14 +1,19 @@
 """Type aliases, protocols, and result types for the CMAD framework.
 
 This module is the single source of truth for cross-module type names.
-It imports from typing, collections.abc, jax, and numpy only.
+Imports are kept minimal: stdlib, jax, numpy, and (under TYPE_CHECKING)
+`cmad.models.global_fields` for the `GlobalFieldsAtPoint` ctx type
+referenced in function-signature aliases.
 """
-from collections.abc import Callable, Sequence
-from typing import NamedTuple, Protocol, TypeAlias
+from collections.abc import Callable
+from typing import TYPE_CHECKING, NamedTuple, Protocol, TypeAlias
 
 import numpy as np
 from jax import Array as JaxArray
 from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from cmad.models.global_fields import GlobalFieldsAtPoint
 
 # ----- Pytree types -----
 
@@ -60,29 +65,24 @@ jax-typed; the framework navigates between them freely."""
 StateList: TypeAlias = list[StateBlock]
 """All residual blocks' state vectors, indexed by residual index."""
 
-GlobalField: TypeAlias = NDArray[np.floating] | JaxArray
-"""One block of prescribed global data (u or u_prev) at this material
-point. Same numpy-or-jax convention as StateBlock."""
-
-GlobalList: TypeAlias = list[GlobalField]
-"""All global-field blocks, indexed by residual index."""
-
-
 # ----- Function signatures -----
 
 ResidualFn: TypeAlias = Callable[
-    [StateList, StateList, Params, GlobalList, GlobalList], JaxArray
+    [StateList, StateList, Params,
+     "GlobalFieldsAtPoint", "GlobalFieldsAtPoint"], JaxArray,
 ]
 """Signature of the per-block residual function passed to Model.__init__."""
 
 CauchyFn: TypeAlias = Callable[
-    [StateList, StateList, Params, GlobalList, GlobalList], JaxArray
+    [StateList, StateList, Params,
+     "GlobalFieldsAtPoint", "GlobalFieldsAtPoint"], JaxArray,
 ]
 """Signature of the Cauchy stress function passed to Model.__init__."""
 
 QoIFn: TypeAlias = Callable[
-    [StateList, StateList, Params, GlobalList, GlobalList, JaxArray, JaxArray],
-    JaxArray,
+    [StateList, StateList, Params,
+     "GlobalFieldsAtPoint", "GlobalFieldsAtPoint",
+     JaxArray, JaxArray], JaxArray,
 ]
 """Signature of the QoI function passed to QoI.__init__."""
 
@@ -134,8 +134,8 @@ class SupportsPrimalLoop(SupportsNewton, Protocol):
     def set_xi_to_init_vals(self) -> None: ...
     def gather_global(
         self,
-        u: Sequence[GlobalField],
-        u_prev: Sequence[GlobalField],
+        U: "GlobalFieldsAtPoint",
+        U_prev: "GlobalFieldsAtPoint",
     ) -> None: ...
     def advance_xi(self) -> None: ...
     def evaluate_cauchy(self) -> None: ...

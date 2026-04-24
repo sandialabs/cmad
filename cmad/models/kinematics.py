@@ -3,19 +3,22 @@ import numpy as np
 from numpy.typing import NDArray
 
 from cmad.models.deformation_types import DefType
-from cmad.typing import GlobalList, JaxArray, StateList
+from cmad.models.global_fields import GlobalFieldsAtPoint
+from cmad.typing import JaxArray, StateList
 
 
 def gather_F(
-        xi: StateList, u: GlobalList, def_type: int,
+        xi: StateList, U: GlobalFieldsAtPoint, def_type: int,
         local_var_idx: int, uniaxial_stress_idx: int = 0,
 ) -> JaxArray | NDArray[np.floating]:
 
+    grad_u = U.grad_fields["u"]
+
     if def_type == DefType.FULL_3D:
-        return u[0]
+        return jnp.eye(3) + grad_u
 
     elif def_type == DefType.PLANE_STRESS:
-        F_2D = u[0]
+        F_2D = jnp.eye(2) + grad_u
         F_33 = xi[local_var_idx]
         F = jnp.r_[jnp.c_[F_2D, jnp.zeros((2, 1))],
                    jnp.c_[jnp.zeros((1, 2)), F_33]]
@@ -23,7 +26,7 @@ def gather_F(
         return F
 
     elif def_type == DefType.PLANE_STRAIN:
-        F_2D = u[0]
+        F_2D = jnp.eye(2) + grad_u
         F = jnp.r_[jnp.c_[F_2D, jnp.zeros((2, 1))],
                    jnp.c_[jnp.zeros((1, 2)), 1.]]
 
@@ -31,7 +34,8 @@ def gather_F(
 
     elif def_type == DefType.UNIAXIAL_STRESS:
         on_axis_idx = uniaxial_stress_idx
-        F_uniaxial = u[0][on_axis_idx, on_axis_idx]
+        F_1D = jnp.eye(1) + grad_u
+        F_uniaxial = F_1D[on_axis_idx, on_axis_idx]
         stretches = xi[local_var_idx]
 
         if on_axis_idx == 0:
