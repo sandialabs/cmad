@@ -12,6 +12,7 @@ from cmad.calibrations.al7079.support import (
     slab_data,
 )
 from cmad.models.deformation_types import DefType
+from cmad.models.global_fields import mp_U_from_F
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.solver.nonlinear_solver import newton_solve
@@ -112,9 +113,10 @@ def run_test(R_matrices, Y, diff_tol):
             # method 1: apply rotation matrix outside of model
             for step in range(1, num_steps + 1):
 
-                u = [R_matrix.T @ F[:, :, step] @ R_matrix]
-                u_prev = [R_matrix.T @ F[:, :, step - 1] @ R_matrix]
-                model.gather_global(u, u_prev)
+                model.gather_global(
+                    mp_U_from_F(R_matrix.T @ F[:, :, step] @ R_matrix),
+                    mp_U_from_F(R_matrix.T @ F[:, :, step - 1] @ R_matrix),
+                )
 
                 newton_solve(model)
                 model.store_xi(xi_at_step, model.xi(), step)
@@ -137,9 +139,10 @@ def run_test(R_matrices, Y, diff_tol):
 
             # method 2: apply rotation matrix inside of model
             for step in range(1, num_steps + 1):
-                u = [F[:, :, step]]
-                u_prev = [F[:, :, step - 1]]
-                model.gather_global(u, u_prev)
+                model.gather_global(
+                    mp_U_from_F(F[:, :, step]),
+                    mp_U_from_F(F[:, :, step - 1]),
+                )
 
                 newton_solve(model)
                 model.store_xi(xi_at_step, model.xi(), step)

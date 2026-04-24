@@ -13,6 +13,7 @@ from cmad.models.elastic_stress import (
     compressible_neohookean_cauchy_stress,
     isotropic_linear_elastic_cauchy_stress,
 )
+from cmad.models.global_fields import mp_U_from_F
 from cmad.solver.nonlinear_solver import newton_solve
 from tests.support.test_problems import params_hyperelastic
 
@@ -72,17 +73,17 @@ class TestHyperelasticModels(unittest.TestCase):
 
             for step in range(1, num_steps + 1):
 
-                u = [F[:1, :1, step]]
-                u_prev = [F[:1, :1, step - 1]]
-
-                model.gather_global(u, u_prev)
+                model.gather_global(
+                    mp_U_from_F(F[:1, :1, step]),
+                    mp_U_from_F(F[:1, :1, step - 1]),
+                )
 
                 newton_solve(model)
                 model.store_xi(xi_at_step, model.xi(), step)
 
                 model.evaluate_cauchy()
                 cauchy[:, :, step] = model.Sigma().copy()
-                J[step] = u[0][0, 0] \
+                J[step] = F[0, 0, step] \
                     * xi_at_step[step][1][0] * xi_at_step[step][1][1]
 
                 model.advance_xi()
@@ -129,10 +130,10 @@ class TestHyperelasticModels(unittest.TestCase):
 
             for step in range(1, num_steps + 1):
 
-                u = [F_3D[:, :, step]]
-                u_prev = [F_3D[:, :, step - 1]]
-
-                model.gather_global(u, u_prev)
+                model.gather_global(
+                    mp_U_from_F(F_3D[:, :, step]),
+                    mp_U_from_F(F_3D[:, :, step - 1]),
+                )
 
                 newton_solve(model)
 

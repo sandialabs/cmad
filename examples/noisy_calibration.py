@@ -4,6 +4,7 @@ from jax.tree_util import tree_map
 from scipy.optimize import fmin_l_bfgs_b
 
 from cmad.models.deformation_types import DefType, def_type_ndims
+from cmad.models.global_fields import mp_U_from_F
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.neural_networks.simple_neural_network import SimpleNeuralNetwork
@@ -130,9 +131,10 @@ def compute_cauchy(model, F):
 
     for step in range(1, num_steps + 1):
 
-        u = [F[:, :, step]]
-        u_prev = [F[:, :, step - 1]]
-        model.gather_global(u, u_prev)
+        model.gather_global(
+            mp_U_from_F(F[:, :, step]),
+            mp_U_from_F(F[:, :, step - 1]),
+        )
 
         model.seed_xi()
         newton_solve(model)

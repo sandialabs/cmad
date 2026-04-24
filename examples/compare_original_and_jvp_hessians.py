@@ -8,6 +8,7 @@ from jax.lax import fori_loop, while_loop
 from jax.tree_util import tree_map
 
 from cmad.models.deformation_types import DefType, def_type_ndims
+from cmad.models.global_fields import mp_U_from_F
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.objectives.mp_jvp_objective import MPJVPObjective
 from cmad.objectives.mp_objective import (
@@ -24,9 +25,9 @@ def get_xis(update_fun, model, F, parameters):
     num_steps = F.shape[-1] - 1
     xis = [model._init_xi]
     for step in range(1, num_steps + 1):
-        u = [F[:, :, step]]
-        u_prev = [F[:, :, step - 1]]
-        xis.append(update_fun(xis[-1], parameters, u, u_prev))
+        U = mp_U_from_F(F[:, :, step])
+        U_prev = mp_U_from_F(F[:, :, step - 1])
+        xis.append(update_fun(xis[-1], parameters, U, U_prev))
     return xis
 
 
@@ -36,10 +37,10 @@ def get_xis_cauchy(update_fun, model, F, parameters):
     cauchy = [jnp.zeros((3, 3))]
 
     for step in range(1,num_steps + 1):
-        u = [F[:, :, step]]
-        u_prev = [F[:, :, step - 1]]
+        U = mp_U_from_F(F[:, :, step])
+        U_prev = mp_U_from_F(F[:, :, step - 1])
         cauchy.append(model.cauchy(xis[step], xis[step-1],
-            parameters, u, u_prev))
+            parameters, U, U_prev))
     return xis, cauchy
 
 
@@ -55,9 +56,10 @@ def compute_xi_and_cauchy(model, F):
 
     for step in range(1, num_steps + 1):
 
-        u = [F[:, :, step]]
-        u_prev = [F[:, :, step - 1]]
-        model.gather_global(u, u_prev)
+        model.gather_global(
+            mp_U_from_F(F[:, :, step]),
+            mp_U_from_F(F[:, :, step - 1]),
+        )
 
         model.seed_xi()
         newton_solve(model)
@@ -373,9 +375,10 @@ def compute_fun(qoi, F):
 
     for step in range(1, num_steps + 1):
 
-        u = [F[:, :, step]]
-        u_prev = [F[:, :, step - 1]]
-        model.gather_global(u, u_prev)
+        model.gather_global(
+            mp_U_from_F(F[:, :, step]),
+            mp_U_from_F(F[:, :, step - 1]),
+        )
 
         model.seed_xi()
         newton_solve(model)

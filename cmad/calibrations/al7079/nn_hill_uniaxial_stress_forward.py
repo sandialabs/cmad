@@ -17,6 +17,7 @@ from cmad.models.effective_stress import (
     hybrid_hill_effective_stress,
     scaled_effective_stress,
 )
+from cmad.models.global_fields import mp_U_from_F
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.neural_networks.input_convex_neural_network import InputConvexNeuralNetwork
 from cmad.solver.nonlinear_solver import newton_solve
@@ -123,9 +124,10 @@ for rr, Rmat in enumerate(Rmats):
         strain_ratio = np.zeros(num_steps + 1)
 
         for step in range(1, num_steps + 1):
-            u = [F[:, :, step]]
-            u_prev = [F[:, :, step - 1]]
-            model.gather_global(u, u_prev)
+            model.gather_global(
+                mp_U_from_F(F[:, :, step]),
+                mp_U_from_F(F[:, :, step - 1]),
+            )
 
             # need a looser tolerance than conventional models
             newton_solve(model, abs_tol=1e-13, rel_tol=1e-13,

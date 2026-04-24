@@ -18,6 +18,7 @@ import yaml
 
 from cmad.cli.main import main as cmad_main
 from cmad.models.deformation_types import DefType
+from cmad.models.global_fields import mp_U_from_F
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.solver.nonlinear_solver import newton_solve
 from tests.support.test_problems import J2AnalyticalProblem
@@ -30,7 +31,10 @@ def _truth_cauchy(F: np.ndarray) -> np.ndarray:
     cauchy = np.zeros((3, 3, num_steps + 1))
     model.set_xi_to_init_vals()
     for step in range(1, num_steps + 1):
-        model.gather_global([F[:, :, step]], [F[:, :, step - 1]])
+        model.gather_global(
+            mp_U_from_F(F[:, :, step]),
+            mp_U_from_F(F[:, :, step - 1]),
+        )
         newton_solve(model)
         model.advance_xi()
         model.seed_none()

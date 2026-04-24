@@ -5,6 +5,7 @@ import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
 
 from cmad.models.deformation_types import DefType, def_type_ndims
+from cmad.models.global_fields import mp_U_from_F
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.objectives.mp_objective import MPAdjointObjective, MPDirectObjective
 from cmad.qois.calibration import Calibration
@@ -20,9 +21,10 @@ def compute_cauchy(model, F):
 
     for step in range(1, num_steps + 1):
 
-        u = [F[:, :, step]]
-        u_prev = [F[:, :, step - 1]]
-        model.gather_global(u, u_prev)
+        model.gather_global(
+            mp_U_from_F(F[:, :, step]),
+            mp_U_from_F(F[:, :, step - 1]),
+        )
 
         newton_solve(model)
         model.advance_xi()

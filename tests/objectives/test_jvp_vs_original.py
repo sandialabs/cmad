@@ -12,6 +12,7 @@ import unittest
 import numpy as np
 
 from cmad.models.deformation_types import DefType, def_type_ndims
+from cmad.models.global_fields import mp_U_from_F
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.objectives.mp_jvp_objective import MPJVPObjective
 from cmad.objectives.mp_objective import MPDirectAdjointObjective
@@ -25,9 +26,10 @@ def compute_cauchy(model, F):
     model.set_xi_to_init_vals()
     cauchy = np.zeros((3, 3, num_steps + 1))
     for step in range(1, num_steps + 1):
-        u = [F[:, :, step]]
-        u_prev = [F[:, :, step - 1]]
-        model.gather_global(u, u_prev)
+        model.gather_global(
+            mp_U_from_F(F[:, :, step]),
+            mp_U_from_F(F[:, :, step - 1]),
+        )
         newton_solve(model)
         model.advance_xi()
         model.seed_none()
