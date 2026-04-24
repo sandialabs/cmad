@@ -442,64 +442,6 @@ class Model(ABC):
                 self._xi_prev[idx][eq] = xi_prev[ii, jj]
                 eq += 1
 
-    def set_scalar_u(self, idx: int, u: JaxArray) -> None:
-        self._u[idx] = u.copy()
-
-    def set_vector_u(self, idx: int, u: JaxArray) -> None:
-        self._u[idx] = u.copy()
-
-    def set_sym_tensor_u(self, idx: int, u: JaxArray) -> None:
-        if self._num_eqs[idx] == 6:
-            self._u[idx][0] = u[0, 0]
-            self._u[idx][1] = u[0, 1]
-            self._u[idx][2] = u[0, 2]
-            self._u[idx][3] = u[1, 1]
-            self._u[idx][4] = u[1, 2]
-            self._u[idx][5] = u[2, 2]
-        elif self._num_eqs[idx] == 3:
-            self._u[idx][0] = u[0, 0]
-            self._u[idx][1] = u[0, 1]
-            self._u[idx][2] = u[1, 1]
-        elif self._num_eqs[idx] == 1:
-            self._u[idx][0] = u[0, 0]
-
-    def set_tensor_u(self, idx: int, u: JaxArray) -> None:
-        ndim = Model.get_tensor_ndim(self._num_eqs[idx])
-        eq = 0
-        for ii in range(ndim):
-            for jj in range(ndim):
-                self._u[idx][eq] = u[ii, jj]
-                eq += 1
-
-    def set_scalar_u_prev(self, idx: int, u_prev: JaxArray) -> None:
-        self._u_prev[idx] = u_prev.copy()
-
-    def set_vector_u_prev(self, idx: int, u_prev: JaxArray) -> None:
-        self._u_prev[idx] = u_prev.copy()
-
-    def set_sym_tensor_u_prev(self, idx: int, u_prev: JaxArray) -> None:
-        if self._num_eqs[idx] == 6:
-            self._u_prev[idx][0] = u_prev[0, 0]
-            self._u_prev[idx][1] = u_prev[0, 1]
-            self._u_prev[idx][2] = u_prev[0, 2]
-            self._u_prev[idx][3] = u_prev[1, 1]
-            self._u_prev[idx][4] = u_prev[1, 2]
-            self._u_prev[idx][5] = u_prev[2, 2]
-        elif self._num_eqs[idx] == 3:
-            self._u_prev[idx][0] = u_prev[0, 0]
-            self._u_prev[idx][1] = u_prev[0, 1]
-            self._u_prev[idx][2] = u_prev[1, 1]
-        elif self._num_eqs[idx] == 1:
-            self._u_prev[idx][0] = u_prev[0, 0]
-
-    def set_tensor_u_prev(self, idx: int, u_prev: JaxArray) -> None:
-        ndim = Model.get_tensor_ndim(self._num_eqs[idx])
-        eq = 0
-        for ii in range(ndim):
-            for jj in range(ndim):
-                self._u_prev[idx][eq] = u_prev[ii, jj]
-                eq += 1
-
     @staticmethod
     def store_xi(
             xi_list: list[StateList],
