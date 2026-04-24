@@ -13,6 +13,7 @@ from cmad.models.elastic_stress import (
     isotropic_linear_elastic_stress,
     two_mu_scale_factor,
 )
+from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F, off_axis_idx
 from cmad.models.model import Model
@@ -26,18 +27,18 @@ from cmad.models.var_types import (
     get_vector_from_sym_tensor,
 )
 from cmad.parameters.parameters import Parameters
-from cmad.typing import GlobalList, JaxArray, StateList
+from cmad.typing import JaxArray, StateList
 
 
 def compute_delta_strain(
         xi: StateList, xi_prev: StateList, params: dict[str, Any],
-        u: GlobalList, u_prev: GlobalList,
+        U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
         def_type: int, uniaxial_stress_idx: int,
 ) -> JaxArray:
 
     local_var_idx = 2
-    F = gather_F(xi, u, def_type, local_var_idx, uniaxial_stress_idx)
-    F_prev = gather_F(xi_prev, u_prev, def_type, local_var_idx,
+    F = gather_F(xi, U, def_type, local_var_idx, uniaxial_stress_idx)
+    F_prev = gather_F(xi_prev, U_prev, def_type, local_var_idx,
         uniaxial_stress_idx)
 
     I = jnp.eye(3)
@@ -231,7 +232,7 @@ class SmallRateElasticPlastic(Model):
     @staticmethod
     def _residual_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
-            u: GlobalList, u_prev: GlobalList,
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             def_type: int,
             elastic_stress: Callable[..., JaxArray],
             effective_stress: Callable[..., JaxArray],
@@ -246,7 +247,7 @@ class SmallRateElasticPlastic(Model):
         alpha_prev = get_scalar(xi_prev[1])
 
         trial_delta_strain \
-            = compute_delta_strain(xi, xi_prev, params, u, u_prev, def_type,
+            = compute_delta_strain(xi, xi_prev, params, U, U_prev, def_type,
                                    uniaxial_stress_idx)
         trial_delta_cauchy \
             = elastic_stress(trial_delta_strain, params)
@@ -333,7 +334,7 @@ class SmallRateElasticPlastic(Model):
     @staticmethod
     def _cauchy_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
-            u: GlobalList, u_prev: GlobalList, def_type: int,
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint, def_type: int,
     ) -> JaxArray:
 
         Q = params["rotation matrix"]

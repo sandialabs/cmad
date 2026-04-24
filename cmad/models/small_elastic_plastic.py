@@ -13,6 +13,7 @@ from cmad.models.elastic_stress import (
     isotropic_linear_elastic_stress,
     two_mu_scale_factor,
 )
+from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F, off_axis_idx
 from cmad.models.model import Model
@@ -25,15 +26,15 @@ from cmad.models.var_types import (
     get_vector_from_sym_tensor,
 )
 from cmad.parameters.parameters import Parameters
-from cmad.typing import GlobalList, JaxArray, StateList
+from cmad.typing import JaxArray, StateList
 
 
 def compute_elastic_strain(
-        xi: StateList, params: dict[str, Any], u: GlobalList,
+        xi: StateList, params: dict[str, Any], U: GlobalFieldsAtPoint,
         def_type: int, uniaxial_stress_idx: int,
 ) -> JaxArray:
     local_var_idx = 2
-    F = gather_F(xi, u, def_type, local_var_idx, uniaxial_stress_idx)
+    F = gather_F(xi, U, def_type, local_var_idx, uniaxial_stress_idx)
     plastic_strain = get_sym_tensor_from_vector(xi[0], 3)
     grad_u = F - jnp.eye(3)
     global_total_strain = 0.5 * (grad_u + grad_u.T)
@@ -64,7 +65,7 @@ def compute_elastic_strain(
 
 def compute_yield_fun_and_normal(
         xi: StateList, xi_prev: StateList, params: dict[str, Any],
-        u: GlobalList, u_prev: GlobalList,
+        U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
         def_type: int,
         elastic_stress: Callable[..., JaxArray],
         effective_stress: Callable[..., JaxArray],
@@ -76,7 +77,7 @@ def compute_yield_fun_and_normal(
     Y = plastic_params["flow stress"]["initial yield"]["Y"]
     hardening_params = plastic_params["flow stress"]["hardening"]
 
-    elastic_strain = compute_elastic_strain(xi, params, u, def_type,
+    elastic_strain = compute_elastic_strain(xi, params, U, def_type,
         uniaxial_stress_idx)
     cauchy = elastic_stress(elastic_strain, params)
     phi = effective_stress(cauchy, plastic_params)
@@ -220,7 +221,7 @@ class SmallElasticPlastic(Model):
     @staticmethod
     def _residual_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
-            u: GlobalList, u_prev: GlobalList,
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             def_type: int,
             elastic_stress: Callable[..., JaxArray],
             effective_stress: Callable[..., JaxArray],
@@ -237,7 +238,7 @@ class SmallElasticPlastic(Model):
         # intermediate quantities
         delta_gamma = alpha - alpha_prev
         material_cauchy, yield_fun, yield_normal = compute_yield_fun_and_normal(
-            xi, xi_prev, params, u, u_prev, def_type,
+            xi, xi_prev, params, U, U_prev, def_type,
             elastic_stress, effective_stress, hardening,
             uniaxial_stress_idx, is_complex)
 
@@ -290,12 +291,12 @@ class SmallElasticPlastic(Model):
     @staticmethod
     def _cauchy_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
-            u: GlobalList, u_prev: GlobalList,
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             def_type: int, elastic_stress: Callable[..., JaxArray],
             uniaxial_stress_idx: int,
     ) -> JaxArray:
 
-        elastic_strain = compute_elastic_strain(xi, params, u, def_type,
+        elastic_strain = compute_elastic_strain(xi, params, U, def_type,
             uniaxial_stress_idx)
         material_cauchy = elastic_stress(elastic_strain, params)
         Q = params["rotation matrix"]

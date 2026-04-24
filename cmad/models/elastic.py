@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from functools import partial
-from typing import Any
+from typing import Any, ClassVar
 
 import jax.numpy as jnp
 import numpy as np
@@ -12,6 +12,7 @@ from cmad.models.elastic_stress import (
     isotropic_linear_elastic_cauchy_stress,
     two_mu_scale_factor,
 )
+from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.kinematics import gather_F
 from cmad.models.model import Model
 from cmad.models.var_types import (
@@ -21,7 +22,7 @@ from cmad.models.var_types import (
     get_vector_from_sym_tensor,
 )
 from cmad.parameters.parameters import Parameters
-from cmad.typing import GlobalList, JaxArray, StateList
+from cmad.typing import JaxArray, StateList
 
 
 @register_model("elastic")
@@ -29,6 +30,8 @@ class Elastic(Model):
     """
     General elastic model
     """
+
+    supports_closed_form_cauchy: ClassVar[bool] = True
 
     _def_type: int
     _ndims: int
@@ -104,7 +107,13 @@ class Elastic(Model):
 
         cauchy = partial(self._cauchy_fn, def_type=def_type)
 
-        super().__init__(residual, cauchy)
+        if def_type == DefType.FULL_3D:
+            cauchy_closed_form = partial(self._cauchy_closed_form_fn,
+                                         elastic_stress=elastic_stress_fun)
+            super().__init__(residual, cauchy,
+                             cauchy_closed_form_fun=cauchy_closed_form)
+        else:
+            super().__init__(residual, cauchy)
 
     @classmethod
     def from_deck(
@@ -123,7 +132,7 @@ class Elastic(Model):
     @staticmethod
     def _residual_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
-            u: GlobalList, u_prev: GlobalList,
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             def_type: int, elastic_stress: Callable[..., JaxArray],
     ) -> JaxArray:
 
@@ -131,8 +140,7 @@ class Elastic(Model):
         cauchy = get_sym_tensor_from_vector(xi[0], 3)
 
         # global state variables
-        F = gather_F(xi, u, def_type, 1)  # 3D deformation gradient
-        # T = u[1] # temperature
+        F = gather_F(xi, U, def_type, 1)  # 3D deformation gradient
 
         # elastic residual
         scale_factor = two_mu_scale_factor(params)
@@ -164,8 +172,18 @@ class Elastic(Model):
     @staticmethod
     def _cauchy_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
-            u: GlobalList, u_prev: GlobalList,
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             def_type: int,
     ) -> JaxArray:
 
         return get_sym_tensor_from_vector(xi[0], 3)
+
+    @staticmethod
+    def _cauchy_closed_form_fn(
+            params: dict[str, Any],
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+            elastic_stress: Callable[..., JaxArray],
+    ) -> JaxArray:
+
+        F = jnp.eye(3) + U.grad_fields["u"]
+        return elastic_stress(F, params)
