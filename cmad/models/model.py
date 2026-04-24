@@ -1,5 +1,5 @@
 from abc import ABC
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, ClassVar, cast
 
 import numpy as np

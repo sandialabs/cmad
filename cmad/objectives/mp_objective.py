@@ -11,6 +11,7 @@ from typing import cast
 import numpy as np
 from numpy.typing import NDArray
 
+from cmad.models.global_fields import mp_U_from_F
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
 from cmad.qois.qoi import QoI
@@ -71,9 +72,10 @@ class MPObjective(ABC):
 
         for step in range(1, num_steps + 1):
 
-            u = [F[:, :, step]]
-            u_prev = [F[:, :, step - 1]]
-            model.gather_global(u, u_prev)
+            model.gather_global(
+                mp_U_from_F(F[:, :, step]),
+                mp_U_from_F(F[:, :, step - 1]),
+            )
 
             newton_solve(model)
             model.store_xi(xi_at_step, model.xi(), step)
@@ -109,9 +111,10 @@ class MPAdjointObjective(MPObjective):
 
         for step in range(num_steps, 0, -1):
 
-            u = [F[:, :, step]]
-            u_prev = [F[:, :, step - 1]]
-            model.gather_global(u, u_prev)
+            model.gather_global(
+                mp_U_from_F(F[:, :, step]),
+                mp_U_from_F(F[:, :, step - 1]),
+            )
 
             xi = xi_at_step[step]
             xi_prev = xi_at_step[step - 1]
@@ -170,9 +173,10 @@ class MPDirectObjective(MPObjective):
 
         for step in range(1, num_steps + 1):
 
-            u = [F[:, :, step]]
-            u_prev = [F[:, :, step - 1]]
-            model.gather_global(u, u_prev)
+            model.gather_global(
+                mp_U_from_F(F[:, :, step]),
+                mp_U_from_F(F[:, :, step - 1]),
+            )
 
             newton_solve(model)
 
@@ -234,9 +238,10 @@ class MPDirectAdjointObjective(MPObjective):
 
         for step in range(num_steps, 0, -1):
 
-            u = [F[:, :, step]]
-            u_prev = [F[:, :, step - 1]]
-            model.gather_global(u, u_prev)
+            model.gather_global(
+                mp_U_from_F(F[:, :, step]),
+                mp_U_from_F(F[:, :, step - 1]),
+            )
 
             xi = xi_at_step[step]
             xi_prev = xi_at_step[step - 1]
@@ -275,9 +280,10 @@ class MPDirectAdjointObjective(MPObjective):
 
         for step in range(1, num_steps + 1):
 
-            u = [F[:, :, step]]
-            u_prev = [F[:, :, step - 1]]
-            model.gather_global(u, u_prev)
+            model.gather_global(
+                mp_U_from_F(F[:, :, step]),
+                mp_U_from_F(F[:, :, step - 1]),
+            )
 
             xi = xi_at_step[step]
             xi_prev = xi_at_step[step - 1]

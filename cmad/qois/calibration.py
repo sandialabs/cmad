@@ -6,11 +6,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 from cmad.io.registry import register_qoi
+from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.model import Model
 from cmad.qois.qoi import QoI
 from cmad.typing import (
     CauchyFn,
-    GlobalList,
     JaxArray,
     Params,
     StateList,
@@ -56,11 +56,11 @@ class Calibration(QoI):
     @staticmethod
     def _qoi(
             xi: StateList, xi_prev: StateList, params: Params,
-            u: GlobalList, u_prev: GlobalList,
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             data_at_step: JaxArray, weight_at_step: JaxArray,
             cauchy_fun: CauchyFn,
     ) -> JaxArray:
 
-        cauchy = cauchy_fun(xi, xi_prev, params, u, u_prev)
+        cauchy = cauchy_fun(xi, xi_prev, params, U, U_prev)
         mismatch = weight_at_step * (cauchy - data_at_step)
         return 0.5 * jnp.sum(mismatch * mismatch)

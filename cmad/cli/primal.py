@@ -21,6 +21,7 @@ from cmad.io.writers import (
     write_solver_log,
     write_xi,
 )
+from cmad.models.global_fields import mp_U_from_F
 from cmad.qois.qoi import QoI
 from cmad.solver.nonlinear_solver import newton_solve
 from cmad.typing import SupportsPrimalLoop
@@ -74,7 +75,10 @@ def run_primal_pass(
     J = 0.0
 
     for step in range(1, num_steps + 1):
-        model.gather_global([F[:, :, step]], [F[:, :, step - 1]])
+        model.gather_global(
+            mp_U_from_F(F[:, :, step]),
+            mp_U_from_F(F[:, :, step - 1]),
+        )
         iters, final_res = newton_solve(model, **newton_kwargs)
         model.advance_xi()
         model.evaluate_cauchy()

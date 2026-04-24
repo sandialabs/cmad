@@ -6,11 +6,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 from cmad.io.registry import register_qoi
+from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.model import Model
 from cmad.qois.qoi import QoI
 from cmad.typing import (
     CauchyFn,
-    GlobalList,
     JaxArray,
     Params,
     StateList,
@@ -70,13 +70,13 @@ class UniaxialCalibration(QoI):
     @staticmethod
     def _qoi(
             xi: StateList, xi_prev: StateList, params: Params,
-            u: GlobalList, u_prev: GlobalList,
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             data_at_step: JaxArray, weight_at_step: JaxArray,
             cauchy_fun: CauchyFn,
             uniaxial_stress_idx: int, stretch_var_idx: int,
     ) -> JaxArray:
 
-        sigma = cauchy_fun(xi, xi_prev, params, u, u_prev)
+        sigma = cauchy_fun(xi, xi_prev, params, U, U_prev)
         uniaxial_sigma = sigma[uniaxial_stress_idx, uniaxial_stress_idx]
         off_axis_strains = jnp.r_[xi[stretch_var_idx][0] - 1.,
             xi[stretch_var_idx][1] - 1.]

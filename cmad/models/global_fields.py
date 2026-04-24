@@ -3,6 +3,8 @@ from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
+import numpy as np
+from numpy.typing import NDArray
 
 from cmad.typing import JaxArray
 
@@ -29,10 +31,11 @@ class GlobalFieldsAtPoint:
         return cls(fields=fields, grad_fields=grad_fields)
 
 
-def mp_U_from_F(F: JaxArray) -> GlobalFieldsAtPoint:
+def mp_U_from_F(F: NDArray[np.floating] | JaxArray) -> GlobalFieldsAtPoint:
     """Build the MP-level U from a prescribed F: grad_fields['u'] = F - I."""
-    ndims = F.shape[0]
+    F_jax = jnp.asarray(F)
+    ndims = F_jax.shape[0]
     return GlobalFieldsAtPoint(
         fields={"u": jnp.zeros(ndims)},
-        grad_fields={"u": F - jnp.eye(ndims)},
+        grad_fields={"u": F_jax - jnp.eye(ndims)},
     )
