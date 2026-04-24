@@ -5,7 +5,7 @@ Imports are kept minimal: stdlib, jax, numpy, and (under TYPE_CHECKING)
 `cmad.models.global_fields` for the `GlobalFieldsAtPoint` ctx type
 referenced in function-signature aliases.
 """
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, NamedTuple, Protocol, TypeAlias
 
 import numpy as np
@@ -13,7 +13,9 @@ from jax import Array as JaxArray
 from numpy.typing import NDArray
 
 if TYPE_CHECKING:
+    from cmad.fem.shapes import ShapeFunctionsAtIP
     from cmad.models.global_fields import GlobalFieldsAtPoint
+    from cmad.models.model import Model
 
 # ----- Pytree types -----
 
@@ -85,6 +87,19 @@ QoIFn: TypeAlias = Callable[
      JaxArray, JaxArray], JaxArray,
 ]
 """Signature of the QoI function passed to QoI.__init__."""
+
+ResidualFnGR: TypeAlias = Callable[
+    [StateList, StateList, Params,
+     Sequence[JaxArray], Sequence[JaxArray],
+     "Model",
+     Sequence["ShapeFunctionsAtIP"],
+     float, float],
+    JaxArray,
+]
+"""Signature of the per-element-IP residual function passed to
+GlobalResidual.__init__. U/U_prev and shapes_ip are per-residual-block
+sequences; w and dv are the quadrature weight and reference-volume
+factor at the IP."""
 
 
 # ----- Indices -----
