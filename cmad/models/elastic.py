@@ -136,7 +136,7 @@ class Elastic(Model):
 
         # elastic residual
         scale_factor = two_mu_scale_factor(params)
-        C_elastic_cauchy_tensor = cauchy - elastic_stress(F, u, params)
+        C_elastic_cauchy_tensor = cauchy - elastic_stress(F, params)
         C_elastic_cauchy = \
             get_vector_from_sym_tensor(C_elastic_cauchy_tensor, 3) \
             / scale_factor

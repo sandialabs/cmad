@@ -8,7 +8,7 @@ import jax.numpy as jnp
 
 from cmad.models.elastic_constants import compute_lambda, compute_mu
 from cmad.parameters.parameters import unpack_elastic_params
-from cmad.typing import GlobalList, JaxArray
+from cmad.typing import JaxArray
 
 
 # form used by elastic-plastic models
@@ -27,7 +27,7 @@ def isotropic_linear_elastic_stress(
 
 # alternative form used by elasticity-only models
 def isotropic_linear_elastic_cauchy_stress(
-        F: JaxArray, u: GlobalList, params: dict[str, Any],
+        F: JaxArray, params: dict[str, Any],
 ) -> JaxArray:
     I = jnp.eye(3)
     grad_u = F - I
@@ -42,7 +42,7 @@ def isotropic_linear_elastic_cauchy_stress(
 
 
 def compressible_neohookean_cauchy_stress(
-        F: JaxArray, u: GlobalList, params: dict[str, Any],
+        F: JaxArray, params: dict[str, Any],
 ) -> JaxArray:
     J = jnp.linalg.det(F)
     Jm23 = jnp.cbrt(J)**-2

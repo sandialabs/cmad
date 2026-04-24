@@ -5,11 +5,11 @@ import jax.numpy as jnp
 from jax import grad
 
 from cmad.models.kinematics import compute_invariants
-from cmad.typing import GlobalList, JaxArray
+from cmad.typing import JaxArray
 
 
 def compute_cauchy_from_psi_b(
-        F: JaxArray, u: GlobalList, params: dict[str, Any],
+        F: JaxArray, params: dict[str, Any],
         psi_b_fun: Callable[..., JaxArray],
 ) -> JaxArray:
     b = F @ F.T
