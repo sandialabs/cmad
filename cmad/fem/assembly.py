@@ -20,8 +20,11 @@ def iso_jac_at_ip(
     """Per-IP physical-frame shape gradients via the isoparametric Jacobian.
 
     Returns ``(grad_N_phys, iso_jac_det, iso_jac)`` where
-    ``iso_jac[j, i] = ∂x_i/∂ξ_j`` (transpose-of-classical convention,
-    chosen so ``grad_N_phys = grad_N_ref @ inv(iso_jac)``).
+    ``iso_jac[i, j] = ∂x_i/∂ξ_j``. With this convention
+    ``inv(iso_jac)[j, i] = ∂ξ_j/∂x_i`` and the chain rule
+    ``∂N_a/∂x_i = (∂N_a/∂ξ_j)(∂ξ_j/∂x_i)`` collapses to
+    ``grad_N_phys = grad_N_ref @ inv(iso_jac)``.
+
     ``iso_jac_det`` is signed — a negative value indicates element
     inversion and is propagated, not absorbed via ``abs(...)``, so
     inverted elements surface as Newton divergence rather than silent
@@ -30,7 +33,7 @@ def iso_jac_at_ip(
     Naming ``iso_jac`` / ``iso_jac_det`` avoids collision with
     ``J = det(F)`` from continuum-mechanics kinematics.
     """
-    iso_jac = grad_N_ref.T @ X_elem
+    iso_jac = X_elem.T @ grad_N_ref
     iso_jac_det = jnp.linalg.det(iso_jac)
     grad_N_phys = grad_N_ref @ jnp.linalg.inv(iso_jac)
     return grad_N_phys, iso_jac_det, iso_jac
