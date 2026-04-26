@@ -91,6 +91,11 @@ def fe_newton_solve(
 ) -> tuple[NDArray[np.floating], int, float]:
     """Quasi-static global Newton driver for the FE forward problem.
 
+    Nonlinear convention: ``K = dR/dU`` is the tangent stiffness and
+    ``R(U) = R_int(U) - F_ext`` is the residual (body force folded into
+    ``R`` by the assembly — no separate ``F`` vector). Each Newton step
+    solves ``K · dU = -R``.
+
     Each iteration assembles the global ``(K, R)`` via
     :func:`assemble_global`, applies Dirichlet boundary conditions by
     strong enforcement, and solves the sparse system

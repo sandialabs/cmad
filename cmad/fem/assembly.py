@@ -348,6 +348,14 @@ def assemble_global(
 ) -> tuple[scipy.sparse.coo_matrix, NDArray[np.floating]]:
     """Walk all element blocks and emit the global ``(K_coo, R)`` pair.
 
+    Nonlinear-FE convention: ``K = dR/dU`` is the tangent stiffness and
+    ``R(U) = R_int(U) - F_ext`` is the residual, with the body-force
+    contribution folded into ``R`` at the per-element level (no separate
+    ``F`` vector). The Newton driver in
+    :func:`cmad.fem.nonlinear_solver.fe_newton_solve` solves
+    ``K · dU = -R``; the linear ``K U = F`` form is the degenerate
+    one-iter case for a U-linear residual.
+
     Each block's per-element residual and tangent are computed by
     :func:`assemble_element_block`; the global COO triplets are
     concatenated and summed into a single sparse matrix on
