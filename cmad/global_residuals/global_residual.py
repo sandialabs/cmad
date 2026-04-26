@@ -30,8 +30,11 @@ class GlobalResidual(ABC):
     own), U/U_prev are per-residual-block lists of element-local
     basis-coefficient arrays with ``U[i].shape ==
     (num_basis_fns[i], num_eqs[i])``, shapes_ip is a per-block list of
-    :class:`ShapeFunctionsAtIP`, model is the bound :class:`Model`, and
-    w/dv are the quadrature weight and reference-volume factor.
+    :class:`ShapeFunctionsAtIP`, model is the bound :class:`Model`,
+    w/dv are the quadrature weight and reference-volume factor, and
+    ip_set is the integration-point-set index dispatched by the
+    assembly layer (single-ip_set GRs ignore it; multi-ip_set GRs
+    use it to dispatch term-specific contributions).
 
     Subclasses pair with a concrete Model via
     :meth:`for_model(model, mode)`, which returns a ``dict[str,
@@ -180,11 +183,11 @@ class GlobalResidual(ABC):
 
         # R-composed: close the model into the public residual function,
         # then jit. Post-closure argnums: xi=0, xi_prev=1, params=2,
-        # U=3, U_prev=4, shapes_ip=5, w=6, dv=7.
-        def r_at_ip(xi, xi_prev, params, U, U_prev, shapes_ip, w, dv):
+        # U=3, U_prev=4, shapes_ip=5, w=6, dv=7, ip_set=8.
+        def r_at_ip(xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set):
             return residual_fn(
                 xi, xi_prev, params, U, U_prev,
-                model, shapes_ip, w, dv,
+                model, shapes_ip, w, dv, ip_set,
             )
 
         evaluators: dict[str, Callable[..., PyTree]] = {

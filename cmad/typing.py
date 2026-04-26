@@ -93,13 +93,18 @@ ResidualFnGR: TypeAlias = Callable[
      Sequence[JaxArray], Sequence[JaxArray],
      "Model",
      Sequence["ShapeFunctionsAtIP"],
-     float, float],
+     float, float,
+     int],
     JaxArray,
 ]
 """Signature of the per-element-IP residual function passed to
 GlobalResidual.__init__. U/U_prev and shapes_ip are per-residual-block
 sequences; w and dv are the quadrature weight and reference-volume
-factor at the IP."""
+factor at the IP. The trailing int is the integration-point-set index
+dispatched by the assembly layer; single-ip_set GRs ignore it,
+multi-ip_set GRs (e.g. mixed u-p with two quadrature orders for
+divergence + pressure-mass terms) read it to dispatch term-specific
+residual contributions via lax.switch or per-ip_set branches."""
 
 
 # ----- Indices -----

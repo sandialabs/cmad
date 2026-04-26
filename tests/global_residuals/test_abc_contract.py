@@ -68,7 +68,7 @@ class _ToyEquilibrium(GlobalResidual):
         self._init_element_dof_layout()
 
         def residual_fn(xi, xi_prev, params, U, U_prev,
-                        model, shapes_ip, w, dv):
+                        model, shapes_ip, w, dv, ip_set):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(U_prev, shapes_ip)
             sigma = model.cauchy_closed_form(params, U_ip, U_ip_prev)
@@ -89,7 +89,8 @@ def _test_inputs(model: Elastic):
     shapes_ip = [_tet_barycenter_shapes()]
     w = 1.0
     dv = 1.0 / 6.0
-    return xi, xi_prev, params, U, U_prev, shapes_ip, w, dv
+    ip_set = 0
+    return xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set
 
 
 class TestGlobalResidualABC(unittest.TestCase):
@@ -138,11 +139,11 @@ class TestGlobalResidualABC(unittest.TestCase):
         model = _make_linear_elastic_model()
         evaluators = gr.for_model(
             model, mode=GlobalResidualMode.CLOSED_FORM)
-        xi, xi_prev, params, U, U_prev, shapes_ip, w, dv = (
+        xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set = (
             _test_inputs(model))
 
         ad = evaluators["dR_dU"](
-            xi, xi_prev, params, U, U_prev, shapes_ip, w, dv)
+            xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set)
         ad_arr = np.asarray(ad[0])          # (1, 4, 3, 4, 3)
 
         eps = 1e-6
@@ -153,10 +154,10 @@ class TestGlobalResidualABC(unittest.TestCase):
                 U_minus = [U[0].at[b, k].add(-eps)]
                 R_plus = evaluators["R"](
                     xi, xi_prev, params, U_plus, U_prev,
-                    shapes_ip, w, dv)
+                    shapes_ip, w, dv, ip_set)
                 R_minus = evaluators["R"](
                     xi, xi_prev, params, U_minus, U_prev,
-                    shapes_ip, w, dv)
+                    shapes_ip, w, dv, ip_set)
                 fd_arr[:, :, :, b, k] = (R_plus - R_minus) / (2 * eps)
 
         self.assertTrue(jnp.allclose(
@@ -167,13 +168,13 @@ class TestGlobalResidualABC(unittest.TestCase):
         model = _make_linear_elastic_model()
         evaluators = gr.for_model(
             model, mode=GlobalResidualMode.CLOSED_FORM)
-        xi, xi_prev, params, U, U_prev, shapes_ip, w, dv = (
+        xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set = (
             _test_inputs(model))
 
         R0 = evaluators["R"](
-            xi, xi_prev, params, U, U_prev, shapes_ip, w, dv)
+            xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set)
         K_full = evaluators["dR_dU"](
-            xi, xi_prev, params, U, U_prev, shapes_ip, w, dv)[0]
+            xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set)[0]
         # Free DOFs: node 3. K_ff: (3, 3). R_f: (3,).
         K_ff = K_full[0, 3, :, 3, :]
         R_f = R0[0, 3, :]
@@ -181,7 +182,7 @@ class TestGlobalResidualABC(unittest.TestCase):
 
         U_new = [U[0].at[3].add(dU_f)]
         R1 = evaluators["R"](
-            xi, xi_prev, params, U_new, U_prev, shapes_ip, w, dv)
+            xi, xi_prev, params, U_new, U_prev, shapes_ip, w, dv, ip_set)
         self.assertLess(float(jnp.linalg.norm(R1[0, 3, :])), 1e-10)
 
     def test_ad_matches_fd_on_dR_dparams_closed_form(self):
@@ -189,11 +190,11 @@ class TestGlobalResidualABC(unittest.TestCase):
         model = _make_linear_elastic_model()
         evaluators = gr.for_model(
             model, mode=GlobalResidualMode.CLOSED_FORM)
-        xi, xi_prev, params, U, U_prev, shapes_ip, w, dv = (
+        xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set = (
             _test_inputs(model))
 
         ad = evaluators["dR_dparams"](
-            xi, xi_prev, params, U, U_prev, shapes_ip, w, dv)
+            xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set)
 
         for key in ("kappa", "mu"):
             base = float(params["elastic"][key])
@@ -206,9 +207,9 @@ class TestGlobalResidualABC(unittest.TestCase):
             params_minus = {
                 "elastic": {key: base - eps, other_key: other_val}}
             R_plus = evaluators["R"](
-                xi, xi_prev, params_plus, U, U_prev, shapes_ip, w, dv)
+                xi, xi_prev, params_plus, U, U_prev, shapes_ip, w, dv, ip_set)
             R_minus = evaluators["R"](
-                xi, xi_prev, params_minus, U, U_prev, shapes_ip, w, dv)
+                xi, xi_prev, params_minus, U, U_prev, shapes_ip, w, dv, ip_set)
             fd = (R_plus - R_minus) / (2 * eps)
 
             self.assertTrue(jnp.allclose(
