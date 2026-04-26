@@ -34,7 +34,9 @@ class DirichletBC:
 
     ``field_name`` matches one of the field-layout names in the
     :class:`cmad.fem.dof.GlobalDofMap` the BC will be resolved against
-    (which by convention align with ``GlobalResidual.resid_names``).
+    (which by convention align with ``GlobalResidual.var_names`` — the
+    field-symbol list, parallel to the residual-equation-label
+    ``resid_names``).
 
     ``dofs`` lists the field-local component indices to constrain — for
     a 3-component vector field, ``[0]`` constrains the x-component while
