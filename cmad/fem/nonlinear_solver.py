@@ -8,22 +8,28 @@ def apply_strong_dirichlet(
         K_coo: scipy.sparse.coo_matrix,
         R: NDArray[np.floating],
         prescribed_indices: NDArray[np.intp],
-        prescribed_values: NDArray[np.floating],
+        dbc_residual: NDArray[np.floating],
         scale: float | NDArray[np.floating] | None = None,
 ) -> tuple[scipy.sparse.csr_matrix, NDArray[np.floating], float | NDArray[np.floating]]:
     """Strong-enforce Dirichlet BCs by zeroing prescribed rows + columns.
 
     Rebuilds K's COO triplets with prescribed-row-or-column entries
     dropped and scaled-identity entries appended at the prescribed
-    diagonal; sets ``R[prescribed] = scale * prescribed_values``.
+    diagonal; sets ``R[prescribed] = scale * dbc_residual``.
 
-    Homogeneous Dirichlet: pass ``prescribed_values = 0``. The enforced
-    residual at prescribed dofs is zero, the Newton update at those
-    dofs is zero, and ``U[prescribed]`` is preserved at the BC target
-    across iterations (provided the caller initialized it there).
-    Non-homogeneous Dirichlet: pass
-    ``prescribed_values = U[prescribed] - bc_target`` to drive the
-    Newton update toward the BC target.
+    ``dbc_residual`` is the residual the caller wants at each DBC dof
+    after enforcement, *not* the BC target value itself. Semantically
+    it is ``U[prescribed] - bc_target`` for the Newton formulation
+    (with ``dU[prescribed] = -dbc_residual`` from the linear solve,
+    so one Newton update drives ``U[prescribed]`` toward the target).
+
+    Homogeneous DBC with U pre-loaded to the BC target: pass
+    ``dbc_residual = 0``. The Newton update at prescribed dofs is
+    zero and ``U[prescribed]`` is preserved at the target across
+    iterations.
+    Non-homogeneous DBC without pre-loading: pass
+    ``dbc_residual = U[prescribed] - bc_target`` to drive the
+    Newton update toward the target.
 
     ``scale`` defaults to ``mean(|diag(K)|[unprescribed])`` — single
     scalar with the same units as the unprescribed diagonal, so the
@@ -65,6 +71,6 @@ def apply_strong_dirichlet(
     ).tocsr()
 
     R_enforced = R.copy()
-    R_enforced[p] = diag_vals * np.asarray(prescribed_values).astype(R.dtype)
+    R_enforced[p] = diag_vals * np.asarray(dbc_residual).astype(R.dtype)
 
     return K_csr, R_enforced, scale_resolved
