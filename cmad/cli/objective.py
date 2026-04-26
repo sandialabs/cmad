@@ -1,6 +1,6 @@
 """Implementation of the ``cmad objective`` subcommand.
 
-Builds the same object graph as ``cmad primal`` plus the registered
+Builds the same problem as ``cmad primal`` plus the registered
 QoI, runs a single forward pass through :func:`cmad.cli.primal.run_primal_pass`
 with the QoI supplied so J is accumulated alongside cauchy, xi, and
 solver log in one loop. Writes the primal output set plus ``J.json``.
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cmad.cli.common import build_mp_object_graph, resolve_output
+from cmad.cli.common import build_mp_problem, resolve_output
 from cmad.cli.primal import run_primal_pass
 from cmad.io.writers import (
     write_cauchy,
@@ -24,7 +24,7 @@ from cmad.io.writers import (
 
 def run_objective(deck_path: Path) -> int:
     """Execute the objective subcommand on ``deck_path``. Returns an exit code."""
-    graph = build_mp_object_graph(deck_path, "objective")
+    graph = build_mp_problem(deck_path, "objective")
     qoi = graph.qoi
     assert qoi is not None
     num_steps = graph.F.shape[2] - 1

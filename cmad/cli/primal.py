@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from cmad.cli.common import build_mp_object_graph, resolve_output
+from cmad.cli.common import build_mp_problem, resolve_output
 from cmad.io.writers import (
     write_cauchy,
     write_resolved_deck,
@@ -29,7 +29,7 @@ from cmad.typing import SupportsPrimalLoop
 
 def run_primal(deck_path: Path) -> int:
     """Execute the primal subcommand on ``deck_path``. Returns an exit code."""
-    graph = build_mp_object_graph(deck_path, "primal")
+    graph = build_mp_problem(deck_path, "primal")
     num_steps = graph.F.shape[2] - 1
 
     newton_kwargs = graph.resolved["solver"]["newton"]

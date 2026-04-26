@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cmad.cli.common import build_mp_object_graph, resolve_output
+from cmad.cli.common import build_mp_problem, resolve_output
 from cmad.cli.sensitivity import build_sensitivity_driver
 from cmad.io.writers import (
     write_grad,
@@ -25,7 +25,7 @@ from cmad.io.writers import (
 
 def run_hessian(deck_path: Path) -> int:
     """Execute the hessian subcommand on ``deck_path``. Returns an exit code."""
-    graph = build_mp_object_graph(deck_path, "hessian")
+    graph = build_mp_problem(deck_path, "hessian")
     qoi = graph.qoi
     assert qoi is not None
 

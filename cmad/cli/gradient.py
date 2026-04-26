@@ -1,6 +1,6 @@
 """Implementation of the ``cmad gradient`` subcommand.
 
-Builds the object graph (model / parameters / QoI), constructs the
+Builds the problem (model / parameters / QoI), constructs the
 sensitivity driver dictated by ``sensitivity.type``, and evaluates
 ``(J, grad)`` at the deck's parameter point (canonical coordinates).
 Writes ``J.json``, ``grad.{npy,csv}``, and ``deck.resolved.yaml``; no
@@ -14,14 +14,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cmad.cli.common import build_mp_object_graph, resolve_output
+from cmad.cli.common import build_mp_problem, resolve_output
 from cmad.cli.sensitivity import build_sensitivity_driver
 from cmad.io.writers import write_grad, write_J, write_resolved_deck
 
 
 def run_gradient(deck_path: Path) -> int:
     """Execute the gradient subcommand on ``deck_path``. Returns an exit code."""
-    graph = build_mp_object_graph(deck_path, "gradient")
+    graph = build_mp_problem(deck_path, "gradient")
     qoi = graph.qoi
     assert qoi is not None
 

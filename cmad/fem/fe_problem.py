@@ -32,7 +32,7 @@ _DEFAULT_ASSEMBLY_QUADRATURE: dict[ElementFamily, QuadratureRule] = {
 class FEProblem:
     """Immutable durable state for an FE forward problem.
 
-    Sibling to ``MPObjectGraph`` in ``cmad/cli/common.py`` — same
+    Sibling to ``MPProblem`` in ``cmad/cli/common.py`` — same
     builder/runner separation. CLI dispatch wraps :func:`build_fe_problem`
     and the assembly+solve operations without modifying this
     dataclass.

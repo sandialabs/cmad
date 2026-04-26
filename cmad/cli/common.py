@@ -28,7 +28,7 @@ from cmad.qois.qoi import QoI
 
 
 @dataclass(frozen=True)
-class MPObjectGraph:
+class MPProblem:
     resolved: dict[str, Any]
     parameters: Parameters
     model: Model
@@ -36,15 +36,15 @@ class MPObjectGraph:
     qoi: QoI | None
 
 
-def build_mp_object_graph(
+def build_mp_problem(
         deck_path: Path, subcommand: str,
-) -> MPObjectGraph:
-    """Build the material-point object graph shared by all subcommands.
+) -> MPProblem:
+    """Build the material-point problem shared by all subcommands.
 
     Runs deck load + defaults + schema validation, resolves the
     registered model and (for all subcommands except ``primal``) QoI,
     builds parameters, and loads the deformation history. The returned
-    graph's ``qoi`` is ``None`` iff ``subcommand == "primal"``.
+    problem's ``qoi`` is ``None`` iff ``subcommand == "primal"``.
     """
     deck = load_deck(deck_path)
     resolved = apply_deck_defaults(deck)
@@ -65,7 +65,7 @@ def build_mp_object_graph(
         data, weight = load_qoi_data(resolved["qoi"], deck_path.parent)
         qoi = qoi_cls.from_deck(resolved["qoi"], model, data, weight)
 
-    return MPObjectGraph(
+    return MPProblem(
         resolved=resolved, parameters=parameters,
         model=model, F=F, qoi=qoi,
     )

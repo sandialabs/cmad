@@ -22,7 +22,7 @@ from jax.tree_util import tree_flatten_with_path
 from numpy.typing import NDArray
 from scipy.optimize import minimize
 
-from cmad.cli.common import build_mp_object_graph, resolve_output
+from cmad.cli.common import build_mp_problem, resolve_output
 from cmad.cli.sensitivity import build_sensitivity_driver
 from cmad.io.writers import (
     write_opt_history,
@@ -35,7 +35,7 @@ from cmad.parameters.parameters import Parameters
 
 def run_calibrate(deck_path: Path) -> int:
     """Execute the calibrate subcommand on ``deck_path``. Returns an exit code."""
-    graph = build_mp_object_graph(deck_path, "calibrate")
+    graph = build_mp_problem(deck_path, "calibrate")
     qoi = graph.qoi
     assert qoi is not None
     parameters = graph.parameters
