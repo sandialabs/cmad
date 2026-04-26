@@ -49,7 +49,7 @@ def _make_linear_elastic_model() -> Elastic:
 class _ToyEquilibrium(GlobalResidual):
     """3D u-only quasi-static equilibrium, small-def kinematics.
 
-    Residual form: ``R_nodal[a, i] = grad_N[a, j] * sigma[j, i] * w * dv``
+    Residual form: ``R[a, i] = grad_N[a, j] * sigma[j, i] * w * dv``
     evaluated at a single barycenter IP of a canonical linear tet.
     Cauchy stress comes from ``model.cauchy_closed_form``
     (CLOSED_FORM-only shape).
@@ -72,8 +72,8 @@ class _ToyEquilibrium(GlobalResidual):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(U_prev, shapes_ip)
             sigma = model.cauchy_closed_form(params, U_ip, U_ip_prev)
-            R_nodal = (shapes_ip[0].grad_N @ sigma) * w * dv   # (4, 3)
-            return R_nodal[jnp.newaxis, :, :]                   # (1, 4, 3)
+            R = (shapes_ip[0].grad_N @ sigma) * w * dv   # (4, 3)
+            return [R]
 
         super().__init__(residual_fn)
 
@@ -101,23 +101,17 @@ class TestGlobalResidualABC(unittest.TestCase):
             model, mode=GlobalResidualMode.CLOSED_FORM)
         self.assertEqual(
             set(evaluators.keys()),
-            {"R", "dR_dU", "dR_dU_prev", "dR_dparams"},
+            {"R", "R_and_dR_dU"},
         )
 
-    def test_for_model_coupled_keys(self):
+    def test_for_model_coupled_raises_not_implemented(self):
         gr = _ToyEquilibrium()
         model = _make_linear_elastic_model()
-        evaluators = gr.for_model(
-            model, mode=GlobalResidualMode.COUPLED)
-        self.assertEqual(
-            set(evaluators.keys()),
-            {
-                "R", "dR_dU", "dR_dU_prev", "dR_dparams",
-                "dR_dxi", "dR_dxi_prev",
-                "C", "dC_dU", "dC_dU_prev",
-                "dC_dxi", "dC_dxi_prev", "dC_dparams",
-            },
-        )
+        with self.assertRaises(NotImplementedError) as ctx:
+            gr.for_model(model, mode=GlobalResidualMode.COUPLED)
+        msg = str(ctx.exception)
+        self.assertIn("COUPLED", msg)
+        self.assertIn("custom_vjp", msg)
 
     def test_for_model_closed_form_rejects_incapable_model(self):
         gr = _ToyEquilibrium()
@@ -142,9 +136,9 @@ class TestGlobalResidualABC(unittest.TestCase):
         xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set = (
             _test_inputs(model))
 
-        ad = evaluators["dR_dU"](
+        _, dR_dU = evaluators["R_and_dR_dU"](
             xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set)
-        ad_arr = np.asarray(ad[0])          # (1, 4, 3, 4, 3)
+        ad_arr = np.asarray(dR_dU[0][0])          # (4, 3, 4, 3)
 
         eps = 1e-6
         fd_arr = np.zeros_like(ad_arr)
@@ -158,7 +152,7 @@ class TestGlobalResidualABC(unittest.TestCase):
                 R_minus = evaluators["R"](
                     xi, xi_prev, params, U_minus, U_prev,
                     shapes_ip, w, dv, ip_set)
-                fd_arr[:, :, :, b, k] = (R_plus - R_minus) / (2 * eps)
+                fd_arr[:, :, b, k] = (R_plus[0] - R_minus[0]) / (2 * eps)
 
         self.assertTrue(jnp.allclose(
             ad_arr, fd_arr, rtol=1e-5, atol=1e-10))
@@ -171,49 +165,19 @@ class TestGlobalResidualABC(unittest.TestCase):
         xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set = (
             _test_inputs(model))
 
-        R0 = evaluators["R"](
+        R0_blocks, dR_dU = evaluators["R_and_dR_dU"](
             xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set)
-        K_full = evaluators["dR_dU"](
-            xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set)[0]
+        R0 = R0_blocks[0]
+        K_full = dR_dU[0][0]
         # Free DOFs: node 3. K_ff: (3, 3). R_f: (3,).
-        K_ff = K_full[0, 3, :, 3, :]
-        R_f = R0[0, 3, :]
+        K_ff = K_full[3, :, 3, :]
+        R_f = R0[3, :]
         dU_f = -jnp.linalg.solve(K_ff, R_f)
 
         U_new = [U[0].at[3].add(dU_f)]
-        R1 = evaluators["R"](
+        R1_blocks = evaluators["R"](
             xi, xi_prev, params, U_new, U_prev, shapes_ip, w, dv, ip_set)
-        self.assertLess(float(jnp.linalg.norm(R1[0, 3, :])), 1e-10)
-
-    def test_ad_matches_fd_on_dR_dparams_closed_form(self):
-        gr = _ToyEquilibrium()
-        model = _make_linear_elastic_model()
-        evaluators = gr.for_model(
-            model, mode=GlobalResidualMode.CLOSED_FORM)
-        xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set = (
-            _test_inputs(model))
-
-        ad = evaluators["dR_dparams"](
-            xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set)
-
-        for key in ("kappa", "mu"):
-            base = float(params["elastic"][key])
-            eps = 1e-5 * abs(base)
-            other_key = "mu" if key == "kappa" else "kappa"
-            other_val = params["elastic"][other_key]
-
-            params_plus = {
-                "elastic": {key: base + eps, other_key: other_val}}
-            params_minus = {
-                "elastic": {key: base - eps, other_key: other_val}}
-            R_plus = evaluators["R"](
-                xi, xi_prev, params_plus, U, U_prev, shapes_ip, w, dv, ip_set)
-            R_minus = evaluators["R"](
-                xi, xi_prev, params_minus, U, U_prev, shapes_ip, w, dv, ip_set)
-            fd = (R_plus - R_minus) / (2 * eps)
-
-            self.assertTrue(jnp.allclose(
-                ad["elastic"][key], fd, rtol=1e-5, atol=1e-10))
+        self.assertLess(float(jnp.linalg.norm(R1_blocks[0][3, :])), 1e-10)
 
 
 if __name__ == "__main__":

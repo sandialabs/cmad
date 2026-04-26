@@ -39,20 +39,6 @@ def iso_jac_at_ip(
     return grad_N_phys, iso_jac_det, iso_jac
 
 
-def _zero_body_force(
-        ndims: int,
-) -> Callable[[JaxArray | NDArray[np.floating], float], JaxArray]:
-    """Body-force callable emitting zeros at every IP.
-
-    Threaded through :func:`per_element_residual` when no body force
-    is configured; keeps the per-element call signature stable instead
-    of branching on ``body_force_fn is None`` at trace time.
-    """
-    def _zero(_coords: JaxArray | NDArray[np.floating], _t: float) -> JaxArray:
-        return jnp.zeros(ndims)
-    return _zero
-
-
 def _gather_element_U(
         U_global: NDArray[np.floating] | JaxArray,
         dof_map: GlobalDofMap,
@@ -128,7 +114,7 @@ def _element_eq_indices(
     return eq.reshape(n_elems, -1).astype(np.intp)
 
 
-def per_element_residual(
+def per_element_R_and_K(
         X_elem: JaxArray,
         U_elem: Sequence[JaxArray],
         U_prev_elem: Sequence[JaxArray],
@@ -136,33 +122,60 @@ def per_element_residual(
         quad_xi: NDArray[np.floating] | JaxArray,
         quad_w: NDArray[np.floating] | JaxArray,
         interpolant_fn: Callable[[JaxArray], ShapeFunctionsAtIP],
-        R_evaluator: Callable[..., JaxArray],
-        body_force_fn: Callable[
+        R_and_dR_dU_evaluator: Callable[
+            ..., tuple[Sequence[JaxArray], Sequence[Sequence[JaxArray]]],
+        ],
+        forcing_fns_by_block_idx: dict[int, Callable[
             [JaxArray | NDArray[np.floating], float],
             JaxArray | NDArray[np.floating],
-        ],
+        ]],
+        residual_block_shapes: Sequence[tuple[int, int]],
         t: float,
         xi_dummy: StateList,
         xi_prev_dummy: StateList,
-) -> JaxArray:
-    """Per-element residual contribution at all IPs of one element.
+) -> tuple[list[JaxArray], list[list[JaxArray]]]:
+    """Per-element ``(R_blocks, dR_dU_blocks)`` at all IPs of one element.
 
     For each IP: lift reference-frame shape gradients to physical-frame
-    via :func:`iso_jac_at_ip`, call ``R_evaluator`` for the internal-
-    force contribution, and subtract the body-force contribution
-    ``f_ext = N · b · w · dv`` from residual block 0 (the displacement
-    / momentum block). Returns shape ``(num_residuals, nnodes,
-    num_eqs)`` summed across IPs.
+    via :func:`iso_jac_at_ip`, call ``R_and_dR_dU_evaluator`` for the
+    fused internal-force + tangent contribution, and accumulate.
+    Subtract the forcing contribution ``f_ext_r = N · f_r · w · dv``
+    from each residual block ``r`` listed in
+    ``forcing_fns_by_block_idx`` (sparse — absent block_idx means no
+    forcing on that block, e.g. the pressure block of a mixed u-p
+    method).
+
+    Returns ``(R_blocks, dR_dU_blocks)`` where ``R_blocks[r]`` has
+    shape ``(num_basis_fns_r, num_eqs_r)`` and ``dR_dU_blocks[r][s]``
+    has shape ``(num_basis_fns_r, num_eqs_r, num_basis_fns_s,
+    num_eqs_s)``, summed across IPs. ``residual_block_shapes`` is the
+    list of ``(num_basis_fns, num_eqs)`` tuples per residual block,
+    used to allocate the accumulator buffers (typically sourced from
+    ``gr.block_shapes``).
 
     Vmap-over-elements compatible: only ``X_elem``, ``U_elem``,
     ``U_prev_elem`` carry the leading element axis; the rest are
     element-invariant. The Python-level IP loop unrolls under jit.
-    ``ip_set=0`` is always passed to ``R_evaluator``; GRs with multiple
+    ``ip_set=0`` is always passed to the evaluator; GRs with multiple
     ip_sets dispatch on the trailing arg inside their residual_fn
     body (see :data:`cmad.typing.ResidualFnGR`).
+
+    Single-element-family multi-block assumption: every residual block
+    shares the same physical-frame shape functions
+    ``ShapeFunctionsAtIP``. Multi-basis cases (Taylor-Hood Q2/Q1) will
+    require per-block interpolant lookups in a future change.
     """
-    nnodes, ndims = X_elem.shape
-    R_elem = jnp.zeros((1, nnodes, ndims))
+    num_blocks = len(residual_block_shapes)
+    R_blocks = [
+        jnp.zeros((nb, neq)) for nb, neq in residual_block_shapes
+    ]
+    dR_dU_blocks = [
+        [
+            jnp.zeros((nb_r, neq_r, nb_s, neq_s))
+            for nb_s, neq_s in residual_block_shapes
+        ]
+        for nb_r, neq_r in residual_block_shapes
+    ]
 
     nips = quad_xi.shape[0]
     for ip_idx in range(nips):
@@ -176,68 +189,27 @@ def per_element_residual(
         w_ref = quad_w[ip_idx]
         dv = iso_jac_det
 
-        R_int = R_evaluator(
+        shapes_phys_per_block = [shapes_phys] * num_blocks
+        R_ip, dR_dU_ip = R_and_dR_dU_evaluator(
             xi_dummy, xi_prev_dummy, params, U_elem, U_prev_elem,
-            [shapes_phys], w_ref, dv, 0,
+            shapes_phys_per_block, w_ref, dv, 0,
         )
-        R_elem = R_elem + R_int
 
-        coords_ip = shapes_ref.N @ X_elem
-        b_ip = jnp.asarray(body_force_fn(coords_ip, t))
-        f_ext = jnp.einsum(
-            "a,k->ak", shapes_ref.N, b_ip,
-        ) * w_ref * dv
-        R_elem = R_elem.at[0].add(-f_ext)
+        for r in range(num_blocks):
+            R_blocks[r] = R_blocks[r] + R_ip[r]
+            for s in range(num_blocks):
+                dR_dU_blocks[r][s] = dR_dU_blocks[r][s] + dR_dU_ip[r][s]
 
-    return R_elem
+        if forcing_fns_by_block_idx:
+            coords_ip = shapes_ref.N @ X_elem
+            for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
+                f_ip = jnp.asarray(forcing_fn(coords_ip, t))
+                f_ext = jnp.einsum(
+                    "a,k->ak", shapes_ref.N, f_ip,
+                ) * w_ref * dv
+                R_blocks[block_idx] = R_blocks[block_idx] - f_ext
 
-
-def per_element_tangent(
-        X_elem: JaxArray,
-        U_elem: Sequence[JaxArray],
-        U_prev_elem: Sequence[JaxArray],
-        params: Params,
-        quad_xi: NDArray[np.floating] | JaxArray,
-        quad_w: NDArray[np.floating] | JaxArray,
-        interpolant_fn: Callable[[JaxArray], ShapeFunctionsAtIP],
-        dR_dU_evaluator: Callable[..., Sequence[JaxArray]],
-        xi_dummy: StateList,
-        xi_prev_dummy: StateList,
-) -> JaxArray:
-    """Per-element tangent ``K_elem = Σ_IPs dR_int/dU`` for a single U block.
-
-    ``dR_dU_evaluator`` returns a list whose entry ``i`` is the per-
-    U-block jacobian ``dR/dU[i]``; this function sums entry ``[0]``,
-    sized ``(num_residuals, nnodes, num_eqs, nnodes_block_0,
-    num_eqs_block_0)``. Multi-block assembly walks ``(residual_block,
-    U_block)`` pairs and scatters them externally.
-
-    Body force is independent of U and contributes nothing to the
-    tangent. Vmap-over-elements convention matches
-    :func:`per_element_residual`.
-    """
-    nnodes, ndims = X_elem.shape
-    K_elem = jnp.zeros((1, nnodes, ndims, nnodes, ndims))
-
-    nips = quad_xi.shape[0]
-    for ip_idx in range(nips):
-        shapes_ref = interpolant_fn(quad_xi[ip_idx])
-        grad_N_phys, iso_jac_det, _ = iso_jac_at_ip(
-            shapes_ref.grad_N, X_elem,
-        )
-        shapes_phys = ShapeFunctionsAtIP(
-            N=shapes_ref.N, grad_N=grad_N_phys,
-        )
-        w_ref = quad_w[ip_idx]
-        dv = iso_jac_det
-
-        K_ip_blocks = dR_dU_evaluator(
-            xi_dummy, xi_prev_dummy, params, U_elem, U_prev_elem,
-            [shapes_phys], w_ref, dv, 0,
-        )
-        K_elem = K_elem + K_ip_blocks[0]
-
-    return K_elem
+    return R_blocks, dR_dU_blocks
 
 
 def assemble_element_block(
@@ -254,11 +226,18 @@ def assemble_element_block(
 ]:
     """Assemble one element block's COO triplets + R contribution.
 
-    Vmaps :func:`per_element_residual` and :func:`per_element_tangent`
-    over the block's elements, brings the per-element results back to
-    numpy, and emits ``(rows, cols, vals)`` ready for the global COO
-    construction plus a flat ``R_block`` of shape
+    Vmaps :func:`per_element_R_and_K` over the block's elements,
+    brings the per-element results back to numpy, and emits
+    ``(rows, cols, vals)`` ready for the global COO construction
+    plus a flat ``R_global_block`` of shape
     ``(dof_map.num_total_dofs,)`` already scattered via ``np.add.at``.
+
+    Multi-residual-block GRs scatter via nested loops over
+    ``(r, s)`` residual-block / U-block pairs; each pair scatters the
+    appropriate sub-tangent into the global rows/cols using its
+    block-specific eq indices, looked up from the GR's ``var_names[r]``
+    against ``dof_map.field_layouts``. Single-block GRs are the
+    degenerate ``r=s=0`` case.
     """
     mesh = fe_problem.mesh
     dof_map = fe_problem.dof_map
@@ -274,12 +253,13 @@ def assemble_element_block(
     model = fe_problem.models_by_block[block_name]
     params = model.parameters.values
     evaluators = fe_problem.evaluators_by_block[block_name]
+    gr = fe_problem.gr
+    block_shapes = gr.block_shapes
+    num_blocks = len(block_shapes)
 
     quad_rule = fe_problem.assembly_quadrature[mesh.element_family]
     interpolant_fn = fe_problem.interpolant_fn[mesh.element_family]
-    body_force_fn = fe_problem.body_force_fn or _zero_body_force(
-        fe_problem.ndims,
-    )
+    forcing_fns_by_block_idx = fe_problem.forcing_fns_by_block_idx or {}
 
     xi_dummy: StateList = [jnp.zeros_like(b) for b in model._init_xi]
     xi_prev_dummy: StateList = [jnp.zeros_like(b) for b in model._init_xi]
@@ -287,57 +267,73 @@ def assemble_element_block(
     quad_xi = jnp.asarray(quad_rule.xi)
     quad_w = jnp.asarray(quad_rule.w)
 
-    R_eval = cast(Callable[..., JaxArray], evaluators["R"])
-    dR_dU_eval = cast(
-        Callable[..., Sequence[JaxArray]], evaluators["dR_dU"],
+    R_and_dR_dU_eval = cast(
+        Callable[
+            ..., tuple[Sequence[JaxArray], Sequence[Sequence[JaxArray]]],
+        ],
+        evaluators["R_and_dR_dU"],
     )
 
-    R_per_elem = vmap(
-        lambda X, U, Up: per_element_residual(
+    R_per_elem_blocks, K_per_elem_blocks = vmap(
+        lambda X, U, Up: per_element_R_and_K(
             X, U, Up, params,
             quad_xi, quad_w,
             interpolant_fn,
-            R_eval,
-            body_force_fn, t,
+            R_and_dR_dU_eval,
+            forcing_fns_by_block_idx, block_shapes, t,
             xi_dummy, xi_prev_dummy,
         ),
     )(X_block, U_elem_block, U_prev_elem_block)
 
-    K_per_elem = vmap(
-        lambda X, U, Up: per_element_tangent(
-            X, U, Up, params,
-            quad_xi, quad_w,
-            interpolant_fn,
-            dR_dU_eval,
-            xi_dummy, xi_prev_dummy,
-        ),
-    )(X_block, U_elem_block, U_prev_elem_block)
+    name_to_field_idx = {
+        layout.name: i for i, layout in enumerate(dof_map.field_layouts)
+    }
+    eq_indices_per_block = [
+        _element_eq_indices(
+            connectivity_block, dof_map,
+            field_idx=name_to_field_idx[gr.var_names[r]],
+        )
+        for r in range(num_blocks)
+    ]
 
-    R_per_elem_np = np.asarray(R_per_elem)
-    K_per_elem_np = np.asarray(K_per_elem)
-
-    eq_indices_per_elem = _element_eq_indices(connectivity_block, dof_map)
     n_elems = connectivity_block.shape[0]
-    n_dofs_elem = eq_indices_per_elem.shape[1]
 
-    R_elem_flat = R_per_elem_np.reshape(n_elems, -1)
+    R_global_block = np.zeros(dof_map.num_total_dofs, dtype=np.float64)
+    for r in range(num_blocks):
+        R_arr = np.asarray(R_per_elem_blocks[r])
+        R_flat = R_arr.reshape(n_elems, -1)
+        eq_r = eq_indices_per_block[r]
+        np.add.at(R_global_block, eq_r.ravel(), R_flat.ravel())
 
-    rows = np.broadcast_to(
-        eq_indices_per_elem[:, :, None],
-        (n_elems, n_dofs_elem, n_dofs_elem),
-    ).ravel()
-    cols = np.broadcast_to(
-        eq_indices_per_elem[:, None, :],
-        (n_elems, n_dofs_elem, n_dofs_elem),
-    ).ravel()
-    vals = K_per_elem_np.reshape(
-        n_elems, n_dofs_elem, n_dofs_elem,
-    ).ravel()
+    rows_all: list[NDArray[np.intp]] = []
+    cols_all: list[NDArray[np.intp]] = []
+    vals_all: list[NDArray[np.floating]] = []
+    for r in range(num_blocks):
+        eq_r = eq_indices_per_block[r]
+        n_dofs_r = eq_r.shape[1]
+        for s in range(num_blocks):
+            eq_s = eq_indices_per_block[s]
+            n_dofs_s = eq_s.shape[1]
+            K_arr = np.asarray(K_per_elem_blocks[r][s])
+            K_flat = K_arr.reshape(n_elems, n_dofs_r, n_dofs_s)
+            rows = np.broadcast_to(
+                eq_r[:, :, None],
+                (n_elems, n_dofs_r, n_dofs_s),
+            ).ravel()
+            cols = np.broadcast_to(
+                eq_s[:, None, :],
+                (n_elems, n_dofs_r, n_dofs_s),
+            ).ravel()
+            rows_all.append(rows)
+            cols_all.append(cols)
+            vals_all.append(K_flat.ravel())
 
-    R_block = np.zeros(dof_map.num_total_dofs, dtype=np.float64)
-    np.add.at(R_block, eq_indices_per_elem.ravel(), R_elem_flat.ravel())
-
-    return rows, cols, vals, R_block
+    return (
+        np.concatenate(rows_all),
+        np.concatenate(cols_all),
+        np.concatenate(vals_all),
+        R_global_block,
+    )
 
 
 def assemble_global(

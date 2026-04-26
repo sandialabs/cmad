@@ -157,7 +157,7 @@ def _build_fe_problem(
         dof_map=dof_map,
         gr=gr,
         models_by_block={"all": elastic},
-        body_force_fn=body_force_fn,
+        forcing_fns_by_block_idx={0: body_force_fn},
     )
 
 

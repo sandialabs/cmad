@@ -4,7 +4,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
-from jax import jacfwd, jacrev, jit
+from jax import jacfwd, jit
 from numpy.typing import NDArray
 
 from cmad.fem.shapes import ShapeFunctionsAtIP
@@ -23,7 +23,7 @@ class GlobalResidual(ABC):
     pass it to super().__init__(). See :data:`cmad.typing.ResidualFnGR`
     for the required callable signature:
 
-      (xi, xi_prev, params, U, U_prev, model, shapes_ip, w, dv) -> Array
+      (xi, xi_prev, params, U, U_prev, model, shapes_ip, w, dv) -> Sequence[Array]
 
     where xi/xi_prev are Model's per-integration-point local state
     (threaded through GR's call to model.cauchy; GR has no xi of its
@@ -38,12 +38,14 @@ class GlobalResidual(ABC):
 
     Subclasses pair with a concrete Model via
     :meth:`for_model(model, mode)`, which returns a ``dict[str,
-    Callable]`` of jit'd evaluators closed over ``model._residual`` and
-    the mode-selected cauchy method. The string keys ("R", "dR_dU",
-    ...) identify each evaluator and replace Model's mutable
-    ``_deriv_mode`` state machine: FE assembly vmaps closures over
-    element batches, which works on pure functions but not on methods
-    that mutate instance state.
+    Callable]`` of jit'd evaluators closed over ``model._residual``
+    and the mode-selected cauchy method. CLOSED_FORM mode exposes
+    ``"R"`` (residual-only, for linesearch trial points and other
+    cheap residual probes) and ``"R_and_dR_dU"`` (fused R + tangent
+    for the Newton step). The string-key dict replaces Model's
+    mutable ``_deriv_mode`` state machine: FE assembly vmaps closures
+    over element batches, which works on pure functions but not on
+    methods that mutate instance state.
     """
 
     # ---- attributes the subclass must set before super().__init__() ----
@@ -150,6 +152,19 @@ class GlobalResidual(ABC):
             U, shapes_ip, self.var_names,
         )
 
+    @property
+    def block_shapes(self) -> list[tuple[int, int]]:
+        """Per-residual-block ``(num_basis_fns, num_eqs)`` tuples.
+
+        Used by the assembly layer to allocate per-element residual
+        and tangent buffers without inspecting the GR's internal arrays.
+        Order matches the residual-block index ``r``.
+        """
+        return [
+            (int(self._num_basis_fns[r]), int(self._num_eqs[r]))
+            for r in range(self.num_residuals)
+        ]
+
     def for_model(
             self,
             model: Model,
@@ -158,18 +173,41 @@ class GlobalResidual(ABC):
         """Bind this GR to a concrete Model in a specific operational
         mode. Returns a dict of jit'd evaluators keyed by string names:
 
-        - always: ``R``, ``dR_dU``, ``dR_dU_prev``, ``dR_dparams``.
-        - COUPLED only: ``dR_dxi``, ``dR_dxi_prev``, plus the
-          C-composed family ``C``, ``dC_dU``, ``dC_dU_prev``,
-          ``dC_dxi``, ``dC_dxi_prev``, ``dC_dparams``.
+        - CLOSED_FORM: ``"R"`` (residual only, returning ``R_blocks``)
+          and ``"R_and_dR_dU"`` (fused, returning
+          ``(R_blocks, dR_dU_blocks)``). ``R_blocks`` is a list with
+          entry ``r`` shaped ``(num_basis_fns_r, num_eqs_r)`` matching
+          the GR's residual_fn return; ``dR_dU_blocks`` is a list-of-
+          lists with ``dR_dU_blocks[r][s]`` shaped
+          ``(num_basis_fns_r, num_eqs_r, num_basis_fns_s,
+          num_eqs_s)``. The fused evaluator exists so XLA can CSE
+          the shared work (interpolation, kinematics, Cauchy stress)
+          when both R and its tangent are needed (Newton step); the
+          R-only evaluator covers cheap-residual paths (linesearch
+          trial points, perturbation probes).
+        - COUPLED: not yet implemented; raises NotImplementedError.
+          The coupled-mode evaluator must wrap the per-IP local
+          Newton solve in custom_vjp so the global outer Newton sees
+          the IFT-corrected ``dR/dU`` rather than differentiating
+          through the inner solver.
 
         The same GR can be bound to multiple (model, mode) combinations
         by repeated ``for_model`` calls; ``mode`` is not stored on the
         instance.
 
+        Raises ``NotImplementedError`` if ``mode == COUPLED``.
         Raises ``ValueError`` if ``mode == CLOSED_FORM`` and
         ``model.supports_closed_form_cauchy`` is False.
         """
+        if mode == GlobalResidualMode.COUPLED:
+            raise NotImplementedError(
+                "GlobalResidual.for_model COUPLED mode is not yet "
+                "implemented. The coupled-mode evaluator requires the "
+                "per-IP local Newton solve to be wrapped in "
+                "custom_vjp so the outer global Newton sees an "
+                "IFT-corrected dR/dU, not a differentiated solver. "
+                "Use CLOSED_FORM for now."
+            )
         if (mode == GlobalResidualMode.CLOSED_FORM
                 and not model.supports_closed_form_cauchy):
             raise ValueError(
@@ -179,46 +217,32 @@ class GlobalResidual(ABC):
             )
 
         residual_fn = self._residual_fn
-        var_names = self.var_names
 
-        # R-composed: close the model into the public residual function,
-        # then jit. Post-closure argnums: xi=0, xi_prev=1, params=2,
-        # U=3, U_prev=4, shapes_ip=5, w=6, dv=7, ip_set=8.
+        # R-composed: close the model into the public residual function.
+        # Post-closure argnums: xi=0, xi_prev=1, params=2, U=3,
+        # U_prev=4, shapes_ip=5, w=6, dv=7, ip_set=8.
         def r_at_ip(xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set):
             return residual_fn(
                 xi, xi_prev, params, U, U_prev,
                 model, shapes_ip, w, dv, ip_set,
             )
 
-        evaluators: dict[str, Callable[..., PyTree]] = {
-            "R":          jit(r_at_ip),
-            "dR_dU":      jit(jacfwd(r_at_ip, argnums=3)),
-            "dR_dU_prev": jit(jacfwd(r_at_ip, argnums=4)),
-            "dR_dparams": jit(jacrev(r_at_ip, argnums=2)),
+        dR_dU_at_ip = jacfwd(r_at_ip, argnums=3)
+
+        def r_and_dR_dU_at_ip(
+                xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set,
+        ):
+            R = r_at_ip(
+                xi, xi_prev, params, U, U_prev,
+                shapes_ip, w, dv, ip_set,
+            )
+            dR_dU = dR_dU_at_ip(
+                xi, xi_prev, params, U, U_prev,
+                shapes_ip, w, dv, ip_set,
+            )
+            return R, dR_dU
+
+        return {
+            "R": jit(r_at_ip),
+            "R_and_dR_dU": jit(r_and_dR_dU_at_ip),
         }
-
-        if mode == GlobalResidualMode.COUPLED:
-            evaluators["dR_dxi"] = jit(jacfwd(r_at_ip, argnums=0))
-            evaluators["dR_dxi_prev"] = jit(jacfwd(r_at_ip, argnums=1))
-
-            # C-composed: Model's local residual threaded through GR's
-            # per-block interpolation, fused under jit with the outer
-            # closure. Argnums: xi=0, xi_prev=1, params=2, U=3,
-            # U_prev=4, shapes_ip=5.
-            def c_at_ip(xi, xi_prev, params, U, U_prev, shapes_ip):
-                U_ip = interpolate_global_fields_at_ip(
-                    U, shapes_ip, var_names)
-                U_ip_prev = interpolate_global_fields_at_ip(
-                    U_prev, shapes_ip, var_names)
-                return model._residual(
-                    xi, xi_prev, params, U_ip, U_ip_prev,
-                )
-
-            evaluators["C"] = jit(c_at_ip)
-            evaluators["dC_dU"] = jit(jacfwd(c_at_ip, argnums=3))
-            evaluators["dC_dU_prev"] = jit(jacfwd(c_at_ip, argnums=4))
-            evaluators["dC_dxi"] = jit(jacfwd(c_at_ip, argnums=0))
-            evaluators["dC_dxi_prev"] = jit(jacfwd(c_at_ip, argnums=1))
-            evaluators["dC_dparams"] = jit(jacrev(c_at_ip, argnums=2))
-
-        return evaluators

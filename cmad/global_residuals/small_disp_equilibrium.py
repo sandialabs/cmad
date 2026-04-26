@@ -51,7 +51,7 @@ class SmallDispEquilibrium(GlobalResidual):
             U_ip_prev = self.interpolate_global_fields_at_ip(U_prev, shapes_ip)
             sigma = model.cauchy_closed_form(params, U_ip, U_ip_prev)
             R_internal = (shapes_ip[0].grad_N @ sigma) * w * dv
-            return R_internal[jnp.newaxis, :, :]
+            return [R_internal]
 
         super().__init__(residual_fn)
 

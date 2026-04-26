@@ -41,6 +41,14 @@ class FEProblem:
     dict) result of binding ``gr.for_model(models_by_block[block],
     mode=modes_by_block[block])`` per element block, so each
     (GR, Model, mode) triple compiles once at construction.
+
+    ``forcing_fns_by_block_idx`` is a sparse per-residual-block dict
+    of body-force / source-term callables. Absence of a residual-
+    block index means no forcing on that block (e.g. the pressure
+    residual of a mixed u-p method, or a divergence-free thermal
+    problem). Each callable returns a vector of shape
+    ``(num_eqs[block_idx],)``. Surface tractions / Neumann BCs are
+    not handled here — see future per-face evaluator design.
     """
     mesh: Mesh
     dof_map: GlobalDofMap
@@ -48,10 +56,10 @@ class FEProblem:
     models_by_block: dict[str, Model]
     modes_by_block: dict[str, GlobalResidualMode]
     evaluators_by_block: dict[str, dict[str, Callable[..., PyTree]]]
-    body_force_fn: Callable[
+    forcing_fns_by_block_idx: dict[int, Callable[
         [NDArray[np.floating] | JaxArray, float],
         NDArray[np.floating] | JaxArray,
-    ] | None
+    ]] | None
     assembly_quadrature: dict[ElementFamily, QuadratureRule]
     interpolant_fn: dict[
         ElementFamily, Callable[[JaxArray], ShapeFunctionsAtIP],
@@ -152,10 +160,10 @@ def build_fe_problem(
         gr: GlobalResidual,
         models_by_block: dict[str, Model],
         modes_by_block: dict[str, GlobalResidualMode] | None = None,
-        body_force_fn: Callable[
+        forcing_fns_by_block_idx: dict[int, Callable[
             [NDArray[np.floating] | JaxArray, float],
             NDArray[np.floating] | JaxArray,
-        ] | None = None,
+        ]] | None = None,
         assembly_quadrature: dict[ElementFamily, QuadratureRule] | None = None,
         interpolant_fn: dict[
             ElementFamily, Callable[[JaxArray], ShapeFunctionsAtIP],
@@ -173,6 +181,14 @@ def build_fe_problem(
     Each (block, model, mode) triple is bound via
     ``gr.for_model(model, mode=mode)`` at construction so the
     per-block evaluator dicts compile once.
+
+    ``forcing_fns_by_block_idx`` keys must lie in ``[0, gr.num_residuals)``;
+    the builder also probes each callable at the origin (best-effort)
+    and verifies the returned shape matches ``(gr._num_eqs[block_idx],)``
+    so common mistakes (wrong vector length, wrong block index) surface
+    eagerly rather than at jit trace time. Probes that fail to evaluate
+    outside a jit context are silently skipped — the trace-time error
+    will still catch the shape mismatch.
     """
     if modes_by_block is None:
         modes_by_block = {
@@ -196,6 +212,28 @@ def build_fe_problem(
             f"match models_by_block keys ({sorted(block_names_models)})"
         )
 
+    if forcing_fns_by_block_idx is not None:
+        num_blocks = gr.num_residuals
+        ndims = int(mesh.nodes.shape[1])
+        for block_idx, fn in forcing_fns_by_block_idx.items():
+            if not (0 <= block_idx < num_blocks):
+                raise ValueError(
+                    f"forcing_fns_by_block_idx has block_idx={block_idx} "
+                    f"out of range [0, {num_blocks}); GR has "
+                    f"{num_blocks} residual blocks"
+                )
+            try:
+                probe = np.asarray(fn(np.zeros(ndims), 0.0))
+            except Exception:
+                continue
+            expected = (int(gr._num_eqs[block_idx]),)
+            if probe.shape != expected:
+                raise ValueError(
+                    f"forcing_fns_by_block_idx[{block_idx}] returned "
+                    f"shape {probe.shape}; expected {expected} "
+                    f"(gr._num_eqs[{block_idx}])"
+                )
+
     evaluators_by_block: dict[str, dict[str, Callable[..., PyTree]]] = {
         b: gr.for_model(models_by_block[b], mode=modes_by_block[b])
         for b in models_by_block
@@ -208,7 +246,7 @@ def build_fe_problem(
         models_by_block=models_by_block,
         modes_by_block=modes_by_block,
         evaluators_by_block=evaluators_by_block,
-        body_force_fn=body_force_fn,
+        forcing_fns_by_block_idx=forcing_fns_by_block_idx,
         assembly_quadrature=assembly_quadrature,
         interpolant_fn=interpolant_fn,
     )
