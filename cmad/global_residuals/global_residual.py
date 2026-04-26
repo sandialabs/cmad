@@ -54,6 +54,7 @@ class GlobalResidual(ABC):
     # ---- attributes set by self._init_residuals() ----
     num_residuals: int
     resid_names: list[str | None]
+    var_names: list[str | None]
 
     # ---- attributes set by self._init_element_dof_layout() ----
     num_element_dofs: int
@@ -86,6 +87,7 @@ class GlobalResidual(ABC):
         self._num_basis_fns = np.zeros(num_residuals, dtype=int)
         self._var_types = np.zeros(num_residuals, dtype=int)
         self.resid_names = [None] * num_residuals
+        self.var_names = [None] * num_residuals
 
     def _init_element_dof_layout(self) -> None:
         """Compute per-block flat-DOF offsets and the total element-DOF
@@ -135,12 +137,14 @@ class GlobalResidual(ABC):
     ) -> GlobalFieldsAtPoint:
         """Thin method wrapper around the module-level
         :func:`interpolate_global_fields_at_ip`, closing over
-        ``self.resid_names``. Subclasses with mixed-basis interpolation
-        logic that can't be expressed through per-block iteration
-        should override this method.
+        ``self.var_names`` (the field-symbol / dict-key carrier; the
+        parallel ``self.resid_names`` carries the governing-equation
+        label and is not consumed here). Subclasses with mixed-basis
+        interpolation logic that can't be expressed through per-block
+        iteration should override this method.
         """
         return interpolate_global_fields_at_ip(
-            U, shapes_ip, self.resid_names,
+            U, shapes_ip, self.var_names,
         )
 
     def for_model(
@@ -172,7 +176,7 @@ class GlobalResidual(ABC):
             )
 
         residual_fn = self._residual_fn
-        resid_names = self.resid_names
+        var_names = self.var_names
 
         # R-composed: close the model into the public residual function,
         # then jit. Post-closure argnums: xi=0, xi_prev=1, params=2,
@@ -200,9 +204,9 @@ class GlobalResidual(ABC):
             # U_prev=4, shapes_ip=5.
             def c_at_ip(xi, xi_prev, params, U, U_prev, shapes_ip):
                 U_ip = interpolate_global_fields_at_ip(
-                    U, shapes_ip, resid_names)
+                    U, shapes_ip, var_names)
                 U_ip_prev = interpolate_global_fields_at_ip(
-                    U_prev, shapes_ip, resid_names)
+                    U_prev, shapes_ip, var_names)
                 return model._residual(
                     xi, xi_prev, params, U_ip, U_ip_prev,
                 )

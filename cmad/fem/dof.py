@@ -40,9 +40,13 @@ from cmad.fem.mesh import Mesh
 class GlobalFieldLayout:
     """Per-field DOF layout.
 
-    ``name`` is the field identifier (e.g., ``"u"``, ``"displacement"``,
-    ``"pressure"``). By convention matches the corresponding entry in
-    ``GlobalResidual.resid_names``.
+    ``name`` is the field symbol (e.g., ``"u"``, ``"p"``, ``"T"``) —
+    used as the dict key in ``U.fields[name]`` / ``U.grad_fields[name]``
+    and matched against ``DirichletBC.field_name``. By convention
+    matches the corresponding entry in ``GlobalResidual.var_names``.
+    The parallel ``GlobalResidual.resid_names`` carries the governing-
+    equation label (``"displacement"``, ``"pressure"``, ``"energy"``)
+    separately for output / deck schema / post-processing.
 
     ``num_basis_fns`` is the number of basis functions in the field's
     expansion. For Lagrange/CG bases on linear elements, this equals the
