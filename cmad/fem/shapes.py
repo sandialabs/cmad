@@ -1,12 +1,12 @@
 """Shape-function values and gradients at a finite-element integration point."""
 from dataclasses import dataclass
 
-import jax
+from jax.tree_util import register_pytree_node_class
 
 from cmad.typing import JaxArray
 
 
-@jax.tree_util.register_pytree_node_class
+@register_pytree_node_class
 @dataclass(frozen=True)
 class ShapeFunctionsAtIP:
     """One basis's shape-function values and gradients at an IP.

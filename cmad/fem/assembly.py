@@ -2,10 +2,10 @@
 from collections.abc import Callable, Sequence
 from typing import cast
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.sparse
+from jax import vmap
 from numpy.typing import NDArray
 
 from cmad.fem.dof import GlobalDofMap
@@ -62,7 +62,7 @@ def _gather_element_U(
 
     Returns one array per field in ``dof_map.field_layouts``; entry
     ``f`` has shape ``(n_elems, num_basis_fns_per_elem,
-    num_dofs_per_basis_fn[f])`` ready for ``jax.vmap`` over the
+    num_dofs_per_basis_fn[f])`` ready for ``vmap`` over the
     leading element axis. Each gather honors the layout's block
     offset, per-basis-function dof count, and any explicit
     ``basis_fn_to_vertex`` (identity by default).
@@ -292,7 +292,7 @@ def assemble_element_block(
         Callable[..., Sequence[JaxArray]], evaluators["dR_dU"],
     )
 
-    R_per_elem = jax.vmap(
+    R_per_elem = vmap(
         lambda X, U, Up: per_element_residual(
             X, U, Up, params,
             quad_xi, quad_w,
@@ -303,7 +303,7 @@ def assemble_element_block(
         ),
     )(X_block, U_elem_block, U_prev_elem_block)
 
-    K_per_elem = jax.vmap(
+    K_per_elem = vmap(
         lambda X, U, Up: per_element_tangent(
             X, U, Up, params,
             quad_xi, quad_w,

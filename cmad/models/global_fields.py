@@ -1,15 +1,15 @@
 """Structured global-state context for Model and QoI evaluation."""
 from dataclasses import dataclass
 
-import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.tree_util import register_pytree_node_class
 from numpy.typing import NDArray
 
 from cmad.typing import JaxArray
 
 
-@jax.tree_util.register_pytree_node_class
+@register_pytree_node_class
 @dataclass(frozen=True)
 class GlobalFieldsAtPoint:
     """Interpolated global fields + their gradients at an evaluation point."""
