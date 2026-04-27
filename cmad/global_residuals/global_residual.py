@@ -1,6 +1,6 @@
 """Global-residual abstract contract and composed-helper builder."""
 from abc import ABC
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -13,7 +13,7 @@ from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
-from cmad.typing import JaxArray, PyTree, ResidualFnGR
+from cmad.typing import GREvaluators, JaxArray, ResidualFnGR
 
 
 class GlobalResidual(ABC):
@@ -169,7 +169,7 @@ class GlobalResidual(ABC):
             self,
             model: Model,
             mode: GlobalResidualMode = GlobalResidualMode.COUPLED,
-    ) -> dict[str, Callable[..., PyTree]]:
+    ) -> GREvaluators:
         """Bind this GR to a concrete Model in a specific operational
         mode. Returns a dict of jit'd evaluators keyed by string names:
 

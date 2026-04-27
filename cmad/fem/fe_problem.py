@@ -13,7 +13,7 @@ from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.model import Model
-from cmad.typing import JaxArray, PyTree
+from cmad.typing import GREvaluators, JaxArray
 
 _DEFAULT_INTERPOLANT_FN: dict[
     ElementFamily, Callable[[JaxArray], ShapeFunctionsAtIP],
@@ -55,7 +55,7 @@ class FEProblem:
     gr: GlobalResidual
     models_by_block: dict[str, Model]
     modes_by_block: dict[str, GlobalResidualMode]
-    evaluators_by_block: dict[str, dict[str, Callable[..., PyTree]]]
+    evaluators_by_block: dict[str, GREvaluators]
     forcing_fns_by_block_idx: dict[int, Callable[
         [NDArray[np.floating] | JaxArray, float],
         NDArray[np.floating] | JaxArray,
@@ -234,7 +234,7 @@ def build_fe_problem(
                     f"(gr._num_eqs[{block_idx}])"
                 )
 
-    evaluators_by_block: dict[str, dict[str, Callable[..., PyTree]]] = {
+    evaluators_by_block: dict[str, GREvaluators] = {
         b: gr.for_model(models_by_block[b], mode=modes_by_block[b])
         for b in models_by_block
     }

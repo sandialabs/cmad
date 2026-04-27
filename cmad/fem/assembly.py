@@ -1,6 +1,5 @@
 """Element + global FE assembly machinery."""
 from collections.abc import Callable, Sequence
-from typing import cast
 
 import jax.numpy as jnp
 import numpy as np
@@ -11,7 +10,7 @@ from numpy.typing import NDArray
 from cmad.fem.dof import GlobalDofMap
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.shapes import ShapeFunctionsAtIP
-from cmad.typing import JaxArray, Params, StateList
+from cmad.typing import JaxArray, Params, RAndDRDUEvaluator, StateList
 
 
 def iso_jac_at_ip(
@@ -122,9 +121,7 @@ def per_element_R_and_K(
         quad_xi: NDArray[np.floating] | JaxArray,
         quad_w: NDArray[np.floating] | JaxArray,
         interpolant_fn: Callable[[JaxArray], ShapeFunctionsAtIP],
-        R_and_dR_dU_evaluator: Callable[
-            ..., tuple[Sequence[JaxArray], Sequence[Sequence[JaxArray]]],
-        ],
+        R_and_dR_dU_evaluator: RAndDRDUEvaluator,
         forcing_fns_by_block_idx: dict[int, Callable[
             [JaxArray | NDArray[np.floating], float],
             JaxArray | NDArray[np.floating],
@@ -267,19 +264,12 @@ def assemble_element_block(
     quad_xi = jnp.asarray(quad_rule.xi)
     quad_w = jnp.asarray(quad_rule.w)
 
-    R_and_dR_dU_eval = cast(
-        Callable[
-            ..., tuple[Sequence[JaxArray], Sequence[Sequence[JaxArray]]],
-        ],
-        evaluators["R_and_dR_dU"],
-    )
-
     R_per_elem_blocks, K_per_elem_blocks = vmap(
         lambda X, U, Up: per_element_R_and_K(
             X, U, Up, params,
             quad_xi, quad_w,
             interpolant_fn,
-            R_and_dR_dU_eval,
+            evaluators["R_and_dR_dU"],
             forcing_fns_by_block_idx, block_shapes, t,
             xi_dummy, xi_prev_dummy,
         ),
@@ -288,13 +278,19 @@ def assemble_element_block(
     name_to_field_idx = {
         layout.name: i for i, layout in enumerate(dof_map.field_layouts)
     }
-    eq_indices_per_block = [
-        _element_eq_indices(
-            connectivity_block, dof_map,
-            field_idx=name_to_field_idx[gr.var_names[r]],
+    eq_indices_per_block: list[NDArray[np.intp]] = []
+    for r in range(num_blocks):
+        var_name = gr.var_names[r]
+        assert var_name is not None, (
+            f"GR var_names[{r}] is None; fully-initialized GRs must "
+            f"populate every var_names entry"
         )
-        for r in range(num_blocks)
-    ]
+        eq_indices_per_block.append(
+            _element_eq_indices(
+                connectivity_block, dof_map,
+                field_idx=name_to_field_idx[var_name],
+            )
+        )
 
     n_elems = connectivity_block.shape[0]
 

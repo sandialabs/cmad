@@ -6,7 +6,7 @@ Imports are kept minimal: stdlib, jax, numpy, and (under TYPE_CHECKING)
 referenced in function-signature aliases.
 """
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, NamedTuple, Protocol, TypeAlias
+from typing import TYPE_CHECKING, NamedTuple, Protocol, TypeAlias, TypedDict
 
 import numpy as np
 from jax import Array as JaxArray
@@ -108,6 +108,49 @@ dispatched by the assembly layer; single-ip_set GRs ignore it,
 multi-ip_set GRs (e.g. mixed u-p with two quadrature orders for
 divergence + pressure-mass terms) read it to dispatch term-specific
 residual contributions via lax.switch or per-ip_set branches."""
+
+REvaluator: TypeAlias = Callable[
+    [StateList, StateList, Params,
+     Sequence[JaxArray], Sequence[JaxArray],
+     Sequence["ShapeFunctionsAtIP"],
+     float | JaxArray, float | JaxArray,
+     int],
+    Sequence[JaxArray],
+]
+"""Signature of the model-closed R-only evaluator returned by
+GlobalResidual.for_model. Same call shape as ResidualFnGR with the
+``model`` argument bound away by the closure; returns the per-
+residual-block ``R_blocks`` list. ``w`` and ``dv`` accept Python
+floats (test-side scalars) or 0-d JaxArrays (assembly-side
+quadrature weights and Jacobian determinants)."""
+
+RAndDRDUEvaluator: TypeAlias = Callable[
+    [StateList, StateList, Params,
+     Sequence[JaxArray], Sequence[JaxArray],
+     Sequence["ShapeFunctionsAtIP"],
+     float | JaxArray, float | JaxArray,
+     int],
+    tuple[Sequence[JaxArray], Sequence[Sequence[JaxArray]]],
+]
+"""Signature of the fused R + dR/dU evaluator returned by
+GlobalResidual.for_model. Returns ``(R_blocks, dR_dU_blocks)`` where
+``R_blocks`` matches the REvaluator return and ``dR_dU_blocks`` is
+list-of-lists keyed by ``(residual_block_r, U_block_s)``."""
+
+
+class GREvaluators(TypedDict, total=False):
+    """Per-(GR, model, mode) evaluator dict from GlobalResidual.for_model.
+
+    Keys present depend on the mode passed to ``for_model``. CLOSED_FORM
+    populates both ``R`` and ``R_and_dR_dU``: the R-only evaluator
+    covers cheap-residual paths (linesearch trial points, finite-
+    difference probes), the fused evaluator is the Newton-step path
+    (XLA CSEs interpolation / kinematics / Cauchy-stress between R and
+    its tangent). Future modes (COUPLED with custom_vjp around per-IP
+    local Newton) will add their own keys here.
+    """
+    R: REvaluator
+    R_and_dR_dU: RAndDRDUEvaluator
 
 
 # ----- Indices -----
