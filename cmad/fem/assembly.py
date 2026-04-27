@@ -81,7 +81,7 @@ def _gather_element_U(
 def _element_eq_indices(
         connectivity_block: NDArray[np.intp],
         dof_map: GlobalDofMap,
-        field_idx: int = 0,
+        field_idx: int,
 ) -> NDArray[np.intp]:
     """Per-element flat global eq indices for one field block.
 
@@ -161,6 +161,13 @@ def per_element_R_and_K(
     shares the same physical-frame shape functions
     ``ShapeFunctionsAtIP``. Multi-basis cases (Taylor-Hood Q2/Q1) will
     require per-block interpolant lookups in a future change.
+
+    ``xi_dummy`` and ``xi_prev_dummy`` are zero-filled placeholders.
+    The CLOSED_FORM evaluator path uses ``model.cauchy_closed_form``,
+    which is U-only — state args are unused, so passing zeros is
+    correct. When COUPLED mode lands, the per-IP local Newton will
+    consume xi (plasticity etc.); these args become load-bearing and
+    assembly will need to gather/scatter actual element-IP state.
     """
     num_blocks = len(residual_block_shapes)
     R_blocks = [
@@ -340,19 +347,22 @@ def assemble_global(
 ) -> tuple[scipy.sparse.coo_matrix, NDArray[np.floating]]:
     """Walk all element blocks and emit the global ``(K_coo, R)`` pair.
 
-    Nonlinear-FE convention: ``K = dR/dU`` is the tangent stiffness and
-    ``R(U) = R_int(U) - F_ext`` is the residual, with the body-force
-    contribution folded into ``R`` at the per-element level (no separate
-    ``F`` vector). The Newton driver in
+    ``K_coo`` is the global tangent ``dR/dU`` as a
+    ``scipy.sparse.coo_matrix`` of shape ``(n_dofs, n_dofs)``; ``R``
+    is the flat residual vector of length ``n_dofs``, dtype float64.
+    Nonlinear-FE convention: ``R(U) = R_int(U) - F_ext`` (body-force
+    contribution folded into ``R`` at the per-element level, no
+    separate ``F`` vector). The Newton driver in
     :func:`cmad.fem.nonlinear_solver.fe_newton_solve` solves
     ``K · dU = -R``; the linear ``K U = F`` form is the degenerate
     one-iter case for a U-linear residual.
 
-    Each block's per-element residual and tangent are computed by
-    :func:`assemble_element_block`; the global COO triplets are
-    concatenated and summed into a single sparse matrix on
-    ``coo_matrix`` construction (duplicates accumulate naturally on
-    ``.tocsr()``). ``R`` is the flat residual sum across blocks.
+    Implementation note: each block's per-element residual and tangent
+    are computed by :func:`assemble_element_block`, which returns
+    per-block ``(rows, cols, vals, R_block)`` triplet streams; this
+    function concatenates the streams across blocks and builds the COO
+    matrix once at the bottom (duplicate ``(row, col)`` entries
+    accumulate naturally on ``.tocsr()``).
     """
     n_dofs = fe_problem.dof_map.num_total_dofs
     rows_all: list[NDArray[np.intp]] = []
