@@ -81,6 +81,31 @@ def hex_quadrature(degree: int) -> QuadratureRule:
     return QuadratureRule(xi=xi_mesh, w=w_mesh)
 
 
+def quad_quadrature(degree: int) -> QuadratureRule:
+    """Gauss-Legendre tensor-product rule on the reference quad [-1,1]^2.
+
+    Exact for polynomials in (x,y) with each coordinate exponent
+    <= ``degree`` (per-direction exactness, not total-degree).
+    Internally chooses ``n = ceil((degree + 1) / 2)`` points per
+    direction, for a total of ``n ** 2`` integration points. Weights
+    sum to 4 (area of [-1,1]^2).
+
+    Raises :class:`ValueError` if ``degree < 1``.
+    """
+    if degree < 1:
+        raise ValueError(
+            f"quad_quadrature requires degree >= 1; got degree={degree}"
+        )
+    n = int(np.ceil((degree + 1) / 2))
+    xi_1d, w_1d = gauss_legendre_1d(n)
+    xi_mesh = np.stack(
+        np.meshgrid(xi_1d, xi_1d, indexing="ij"),
+        axis=-1,
+    ).reshape(-1, 2)
+    w_mesh = (w_1d[:, None] * w_1d[None, :]).reshape(-1)
+    return QuadratureRule(xi=xi_mesh, w=w_mesh)
+
+
 # ---- Keast tet tables (degrees 1..6) ---------------------------------------
 #
 # Transcribed verbatim from add_fem's

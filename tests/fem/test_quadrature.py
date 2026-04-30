@@ -1,16 +1,18 @@
-"""Monomial-exactness tests for 3D Gauss-Legendre quadrature rules.
+"""Monomial-exactness tests for Gauss-Legendre quadrature rules.
 
-Hex rules (``hex_quadrature(degree)``) are Gauss-Legendre tensor products
-with per-coordinate exactness: every monomial ``x^a y^b z^c`` with
-``max(a,b,c) <= degree`` is integrated exactly.
+Hex rules (``hex_quadrature(degree)``) and quad rules
+(``quad_quadrature(degree)``) are Gauss-Legendre tensor products with
+per-coordinate exactness: every monomial ``x^a y^b (z^c)`` with
+``max(a, b, ...) <= degree`` is integrated exactly.
 
 Tet rules (``tet_quadrature(degree)``) are Keast tables with total-degree
 exactness: every monomial ``x^a y^b z^c`` with ``a + b + c <= degree`` is
 integrated exactly on the unit simplex.
 
 The analytical integrals are in closed form:
-- Hex on [-1, 1]^3: the coordinatewise factorization
-  ``integral x^n dx over [-1, 1] = 0 if n odd else 2 / (n + 1)``.
+- Hex on [-1, 1]^3 / quad on [-1, 1]^2: the coordinatewise
+  factorization ``integral x^n dx over [-1, 1] = 0 if n odd else
+  2 / (n + 1)``.
 - Tet on the unit simplex: the Dirichlet integral
   ``integral x^a y^b z^c dV = a! b! c! / (a + b + c + 3)!``.
 """
@@ -19,7 +21,7 @@ import unittest
 
 import numpy as np
 
-from cmad.fem.quadrature import hex_quadrature, tet_quadrature
+from cmad.fem.quadrature import hex_quadrature, quad_quadrature, tet_quadrature
 
 
 def _hex_mono_int(n: int) -> float:
@@ -58,6 +60,25 @@ class TestHexQuadrature(unittest.TestCase):
                         with self.subTest(degree=degree, mono=(a, b, c)):
                             self.assertAlmostEqual(
                                 numerical, analytical, places=11)
+
+
+class TestQuadQuadrature(unittest.TestCase):
+    _degrees = tuple(range(1, 8))
+
+    def test_monomial_exactness(self):
+        for degree in self._degrees:
+            rule = quad_quadrature(degree)
+            for a in range(degree + 1):
+                for b in range(degree + 1):
+                    analytical = _hex_mono_int(a) * _hex_mono_int(b)
+                    numerical = float(np.sum(
+                        rule.w
+                        * rule.xi[:, 0]**a
+                        * rule.xi[:, 1]**b
+                    ))
+                    with self.subTest(degree=degree, mono=(a, b)):
+                        self.assertAlmostEqual(
+                            numerical, analytical, places=11)
 
 
 class TestTetQuadrature(unittest.TestCase):
