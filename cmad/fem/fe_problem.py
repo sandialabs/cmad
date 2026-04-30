@@ -1,11 +1,11 @@
 """FEProblem + FEState dataclasses for the FE forward problem."""
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from numpy.typing import NDArray
 
-from cmad.fem.dof import GlobalDofMap
+from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.mesh import Mesh
 from cmad.fem.quadrature import QuadratureRule, hex_quadrature, tet_quadrature
@@ -41,6 +41,15 @@ class FEProblem:
     problem). Each callable returns a vector of shape
     ``(num_eqs[block_idx],)``. Surface tractions / Neumann BCs are
     not handled here — see future per-face evaluator design.
+
+    ``field_layouts_per_block`` and ``field_idx_per_block`` resolve
+    the ``gr.var_names[r]`` ↔ ``dof_map.field_layouts`` dispatch once
+    at construction (parallel to ``gr.var_names``, length
+    ``gr.num_residuals``). Consumers — assembly, the future adjoint
+    builder — read directly from these instead of rebuilding the
+    name → layout dict on every call. Population happens in
+    :meth:`__post_init__` and raises ``ValueError`` on a missing or
+    unmatched ``var_name``.
     """
     mesh: Mesh
     dof_map: GlobalDofMap
@@ -53,6 +62,37 @@ class FEProblem:
         NDArray[np.floating] | JaxArray,
     ]] | None
     assembly_quadrature: dict[ElementFamily, QuadratureRule]
+
+    field_layouts_per_block: list[GlobalFieldLayout] = field(
+        init=False, default_factory=list,
+    )
+    field_idx_per_block: list[int] = field(
+        init=False, default_factory=list,
+    )
+
+    def __post_init__(self) -> None:
+        name_to_idx = {
+            fl.name: i for i, fl in enumerate(self.dof_map.field_layouts)
+        }
+        layouts: list[GlobalFieldLayout] = []
+        idxs: list[int] = []
+        for r in range(self.gr.num_residuals):
+            var_name = self.gr.var_names[r]
+            if var_name is None:
+                raise ValueError(
+                    f"GR var_names[{r}] is None; fully-initialized GRs "
+                    "must populate every var_names entry"
+                )
+            if var_name not in name_to_idx:
+                raise ValueError(
+                    f"GR var_names[{r}]='{var_name}' has no matching "
+                    f"GlobalFieldLayout (known: {sorted(name_to_idx)})"
+                )
+            idx = name_to_idx[var_name]
+            idxs.append(idx)
+            layouts.append(self.dof_map.field_layouts[idx])
+        object.__setattr__(self, "field_layouts_per_block", layouts)
+        object.__setattr__(self, "field_idx_per_block", idxs)
 
     @property
     def ndims(self) -> int:

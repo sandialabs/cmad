@@ -321,24 +321,13 @@ def assemble_element_block(
     )
     geom_interpolant_fn = mesh.geometric_finite_element.interpolant_fn
 
-    name_to_field_idx = {
-        layout.name: i for i, layout in enumerate(dof_map.field_layouts)
-    }
-    field_idx_per_block: list[int] = []
+    field_idx_per_block = fe_problem.field_idx_per_block
     per_block_interpolant_fns: list[
         Callable[[JaxArray], ShapeFunctionsAtIP]
-    ] = []
-    for r in range(num_blocks):
-        var_name = gr.var_names[r]
-        assert var_name is not None, (
-            f"GR var_names[{r}] is None; fully-initialized GRs must "
-            f"populate every var_names entry"
-        )
-        field_idx = name_to_field_idx[var_name]
-        field_idx_per_block.append(field_idx)
-        per_block_interpolant_fns.append(
-            dof_map.field_layouts[field_idx].finite_element.interpolant_fn
-        )
+    ] = [
+        fl.finite_element.interpolant_fn
+        for fl in fe_problem.field_layouts_per_block
+    ]
 
     xi_dummy: StateList = [jnp.zeros_like(b) for b in model._init_xi]
     xi_prev_dummy: StateList = [jnp.zeros_like(b) for b in model._init_xi]
