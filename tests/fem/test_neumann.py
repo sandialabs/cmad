@@ -5,15 +5,20 @@ scatter. Resolution validates field/sideset names and the VERTEX-only
 FE constraint with exactly 1 DOF per vertex. The evaluator integrates
 ``-∫_side N · t̄ dA`` per element with degree-2 side quadrature and
 the scatter distributes per-element side residuals into the global
-``R`` via the field's eq formula.
+``R`` via the field's eq formula. The threading tests cover the
+``build_fe_problem`` ↔ ``FEProblem`` ↔ ``assemble_global`` path so
+NBCs reach the global residual through the public builder.
 """
 import unittest
 
 import numpy as np
+from jax.tree_util import tree_map
 
+from cmad.fem.assembly import assemble_global
 from cmad.fem.bcs import NeumannBC
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.element_family import ElementFamily
+from cmad.fem.fe_problem import build_fe_problem
 from cmad.fem.finite_element import (
     P1_TET,
     Q1_HEX,
@@ -27,6 +32,10 @@ from cmad.fem.neumann import (
     resolve_neumann_bcs,
 )
 from cmad.fem.quadrature import quad_quadrature, tri_quadrature
+from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
+from cmad.models.deformation_types import DefType
+from cmad.models.elastic import Elastic
+from cmad.parameters.parameters import Parameters
 
 _SIDE_QUAD = {
     ElementFamily.HEX_LINEAR: quad_quadrature(degree=2),
@@ -182,10 +191,9 @@ class TestAssembleSideNeumann(unittest.TestCase):
         mesh, dm = _build_hex_mesh_and_dofmap()
         n_dofs = dm.num_total_dofs
         R = np.arange(n_dofs, dtype=np.float64)
-        R_out = assemble_side_neumann(
-            R, mesh, dm, [], _SIDE_QUAD, 0.0,
-        )
-        np.testing.assert_array_equal(R_out, R)
+        R_orig = R.copy()
+        assemble_side_neumann(R, mesh, dm, [], _SIDE_QUAD, 0.0)
+        np.testing.assert_array_equal(R, R_orig)
 
     def test_uniform_traction_zmax_unit_hex(self):
         # +z face of the unit cube has area 1; for uniform traction
@@ -202,9 +210,7 @@ class TestAssembleSideNeumann(unittest.TestCase):
         resolved = resolve_neumann_bcs(mesh, dm, [bc])
         n_dofs = dm.num_total_dofs
         R = np.zeros(n_dofs, dtype=np.float64)
-        R = assemble_side_neumann(
-            R, mesh, dm, resolved, _SIDE_QUAD, 0.0,
-        )
+        assemble_side_neumann(R, mesh, dm, resolved, _SIDE_QUAD, 0.0)
         local_zmax = np.array([4, 5, 6, 7])
         global_zmax = mesh.connectivity[0, local_zmax]
         nonzero_eqs = set()
@@ -238,9 +244,7 @@ class TestAssembleSideNeumann(unittest.TestCase):
         resolved = resolve_neumann_bcs(mesh, dm, [bc])
         n_dofs = dm.num_total_dofs
         R = np.zeros(n_dofs, dtype=np.float64)
-        R = assemble_side_neumann(
-            R, mesh, dm, resolved, _SIDE_QUAD, 0.0,
-        )
+        assemble_side_neumann(R, mesh, dm, resolved, _SIDE_QUAD, 0.0)
         expected = -np.sqrt(3.0) / 6.0
         for node in (1, 2, 3):
             np.testing.assert_allclose(
@@ -274,9 +278,7 @@ class TestAssembleSideNeumann(unittest.TestCase):
         resolved = resolve_neumann_bcs(mesh, dm, [bc])
         n_dofs = dm.num_total_dofs
         R = np.zeros(n_dofs, dtype=np.float64)
-        R = assemble_side_neumann(
-            R, mesh, dm, resolved, _SIDE_QUAD, 0.0,
-        )
+        assemble_side_neumann(R, mesh, dm, resolved, _SIDE_QUAD, 0.0)
         local_zmax = np.array([4, 5, 6, 7])
         e0 = mesh.connectivity[0, local_zmax]
         e1 = mesh.connectivity[1, local_zmax]
@@ -297,6 +299,76 @@ class TestAssembleSideNeumann(unittest.TestCase):
         for g in shared:
             np.testing.assert_allclose(
                 R[g * 3 + 2], -p / 2.0, atol=1e-12,
+            )
+
+
+def _make_elastic_parameters() -> Parameters:
+    values: dict = {"elastic": {"kappa": 100.0, "mu": 50.0}}
+    active_flags = tree_map(lambda _: True, values)
+    transforms = tree_map(lambda _: None, values)
+    return Parameters(values, active_flags, transforms)
+
+
+def _build_unit_hex_fe_problem(
+        neumann_bcs: tuple[NeumannBC, ...] = (),
+):
+    mesh = StructuredHexMesh((1.0, 1.0, 1.0), (1, 1, 1))
+    layout = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
+    dof_map = build_dof_map(
+        mesh, [layout], [], components_by_field={"u": 3},
+    )
+    gr = SmallDispEquilibrium(ndims=3)
+    elastic = Elastic(_make_elastic_parameters(), def_type=DefType.FULL_3D)
+    return build_fe_problem(
+        mesh=mesh,
+        dof_map=dof_map,
+        gr=gr,
+        models_by_block={"all": elastic},
+        neumann_bcs=neumann_bcs,
+    )
+
+
+class TestNeumannBCThreading(unittest.TestCase):
+
+    def test_build_fe_problem_threads_neumann_bcs(self):
+        bc = NeumannBC(
+            sideset_names=["zmax_sides"],
+            field_name="u",
+            values=[0.0, 0.0, 1.5],
+        )
+        fe_problem = _build_unit_hex_fe_problem(neumann_bcs=(bc,))
+        self.assertEqual(len(fe_problem.resolved_neumann_bcs), 1)
+        resolved = fe_problem.resolved_neumann_bcs[0]
+        self.assertEqual(resolved.field_idx, 0)
+        self.assertEqual(resolved.num_components, 3)
+        self.assertIn(
+            (ElementFamily.HEX_LINEAR, 1),
+            resolved.elem_ids_by_side,
+        )
+        self.assertIn(
+            ElementFamily.HEX_LINEAR, fe_problem.side_quadrature,
+        )
+
+    def test_assemble_global_includes_neumann_contribution(self):
+        # At U=0 the linear-elastic volume contribution is zero, so any
+        # nonzero R entry must come from the Neumann scatter inside
+        # assemble_global. Pin against the unit-hex zmax expectation:
+        # -p/4 at each of the four +z corner nodes' z-DOFs.
+        p = 2.5
+        bc = NeumannBC(
+            sideset_names=["zmax_sides"],
+            field_name="u",
+            values=[0.0, 0.0, p],
+        )
+        fe_problem = _build_unit_hex_fe_problem(neumann_bcs=(bc,))
+        n_dofs = fe_problem.dof_map.num_total_dofs
+        U_zero = np.zeros(n_dofs, dtype=np.float64)
+        _, R = assemble_global(fe_problem, U_zero, U_zero, t=0.0)
+        local_zmax = np.array([4, 5, 6, 7])
+        global_zmax = fe_problem.mesh.connectivity[0, local_zmax]
+        for g in global_zmax:
+            np.testing.assert_allclose(
+                R[g * 3 + 2], -p / 4.0, atol=1e-12,
             )
 
 

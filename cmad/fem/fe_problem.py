@@ -1,14 +1,22 @@
 """FEProblem + FEState dataclasses for the FE forward problem."""
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
 from numpy.typing import NDArray
 
+from cmad.fem.bcs import NeumannBC
 from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.mesh import Mesh
-from cmad.fem.quadrature import QuadratureRule, hex_quadrature, tet_quadrature
+from cmad.fem.neumann import ResolvedNeumannBC, resolve_neumann_bcs
+from cmad.fem.quadrature import (
+    QuadratureRule,
+    hex_quadrature,
+    quad_quadrature,
+    tet_quadrature,
+    tri_quadrature,
+)
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.model import Model
@@ -17,6 +25,11 @@ from cmad.typing import GREvaluators, JaxArray
 _DEFAULT_ASSEMBLY_QUADRATURE: dict[ElementFamily, QuadratureRule] = {
     ElementFamily.HEX_LINEAR: hex_quadrature(degree=2),
     ElementFamily.TET_LINEAR: tet_quadrature(degree=1),
+}
+
+_DEFAULT_SIDE_QUADRATURE: dict[ElementFamily, QuadratureRule] = {
+    ElementFamily.HEX_LINEAR: quad_quadrature(degree=2),
+    ElementFamily.TET_LINEAR: tri_quadrature(degree=2),
 }
 
 
@@ -39,13 +52,22 @@ class FEProblem:
     block index means no forcing on that block (e.g. the pressure
     residual of a mixed u-p method, or a divergence-free thermal
     problem). Each callable returns a vector of shape
-    ``(num_eqs[block_idx],)``. Surface tractions / Neumann BCs are
-    not handled here — see future per-face evaluator design.
+    ``(num_eqs[block_idx],)``.
+
+    ``neumann_bcs`` is the list of natural-BC (surface-flux)
+    declarations applied via the per-side evaluator in
+    :mod:`cmad.fem.neumann`. ``side_quadrature`` is the per-family
+    quadrature rule consumed by that evaluator (defaults
+    degree-2 quad / tri for hex / tet faces). NBCs resolve at
+    construction into ``resolved_neumann_bcs`` — per-NBC
+    ``(family, local_side_id) -> elem_ids`` groups plus
+    materialized values — which the surface-scatter step in
+    :func:`cmad.fem.assembly.assemble_global` consumes per call.
 
     ``field_layouts_per_block`` and ``field_idx_per_block`` resolve
     the ``gr.var_names[r]`` ↔ ``dof_map.field_layouts`` dispatch once
     at construction (parallel to ``gr.var_names``, length
-    ``gr.num_residuals``). Consumers — assembly, the future adjoint
+    ``gr.num_residuals``). Consumers — assembly, the adjoint
     builder — read directly from these instead of rebuilding the
     name → layout dict on every call. Population happens in
     :meth:`__post_init__` and raises ``ValueError`` on a missing or
@@ -62,11 +84,16 @@ class FEProblem:
         NDArray[np.floating] | JaxArray,
     ]] | None
     assembly_quadrature: dict[ElementFamily, QuadratureRule]
+    neumann_bcs: Sequence[NeumannBC]
+    side_quadrature: dict[ElementFamily, QuadratureRule]
 
     field_layouts_per_block: list[GlobalFieldLayout] = field(
         init=False, default_factory=list,
     )
     field_idx_per_block: list[int] = field(
+        init=False, default_factory=list,
+    )
+    resolved_neumann_bcs: list[ResolvedNeumannBC] = field(
         init=False, default_factory=list,
     )
 
@@ -102,6 +129,11 @@ class FEProblem:
             layouts.append(self.dof_map.field_layouts[idx])
         object.__setattr__(self, "field_layouts_per_block", layouts)
         object.__setattr__(self, "field_idx_per_block", idxs)
+
+        resolved = resolve_neumann_bcs(
+            self.mesh, self.dof_map, self.neumann_bcs,
+        )
+        object.__setattr__(self, "resolved_neumann_bcs", resolved)
 
     @property
     def ndims(self) -> int:
@@ -223,15 +255,19 @@ def build_fe_problem(
             NDArray[np.floating] | JaxArray,
         ]] | None = None,
         assembly_quadrature: dict[ElementFamily, QuadratureRule] | None = None,
+        neumann_bcs: Sequence[NeumannBC] = (),
+        side_quadrature: dict[ElementFamily, QuadratureRule] | None = None,
 ) -> FEProblem:
     """Validate FE inputs and build an immutable :class:`FEProblem`.
 
     Element-block names in ``mesh.element_blocks`` must match the keys
     in ``models_by_block`` and ``modes_by_block`` (when supplied); the
     builder raises ``ValueError`` on mismatch. ``modes_by_block``
-    defaults to all-``CLOSED_FORM``. ``assembly_quadrature`` and
-    ``interpolant_fn`` default to a hex / tet table using degree-2
-    hex Gauss-Legendre and 1-pt tet rules.
+    defaults to all-``CLOSED_FORM``. ``assembly_quadrature``
+    defaults to a per-family table with degree-2 hex Gauss-Legendre
+    and 1-pt tet rules. ``side_quadrature`` defaults to degree-2
+    quad / tri rules for hex / tet face integration consumed by
+    :mod:`cmad.fem.neumann`.
 
     Each (block, model, mode) triple is bound via
     ``gr.for_model(model, mode=mode)`` at construction so the
@@ -244,6 +280,12 @@ def build_fe_problem(
     eagerly rather than at jit trace time. Probes that fail to evaluate
     outside a jit context are silently skipped — the trace-time error
     will still catch the shape mismatch.
+
+    ``neumann_bcs`` is forwarded to :func:`FEProblem` for resolution
+    in :meth:`__post_init__`; resolution failures (unknown field /
+    sideset, non-VERTEX FE, sequence-values length mismatch) raise
+    eagerly with diagnostic messages from
+    :func:`cmad.fem.neumann.resolve_neumann_bcs`.
     """
     if modes_by_block is None:
         modes_by_block = {
@@ -251,6 +293,8 @@ def build_fe_problem(
         }
     if assembly_quadrature is None:
         assembly_quadrature = dict(_DEFAULT_ASSEMBLY_QUADRATURE)
+    if side_quadrature is None:
+        side_quadrature = dict(_DEFAULT_SIDE_QUADRATURE)
 
     block_names_mesh = set(mesh.element_blocks.keys())
     block_names_models = set(models_by_block.keys())
@@ -301,4 +345,6 @@ def build_fe_problem(
         evaluators_by_block=evaluators_by_block,
         forcing_fns_by_block_idx=forcing_fns_by_block_idx,
         assembly_quadrature=assembly_quadrature,
+        neumann_bcs=neumann_bcs,
+        side_quadrature=side_quadrature,
     )

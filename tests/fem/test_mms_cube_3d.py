@@ -48,21 +48,24 @@ from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
 from cmad.parameters.parameters import Parameters
-from cmad.typing import JaxArray
+from cmad.typing import JaxArray, Params
 
 _KAPPA = 100.0
 _MU = 50.0
 
 
 def _make_parameters() -> Parameters:
-    values = {"elastic": {"kappa": _KAPPA, "mu": _MU}}
+    values: Params = {"elastic": {"kappa": _KAPPA, "mu": _MU}}
     active_flags = tree_map(lambda _: True, values)
     transforms = tree_map(lambda _: None, values)
     return Parameters(values, active_flags, transforms)
 
 
 def _build_mms_callables() -> tuple[
-    Callable[[JaxArray, float], JaxArray],
+    Callable[
+        [NDArray[np.floating] | JaxArray, float],
+        NDArray[np.floating] | JaxArray,
+    ],
     Callable[[NDArray[np.floating]], NDArray[np.floating]],
     Callable[[NDArray[np.floating]], NDArray[np.floating]],
 ]:
@@ -94,7 +97,9 @@ def _build_mms_callables() -> tuple[
     u_callable = lambdify((x, y, z), u_sym, modules="numpy")
     grad_u_callable = lambdify((x, y, z), grad_u_sym, modules="numpy")
 
-    def body_force_fn(coords: JaxArray, _t: float) -> JaxArray:
+    def body_force_fn(
+            coords: NDArray[np.floating] | JaxArray, _t: float,
+    ) -> NDArray[np.floating] | JaxArray:
         return jnp.asarray(
             b_callable(coords[0], coords[1], coords[2]),
         ).reshape(-1)
@@ -114,7 +119,10 @@ def _build_mms_callables() -> tuple[
 
 def _build_fe_problem(
         mesh: Mesh,
-        body_force_fn: Callable[[JaxArray, float], JaxArray],
+        body_force_fn: Callable[
+            [NDArray[np.floating] | JaxArray, float],
+            NDArray[np.floating] | JaxArray,
+        ],
 ) -> FEProblem:
     if mesh.element_family == ElementFamily.HEX_LINEAR:
         fe = Q1_HEX
@@ -221,7 +229,10 @@ def _l2_h1_errors(
 
 class TestMmsCube3D(unittest.TestCase):
 
-    body_force_fn: Callable[[JaxArray, float], JaxArray]
+    body_force_fn: Callable[
+        [NDArray[np.floating] | JaxArray, float],
+        NDArray[np.floating] | JaxArray,
+    ]
     u_exact: Callable[[NDArray[np.floating]], NDArray[np.floating]]
     grad_u_exact: Callable[[NDArray[np.floating]], NDArray[np.floating]]
 

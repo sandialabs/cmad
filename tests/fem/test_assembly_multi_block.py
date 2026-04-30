@@ -34,7 +34,7 @@ from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.finite_element import P1_TET
 from cmad.fem.mesh import Mesh
-from cmad.fem.quadrature import tet_quadrature
+from cmad.fem.quadrature import tet_quadrature, tri_quadrature
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.model import Model
@@ -135,6 +135,10 @@ def _build_fe_problem() -> FEProblem:
         assembly_quadrature={
             ElementFamily.TET_LINEAR: tet_quadrature(degree=1),
         },
+        neumann_bcs=(),
+        side_quadrature={
+            ElementFamily.TET_LINEAR: tri_quadrature(degree=2),
+        },
     )
 
 
@@ -151,16 +155,20 @@ class TestAssemblyMultiBlock(unittest.TestCase):
         self.n_dofs_p = 4
 
     def test_R_block_scatter_lands_in_correct_field_eqs(self) -> None:
-        _, _, _, R = assemble_element_block(
-            self.fe_problem, "all", self.U, self.U_prev, t=0.0,
+        n_dofs = self.fe_problem.dof_map.num_total_dofs
+        R = np.zeros(n_dofs, dtype=np.float64)
+        assemble_element_block(
+            R, self.fe_problem, "all", self.U, self.U_prev, t=0.0,
         )
         self.assertEqual(R.shape, (self.n_dofs_u + self.n_dofs_p,))
         np.testing.assert_allclose(R[:self.n_dofs_u], _R_U_PER_IP)
         np.testing.assert_allclose(R[self.n_dofs_u:], _R_P_PER_IP)
 
     def test_K_scatter_populates_all_four_block_pairs(self) -> None:
-        rows, cols, vals, _ = assemble_element_block(
-            self.fe_problem, "all", self.U, self.U_prev, t=0.0,
+        n_dofs = self.fe_problem.dof_map.num_total_dofs
+        R = np.zeros(n_dofs, dtype=np.float64)
+        rows, cols, vals = assemble_element_block(
+            R, self.fe_problem, "all", self.U, self.U_prev, t=0.0,
         )
         u_rows = rows < self.n_dofs_u
         u_cols = cols < self.n_dofs_u
@@ -184,8 +192,10 @@ class TestAssemblyMultiBlock(unittest.TestCase):
 
     def test_K_off_diagonal_uses_correct_row_col_eq_ranges(self) -> None:
         """up entries: u-eq rows, p-eq cols. pu entries: p-eq rows, u-eq cols."""
-        rows, cols, _, _ = assemble_element_block(
-            self.fe_problem, "all", self.U, self.U_prev, t=0.0,
+        n_dofs = self.fe_problem.dof_map.num_total_dofs
+        R = np.zeros(n_dofs, dtype=np.float64)
+        rows, cols, _ = assemble_element_block(
+            R, self.fe_problem, "all", self.U, self.U_prev, t=0.0,
         )
         u_rows = rows < self.n_dofs_u
         u_cols = cols < self.n_dofs_u

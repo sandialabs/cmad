@@ -269,7 +269,7 @@ class GlobalDofMap:
         ]
 
         values = np.empty(n_prescribed, dtype=np.float64)
-        for rbc, vals in zip(self.resolved_bcs, bc_vals):
+        for rbc, vals in zip(self.resolved_bcs, bc_vals, strict=True):
             positions = np.searchsorted(
                 self.prescribed_indices, rbc.eq_indices,
             )
@@ -529,13 +529,15 @@ def build_dof_map(
         eq_chunks.append(eq_indices_flat)
 
     if eq_chunks:
-        sizes = np.asarray([c.size for c in eq_chunks], dtype=np.intp)
+        chunk_sizes = np.asarray(
+            [c.size for c in eq_chunks], dtype=np.intp,
+        )
         all_eqs = np.concatenate(eq_chunks)
         all_bc_idx = np.repeat(
-            np.arange(len(eq_chunks), dtype=np.intp), sizes,
+            np.arange(len(eq_chunks), dtype=np.intp), chunk_sizes,
         )
         all_bc_eq_idx = np.concatenate(
-            [np.arange(s, dtype=np.intp) for s in sizes]
+            [np.arange(s, dtype=np.intp) for s in chunk_sizes]
         )
         order = np.argsort(all_eqs, kind="stable")
         sorted_bc_idx = all_bc_idx[order]

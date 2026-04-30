@@ -10,6 +10,7 @@ from numpy.typing import NDArray
 from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.finite_element import EntityType
+from cmad.fem.neumann import assemble_side_neumann
 from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.typing import JaxArray, Params, RAndDRDUEvaluator, StateList
 
@@ -269,6 +270,7 @@ def per_element_R_and_K(
 
 
 def assemble_element_block(
+        R_global: NDArray[np.floating],
         fe_problem: FEProblem,
         block_name: str,
         U_global: NDArray[np.floating] | JaxArray,
@@ -278,15 +280,13 @@ def assemble_element_block(
     NDArray[np.intp],
     NDArray[np.intp],
     NDArray[np.floating],
-    NDArray[np.floating],
 ]:
-    """Assemble one element block's COO triplets + R contribution.
+    """Assemble one element block's COO triplets and scatter R in place.
 
     Vmaps :func:`per_element_R_and_K` over the block's elements,
-    brings the per-element results back to numpy, and emits
-    ``(rows, cols, vals)`` ready for the global COO construction
-    plus a flat ``R_global_block`` of shape
-    ``(dof_map.num_total_dofs,)`` already scattered via ``np.add.at``.
+    brings the per-element results back to numpy, scatters the per-
+    element residuals into ``R_global`` in place via ``np.add.at``,
+    and returns ``(rows, cols, vals)`` for the global COO build.
 
     Multi-residual-block GRs scatter via nested loops over
     ``(r, s)`` residual-block / U-block pairs; each pair scatters the
@@ -356,12 +356,11 @@ def assemble_element_block(
 
     n_elems = connectivity_block.shape[0]
 
-    R_global_block = np.zeros(dof_map.num_total_dofs, dtype=np.float64)
     for r in range(num_blocks):
         R_arr = np.asarray(R_per_elem_blocks[r])
         R_flat = R_arr.reshape(n_elems, -1)
         eq_r = eq_indices_per_block[r]
-        np.add.at(R_global_block, eq_r.ravel(), R_flat.ravel())
+        np.add.at(R_global, eq_r.ravel(), R_flat.ravel())
 
     rows_all: list[NDArray[np.intp]] = []
     cols_all: list[NDArray[np.intp]] = []
@@ -390,7 +389,6 @@ def assemble_element_block(
         np.concatenate(rows_all),
         np.concatenate(cols_all),
         np.concatenate(vals_all),
-        R_global_block,
     )
 
 
@@ -406,18 +404,26 @@ def assemble_global(
     ``scipy.sparse.coo_matrix`` of shape ``(n_dofs, n_dofs)``; ``R``
     is the flat residual vector of length ``n_dofs``, dtype float64.
     Nonlinear-FE convention: ``R(U) = R_int(U) - F_ext`` (body-force
-    contribution folded into ``R`` at the per-element level, no
-    separate ``F`` vector). The Newton driver in
+    and surface-flux contributions folded into ``R``, no separate
+    ``F`` vector). Body forces accumulate at the per-element level
+    inside :func:`per_element_R_and_K`; surface fluxes accumulate
+    via :func:`cmad.fem.neumann.assemble_side_neumann` after the
+    volume walk. The Newton driver in
     :func:`cmad.fem.nonlinear_solver.fe_newton_solve` solves
     ``K · dU = -R``; the linear ``K U = F`` form is the degenerate
-    one-iter case for a U-linear residual.
+    one-iter case for a U-linear residual. Explicit ``(coords, t)``
+    Neumann fluxes are U-independent, so ``K`` gets no surface
+    contribution.
 
-    Implementation note: each block's per-element residual and tangent
-    are computed by :func:`assemble_element_block`, which returns
-    per-block ``(rows, cols, vals, R_block)`` triplet streams; this
-    function concatenates the streams across blocks and builds the COO
-    matrix once at the bottom (duplicate ``(row, col)`` entries
-    accumulate naturally on ``.tocsr()``).
+    Implementation note: each block's per-element residual scatters
+    into ``R_global`` in place via :func:`assemble_element_block`,
+    which also returns the block's ``(rows, cols, vals)`` COO stream;
+    this function concatenates the streams across blocks and builds
+    the COO matrix once at the bottom (duplicate ``(row, col)``
+    entries accumulate naturally on ``.tocsr()``). Surface fluxes
+    likewise scatter into ``R_global`` in place via
+    :func:`cmad.fem.neumann.assemble_side_neumann` after the volume
+    walk.
     """
     n_dofs = fe_problem.dof_map.num_total_dofs
     rows_all: list[NDArray[np.intp]] = []
@@ -426,13 +432,22 @@ def assemble_global(
     R_global = np.zeros(n_dofs, dtype=np.float64)
 
     for block_name in fe_problem.evaluators_by_block:
-        rows, cols, vals, R_block = assemble_element_block(
-            fe_problem, block_name, U_global, U_prev_global, t,
+        rows, cols, vals = assemble_element_block(
+            R_global, fe_problem, block_name,
+            U_global, U_prev_global, t,
         )
         rows_all.append(rows)
         cols_all.append(cols)
         vals_all.append(vals)
-        R_global += R_block
+
+    assemble_side_neumann(
+        R_global,
+        fe_problem.mesh,
+        fe_problem.dof_map,
+        fe_problem.resolved_neumann_bcs,
+        fe_problem.side_quadrature,
+        t,
+    )
 
     K_coo = scipy.sparse.coo_matrix(
         (np.concatenate(vals_all),

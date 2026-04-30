@@ -22,8 +22,8 @@ residual at the field's basis fns on the named sides. The pipeline:
 3. :func:`assemble_side_neumann` — outer driver: iterates resolved
    NBCs and ``(family, local_side_id)`` groups, vmaps
    :func:`per_side_neumann_R` over the group's element ids, and
-   scatters per-element side residuals into the global ``R`` via
-   the field's eq formula. Returns a fresh ndarray.
+   scatters per-element side residuals into the caller's ``R_global``
+   in place via the field's eq formula.
 
 Sign convention. ``R -= ∫_∂Ω N · t̄ dA`` follows the existing body-
 force scatter at :func:`cmad.fem.assembly.per_element_R_and_K`,
@@ -268,29 +268,25 @@ def assemble_side_neumann(
         resolved_neumann_bcs: Sequence[ResolvedNeumannBC],
         side_quadrature: dict[ElementFamily, QuadratureRule],
         t: float,
-) -> NDArray[np.floating]:
-    """Add Neumann surface contributions into the global residual.
+) -> None:
+    """Scatter Neumann surface contributions into ``R_global`` in place.
 
     Iterates each resolved NBC and its ``(family, local_side_id)``
     groups, vmaps :func:`per_side_neumann_R` over the group's
     element ids, and scatters per-element side residuals into
     ``R_global`` via the field's eq formula
     ``eq = block_offset + basis_fn * num_components + component``.
-    K gets no contribution.
-
-    Returns a fresh ndarray (does not mutate the input). When
-    ``resolved_neumann_bcs`` is empty, returns the input unchanged
-    as a no-op.
+    K gets no contribution. ``R_global`` is mutated in place via
+    ``np.add.at``; no-op when ``resolved_neumann_bcs`` is empty.
     """
     if not resolved_neumann_bcs:
-        return R_global
+        return
     if mesh.geometric_finite_element is None:
         raise ValueError(
             "Mesh.geometric_finite_element is required for "
             "Neumann surface assembly; mesh is malformed."
         )
     geom_interpolant_fn = mesh.geometric_finite_element.interpolant_fn
-    R_global_out = np.asarray(R_global, dtype=np.float64).copy()
 
     for nbc in resolved_neumann_bcs:
         fe = nbc.finite_element
@@ -356,9 +352,7 @@ def assemble_side_neumann(
 
             R_arr = np.asarray(R_per_elem)
             R_flat = R_arr.reshape(n_elems, -1)
-            np.add.at(R_global_out, eq_flat.ravel(), R_flat.ravel())
-
-    return R_global_out
+            np.add.at(R_global, eq_flat.ravel(), R_flat.ravel())
 
 
 def _values_fn_for(
