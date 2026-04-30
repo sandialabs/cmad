@@ -7,8 +7,9 @@ import scipy.sparse
 from jax import vmap
 from numpy.typing import NDArray
 
-from cmad.fem.dof import GlobalDofMap
+from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
 from cmad.fem.fe_problem import FEProblem
+from cmad.fem.finite_element import EntityType
 from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.typing import JaxArray, Params, RAndDRDUEvaluator, StateList
 
@@ -38,6 +39,48 @@ def iso_jac_at_ip(
     return grad_N_phys, iso_jac_det, iso_jac
 
 
+def _element_basis_fns(
+        layout: GlobalFieldLayout,
+        connectivity_block: NDArray[np.intp],
+) -> NDArray[np.intp]:
+    """Per-element basis-function global indices for a field.
+
+    For VERTEX-only DOF placement (P1 / Q1 and other vertex-anchored
+    fields), returns connectivity-derived indices:
+    ``basis_fn[elem, slot] = connectivity[elem, slot //
+    dofs_per_vertex] * dofs_per_vertex + (slot % dofs_per_vertex)``.
+
+    Edge / face / cell DOF placement is not yet supported in this
+    assembly path; fields with non-VERTEX DOFs raise
+    ``NotImplementedError``. Mixed-basis support layers in alongside
+    sideset-keyed BCs.
+    """
+    fe = layout.finite_element
+    non_vertex = [
+        et for et, count in fe.dofs_per_entity.items()
+        if et != EntityType.VERTEX and count > 0
+    ]
+    if non_vertex:
+        names = [et.name for et in non_vertex]
+        raise NotImplementedError(
+            f"GlobalFieldLayout '{layout.name}' has DOFs on {names} "
+            "entities; assembly currently supports VERTEX DOFs only."
+        )
+    dofs_per_vertex = fe.dofs_per_entity.get(EntityType.VERTEX, 0)
+    if dofs_per_vertex == 0:
+        raise NotImplementedError(
+            f"GlobalFieldLayout '{layout.name}' has no VERTEX DOFs; "
+            "all-non-vertex DOF gather is not supported."
+        )
+    n_elems, n_vertices_per_elem = connectivity_block.shape
+    m_arr = np.arange(dofs_per_vertex)
+    bf_per_elem = (
+        connectivity_block.astype(np.intp)[:, :, None] * dofs_per_vertex
+        + m_arr[None, None, :]
+    ).reshape(n_elems, n_vertices_per_elem * dofs_per_vertex)
+    return bf_per_elem
+
+
 def _gather_element_U(
         U_global: NDArray[np.floating] | JaxArray,
         dof_map: GlobalDofMap,
@@ -45,29 +88,19 @@ def _gather_element_U(
 ) -> list[JaxArray]:
     """Gather per-element basis-coefficient arrays from the flat global U.
 
-    Returns one array per field in ``dof_map.field_layouts``; entry
-    ``f`` has shape ``(n_elems, num_basis_fns_per_elem,
-    num_dofs_per_basis_fn[f])`` ready for ``vmap`` over the
-    leading element axis. Each gather honors the layout's block
-    offset, per-basis-function dof count, and any explicit
-    ``basis_fn_to_vertex`` (identity by default).
+    Returns one array per field in ``dof_map.field_layouts``; entry ``f``
+    has shape ``(n_elems, num_dofs_per_element_f,
+    num_dofs_per_basis_fn[f])`` ready for ``vmap`` over the leading
+    element axis. Per-element basis-fn indices come from
+    :func:`_element_basis_fns`; the eq formula is
+    ``eq = block_off + basis_fn * num_dofs_per_basis_fn + component``.
     """
     U_jax = jnp.asarray(U_global)
     out: list[JaxArray] = []
     for field_idx, layout in enumerate(dof_map.field_layouts):
+        bf_per_elem = _element_basis_fns(layout, connectivity_block)
         ndofs = layout.num_dofs_per_basis_fn
         block_off = int(dof_map.block_offsets[field_idx])
-
-        bf_per_elem = connectivity_block.astype(np.intp)
-        if layout.basis_fn_to_vertex is not None:
-            vertex_to_bf = {
-                int(v): bf
-                for bf, v in enumerate(layout.basis_fn_to_vertex)
-            }
-            bf_per_elem = np.vectorize(vertex_to_bf.__getitem__)(
-                connectivity_block,
-            ).astype(np.intp)
-
         k_arr = np.arange(ndofs)
         eq_3d = (
             block_off
@@ -85,24 +118,15 @@ def _element_eq_indices(
 ) -> NDArray[np.intp]:
     """Per-element flat global eq indices for one field block.
 
-    Returns shape ``(n_elems, num_basis_fns_per_elem *
-    num_dofs_per_basis_fn)`` in ``(a, k)`` major-minor order — basis-
-    function-outer, equation-inner — keeping element-stiffness sub-
-    blocks contiguous in the COO scatter.
+    Returns shape ``(n_elems, num_dofs_per_element *
+    num_dofs_per_basis_fn)`` in ``(basis_fn, component)`` major-minor
+    order — basis-function-outer, component-inner — keeping element-
+    stiffness sub-blocks contiguous in the COO scatter.
     """
     layout = dof_map.field_layouts[field_idx]
+    bf_per_elem = _element_basis_fns(layout, connectivity_block)
     ndofs = layout.num_dofs_per_basis_fn
     block_off = int(dof_map.block_offsets[field_idx])
-
-    bf_per_elem = connectivity_block.astype(np.intp)
-    if layout.basis_fn_to_vertex is not None:
-        vertex_to_bf = {
-            int(v): bf for bf, v in enumerate(layout.basis_fn_to_vertex)
-        }
-        bf_per_elem = np.vectorize(vertex_to_bf.__getitem__)(
-            connectivity_block,
-        ).astype(np.intp)
-
     n_elems = connectivity_block.shape[0]
     k_arr = np.arange(ndofs)
     eq = (

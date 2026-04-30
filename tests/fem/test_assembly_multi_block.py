@@ -32,6 +32,7 @@ from cmad.fem.assembly import assemble_element_block
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem
+from cmad.fem.finite_element import P1_TET
 from cmad.fem.interpolants import tet_linear
 from cmad.fem.mesh import Mesh
 from cmad.fem.quadrature import tet_quadrature
@@ -119,12 +120,11 @@ def _build_unit_tet_mesh() -> Mesh:
 
 def _build_fe_problem() -> FEProblem:
     mesh = _build_unit_tet_mesh()
-    n_nodes = int(mesh.nodes.shape[0])
     layout_u = GlobalFieldLayout(
-        name="u", num_basis_fns=n_nodes, num_dofs_per_basis_fn=3,
+        name="u", finite_element=P1_TET, num_dofs_per_basis_fn=3,
     )
     layout_p = GlobalFieldLayout(
-        name="p", num_basis_fns=n_nodes, num_dofs_per_basis_fn=1,
+        name="p", finite_element=P1_TET, num_dofs_per_basis_fn=1,
     )
     dof_map = build_dof_map(mesh, [layout_u, layout_p], [])
     gr = _TwoBlockMockGR()

@@ -12,11 +12,12 @@ array, decoupling DOF numbering (structural) from BC enforcement
 strategy; consumers choose UF/UP reduction, symmetric strong
 enforcement, or matrix-free apply against the same metadata.
 
-Per-field :class:`GlobalFieldLayout` carries an optional
-``basis_fn_to_vertex`` mapping for stable mixed methods (e.g.,
-Taylor-Hood pressure) where a field's basis functions live at a strict
-subset of mesh vertices; ``None`` defaults to identity (basis function
-``i`` anchors at mesh node ``i``) for the equal-order case.
+Per-field :class:`GlobalFieldLayout` carries a :class:`FiniteElement`
+spec that says how many DOFs sit on each mesh entity type (vertex /
+edge / face / cell). The DOF map allocates per-field DOFs by walking
+the mesh's entity tables: ``mesh.entity_count(et) *
+fe.dofs_per_entity[et]`` summed across entity types. P1 / Q1 fields
+have ``{VERTEX: 1}`` and reduce to one basis-fn per mesh vertex.
 
 Multi-field layouts naturally support fields without any BCs (those
 fields contribute zero entries to ``prescribed_indices``).
@@ -33,6 +34,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from cmad.fem.bcs import DirichletBC
+from cmad.fem.finite_element import EntityType, FiniteElement
 from cmad.fem.mesh import Mesh
 
 
@@ -48,60 +50,30 @@ class GlobalFieldLayout:
     equation label (``"displacement"``, ``"pressure"``, ``"energy"``)
     separately for output / deck schema / post-processing.
 
-    ``num_basis_fns`` is the number of basis functions in the field's
-    expansion. For Lagrange/CG bases on linear elements, this equals the
-    number of mesh vertices.
+    ``finite_element`` is the :class:`FiniteElement` spec; its
+    ``dofs_per_entity`` table determines how many basis-function
+    coefficients live on each entity type (vertex / edge / face /
+    cell), and its ``interpolant_fn`` supplies the reference-frame
+    shape functions consumed by assembly. The FE's ``element_family``
+    must match the mesh's ``element_family``; this is checked at
+    :func:`build_dof_map` time.
 
-    ``num_dofs_per_basis_fn`` is the components-per-basis-function count
-    (3 for a vector displacement field, 1 for a scalar pressure or
-    temperature field).
-
-    ``basis_fn_to_vertex`` is the optional explicit mapping from
-    basis-function index to mesh-vertex index. ``None`` defaults to
-    identity (``basis_fn[i]`` anchors at ``mesh.nodes[i]``), valid for
-    linear/CG bases where every mesh node carries one basis function.
-    Non-None has shape ``(num_basis_fns,)``, each entry a valid mesh-
-    node index, used by the BC resolver to look up vertex coordinates
-    and indices for nodeset-keyed BCs. The entries must be unique
-    (each vertex appears at most once); the mesh-relative range is
-    validated at :func:`build_dof_map` time.
+    ``num_dofs_per_basis_fn`` is the components-per-basis-function
+    count (3 for a vector displacement field, 1 for a scalar pressure
+    / temperature field). Independent of the basis-fn topology owned
+    by ``finite_element``.
     """
 
     name: str
-    num_basis_fns: int
+    finite_element: FiniteElement
     num_dofs_per_basis_fn: int
-    basis_fn_to_vertex: NDArray[np.intp] | None = None
 
     def __post_init__(self) -> None:
-        if self.num_basis_fns < 1:
-            raise ValueError(
-                f"GlobalFieldLayout '{self.name}': num_basis_fns must be "
-                f">= 1; got {self.num_basis_fns}"
-            )
         if self.num_dofs_per_basis_fn < 1:
             raise ValueError(
                 f"GlobalFieldLayout '{self.name}': num_dofs_per_basis_fn "
                 f"must be >= 1; got {self.num_dofs_per_basis_fn}"
             )
-        if self.basis_fn_to_vertex is not None:
-            if self.basis_fn_to_vertex.ndim != 1:
-                raise ValueError(
-                    f"GlobalFieldLayout '{self.name}': basis_fn_to_vertex "
-                    f"must be 1D; got shape "
-                    f"{self.basis_fn_to_vertex.shape}"
-                )
-            if self.basis_fn_to_vertex.shape[0] != self.num_basis_fns:
-                raise ValueError(
-                    f"GlobalFieldLayout '{self.name}': basis_fn_to_vertex "
-                    f"length ({self.basis_fn_to_vertex.shape[0]}) does not "
-                    f"match num_basis_fns ({self.num_basis_fns})"
-                )
-            n_unique = len(np.unique(self.basis_fn_to_vertex))
-            if n_unique != self.basis_fn_to_vertex.shape[0]:
-                raise ValueError(
-                    f"GlobalFieldLayout '{self.name}': basis_fn_to_vertex "
-                    "entries must be unique"
-                )
 
 
 @dataclass(frozen=True)
@@ -209,6 +181,18 @@ class GlobalDofMap:
         return np.concatenate(chunks)
 
 
+def _num_basis_fns_in_mesh(
+        layout: GlobalFieldLayout, mesh: Mesh,
+) -> int:
+    """Total per-mesh basis-fn count for a field: sum over entity types
+    of ``mesh.entity_count(et) * fe.dofs_per_entity[et]``.
+    """
+    return sum(
+        mesh.entity_count(et) * count
+        for et, count in layout.finite_element.dofs_per_entity.items()
+    )
+
+
 def build_dof_map(
     mesh: Mesh,
     field_layouts: list[GlobalFieldLayout],
@@ -216,34 +200,41 @@ def build_dof_map(
 ) -> GlobalDofMap:
     """Build a :class:`GlobalDofMap` from a mesh, field layouts, and BCs.
 
-    Validates field-name uniqueness and per-field
-    ``basis_fn_to_vertex`` against the mesh, resolves each BC's nodeset
-    to coord-and-eq-index arrays, detects double-prescription, and
-    assembles the global flat ``prescribed_indices`` array.
+    Validates field-name uniqueness and per-field FE-family vs
+    mesh-family agreement, computes per-field DOF block sizes by walking
+    the FE's ``dofs_per_entity`` against the mesh's entity counts,
+    resolves each BC's nodeset to coord-and-eq-index arrays, detects
+    double-prescription, and assembles the global flat
+    ``prescribed_indices`` array.
 
-    Field-major ordering: ``block_offsets[0] = 0``,
+    Field-major ordering: ``block_offsets[0] = 0``, and
     ``block_offsets[i+1] = block_offsets[i] +
-    field_layouts[i].num_basis_fns *
-    field_layouts[i].num_dofs_per_basis_fn``.
+    n_basis_fns_for_field_i * field_layouts[i].num_dofs_per_basis_fn``,
+    where ``n_basis_fns_for_field_i = sum(mesh.entity_count(et) *
+    fe.dofs_per_entity[et])``.
+
+    BCs are nodeset-keyed and resolve through the field's VERTEX DOFs:
+    each mesh vertex in the nodeset contributes
+    ``dofs_per_entity[VERTEX]`` basis fns to the constrained set. Fields
+    whose FE has no VERTEX DOFs cannot be constrained via nodeset BCs;
+    sideset-keyed BCs for non-vertex DOFs are not yet supported.
 
     Raises:
         ValueError: if field-layout names are not unique;
-                    if a layout's identity ``basis_fn_to_vertex``
-                    requires ``num_basis_fns == len(mesh.nodes)`` and
-                    the equality fails;
-                    if a layout's explicit ``basis_fn_to_vertex`` has
-                    entries outside ``[0, len(mesh.nodes))``;
+                    if a layout's FE element_family doesn't match the
+                    mesh's element_family;
                     if a BC references an unknown field;
                     if a BC's dofs index is out of range for its field;
-                    if a BC's nodeset includes a mesh node outside the
-                    explicit mapping's image;
+                    if a BC targets a field whose FE has no VERTEX
+                    DOFs;
                     if two BCs prescribe the same
                     ``(field, basis_fn, dof)``.
+        NotImplementedError: if a BC targets a field whose FE has
+                    ``dofs_per_entity[VERTEX] > 1`` (multiplicity beyond
+                    1 per vertex needs a richer BC API).
         KeyError:   if a BC references a nodeset name that's not in
                     ``mesh.node_sets``.
     """
-    n_nodes = int(mesh.nodes.shape[0])
-
     names = [fl.name for fl in field_layouts]
     if len(set(names)) != len(names):
         raise ValueError(
@@ -251,29 +242,17 @@ def build_dof_map(
         )
 
     for layout in field_layouts:
-        if layout.basis_fn_to_vertex is None:
-            if layout.num_basis_fns != n_nodes:
-                raise ValueError(
-                    f"GlobalFieldLayout '{layout.name}': identity "
-                    "basis_fn_to_vertex requires num_basis_fns "
-                    f"({layout.num_basis_fns}) == len(mesh.nodes) "
-                    f"({n_nodes}); supply an explicit basis_fn_to_vertex "
-                    "otherwise"
-                )
-        else:
-            mapping = layout.basis_fn_to_vertex
-            if mapping.size > 0 and (
-                int(mapping.min()) < 0 or int(mapping.max()) >= n_nodes
-            ):
-                raise ValueError(
-                    f"GlobalFieldLayout '{layout.name}' "
-                    "basis_fn_to_vertex entries must be in "
-                    f"[0, {n_nodes}); got "
-                    f"[{int(mapping.min())}, {int(mapping.max())}]"
-                )
+        fe_family = layout.finite_element.element_family
+        if fe_family != mesh.element_family:
+            raise ValueError(
+                f"GlobalFieldLayout '{layout.name}': finite_element family "
+                f"({fe_family.name}) does not match mesh element_family "
+                f"({mesh.element_family.name})"
+            )
 
     sizes = [
-        fl.num_basis_fns * fl.num_dofs_per_basis_fn for fl in field_layouts
+        _num_basis_fns_in_mesh(fl, mesh) * fl.num_dofs_per_basis_fn
+        for fl in field_layouts
     ]
     block_offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.intp)
 
@@ -290,6 +269,7 @@ def build_dof_map(
             )
         field_idx = name_to_idx[bc.field_name]
         layout = field_layouts[field_idx]
+        fe = layout.finite_element
 
         for dof in bc.dofs:
             if dof < 0 or dof >= layout.num_dofs_per_basis_fn:
@@ -307,24 +287,23 @@ def build_dof_map(
             )
         set_nodes = mesh.node_sets[bc.nodeset_name]
 
-        if layout.basis_fn_to_vertex is None:
-            basis_fns_for_set = set_nodes.astype(np.intp)
-        else:
-            vertex_to_bf: dict[int, int] = {
-                int(v): bf
-                for bf, v in enumerate(layout.basis_fn_to_vertex)
-            }
-            bf_list: list[int] = []
-            for vertex_idx in set_nodes:
-                v_int = int(vertex_idx)
-                if v_int not in vertex_to_bf:
-                    raise ValueError(
-                        f"DirichletBC on nodeset '{bc.nodeset_name}' for "
-                        f"field '{bc.field_name}': mesh node {v_int} is "
-                        "not in basis_fn_to_vertex's image"
-                    )
-                bf_list.append(vertex_to_bf[v_int])
-            basis_fns_for_set = np.asarray(bf_list, dtype=np.intp)
+        dofs_per_vertex = fe.dofs_per_entity.get(EntityType.VERTEX, 0)
+        if dofs_per_vertex == 0:
+            raise ValueError(
+                f"DirichletBC on field '{bc.field_name}' targets nodeset "
+                f"'{bc.nodeset_name}', but the field's FiniteElement "
+                f"'{fe.name}' has no VERTEX DOFs. Sideset-keyed BCs for "
+                "non-vertex DOFs are not yet supported."
+            )
+        if dofs_per_vertex > 1:
+            raise NotImplementedError(
+                f"DirichletBC on field '{bc.field_name}': FiniteElement "
+                f"'{fe.name}' has dofs_per_entity[VERTEX]={dofs_per_vertex} "
+                "> 1; nodeset-keyed BCs only handle 1 DOF per vertex."
+            )
+
+        # dofs_per_vertex == 1: basis_fn[v] = v (identity).
+        basis_fns_for_set = set_nodes.astype(np.intp)
 
         ndofs = layout.num_dofs_per_basis_fn
         block_off = int(block_offsets[field_idx])

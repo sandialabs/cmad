@@ -36,6 +36,7 @@ from cmad.fem.bcs import DirichletBC
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem, FEState, build_fe_problem
+from cmad.fem.finite_element import P1_TET, Q1_HEX
 from cmad.fem.interpolants import hex_linear, tet_linear
 from cmad.fem.mesh import (
     Mesh,
@@ -133,9 +134,14 @@ def _build_fe_problem(
         mesh: Mesh,
         body_force_fn: Callable[[JaxArray, float], JaxArray],
 ) -> FEProblem:
-    n_nodes = int(mesh.nodes.shape[0])
+    if mesh.element_family == ElementFamily.HEX_LINEAR:
+        fe = Q1_HEX
+    elif mesh.element_family == ElementFamily.TET_LINEAR:
+        fe = P1_TET
+    else:
+        raise ValueError(f"unsupported element family {mesh.element_family}")
     layout = GlobalFieldLayout(
-        name="u", num_basis_fns=n_nodes, num_dofs_per_basis_fn=3,
+        name="u", finite_element=fe, num_dofs_per_basis_fn=3,
     )
     bc = DirichletBC(
         nodeset_name="all_boundary_nodes",
@@ -144,13 +150,9 @@ def _build_fe_problem(
         values=None,
     )
     dof_map = build_dof_map(mesh, [layout], [bc])
-    if mesh.element_family == ElementFamily.HEX_LINEAR:
-        num_basis_fns = 8
-    elif mesh.element_family == ElementFamily.TET_LINEAR:
-        num_basis_fns = 4
-    else:
-        raise ValueError(f"unsupported element family {mesh.element_family}")
-    gr = SmallDispEquilibrium(num_basis_fns=num_basis_fns, ndims=3)
+    gr = SmallDispEquilibrium(
+        num_basis_fns=fe.num_dofs_per_element, ndims=3,
+    )
     elastic = Elastic(_make_parameters(), def_type=DefType.FULL_3D)
     return build_fe_problem(
         mesh=mesh,
