@@ -1,16 +1,16 @@
-"""Unit tests for `cmad.fem.bcs.DirichletBC`.
+"""Unit tests for `cmad.fem.bcs`.
 
 The dataclass surface is small (no resolution, no mesh handle); these
-tests cover construction round-trip and the three `__post_init__`
-validation paths. Resolution behavior (sideset walk, intra-BC dedup,
-broadcasting None / Sequence / Callable values to flat arrays) is
-exercised in `test_dof.py` because it lives in the DofMap.
+tests cover construction round-trip and the `__post_init__` validation
+paths for both BC types. Resolution behavior (sideset walk, intra-BC
+dedup, broadcasting None / Sequence / Callable values to flat arrays)
+is exercised in `test_dof.py` (DBC) and `test_neumann.py` (NBC).
 """
 import unittest
 
 import numpy as np
 
-from cmad.fem.bcs import DirichletBC
+from cmad.fem.bcs import DirichletBC, NeumannBC
 
 
 class TestDirichletBC(unittest.TestCase):
@@ -77,6 +77,50 @@ class TestPostInitValidation(unittest.TestCase):
                 field_name="u",
                 dofs=[0, 1],
                 values=[0.0],
+            )
+
+
+class TestNeumannBC(unittest.TestCase):
+
+    def test_dataclass_round_trip(self):
+        bc = NeumannBC(
+            sideset_names=["xmax_sides"],
+            field_name="u",
+            values=[0.0, 0.0, -1.0],
+        )
+        self.assertEqual(list(bc.sideset_names), ["xmax_sides"])
+        self.assertEqual(bc.field_name, "u")
+        self.assertEqual(list(bc.values), [0.0, 0.0, -1.0])
+
+    def test_multi_sideset_round_trip(self):
+        bc = NeumannBC(
+            sideset_names=["xmax_sides", "ymax_sides"],
+            field_name="u",
+            values=[1.0, 2.0, 3.0],
+        )
+        self.assertEqual(
+            list(bc.sideset_names), ["xmax_sides", "ymax_sides"],
+        )
+
+    def test_callable_values_accepted(self):
+        def vals(coords, t):
+            return np.zeros((coords.shape[0], 3))
+        bc = NeumannBC(
+            sideset_names=["xmax_sides"], field_name="u", values=vals,
+        )
+        self.assertTrue(callable(bc.values))
+
+
+class TestNeumannBCPostInitValidation(unittest.TestCase):
+
+    def test_empty_sideset_names_raises(self):
+        with self.assertRaisesRegex(ValueError, "sideset_names .* non-empty"):
+            NeumannBC(sideset_names=[], field_name="u", values=[1.0])
+
+    def test_empty_values_raises(self):
+        with self.assertRaisesRegex(ValueError, "values .* non-empty"):
+            NeumannBC(
+                sideset_names=["xmax_sides"], field_name="u", values=[],
             )
 
 
