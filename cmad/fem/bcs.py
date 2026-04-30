@@ -19,12 +19,14 @@ edges and corners.
 
 Cross-BC overlaps. Two BCs may prescribe the same ``(field,
 basis_fn, dof)`` if and only if their values agree at the queried
-time. Resolution detects overlaps at :func:`build_dof_map` time and
-the consistency check fires at
+time. The structurally overprescribed subset is identified at
+:func:`build_dof_map` time and stored on the dofmap as
+``overprescribed_dbc_groups``; the value-consistency check at
 :meth:`cmad.fem.dof.GlobalDofMap.evaluate_prescribed_values` time
-(per-step for time-dependent BCs); inconsistent overlaps raise
-``ValueError`` with a diagnostic naming the conflicting BCs and
-the eq index decoded to ``(field, basis_fn, dof)``.
+iterates only that subset (per-step for time-dependent BCs).
+Inconsistent overlaps raise ``ValueError`` with a diagnostic
+naming the conflicting BCs and the global equation number decoded
+to ``(field, basis_fn, dof)``.
 
 Value sources, in order of generality:
 

@@ -41,11 +41,16 @@ covering several side sets without spurious intra-BC double-
 prescription on shared edges and corners.
 
 Cross-BC overlaps are allowed when their values agree at the queried
-time. ``prescribed_indices`` is the deduplicated sorted union of all
-BCs' prescribed eqs; the value-consistency check fires at
-:meth:`GlobalDofMap.evaluate_prescribed_values` time (per call,
-so time-dependent BCs surface inconsistency at the divergent step
-rather than at construction).
+time. ``prescribed_indices`` is the deduplicated sorted union of the
+global equation numbers prescribed by all BCs (i.e., row indices
+into the global residual / solution vector). The structurally
+overprescribed subset — positions written by two or more BCs — is
+computed once at build via a joint walk of every BC's ``eq_indices``
+and stored on the dofmap as ``overprescribed_dbc_groups``. The
+value-consistency check at
+:meth:`GlobalDofMap.evaluate_prescribed_values` time iterates only
+this small subset (per call, so time-dependent BCs that diverge
+surface at the divergent step rather than at construction).
 
 Prescribed values are evaluated on demand via
 :meth:`GlobalDofMap.evaluate_prescribed_values`, supporting time-
@@ -96,7 +101,8 @@ class GlobalFieldLayout:
 
 @dataclass(frozen=True)
 class _ResolvedBC:
-    """Internal: BC paired with cached coords and pre-computed eq indices.
+    """Internal: BC paired with cached coords and per-BC global
+    equation indices.
 
     ``set_coords`` is the ``(N_set, 3)`` slice of ``mesh.nodes`` for
     the BC's deduplicated boundary-vertex set (after walking all
@@ -104,14 +110,41 @@ class _ResolvedBC:
     vertices). Cached so re-evaluation of values is mesh-handle-free.
 
     ``eq_indices`` is the ``(N_set * len(dofs),)`` flat array of
-    global equation numbers in (vertex-major, dof-minor) order to
-    match the flatten convention used by
+    global equation numbers (row indices into the global residual /
+    solution vector) in (vertex-major, dof-minor) order to match the
+    flatten convention used by
     :meth:`GlobalDofMap.evaluate_prescribed_values`.
     """
 
     bc: DirichletBC
     set_coords: NDArray[np.floating]
     eq_indices: NDArray[np.intp]
+
+
+@dataclass(frozen=True)
+class _OverprescribedDBCGroup:
+    """Internal: one prescribed global equation written by two or more
+    DirichletBCs.
+
+    Records the structural overprescription identified at build time so
+    the runtime value-consistency check can iterate this small set
+    instead of every prescribed position. DBC-specific by name: Neumann
+    BCs accumulate at assembly and don't fix DOFs, so they can't
+    conflict in the same sense.
+
+    ``position`` is an index into ``GlobalDofMap.prescribed_indices``;
+    ``prescribed_indices[position]`` is the overprescribed global
+    equation number.
+
+    ``contributors`` lists ``(bc_idx, bc_eq_idx)`` pairs for every BC
+    that writes this equation. ``bc_idx`` indexes into
+    ``GlobalDofMap.resolved_bcs``; ``bc_eq_idx`` indexes into that
+    BC's ``eq_indices`` array (and into the parallel materialized
+    values array).
+    """
+
+    position: int
+    contributors: list[tuple[int, int]]
 
 
 @dataclass(frozen=True)
@@ -139,11 +172,17 @@ class GlobalDofMap:
     len(prescribed_indices)``.
 
     ``resolved_bcs`` holds the BC list with cached coords and per-BC
-    flat eq_indices for time-dependent re-evaluation via
-    :meth:`evaluate_prescribed_values`. Cross-BC overlap detection +
-    value-consistency check happens inside
-    :meth:`evaluate_prescribed_values`, not here, since values can
-    depend on ``t``.
+    flat ``eq_indices`` (global equation numbers). Used at runtime by
+    :meth:`evaluate_prescribed_values` to materialize values at the
+    queried ``t``.
+
+    ``overprescribed_dbc_groups`` lists the structurally overprescribed
+    positions — entries in ``prescribed_indices`` written by two or
+    more BCs — and their contributors, computed once at build via a
+    joint walk of every BC's ``eq_indices``. Typically small (often
+    empty); the value-consistency check at
+    :meth:`evaluate_prescribed_values` iterates only this set to
+    validate cross-BC agreement at the queried ``t``.
     """
 
     field_layouts: list[GlobalFieldLayout]
@@ -151,6 +190,7 @@ class GlobalDofMap:
     block_offsets: NDArray[np.intp]
     prescribed_indices: NDArray[np.intp]
     resolved_bcs: list[_ResolvedBC]
+    overprescribed_dbc_groups: list[_OverprescribedDBCGroup]
 
     @property
     def num_total_dofs(self) -> int:
@@ -195,59 +235,66 @@ class GlobalDofMap:
     ) -> NDArray[np.floating]:
         """Materialize prescribed values at time ``t``.
 
-        Returns a flat ``(P,)`` float array aligned with
-        ``prescribed_indices``. Re-evaluates each BC's value source
-        (``None`` / ``Sequence[float]`` / callable) using the cached
-        deduplicated boundary-vertex coordinates. Time-independent
-        BCs ignore ``t``.
+        Three-step path:
 
-        Cross-BC consistency check. For any prescribed eq written to
-        by more than one BC, all contributing values must compare
-        equal; otherwise raises ``ValueError`` with a diagnostic
-        naming the conflicting BCs and decoding the eq to its
-        ``(field, basis_fn, dof)`` triple. The check fires per call,
-        so time-dependent BCs that disagree at one ``t`` but not
-        another surface at the divergent step rather than at
+        1. Materialize each BC's values (``None`` / ``Sequence[float]``
+           / callable) once at ``t`` via its cached deduplicated
+           boundary-vertex coordinates. Time-independent BCs ignore
+           ``t``.
+        2. Bulk-scatter every BC into the prescribed-values array,
+           locating each BC's entries via
+           ``np.searchsorted(prescribed_indices, rbc.eq_indices)``.
+           Last-writer-wins where multiple BCs target the same
+           equation; step 3 confirms agreement.
+        3. Validate ``overprescribed_dbc_groups`` (small build-time
+           set): for each group, every contributing BC must agree at
+           this ``t`` (``np.isclose`` with ``rtol=atol=1e-12`` to
+           tolerate algebraic round-off across callable BCs);
+           otherwise raises ``ValueError`` with a diagnostic naming
+           the conflicting BCs and decoding the offending global
+           equation to its ``(field, basis_fn, dof)`` triple.
+
+        The validation set is identified once at build (structural)
+        and reused on every call; only the value comparison is
+        per-call, so time-dependent BCs that disagree at one ``t``
+        but not another surface at the divergent step rather than at
         construction.
         """
-        P = len(self.prescribed_indices)
-        if P == 0:
+        n_prescribed = len(self.prescribed_indices)
+        if n_prescribed == 0:
             return np.empty(0, dtype=np.float64)
 
-        values = np.empty(P, dtype=np.float64)
-        written = np.zeros(P, dtype=bool)
-        written_by = np.full(P, -1, dtype=np.intp)
+        bc_vals = [
+            self._materialize_bc_values(rbc, t) for rbc in self.resolved_bcs
+        ]
 
-        for rbc_idx, rbc in enumerate(self.resolved_bcs):
-            bc_vals_flat = self._materialize_bc_values(rbc, t)
+        values = np.empty(n_prescribed, dtype=np.float64)
+        for rbc, vals in zip(self.resolved_bcs, bc_vals):
             positions = np.searchsorted(
                 self.prescribed_indices, rbc.eq_indices,
             )
-            for k in range(bc_vals_flat.size):
-                pos = int(positions[k])
-                val = float(bc_vals_flat[k])
-                if written[pos]:
-                    if val != values[pos]:
-                        eq = int(self.prescribed_indices[pos])
-                        field_idx, basis_fn, dof = self._decode_eq(eq)
-                        field_name = self.field_layouts[field_idx].name
-                        prior_idx = int(written_by[pos])
-                        prior_bc = self.resolved_bcs[prior_idx].bc
-                        raise ValueError(
-                            "DirichletBC inconsistent prescribed values "
-                            f"at eq {eq} (field='{field_name}', "
-                            f"basis_fn={basis_fn}, dof={dof}, t={t}): "
-                            f"BC #{prior_idx} (sideset_names="
-                            f"{list(prior_bc.sideset_names)}) gives "
-                            f"{values[pos]}; BC #{rbc_idx} "
-                            f"(sideset_names="
-                            f"{list(rbc.bc.sideset_names)}) gives "
-                            f"{val}"
-                        )
-                else:
-                    values[pos] = val
-                    written[pos] = True
-                    written_by[pos] = rbc_idx
+            values[positions] = vals
+
+        for group in self.overprescribed_dbc_groups:
+            ref_bc_idx, ref_bc_eq_idx = group.contributors[0]
+            ref = float(bc_vals[ref_bc_idx][ref_bc_eq_idx])
+            for bc_idx, bc_eq_idx in group.contributors[1:]:
+                v = float(bc_vals[bc_idx][bc_eq_idx])
+                if not np.isclose(v, ref, rtol=1e-12, atol=1e-12):
+                    eq = int(self.prescribed_indices[group.position])
+                    field_idx, basis_fn, dof = self._decode_eq(eq)
+                    field_name = self.field_layouts[field_idx].name
+                    ref_bc = self.resolved_bcs[ref_bc_idx].bc
+                    cur_bc = self.resolved_bcs[bc_idx].bc
+                    raise ValueError(
+                        "DirichletBC inconsistent prescribed values "
+                        f"at eq {eq} (field='{field_name}', "
+                        f"basis_fn={basis_fn}, dof={dof}, t={t}): "
+                        f"BC #{ref_bc_idx} (sideset_names="
+                        f"{list(ref_bc.sideset_names)}) gives {ref}; "
+                        f"BC #{bc_idx} (sideset_names="
+                        f"{list(cur_bc.sideset_names)}) gives {v}"
+                    )
         return values
 
     @staticmethod
@@ -328,10 +375,17 @@ def build_dof_map(
     gather global basis-fns via ``mesh.connectivity[elem, slots]``;
     deduplicate via ``np.unique`` (intra-BC). The deduplicated
     boundary-vertex set drives both ``set_coords`` (for value
-    callables) and ``eq_indices``. Cross-BC: the union of all BCs'
-    eq_indices is deduplicated into ``prescribed_indices``; the
-    consistency check between contributors fires at
-    :meth:`GlobalDofMap.evaluate_prescribed_values` time, not here.
+    callables) and ``eq_indices``. Cross-BC: a joint
+    ``argsort`` + ``np.unique(..., return_counts=True)`` over every
+    BC's ``eq_indices`` produces ``prescribed_indices`` (deduplicated
+    sorted union) and identifies the structurally overprescribed
+    subset (positions with count > 1), recorded as
+    :class:`_OverprescribedDBCGroup` entries on the dofmap with
+    ``(bc_idx, bc_eq_idx)`` contributors. The value-consistency
+    check between contributors fires at
+    :meth:`GlobalDofMap.evaluate_prescribed_values` time (per call,
+    since values can be ``t``-dependent), iterating only the
+    overprescribed subset.
 
     BCs only resolve through the field's VERTEX DOFs: each boundary
     vertex contributes ``dofs_per_entity[VERTEX]`` basis fns to the
@@ -475,11 +529,38 @@ def build_dof_map(
         eq_chunks.append(eq_indices_flat)
 
     if eq_chunks:
-        prescribed_indices = np.unique(
-            np.concatenate(eq_chunks)
-        ).astype(np.intp)
+        sizes = np.asarray([c.size for c in eq_chunks], dtype=np.intp)
+        all_eqs = np.concatenate(eq_chunks)
+        all_bc_idx = np.repeat(
+            np.arange(len(eq_chunks), dtype=np.intp), sizes,
+        )
+        all_bc_eq_idx = np.concatenate(
+            [np.arange(s, dtype=np.intp) for s in sizes]
+        )
+        order = np.argsort(all_eqs, kind="stable")
+        sorted_bc_idx = all_bc_idx[order]
+        sorted_bc_eq_idx = all_bc_eq_idx[order]
+        prescribed_indices, group_starts, group_counts = np.unique(
+            all_eqs[order], return_index=True, return_counts=True,
+        )
+        prescribed_indices = prescribed_indices.astype(np.intp)
+        over_positions = np.flatnonzero(group_counts > 1)
+        overprescribed_dbc_groups: list[_OverprescribedDBCGroup] = [
+            _OverprescribedDBCGroup(
+                position=int(p),
+                contributors=[
+                    (
+                        int(sorted_bc_idx[group_starts[p] + k]),
+                        int(sorted_bc_eq_idx[group_starts[p] + k]),
+                    )
+                    for k in range(int(group_counts[p]))
+                ],
+            )
+            for p in over_positions
+        ]
     else:
         prescribed_indices = np.empty(0, dtype=np.intp)
+        overprescribed_dbc_groups = []
 
     return GlobalDofMap(
         field_layouts=list(field_layouts),
@@ -487,4 +568,5 @@ def build_dof_map(
         block_offsets=block_offsets,
         prescribed_indices=prescribed_indices,
         resolved_bcs=resolved_bcs,
+        overprescribed_dbc_groups=overprescribed_dbc_groups,
     )
