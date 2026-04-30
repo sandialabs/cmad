@@ -142,20 +142,76 @@ REvaluator return and ``dR_dU_blocks`` is list-of-lists keyed by
 ``(residual_block_r, U_block_s)``. U-only at the closure boundary
 for the same reason as REvaluator."""
 
+DRDUEvaluator: TypeAlias = Callable[
+    [Params,
+     Sequence[JaxArray], Sequence[JaxArray],
+     Sequence["ShapeFunctionsAtIP"],
+     float | JaxArray, float | JaxArray,
+     int],
+    Sequence[Sequence[JaxArray]],
+]
+"""Signature of the standalone ``dR/dU`` evaluator returned by
+GlobalResidual.for_model. Same closure boundary as REvaluator;
+returns the ``dR_dU_blocks`` list-of-lists shape from
+RAndDRDUEvaluator without R recomputed. For consumers (adjoint
+K^T, sensitivity-only paths) that don't need R. Semantic role of
+``dR_dU`` is the *total* derivative the consumer plugs into K^T:
+in CLOSED_FORM mode it's a direct ``jacfwd`` over the U-only
+closure (xi(U) baked into ``cauchy_closed_form``); in COUPLED
+mode it will be IFT-corrected via ``custom_vjp`` around the
+per-IP local Newton. Same return shape, same consumer-facing
+role; mode determines implementation."""
+
+DRDUPrevEvaluator: TypeAlias = Callable[
+    [Params,
+     Sequence[JaxArray], Sequence[JaxArray],
+     Sequence["ShapeFunctionsAtIP"],
+     float | JaxArray, float | JaxArray,
+     int],
+    Sequence[Sequence[JaxArray]],
+]
+"""Signature of the standalone ``dR/dU_prev`` evaluator returned by
+GlobalResidual.for_model. Same closure boundary and return shape as
+DRDUEvaluator; differentiates against the previous-step global
+state. Currently zero-valued for all implemented GRs (none use
+U_prev) — exposed for future time-stepping consumers."""
+
+DRDPEvaluator: TypeAlias = Callable[
+    [Params,
+     Sequence[JaxArray], Sequence[JaxArray],
+     Sequence["ShapeFunctionsAtIP"],
+     float | JaxArray, float | JaxArray,
+     int],
+    Sequence[PyTree],
+]
+"""Signature of the standalone ``dR/dparams`` evaluator returned by
+GlobalResidual.for_model. Closure boundary matches REvaluator;
+returns a per-residual-block pytree parallel to ``params``. For
+parameter-gradient assembly (FEMU calibration, imperative-track
+gradient)."""
+
 
 class GREvaluators(TypedDict, total=False):
     """Per-(GR, model, mode) evaluator dict from GlobalResidual.for_model.
 
     Keys present depend on the mode passed to ``for_model``. CLOSED_FORM
-    populates both ``R`` and ``R_and_dR_dU``: the R-only evaluator
-    covers cheap-residual paths (linesearch trial points, finite-
-    difference probes), the fused evaluator is the Newton-step path
-    (XLA CSEs interpolation / kinematics / Cauchy-stress between R and
-    its tangent). Future modes (COUPLED with custom_vjp around per-IP
-    local Newton) will add their own keys here.
+    populates ``R`` (residual only — linesearch trial points and
+    finite-difference probes), ``R_and_dR_dU`` (fused for the Newton
+    step, XLA CSEs interpolation / kinematics / Cauchy-stress between
+    R and its tangent), and the standalone first-derivative evaluators
+    ``dR_dU`` / ``dR_dU_prev`` / ``dR_dp`` (one per differentiable
+    input of the U-only closure, for adjoint and gradient-assembly
+    consumers that don't need R recomputed). Future COUPLED mode
+    (with ``custom_vjp`` around per-IP local Newton) will keep these
+    keys with the same semantic roles and add ``dR_dxi`` /
+    ``dR_dxi_prev`` for the raw xi/xi_prev partials that COUPLED's
+    imperative-track adjoint solve consumes.
     """
     R: REvaluator
     R_and_dR_dU: RAndDRDUEvaluator
+    dR_dU: DRDUEvaluator
+    dR_dU_prev: DRDUPrevEvaluator
+    dR_dp: DRDPEvaluator
 
 
 # ----- Indices -----

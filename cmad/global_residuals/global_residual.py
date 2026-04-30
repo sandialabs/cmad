@@ -5,7 +5,7 @@ from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
-from jax import jacfwd, jit
+from jax import jacfwd, jacrev, jit
 from numpy.typing import NDArray
 
 from cmad.fem.shapes import ShapeFunctionsAtIP
@@ -46,10 +46,14 @@ class GlobalResidual(ABC):
     Callable]`` of jit'd public evaluators closed over
     ``model._residual`` and the mode-selected cauchy method.
     CLOSED_FORM mode exposes ``"R"`` (residual-only, for linesearch
-    trial points and other cheap residual probes) and
-    ``"R_and_dR_dU"`` (fused R + tangent for the Newton step). The
-    public closures are U-only — xi/xi_prev are bound to zeros
-    internally because CLOSED_FORM evaluates stress through
+    trial points and other cheap residual probes), ``"R_and_dR_dU"``
+    (fused R + tangent for the Newton step), and standalone first-
+    derivative evaluators ``"dR_dU"`` / ``"dR_dU_prev"`` / ``"dR_dp"``
+    (one per differentiable input of the U-only closure, for
+    adjoint and gradient-assembly consumers that want a named
+    derivative without R recomputation). The public closures are
+    U-only — xi/xi_prev are bound to zeros internally because
+    CLOSED_FORM evaluates stress through
     ``model.cauchy_closed_form`` and never consults state. The
     string-key dict replaces Model's mutable ``_deriv_mode`` state
     machine: FE assembly vmaps closures over element batches, which
@@ -150,7 +154,17 @@ class GlobalResidual(ABC):
           (interpolation, kinematics, Cauchy stress) when both R and
           its tangent are needed (Newton step); the R-only evaluator
           covers cheap-residual paths (linesearch trial points,
-          perturbation probes).
+          perturbation probes). Standalone first-derivative
+          evaluators ``"dR_dU"``, ``"dR_dU_prev"``, ``"dR_dp"`` are
+          also returned: each is ``jacfwd`` / ``jacrev`` over the
+          U-only closure with respect to one differentiable input
+          (``U``, ``U_prev``, ``params`` respectively). ``"dR_dU"``
+          mirrors the ``dR_dU_blocks`` shape from the fused
+          evaluator (without R recomputation); ``"dR_dU_prev"`` has
+          the same block-pair shape; ``"dR_dp"`` returns a per-
+          residual-block pytree parallel to ``params``. These exist
+          for adjoint and gradient-assembly consumers that want a
+          named derivative without R recomputation.
         - COUPLED: not yet implemented; raises NotImplementedError.
           The coupled-mode evaluator must wrap the per-IP local
           Newton solve in custom_vjp so the global outer Newton sees
@@ -200,6 +214,8 @@ class GlobalResidual(ABC):
             )
 
         dR_dU_at_ip = jacfwd(r_at_ip, argnums=1)
+        dR_dU_prev_at_ip = jacfwd(r_at_ip, argnums=2)
+        dR_dp_at_ip = jacrev(r_at_ip, argnums=0)
 
         def r_and_dR_dU_at_ip(
                 params, U, U_prev, shapes_ip, w, dv, ip_set,
@@ -215,4 +231,7 @@ class GlobalResidual(ABC):
         return {
             "R": jit(r_at_ip),
             "R_and_dR_dU": jit(r_and_dR_dU_at_ip),
+            "dR_dU": jit(dR_dU_at_ip),
+            "dR_dU_prev": jit(dR_dU_prev_at_ip),
+            "dR_dp": jit(dR_dp_at_ip),
         }

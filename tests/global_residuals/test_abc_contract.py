@@ -97,7 +97,7 @@ class TestGlobalResidualABC(unittest.TestCase):
             model, mode=GlobalResidualMode.CLOSED_FORM)
         self.assertEqual(
             set(evaluators.keys()),
-            {"R", "R_and_dR_dU"},
+            {"R", "R_and_dR_dU", "dR_dU", "dR_dU_prev", "dR_dp"},
         )
 
     def test_for_model_coupled_raises_not_implemented(self):
