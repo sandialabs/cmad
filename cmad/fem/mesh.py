@@ -30,12 +30,18 @@ The ``hex_to_tet_split`` helper uses the canonical 6-tet-per-hex diagonal
 split along the body diagonal joining hex nodes 0 and 6 (Howell 1992
 pattern). All 6 tets have positive volume on a positively-oriented hex.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from numpy.typing import NDArray
 
 from cmad.fem.element_family import ElementFamily
+from cmad.fem.finite_element import (
+    P1_TET,
+    Q1_HEX,
+    EntityType,
+    FiniteElement,
+)
 
 _NODES_PER_ELEMENT: dict[ElementFamily, int] = {
     ElementFamily.HEX_LINEAR: 8,
@@ -76,6 +82,46 @@ _TET_FACE_NODES: NDArray[np.intp] = np.array(
 )
 
 
+# Hex local-edge table. Each row lists the two hex-local node indices of
+# one edge. Order: 4 bottom-face edges, 4 top-face edges, 4 verticals.
+_HEX_LOCAL_EDGES: NDArray[np.intp] = np.array(
+    [
+        [0, 1], [1, 2], [2, 3], [3, 0],   # bottom (z=-1) face, CCW
+        [4, 5], [5, 6], [6, 7], [7, 4],   # top (z=+1) face, CCW
+        [0, 4], [1, 5], [2, 6], [3, 7],   # verticals
+    ],
+    dtype=np.intp,
+)
+
+
+# Tet local-edge table. Each row lists the two tet-local node indices of
+# one edge.
+_TET_LOCAL_EDGES: NDArray[np.intp] = np.array(
+    [
+        [0, 1], [0, 2], [0, 3],
+        [1, 2], [1, 3],
+        [2, 3],
+    ],
+    dtype=np.intp,
+)
+
+
+_LOCAL_EDGES_PER_ELEMENT: dict[ElementFamily, NDArray[np.intp]] = {
+    ElementFamily.HEX_LINEAR: _HEX_LOCAL_EDGES,
+    ElementFamily.TET_LINEAR: _TET_LOCAL_EDGES,
+}
+
+_LOCAL_FACES_PER_ELEMENT: dict[ElementFamily, NDArray[np.intp]] = {
+    ElementFamily.HEX_LINEAR: _HEX_FACE_NODES,
+    ElementFamily.TET_LINEAR: _TET_FACE_NODES,
+}
+
+_GEOMETRIC_FINITE_ELEMENT_PER_ELEMENT: dict[ElementFamily, FiniteElement] = {
+    ElementFamily.HEX_LINEAR: Q1_HEX,
+    ElementFamily.TET_LINEAR: P1_TET,
+}
+
+
 # Hex-to-tet split: each hex's 8 corners produce 6 tetrahedra. Each row
 # lists the 4 hex-local node indices that form one tet, in tet_linear
 # ordering (origin, +x, +y, +z). The split shares the body diagonal 0-6.
@@ -111,6 +157,61 @@ _HEX_FACE_TO_TET_FACES: NDArray[np.intp] = np.array(
 )
 
 
+def _enumerate_edges(
+        connectivity: NDArray[np.intp],
+        local_edges: NDArray[np.intp],
+) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
+    """Build the deduplicated edge table + per-element edge index map.
+
+    For each element, look up vertex pairs via the family's local-edge
+    table and the element's connectivity row; sort each pair so the
+    smaller vertex index comes first; deduplicate across all elements
+    via :func:`numpy.unique` with ``return_inverse``.
+
+    Returns ``(edges, element_edges)``: ``edges`` has shape
+    ``(N_edges, 2)`` with sorted-vertex-pair entries; ``element_edges``
+    has shape ``(N_elems, n_local_edges)`` with global edge indices in
+    the local-edge order matching the family's local table.
+    """
+    n_elems = connectivity.shape[0]
+    n_local = local_edges.shape[0]
+    edge_pairs = connectivity[:, local_edges]            # (n_elems, n_local, 2)
+    edge_pairs_sorted = np.sort(edge_pairs, axis=2)
+    flat = edge_pairs_sorted.reshape(-1, 2)
+    edges, inverse = np.unique(flat, axis=0, return_inverse=True)
+    element_edges = inverse.reshape(n_elems, n_local).astype(np.intp)
+    return edges.astype(np.intp), element_edges
+
+
+def _enumerate_faces(
+        connectivity: NDArray[np.intp],
+        local_faces: NDArray[np.intp],
+) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
+    """Build the deduplicated face table + per-element face index map.
+
+    Same pattern as :func:`_enumerate_edges`: per-element face vertex
+    tuples are sorted into a canonical form and deduplicated across the
+    mesh. Variable face-vertex counts (mixed quad / tri) are not
+    supported here; ``local_faces`` must be a fixed ``(n_local_faces,
+    n_face_vertices)`` table.
+
+    Returns ``(faces, element_faces)``: ``faces`` has shape
+    ``(N_faces, n_face_vertices)`` with sorted-vertex-tuple entries;
+    ``element_faces`` has shape ``(N_elems, n_local_faces)`` with
+    global face indices in the local-face order matching the family's
+    local table.
+    """
+    n_elems = connectivity.shape[0]
+    n_local = local_faces.shape[0]
+    n_face_verts = local_faces.shape[1]
+    face_verts = connectivity[:, local_faces]            # (n_elems, n_local, n_face_verts)
+    face_verts_sorted = np.sort(face_verts, axis=2)
+    flat = face_verts_sorted.reshape(-1, n_face_verts)
+    faces, inverse = np.unique(flat, axis=0, return_inverse=True)
+    element_faces = inverse.reshape(n_elems, n_local).astype(np.intp)
+    return faces.astype(np.intp), element_faces
+
+
 @dataclass(frozen=True)
 class Mesh:
     """3D mesh with element_blocks, node_sets, and side_sets.
@@ -136,8 +237,23 @@ class Mesh:
     ``(elem_id, local_face_id)`` pairs (Exodus side sets). Used as
     Neumann BC attach handles and for Exodus mesh round-trip.
 
-    Frozen dataclass; no mutation API. Validation runs in
-    ``__post_init__``.
+    ``geometric_finite_element`` is the :class:`FiniteElement` whose
+    reference-frame interpolant maps reference-element coords to
+    physical coords. Defaults (when ``None`` is passed) to a P1
+    element matching ``element_family`` (P1_TET / Q1_HEX). Resolved
+    in ``__post_init__``; never ``None`` after construction.
+
+    ``edges``, ``element_edges``, ``faces``, ``element_faces`` are
+    derived tables computed at construction (``init=False`` fields).
+    ``edges`` has shape ``(N_edges, 2)`` — deduplicated edge endpoints
+    as sorted-vertex pairs. ``element_edges`` has shape
+    ``(N_elems, n_edges_per_elem)`` — per-element global edge indices
+    in canonical local-edge order. ``faces`` and ``element_faces``
+    have analogous shapes for the face enumeration; ``n_face_vertices``
+    is fixed by ``element_family`` (4 for hex, 3 for tet).
+
+    Frozen dataclass; no mutation API. Validation and derived-table
+    computation run in ``__post_init__``.
     """
 
     nodes: NDArray[np.floating]
@@ -146,6 +262,23 @@ class Mesh:
     element_blocks: dict[str, NDArray[np.intp]]
     node_sets: dict[str, NDArray[np.intp]]
     side_sets: dict[str, NDArray[np.intp]]
+    geometric_finite_element: FiniteElement | None = None
+    edges: NDArray[np.intp] = field(
+        init=False,
+        default_factory=lambda: np.empty((0, 2), dtype=np.intp),
+    )
+    element_edges: NDArray[np.intp] = field(
+        init=False,
+        default_factory=lambda: np.empty((0, 0), dtype=np.intp),
+    )
+    faces: NDArray[np.intp] = field(
+        init=False,
+        default_factory=lambda: np.empty((0, 0), dtype=np.intp),
+    )
+    element_faces: NDArray[np.intp] = field(
+        init=False,
+        default_factory=lambda: np.empty((0, 0), dtype=np.intp),
+    )
 
     def __post_init__(self) -> None:
         if self.nodes.ndim != 2 or self.nodes.shape[1] != 3:
@@ -243,6 +376,38 @@ class Mesh:
                         f"side_sets['{name}'] local_face_ids out of range "
                         f"[0, {n_faces}) for {self.element_family.name}"
                     )
+
+        edges, element_edges = _enumerate_edges(
+            self.connectivity,
+            _LOCAL_EDGES_PER_ELEMENT[self.element_family],
+        )
+        faces, element_faces = _enumerate_faces(
+            self.connectivity,
+            _LOCAL_FACES_PER_ELEMENT[self.element_family],
+        )
+        object.__setattr__(self, "edges", edges)
+        object.__setattr__(self, "element_edges", element_edges)
+        object.__setattr__(self, "faces", faces)
+        object.__setattr__(self, "element_faces", element_faces)
+
+        if self.geometric_finite_element is None:
+            object.__setattr__(
+                self,
+                "geometric_finite_element",
+                _GEOMETRIC_FINITE_ELEMENT_PER_ELEMENT[self.element_family],
+            )
+
+    def entity_count(self, entity_type: EntityType) -> int:
+        """Number of mesh entities of the given ``entity_type``."""
+        if entity_type == EntityType.VERTEX:
+            return int(self.nodes.shape[0])
+        if entity_type == EntityType.EDGE:
+            return int(self.edges.shape[0])
+        if entity_type == EntityType.FACE:
+            return int(self.faces.shape[0])
+        if entity_type == EntityType.CELL:
+            return int(self.connectivity.shape[0])
+        raise ValueError(f"unknown entity_type: {entity_type!r}")
 
 
 def StructuredHexMesh(

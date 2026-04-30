@@ -9,11 +9,32 @@ import unittest
 import numpy as np
 
 from cmad.fem.element_family import ElementFamily
+from cmad.fem.finite_element import P1_TET, Q1_HEX, EntityType, FiniteElement
+from cmad.fem.interpolants import hex_linear
 from cmad.fem.mesh import (
     Mesh,
     StructuredHexMesh,
     hex_to_tet_split,
 )
+
+
+def _build_unit_tet_mesh() -> Mesh:
+    """Single linear tet at the unit-tet vertices."""
+    nodes = np.array([
+        [0., 0., 0.],
+        [1., 0., 0.],
+        [0., 1., 0.],
+        [0., 0., 1.],
+    ])
+    connectivity = np.array([[0, 1, 2, 3]], dtype=np.intp)
+    return Mesh(
+        nodes=nodes,
+        connectivity=connectivity,
+        element_family=ElementFamily.TET_LINEAR,
+        element_blocks={"all": np.array([0], dtype=np.intp)},
+        node_sets={},
+        side_sets={},
+    )
 
 
 class TestMesh(unittest.TestCase):
@@ -206,6 +227,133 @@ class TestHexToTetSplit(unittest.TestCase):
         tet_mesh = hex_to_tet_split(hex_mesh)
         with self.assertRaisesRegex(ValueError, "HEX_LINEAR"):
             hex_to_tet_split(tet_mesh)
+
+
+class TestEdgeEnumeration(unittest.TestCase):
+
+    def test_single_hex_has_12_edges(self):
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (1, 1, 1))
+        self.assertEqual(mesh.edges.shape, (12, 2))
+        self.assertEqual(mesh.element_edges.shape, (1, 12))
+
+    def test_single_tet_has_6_edges(self):
+        mesh = _build_unit_tet_mesh()
+        self.assertEqual(mesh.edges.shape, (6, 2))
+        self.assertEqual(mesh.element_edges.shape, (1, 6))
+
+    def test_2x2x2_hex_has_54_unique_edges(self):
+        # Structured (nx,ny,nz)=(2,2,2): nx*(ny+1)*(nz+1) +
+        # (nx+1)*ny*(nz+1) + (nx+1)*(ny+1)*nz = 18+18+18 = 54.
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+        self.assertEqual(mesh.edges.shape, (54, 2))
+        self.assertEqual(mesh.element_edges.shape, (8, 12))
+
+    def test_adjacent_hexes_share_face_edges(self):
+        # 2x1x1: two hexes share a 4-vertex face → 4 shared edges.
+        # Total: 12 + 12 - 4 = 20.
+        mesh = StructuredHexMesh((2.0, 1.0, 1.0), (2, 1, 1))
+        self.assertEqual(mesh.edges.shape, (20, 2))
+
+    def test_edges_are_sorted_vertex_pairs(self):
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+        self.assertTrue((mesh.edges[:, 0] < mesh.edges[:, 1]).all())
+
+    def test_element_edges_indices_in_range(self):
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+        self.assertGreaterEqual(int(mesh.element_edges.min()), 0)
+        self.assertLess(
+            int(mesh.element_edges.max()), mesh.edges.shape[0],
+        )
+
+    def test_element_edge_round_trip(self):
+        # Hex local edge 0 is between hex-local nodes 0 and 1.
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (1, 1, 1))
+        elem_edge_idx = int(mesh.element_edges[0, 0])
+        edge_verts = mesh.edges[elem_edge_idx]
+        expected = np.sort([
+            mesh.connectivity[0, 0], mesh.connectivity[0, 1],
+        ])
+        np.testing.assert_array_equal(edge_verts, expected)
+
+
+class TestFaceEnumeration(unittest.TestCase):
+
+    def test_single_hex_has_6_faces(self):
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (1, 1, 1))
+        self.assertEqual(mesh.faces.shape, (6, 4))
+        self.assertEqual(mesh.element_faces.shape, (1, 6))
+
+    def test_single_tet_has_4_faces(self):
+        mesh = _build_unit_tet_mesh()
+        self.assertEqual(mesh.faces.shape, (4, 3))
+        self.assertEqual(mesh.element_faces.shape, (1, 4))
+
+    def test_2x2x2_hex_has_36_unique_faces(self):
+        # Structured (2,2,2): (nx+1)*ny*nz + nx*(ny+1)*nz +
+        # nx*ny*(nz+1) = 12+12+12 = 36.
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+        self.assertEqual(mesh.faces.shape, (36, 4))
+        self.assertEqual(mesh.element_faces.shape, (8, 6))
+
+    def test_faces_are_sorted_vertex_tuples(self):
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+        diffs = np.diff(mesh.faces, axis=1)
+        self.assertTrue((diffs > 0).all())
+
+    def test_element_faces_indices_in_range(self):
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+        self.assertGreaterEqual(int(mesh.element_faces.min()), 0)
+        self.assertLess(
+            int(mesh.element_faces.max()), mesh.faces.shape[0],
+        )
+
+
+class TestEntityCount(unittest.TestCase):
+
+    def test_2x2x2_hex_entity_counts(self):
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+        self.assertEqual(mesh.entity_count(EntityType.VERTEX), 27)
+        self.assertEqual(mesh.entity_count(EntityType.EDGE), 54)
+        self.assertEqual(mesh.entity_count(EntityType.FACE), 36)
+        self.assertEqual(mesh.entity_count(EntityType.CELL), 8)
+
+    def test_single_tet_entity_counts(self):
+        mesh = _build_unit_tet_mesh()
+        self.assertEqual(mesh.entity_count(EntityType.VERTEX), 4)
+        self.assertEqual(mesh.entity_count(EntityType.EDGE), 6)
+        self.assertEqual(mesh.entity_count(EntityType.FACE), 4)
+        self.assertEqual(mesh.entity_count(EntityType.CELL), 1)
+
+
+class TestGeometricFiniteElement(unittest.TestCase):
+
+    def test_hex_default_is_q1_hex(self):
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (1, 1, 1))
+        self.assertIs(mesh.geometric_finite_element, Q1_HEX)
+
+    def test_tet_default_is_p1_tet(self):
+        hex_mesh = StructuredHexMesh((1.0, 1.0, 1.0), (1, 1, 1))
+        tet_mesh = hex_to_tet_split(hex_mesh)
+        self.assertIs(tet_mesh.geometric_finite_element, P1_TET)
+
+    def test_explicit_geometric_fe_preserved(self):
+        custom = FiniteElement(
+            name="my_q1_hex",
+            element_family=ElementFamily.HEX_LINEAR,
+            dofs_per_entity={EntityType.VERTEX: 1},
+            interpolant_fn=hex_linear,
+        )
+        base = StructuredHexMesh((1.0, 1.0, 1.0), (1, 1, 1))
+        mesh = Mesh(
+            nodes=base.nodes,
+            connectivity=base.connectivity,
+            element_family=base.element_family,
+            element_blocks=base.element_blocks,
+            node_sets=base.node_sets,
+            side_sets=base.side_sets,
+            geometric_finite_element=custom,
+        )
+        self.assertIs(mesh.geometric_finite_element, custom)
 
 
 if __name__ == "__main__":
