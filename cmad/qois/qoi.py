@@ -8,8 +8,9 @@ from jax.tree_util import tree_flatten
 from numpy.typing import NDArray
 
 from cmad.models.deriv_types import DerivType
+from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.model import Model
-from cmad.typing import JaxArray, PyTree, QoIFn, Step
+from cmad.typing import JaxArray, Params, PyTree, QoIFn, StateList, Step
 
 
 class QoI(ABC):
@@ -37,7 +38,9 @@ class QoI(ABC):
         self._qoi = jit(qoi_fun)
         self._dqoi = [jit(jacfwd(qoi_fun, argnums=DerivType.DXI)),
                       jit(jacfwd(qoi_fun, argnums=DerivType.DXI_PREV)),
-                      jit(jacrev(qoi_fun, argnums=DerivType.DPARAMS))]
+                      jit(jacrev(qoi_fun, argnums=DerivType.DPARAMS)),
+                      jit(jacfwd(qoi_fun, argnums=DerivType.DU)),
+                      jit(jacfwd(qoi_fun, argnums=DerivType.DU_PREV))]
         self._d2qoi = jit(hessian(qoi_fun, argnums=(DerivType.DXI,
                                                     DerivType.DPARAMS)))
 
@@ -189,6 +192,76 @@ class QoI(ABC):
 
     def weight(self) -> NDArray[np.floating]:
         return self._weight
+
+    def dJ_dxi(
+            self,
+            xi: StateList,
+            xi_prev: StateList,
+            params: Params,
+            U: GlobalFieldsAtPoint,
+            U_prev: GlobalFieldsAtPoint,
+            data: JaxArray,
+            weight: JaxArray,
+    ) -> PyTree:
+        return self._dqoi[DerivType.DXI](
+            xi, xi_prev, params, U, U_prev, data, weight,
+        )
+
+    def dJ_dxi_prev(
+            self,
+            xi: StateList,
+            xi_prev: StateList,
+            params: Params,
+            U: GlobalFieldsAtPoint,
+            U_prev: GlobalFieldsAtPoint,
+            data: JaxArray,
+            weight: JaxArray,
+    ) -> PyTree:
+        return self._dqoi[DerivType.DXI_PREV](
+            xi, xi_prev, params, U, U_prev, data, weight,
+        )
+
+    def dJ_dp(
+            self,
+            xi: StateList,
+            xi_prev: StateList,
+            params: Params,
+            U: GlobalFieldsAtPoint,
+            U_prev: GlobalFieldsAtPoint,
+            data: JaxArray,
+            weight: JaxArray,
+    ) -> PyTree:
+        return self._dqoi[DerivType.DPARAMS](
+            xi, xi_prev, params, U, U_prev, data, weight,
+        )
+
+    def dJ_dU(
+            self,
+            xi: StateList,
+            xi_prev: StateList,
+            params: Params,
+            U: GlobalFieldsAtPoint,
+            U_prev: GlobalFieldsAtPoint,
+            data: JaxArray,
+            weight: JaxArray,
+    ) -> PyTree:
+        return self._dqoi[DerivType.DU](
+            xi, xi_prev, params, U, U_prev, data, weight,
+        )
+
+    def dJ_dU_prev(
+            self,
+            xi: StateList,
+            xi_prev: StateList,
+            params: Params,
+            U: GlobalFieldsAtPoint,
+            U_prev: GlobalFieldsAtPoint,
+            data: JaxArray,
+            weight: JaxArray,
+    ) -> PyTree:
+        return self._dqoi[DerivType.DU_PREV](
+            xi, xi_prev, params, U, U_prev, data, weight,
+        )
 
     def data_at_step(self, step: Step) -> NDArray[np.floating]:
         """
