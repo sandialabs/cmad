@@ -7,7 +7,7 @@ the full for_model pipeline — closure-dict keys, capability gating,
 AD gradients vs central FD, and one Newton step for a linear problem.
 """
 import unittest
-from typing import ClassVar
+from typing import ClassVar, cast
 
 import jax.numpy as jnp
 import numpy as np
@@ -22,6 +22,7 @@ from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
 from cmad.models.var_types import VarType
 from cmad.parameters.parameters import Parameters
+from cmad.typing import PyTreeDict
 
 
 def _tet_barycenter_shapes() -> ShapeFunctionsAtIP:
@@ -36,7 +37,8 @@ def _tet_barycenter_shapes() -> ShapeFunctionsAtIP:
 
 
 def _make_parameters() -> Parameters:
-    values = {"elastic": {"kappa": 100.0, "mu": 50.0}}
+    values = cast(
+        PyTreeDict, {"elastic": {"kappa": 100.0, "mu": 50.0}})
     active_flags = tree_map(lambda _: True, values)
     transforms = tree_map(lambda _: None, values)
     return Parameters(values, active_flags, transforms)
@@ -174,6 +176,40 @@ class TestGlobalResidualABC(unittest.TestCase):
         R1_blocks = evaluators["R"](
             params, U_new, U_prev, shapes_ip, w, dv, ip_set)
         self.assertLess(float(jnp.linalg.norm(R1_blocks[0][3, :])), 1e-10)
+
+    def test_dR_dU_standalone_returns_block_pair_structure(self):
+        gr = _ToyEquilibrium()
+        model = _make_linear_elastic_model()
+        evaluators = gr.for_model(
+            model, mode=GlobalResidualMode.CLOSED_FORM)
+        args = _test_inputs(model)
+        result = evaluators["dR_dU"](*args)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(len(result[0]), 1)
+        self.assertEqual(result[0][0].shape, (4, 3, 4, 3))
+
+    def test_dR_dU_prev_standalone_returns_block_pair_structure(self):
+        gr = _ToyEquilibrium()
+        model = _make_linear_elastic_model()
+        evaluators = gr.for_model(
+            model, mode=GlobalResidualMode.CLOSED_FORM)
+        args = _test_inputs(model)
+        result = evaluators["dR_dU_prev"](*args)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(len(result[0]), 1)
+        self.assertEqual(result[0][0].shape, (4, 3, 4, 3))
+
+    def test_dR_dp_returns_residual_block_pytree_parallel_to_params(self):
+        gr = _ToyEquilibrium()
+        model = _make_linear_elastic_model()
+        evaluators = gr.for_model(
+            model, mode=GlobalResidualMode.CLOSED_FORM)
+        args = _test_inputs(model)
+        result = evaluators["dR_dp"](*args)
+        self.assertEqual(len(result), 1)
+        self.assertIn("elastic", result[0])
+        self.assertIn("kappa", result[0]["elastic"])
+        self.assertIn("mu", result[0]["elastic"])
 
 
 if __name__ == "__main__":
