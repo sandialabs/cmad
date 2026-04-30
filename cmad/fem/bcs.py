@@ -63,6 +63,8 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
+from cmad.typing import JaxArray
+
 
 @dataclass(frozen=True)
 class DirichletBC:
@@ -161,7 +163,10 @@ class NeumannBC:
     field_name: str
     values: (
         Sequence[float]
-        | Callable[[NDArray[np.floating], float], NDArray[np.floating]]
+        | Callable[
+            [NDArray[np.floating] | JaxArray, float],
+            NDArray[np.floating] | JaxArray,
+        ]
     )
 
     def __post_init__(self) -> None:
