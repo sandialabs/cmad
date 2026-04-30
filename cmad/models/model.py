@@ -108,7 +108,9 @@ class Model(ABC):
         self._jacobian = [jit(jacfwd(residual_fun, argnums=DerivType.DXI,
                           holomorphic=self._is_complex)),
                           jit(jacfwd(residual_fun, argnums=DerivType.DXI_PREV)),
-                          jit(jacrev(residual_fun, argnums=DerivType.DPARAMS))]
+                          jit(jacrev(residual_fun, argnums=DerivType.DPARAMS)),
+                          jit(jacfwd(residual_fun, argnums=DerivType.DU)),
+                          jit(jacfwd(residual_fun, argnums=DerivType.DU_PREV))]
 
 
         self._hessian_states = jit(hessian(residual_fun,
@@ -292,6 +294,66 @@ class Model(ABC):
         assert self._dSigma is not None, \
             "dSigma() requires a non-DNONE deriv mode (seed_xi/xi_prev/params)"
         return self._dSigma
+
+    def dC_dxi(
+            self,
+            xi: StateList,
+            xi_prev: StateList,
+            params: Params,
+            U: GlobalFieldsAtPoint,
+            U_prev: GlobalFieldsAtPoint,
+    ) -> PyTree:
+        return self._jacobian[DerivType.DXI](
+            xi, xi_prev, params, U, U_prev,
+        )
+
+    def dC_dxi_prev(
+            self,
+            xi: StateList,
+            xi_prev: StateList,
+            params: Params,
+            U: GlobalFieldsAtPoint,
+            U_prev: GlobalFieldsAtPoint,
+    ) -> PyTree:
+        return self._jacobian[DerivType.DXI_PREV](
+            xi, xi_prev, params, U, U_prev,
+        )
+
+    def dC_dp(
+            self,
+            xi: StateList,
+            xi_prev: StateList,
+            params: Params,
+            U: GlobalFieldsAtPoint,
+            U_prev: GlobalFieldsAtPoint,
+    ) -> PyTree:
+        return self._jacobian[DerivType.DPARAMS](
+            xi, xi_prev, params, U, U_prev,
+        )
+
+    def dC_dU(
+            self,
+            xi: StateList,
+            xi_prev: StateList,
+            params: Params,
+            U: GlobalFieldsAtPoint,
+            U_prev: GlobalFieldsAtPoint,
+    ) -> PyTree:
+        return self._jacobian[DerivType.DU](
+            xi, xi_prev, params, U, U_prev,
+        )
+
+    def dC_dU_prev(
+            self,
+            xi: StateList,
+            xi_prev: StateList,
+            params: Params,
+            U: GlobalFieldsAtPoint,
+            U_prev: GlobalFieldsAtPoint,
+    ) -> PyTree:
+        return self._jacobian[DerivType.DU_PREV](
+            xi, xi_prev, params, U, U_prev,
+        )
 
     def variables(
             self,
