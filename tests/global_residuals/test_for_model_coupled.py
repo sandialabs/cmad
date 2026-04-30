@@ -1,11 +1,15 @@
-"""Shape contract + Elastic equivalence tests for GlobalResidual.for_model COUPLED mode.
+"""Shape contract + Elastic equivalence + J2 raw-partial tests for
+GlobalResidual.for_model COUPLED mode.
 
 Bundles a small toy 3D u-only quasi-static equilibrium GR (mirror
 of test_abc_contract.py's _ToyEquilibrium, mode-aware via
 self._mode) and exercises the COUPLED branch's 7-key dict shape,
-mixed argument signatures (9-arg raw vs 8-arg Newton-running), and
+mixed argument signatures (9-arg raw vs 8-arg Newton-running),
 the R + dR/dU equivalence between CLOSED_FORM and COUPLED bindings
-on a closed-form-capable Elastic model.
+on a closed-form-capable Elastic model, and J2 raw-partial
+contracts plus JVP-vs-FD on dR/dU at a plastic-loading point
+(validates the IFT correction in make_newton_solve's custom_jvp
+rule).
 """
 import unittest
 from typing import cast
@@ -21,9 +25,11 @@ from cmad.global_residuals import (
 )
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
+from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.var_types import VarType
 from cmad.parameters.parameters import Parameters
 from cmad.typing import PyTreeDict
+from tests.support.test_problems import J2AnalyticalProblem
 
 
 def _tet_barycenter_shapes() -> ShapeFunctionsAtIP:
@@ -47,6 +53,33 @@ def _make_parameters() -> Parameters:
 
 def _make_linear_elastic_model() -> Elastic:
     return Elastic(_make_parameters(), def_type=DefType.FULL_3D)
+
+
+def _make_J2_model() -> SmallElasticPlastic:
+    """SmallElasticPlastic with the J2-Voce parameter set from the
+    calibration test problem (E=200e3, nu=0.3, Y=200, Voce S=200,
+    D=20)."""
+    return SmallElasticPlastic(
+        J2AnalyticalProblem().J2_parameters, def_type=DefType.FULL_3D)
+
+
+def _j2_plastic_inputs(model: SmallElasticPlastic):
+    """Element-level evaluation point with strain components a few
+    times the yield strain (Y/E = 1e-3); the local Newton lands in
+    the plastic branch."""
+    U = [
+        jnp.zeros((4, 3))
+        .at[1, 0].set(0.005)
+        .at[2, 1].set(0.003)
+        .at[3, 2].set(0.002)
+    ]
+    U_prev = [jnp.zeros((4, 3))]
+    params = model.parameters.values
+    shapes_ip = [_tet_barycenter_shapes()]
+    w = 1.0
+    dv = 1.0 / 6.0
+    ip_set = 0
+    return params, U, U_prev, shapes_ip, w, dv, ip_set
 
 
 class _ToyEquilibrium(GlobalResidual):
@@ -208,6 +241,146 @@ class TestForModelCoupledClosedFormEquivalence(unittest.TestCase):
         self.assertTrue(jnp.allclose(
             dR_dU_closed[0][0], dR_dU_coupled[0][0],
             rtol=0., atol=1e-12))
+
+
+class TestForModelCoupledJ2RawEvaluators(unittest.TestCase):
+    """COUPLED raw evaluators on a J2 plastic-loading point.
+
+    The internal local Newton inside ``R_and_dR_dU_and_xi`` solves
+    ``model._residual(xi, xi_prev, params, U_ip, U_ip_prev) = 0``
+    in the plastic branch; the converged xi is returned as the third
+    element. We then exercise the raw 9-arg evaluators at that
+    converged xi and check structural invariants.
+    """
+    def test_local_newton_converges_to_equilibrium(self):
+        gr = _ToyEquilibrium()
+        model = _make_J2_model()
+        evaluators = gr.for_model(
+            model, mode=GlobalResidualMode.COUPLED)
+        params, U, U_prev, shapes_ip, w, dv, ip_set = (
+            _j2_plastic_inputs(model))
+        xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
+
+        _, _, xi_solved = evaluators["R_and_dR_dU_and_xi"](
+            params, U, U_prev, xi_prev, shapes_ip, w, dv, ip_set)
+
+        # xi at equilibrium for the loading: model._residual ≈ 0.
+        U_ip = gr.interpolate_global_fields_at_ip(U, shapes_ip)
+        U_ip_prev = gr.interpolate_global_fields_at_ip(
+            U_prev, shapes_ip)
+        residual = model._residual(
+            xi_solved, xi_prev, params, U_ip, U_ip_prev)
+        self.assertLess(float(jnp.linalg.norm(residual)), 1e-10)
+
+        # Confirm plastic regime: alpha (xi[1]) is positive after the
+        # solve (took at least one plastic step).
+        self.assertGreater(float(xi_solved[1][0]), 0.0)
+
+    def test_R_raw_at_supplied_xi_matches_total(self):
+        """Raw 9-arg ``R`` at ``xi=xi_solved`` matches R from the
+        Newton-running 8-arg ``R_and_dR_dU_and_xi``."""
+        gr_raw = _ToyEquilibrium()
+        gr_total = _ToyEquilibrium()
+        model = _make_J2_model()
+        ev_raw = gr_raw.for_model(
+            model, mode=GlobalResidualMode.COUPLED)
+        ev_total = gr_total.for_model(
+            model, mode=GlobalResidualMode.COUPLED)
+        params, U, U_prev, shapes_ip, w, dv, ip_set = (
+            _j2_plastic_inputs(model))
+        xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
+
+        R_total, _, xi_solved = ev_total["R_and_dR_dU_and_xi"](
+            params, U, U_prev, xi_prev, shapes_ip, w, dv, ip_set)
+        R_raw = ev_raw["R"](
+            params, U, U_prev, xi_solved, xi_prev,
+            shapes_ip, w, dv, ip_set)
+
+        self.assertTrue(jnp.allclose(
+            R_raw[0], R_total[0], rtol=0., atol=1e-12))
+
+    def test_dR_dxi_and_dR_dxi_prev_shapes(self):
+        gr = _ToyEquilibrium()
+        model = _make_J2_model()
+        evaluators = gr.for_model(
+            model, mode=GlobalResidualMode.COUPLED)
+        params, U, U_prev, shapes_ip, w, dv, ip_set = (
+            _j2_plastic_inputs(model))
+        xi = [jnp.zeros_like(b) for b in model._init_xi]
+        xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
+
+        # SmallElasticPlastic FULL_3D: xi blocks are pstrain (6,)
+        # and alpha (1,). One R block of shape (4, 3).
+        for key in ("dR_dxi", "dR_dxi_prev"):
+            result = evaluators[key](
+                params, U, U_prev, xi, xi_prev,
+                shapes_ip, w, dv, ip_set)
+            self.assertEqual(len(result), 1)
+            self.assertEqual(len(result[0]), 2)
+            self.assertEqual(result[0][0].shape, (4, 3, 6))
+            self.assertEqual(result[0][1].shape, (4, 3, 1))
+
+    def test_dR_dxi_alpha_block_is_zero(self):
+        """``model.cauchy`` for SmallElasticPlastic depends on plastic
+        strain (xi[0]) but not on the hardening variable alpha
+        (xi[1]), so dR/dxi[1] is identically zero — a structural
+        invariant of the model that the wiring should preserve."""
+        gr = _ToyEquilibrium()
+        model = _make_J2_model()
+        evaluators = gr.for_model(
+            model, mode=GlobalResidualMode.COUPLED)
+        params, U, U_prev, shapes_ip, w, dv, ip_set = (
+            _j2_plastic_inputs(model))
+        # Non-trivial xi so the zero result isn't an artifact of
+        # zero state.
+        xi = [jnp.array([0.001, 0.0005, 0.0, 0.0, 0.0, 0.0]),
+              jnp.array([0.001])]
+        xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
+
+        dR_dxi = evaluators["dR_dxi"](
+            params, U, U_prev, xi, xi_prev,
+            shapes_ip, w, dv, ip_set)
+        self.assertTrue(jnp.allclose(dR_dxi[0][1], 0., atol=0.))
+
+
+class TestForModelCoupledJVPvsFD(unittest.TestCase):
+    """Forward-mode JVP correctness on ``dR/dU`` total at a J2
+    plastic-loading point. Validates the IFT correction in
+    ``make_newton_solve``'s ``custom_jvp`` rule against central FD
+    on R from ``R_and_dR_dU_and_xi`` (which re-runs the local Newton
+    each call, so the FD probe inherits the IFT structure)."""
+
+    def test_dR_dU_total_matches_central_fd(self):
+        gr = _ToyEquilibrium()
+        model = _make_J2_model()
+        evaluators = gr.for_model(
+            model, mode=GlobalResidualMode.COUPLED)
+        params, U, U_prev, shapes_ip, w, dv, ip_set = (
+            _j2_plastic_inputs(model))
+        xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
+
+        dR_dU = evaluators["dR_dU"](
+            params, U, U_prev, xi_prev,
+            shapes_ip, w, dv, ip_set)
+        ad_arr = np.asarray(dR_dU[0][0])  # (4, 3, 4, 3)
+
+        eps = 1e-6
+        fd_arr = np.zeros_like(ad_arr)
+        for b in range(4):
+            for k in range(3):
+                U_plus = [U[0].at[b, k].add(eps)]
+                U_minus = [U[0].at[b, k].add(-eps)]
+                R_plus, _, _ = evaluators["R_and_dR_dU_and_xi"](
+                    params, U_plus, U_prev, xi_prev,
+                    shapes_ip, w, dv, ip_set)
+                R_minus, _, _ = evaluators["R_and_dR_dU_and_xi"](
+                    params, U_minus, U_prev, xi_prev,
+                    shapes_ip, w, dv, ip_set)
+                fd_arr[:, :, b, k] = (
+                    R_plus[0] - R_minus[0]) / (2 * eps)
+
+        self.assertTrue(np.allclose(
+            ad_arr, fd_arr, rtol=1e-5, atol=1e-7))
 
 
 if __name__ == "__main__":
