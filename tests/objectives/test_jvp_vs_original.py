@@ -83,8 +83,7 @@ class TestJVPvsOriginal(unittest.TestCase):
         jvp_problem = J2AnalyticalProblem(scale_params=True)
         jvp_model = SmallElasticPlastic(jvp_problem.J2_parameters, def_type)
         jvp_qoi = Calibration(jvp_model, cauchy_data, weight)
-        update_fun = make_newton_solve(jvp_model._residual,
-                                       jvp_model._init_xi)
+        update_fun = make_newton_solve(jvp_model._residual)
         jvp_obj = MPJVPObjective(jvp_qoi, F, update_fun)
 
         # Evaluate.

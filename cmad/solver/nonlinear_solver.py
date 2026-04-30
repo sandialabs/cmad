@@ -7,7 +7,6 @@ from jax.flatten_util import ravel_pytree
 from jax.lax import cond, while_loop
 
 from cmad.typing import JaxArray, PyTree, SupportsNewton
-from cmad.util.pytree_linear_algebra import make_linop, make_op
 
 
 def newton_solve(
@@ -86,23 +85,22 @@ def newton_solve(
 
 def make_newton_solve(
         residual: Callable[..., JaxArray],
-        x0: PyTree,
         max_iters: int = 10,
         abs_tol: float = 1e-14,
         rel_tol: float = 1e-14,
-        max_ls_evals: int = 0,
 ) -> Callable[..., PyTree]:
-    _, tree_x = ravel_pytree(x0)
-    linsolve = make_linop(jnp.linalg.solve, tree_x, tree_x)
-    subtract = make_op(jnp.subtract, tree_x)
-    negate = make_op(lambda p: -p, tree_x)
-
 
     @custom_jvp
-    def newton_solve(*args):
-        x_init = args[0]
-        C = residual(x_init, *args)
-        C_norm_0 = jnp.linalg.norm(C)
+    def newton_solve(x_prev, *other_fixed_args):
+        flat_x_prev, unravel = ravel_pytree(x_prev)
+
+        def residual_flat(x_flat):
+            return ravel_pytree(
+                residual(unravel(x_flat), x_prev, *other_fixed_args)
+            )[0]
+
+        C0 = residual_flat(flat_x_prev)
+        C_norm_0 = jnp.linalg.norm(C0)
 
 
         def true_fun(carry):
@@ -113,11 +111,11 @@ def make_newton_solve(
         def false_fun(carry):
             ii, _converged, x, C, _C_norm = carry
 
-            jac = jacfwd(residual, 0)(x, *args)
-            delta_x = linsolve(jac, C)
-            x_2 = subtract(x, delta_x)
+            jac = jacfwd(residual_flat)(x)
+            delta_x = jnp.linalg.solve(jac, C)
+            x_2 = jnp.subtract(x, delta_x)
 
-            C_2 = residual(x_2, *args)
+            C_2 = residual_flat(x_2)
             C_norm_2 = jnp.linalg.norm(C_2)
 
             return ii + 1, False, x_2, C_2, C_norm_2
@@ -135,17 +133,25 @@ def make_newton_solve(
             return cond(pred, true_fun, false_fun, carry)
 
 
-        return while_loop(cond_fun, body_fun,
-            (0, False, x_init, C, C_norm_0))[2]
+        flat_x = while_loop(cond_fun, body_fun,
+            (0, False, flat_x_prev, C0, C_norm_0))[2]
+        return unravel(flat_x)
 
 
     @newton_solve.defjvp
     def newton_solve_jvp(primals, tangents):
-        x = newton_solve(*primals)
-        A = jacfwd(residual, 0)(x, *primals)
-        _, b = jvp(lambda *args: residual(x, *args),
+        x_prev = primals[0]
+        other_fixed_args = primals[1:]
+        x = newton_solve(x_prev, *other_fixed_args)
+        flat_x, unravel = ravel_pytree(x)
+
+        def residual_flat(x_flat, x_p, *args):
+            return ravel_pytree(residual(unravel(x_flat), x_p, *args))[0]
+
+        A = jacfwd(residual_flat, 0)(flat_x, x_prev, *other_fixed_args)
+        _, b = jvp(lambda *args: residual_flat(flat_x, *args),
             primals, tangents)
-        return x, negate(linsolve(A, b))
+        return x, unravel(-jnp.linalg.solve(A, b))
 
 
     return newton_solve

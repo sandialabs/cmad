@@ -105,8 +105,7 @@ def beta_make_newton_solve(
             effective_stress_fun(beta * cauchy, params)
         return scaled_input_effective_stress / equivalent_stress - 1.
 
-    return make_newton_solve(residual, 1., max_iters,
-         abs_tol, rel_tol, max_ls_evals)
+    return make_newton_solve(residual, max_iters, abs_tol, rel_tol)
 
 
 def make_safe_update_fun(

@@ -29,7 +29,7 @@ from cmad.objectives.mp_objective import (
 )
 from cmad.qois.qoi import QoI
 from cmad.solver.nonlinear_solver import make_newton_solve
-from cmad.typing import GradientResult, HessianResult, PyTree, StateList
+from cmad.typing import GradientResult, HessianResult, StateList
 
 
 class SensitivityDriver(Protocol):
@@ -80,9 +80,9 @@ class _JVPDriver:
     """Wraps :class:`MPJVPObjective` into the ``SensitivityDriver`` surface.
 
     Constructs the model-specific Newton solver helper
-    (``make_newton_solve(model._residual, model._init_xi, **newton_kwargs)``)
-    so the JVP-internal forward pass uses the same convergence tolerances
-    as the driver-level Newton loop.
+    (``make_newton_solve(model._residual, **newton_kwargs)``) so the
+    JVP-internal forward pass uses the same convergence tolerances as
+    the driver-level Newton loop.
     """
 
     def __init__(
@@ -90,15 +90,19 @@ class _JVPDriver:
             newton_kwargs: dict[str, Any],
     ) -> None:
         model = qoi.model()
-        # ``list`` invariance on the PyTree union means StateList is not
-        # directly a PyTree to mypy; make_newton_solve returns the loose
-        # ``Callable[..., PyTree]`` while MPJVPObjective declares the
-        # tighter ``Callable[..., StateList]``. Both coincide at
-        # runtime; casts narrow the static types.
-        x0 = cast(PyTree, model._init_xi)
+        # The deck's solver.newton dict carries max_ls_evals for the
+        # imperative newton_solve and is not relevant to the traced
+        # make_newton_solve. Pluck the traced solver's kwargs by name.
+        # Cast narrows the static return type to MPJVPObjective's
+        # tighter StateList.
         update_fun = cast(
             Callable[..., StateList],
-            make_newton_solve(model._residual, x0, **newton_kwargs),
+            make_newton_solve(
+                model._residual,
+                max_iters=newton_kwargs["max_iters"],
+                abs_tol=newton_kwargs["abs_tol"],
+                rel_tol=newton_kwargs["rel_tol"],
+            ),
         )
         self._jvp_obj = MPJVPObjective(qoi, global_state, update_fun)
 
