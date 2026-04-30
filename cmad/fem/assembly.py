@@ -1,5 +1,6 @@
 """Element + global FE assembly machinery."""
 from collections.abc import Callable, Sequence
+from typing import NamedTuple
 
 import jax.numpy as jnp
 import numpy as np
@@ -38,6 +39,52 @@ def iso_jac_at_ip(
     iso_jac_det = jnp.linalg.det(iso_jac)
     grad_N_phys = grad_N_ref @ jnp.linalg.inv(iso_jac)
     return grad_N_phys, iso_jac_det, iso_jac
+
+
+class _IPGeometry(NamedTuple):
+    """Per-IP geometry quantities shared between CLOSED_FORM and COUPLED kernels."""
+    field_shapes_phys_per_block: list[ShapeFunctionsAtIP]
+    dv: JaxArray
+    coords_ip: JaxArray
+
+
+def _per_ip_geometry(
+        quad_xi_ip: JaxArray,
+        X_elem: JaxArray,
+        geom_interpolant_fn: Callable[[JaxArray], ShapeFunctionsAtIP],
+        per_block_interpolant_fns: Sequence[
+            Callable[[JaxArray], ShapeFunctionsAtIP]
+        ],
+) -> _IPGeometry:
+    """One IP's iso-Jacobian-derived quantities consumed by both kernels.
+
+    Computes the geometric interpolant + isoparametric Jacobian once,
+    lifts each per-block field interpolant's reference-frame gradients
+    to physical frame via the shared ``inv(iso_jac)``, and returns the
+    integration-measure factor ``dv = iso_jac_det`` plus the IP's
+    physical-frame coordinates ``coords_ip = N · X_elem`` (used by
+    forcing-fn callables — computed unconditionally, cheap matmul,
+    kept symmetric across kernels regardless of whether forcing is
+    active).
+    """
+    geom_shapes_ref = geom_interpolant_fn(quad_xi_ip)
+    _, iso_jac_det, iso_jac = iso_jac_at_ip(
+        geom_shapes_ref.grad_N, X_elem,
+    )
+    iso_jac_inv = jnp.linalg.inv(iso_jac)
+    field_shapes_phys_per_block: list[ShapeFunctionsAtIP] = []
+    for r in range(len(per_block_interpolant_fns)):
+        field_shapes_ref_r = per_block_interpolant_fns[r](quad_xi_ip)
+        grad_N_phys_r = field_shapes_ref_r.grad_N @ iso_jac_inv
+        field_shapes_phys_per_block.append(ShapeFunctionsAtIP(
+            N=field_shapes_ref_r.N, grad_N=grad_N_phys_r,
+        ))
+    coords_ip = geom_shapes_ref.N @ X_elem
+    return _IPGeometry(
+        field_shapes_phys_per_block=field_shapes_phys_per_block,
+        dv=iso_jac_det,
+        coords_ip=coords_ip,
+    )
 
 
 def _element_basis_fns(
@@ -228,27 +275,16 @@ def per_element_R_and_K(
 
     nips = quad_xi.shape[0]
     for ip_idx in range(nips):
-        geom_shapes_ref = geom_interpolant_fn(quad_xi[ip_idx])
-        _, iso_jac_det, iso_jac = iso_jac_at_ip(
-            geom_shapes_ref.grad_N, X_elem,
+        geom = _per_ip_geometry(
+            quad_xi[ip_idx], X_elem,
+            geom_interpolant_fn, per_block_interpolant_fns,
         )
-        iso_jac_inv = jnp.linalg.inv(iso_jac)
         w_ref = quad_w[ip_idx]
-        dv = iso_jac_det
-
-        field_shapes_phys_per_block: list[ShapeFunctionsAtIP] = []
-        for r in range(num_blocks):
-            field_shapes_ref_r = per_block_interpolant_fns[r](
-                quad_xi[ip_idx],
-            )
-            grad_N_phys_r = field_shapes_ref_r.grad_N @ iso_jac_inv
-            field_shapes_phys_per_block.append(ShapeFunctionsAtIP(
-                N=field_shapes_ref_r.N, grad_N=grad_N_phys_r,
-            ))
+        dv = geom.dv
 
         R_ip, dR_dU_ip = R_and_dR_dU_evaluator(
             params, U_elem, U_prev_elem,
-            field_shapes_phys_per_block, w_ref, dv, 0,
+            geom.field_shapes_phys_per_block, w_ref, dv, 0,
         )
 
         for r in range(num_blocks):
@@ -257,12 +293,11 @@ def per_element_R_and_K(
                 dR_dU_blocks[r][s] = dR_dU_blocks[r][s] + dR_dU_ip[r][s]
 
         if forcing_fns_by_block_idx:
-            coords_ip = geom_shapes_ref.N @ X_elem
             for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
-                f_ip = jnp.asarray(forcing_fn(coords_ip, t))
+                f_ip = jnp.asarray(forcing_fn(geom.coords_ip, t))
                 f_ext = jnp.einsum(
                     "a,k->ak",
-                    field_shapes_phys_per_block[block_idx].N, f_ip,
+                    geom.field_shapes_phys_per_block[block_idx].N, f_ip,
                 ) * w_ref * dv
                 R_blocks[block_idx] = R_blocks[block_idx] - f_ext
 
