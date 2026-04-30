@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.sparse
 from jax import vmap
+from jax.flatten_util import ravel_pytree
 from numpy.typing import NDArray
 
 from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
@@ -13,7 +14,13 @@ from cmad.fem.fe_problem import FEProblem
 from cmad.fem.finite_element import EntityType
 from cmad.fem.neumann import assemble_side_neumann
 from cmad.fem.shapes import ShapeFunctionsAtIP
-from cmad.typing import JaxArray, Params, RAndDRDUEvaluator
+from cmad.typing import (
+    JaxArray,
+    Params,
+    RAndDRDUAndXiEvaluator,
+    RAndDRDUEvaluator,
+    StateList,
+)
 
 
 def iso_jac_at_ip(
@@ -302,6 +309,121 @@ def per_element_R_and_K(
                 R_blocks[block_idx] = R_blocks[block_idx] - f_ext
 
     return R_blocks, dR_dU_blocks
+
+
+def per_element_R_and_K_coupled(
+        X_elem: JaxArray,
+        U_elem: Sequence[JaxArray],
+        U_prev_elem: Sequence[JaxArray],
+        params: Params,
+        xi_prev_per_ip: JaxArray,
+        quad_xi: NDArray[np.floating] | JaxArray,
+        quad_w: NDArray[np.floating] | JaxArray,
+        geom_interpolant_fn: Callable[[JaxArray], ShapeFunctionsAtIP],
+        per_block_interpolant_fns: Sequence[
+            Callable[[JaxArray], ShapeFunctionsAtIP]
+        ],
+        R_and_dR_dU_and_xi_evaluator: RAndDRDUAndXiEvaluator,
+        unravel_xi: Callable[[JaxArray], StateList],
+        forcing_fns_by_block_idx: dict[int, Callable[
+            [JaxArray | NDArray[np.floating], float],
+            JaxArray | NDArray[np.floating],
+        ]],
+        residual_block_shapes: Sequence[tuple[int, int]],
+        t: float,
+) -> tuple[list[JaxArray], list[list[JaxArray]], JaxArray]:
+    """Per-element ``(R_blocks, dR_dU_blocks, xi_solved_per_ip)`` for COUPLED.
+
+    Mirror of :func:`per_element_R_and_K` for the COUPLED branch of
+    :meth:`GlobalResidual.for_model`. Each IP runs the per-IP local
+    Newton inside ``R_and_dR_dU_and_xi_evaluator`` (the
+    Newton-running 8-arg evaluator from the COUPLED dict) and gets
+    back ``(R, dR_dU, xi_solved)`` with ``dR_dU`` already
+    IFT-corrected via ``make_newton_solve``'s ``custom_jvp`` rule.
+    Body forces accumulate identically to CLOSED_FORM — they're
+    U-dependent only, no xi coupling, so the forcing block is
+    mode-independent.
+
+    ``xi_prev_per_ip`` is flat-trailing: shape
+    ``(n_ips, total_xi_dofs)``, matching the FE-state per-element
+    xi-history layout. Output ``xi_solved_per_ip`` is the same
+    flat-trailing layout — direct reshape into the
+    ``(n_elems, n_ips, total_xi_dofs)`` block-level history when
+    the caller vmaps. Pytree-vs-flat conversion happens inside this
+    kernel: the per-IP local Newton inside the evaluator is
+    pytree-keyed on xi (matching ``model._residual``'s
+    ``StateList`` block-by-block contract), and ``unravel_xi`` /
+    ``ravel_pytree`` bridge between that pytree boundary and the
+    flat storage layout.
+
+    ``unravel_xi`` is a Python-side closure capturing the pytree
+    treedef from ``ravel_pytree(model._init_xi)[1]``. Capture once
+    at the call site; do not pass through ``static_argnums``. The
+    kernel only invokes it inside the per-IP Python loop, which
+    unrolls under jit, so the closure is seen as ordinary Python
+    by JAX.
+
+    Vmap-over-elements compatible: ``X_elem``, ``U_elem``,
+    ``U_prev_elem``, and ``xi_prev_per_ip`` carry the leading
+    element axis when the caller vmaps; everything else is
+    element-invariant. ``ip_set=0`` is always passed to the
+    evaluator; multi-ip_set GRs dispatch on the trailing arg
+    inside their residual_fn body (see
+    :data:`cmad.typing.ResidualFnGR`).
+    """
+    num_blocks = len(residual_block_shapes)
+    R_blocks = [
+        jnp.zeros((nb, neq)) for nb, neq in residual_block_shapes
+    ]
+    dR_dU_blocks = [
+        [
+            jnp.zeros((nb_r, neq_r, nb_s, neq_s))
+            for nb_s, neq_s in residual_block_shapes
+        ]
+        for nb_r, neq_r in residual_block_shapes
+    ]
+
+    nips = quad_xi.shape[0]
+    total_xi_dofs = xi_prev_per_ip.shape[1]
+    xi_solved_per_ip = jnp.zeros((nips, total_xi_dofs))
+
+    for ip_idx in range(nips):
+        geom = _per_ip_geometry(
+            quad_xi[ip_idx], X_elem,
+            geom_interpolant_fn, per_block_interpolant_fns,
+        )
+        w_ref = quad_w[ip_idx]
+        dv = geom.dv
+
+        xi_prev_blocks = unravel_xi(xi_prev_per_ip[ip_idx])
+        R_ip, dR_dU_ip, xi_blocks = R_and_dR_dU_and_xi_evaluator(
+            params, U_elem, U_prev_elem, xi_prev_blocks,
+            geom.field_shapes_phys_per_block, w_ref, dv, 0,
+        )
+
+        for r in range(num_blocks):
+            R_blocks[r] = R_blocks[r] + R_ip[r]
+            for s in range(num_blocks):
+                dR_dU_blocks[r][s] = (
+                    dR_dU_blocks[r][s] + dR_dU_ip[r][s]
+                )
+
+        # Discard the unravel callable; xi treedef is fixed by
+        # the closure in ``unravel_xi`` already.
+        xi_flat, _ = ravel_pytree(xi_blocks)
+        xi_solved_per_ip = xi_solved_per_ip.at[ip_idx].set(xi_flat)
+
+        if forcing_fns_by_block_idx:
+            for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
+                f_ip = jnp.asarray(forcing_fn(geom.coords_ip, t))
+                f_ext = jnp.einsum(
+                    "a,k->ak",
+                    geom.field_shapes_phys_per_block[block_idx].N,
+                    f_ip,
+                ) * w_ref * dv
+                R_blocks[block_idx] = R_blocks[block_idx] - f_ext
+
+    return R_blocks, dR_dU_blocks, xi_solved_per_ip
 
 
 def assemble_element_block(
