@@ -14,6 +14,7 @@ from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
+from cmad.solver.nonlinear_solver import make_newton_solve
 from cmad.typing import GREvaluators, JaxArray, ResidualFnGR
 
 
@@ -42,23 +43,29 @@ class GlobalResidual(ABC):
     CLOSED_FORM mode the per-GR body ignores them.
 
     Subclasses pair with a concrete Model via
-    :meth:`for_model(model, mode)`, which returns a ``dict[str,
+    :meth:`for_model(model, mode)`, which sets ``self._mode`` (so
+    the GR subclass ``residual_fn`` body can branch on it for
+    cauchy dispatch) and returns a mode-specific ``dict[str,
     Callable]`` of jit'd public evaluators closed over
-    ``model._residual`` and the mode-selected cauchy method.
-    CLOSED_FORM mode exposes ``"R"`` (residual-only, for linesearch
-    trial points and other cheap residual probes), ``"R_and_dR_dU"``
-    (fused R + tangent for the Newton step), and standalone first-
-    derivative evaluators ``"dR_dU"`` / ``"dR_dU_prev"`` / ``"dR_dp"``
-    (one per differentiable input of the U-only closure, for
-    adjoint and gradient-assembly consumers that want a named
-    derivative without R recomputation). The public closures are
+    ``model._residual``. CLOSED_FORM mode exposes 5 keys: ``"R"``
+    (residual-only, for linesearch trial points and other cheap
+    residual probes), ``"R_and_dR_dU"`` (fused R + tangent for the
+    Newton step), and standalone first-derivative evaluators
+    ``"dR_dU"`` / ``"dR_dU_prev"`` / ``"dR_dp"`` (one per
+    differentiable input of the U-only closure, for adjoint and
+    gradient-assembly consumers that want a named derivative
+    without R recomputation). The CLOSED_FORM public closures are
     U-only — xi/xi_prev are bound to zeros internally because
-    CLOSED_FORM evaluates stress through
-    ``model.cauchy_closed_form`` and never consults state. The
-    string-key dict replaces Model's mutable ``_deriv_mode`` state
-    machine: FE assembly vmaps closures over element batches, which
-    works on pure functions but not on methods that mutate instance
-    state.
+    ``model.cauchy_closed_form`` is consulted instead. COUPLED
+    mode exposes a different 7-key dict mixing raw partials at
+    supplied ξ (9-arg sig including xi) with Newton-running totals
+    (8-arg sig; xi internally solved from ``xi_prev``); see
+    :meth:`for_model` for the full contract. A single GR instance
+    binds to one mode at a time — repeated ``for_model`` calls
+    mutate ``self._mode``. The string-key dict replaces Model's
+    mutable ``_deriv_mode`` state machine: FE assembly vmaps
+    closures over element batches, which works on pure functions
+    but not on methods that mutate instance state.
     """
 
     # ---- attributes the subclass must set before super().__init__() ----
@@ -75,6 +82,9 @@ class GlobalResidual(ABC):
 
     # ---- attribute set by __init__() ----
     _residual_fn: ResidualFnGR
+
+    # ---- attribute set by for_model() ----
+    _mode: GlobalResidualMode
 
     @classmethod
     def from_deck(
@@ -132,70 +142,99 @@ class GlobalResidual(ABC):
             self,
             model: Model,
             mode: GlobalResidualMode = GlobalResidualMode.COUPLED,
+            coupled_newton_kwargs: dict[str, Any] | None = None,
     ) -> GREvaluators:
         """Bind this GR to a concrete Model in a specific operational
-        mode. Returns a dict of jit'd public evaluators keyed by
-        string names:
+        mode. Sets ``self._mode = mode`` so the GR subclass
+        ``residual_fn`` body can branch on it for cauchy dispatch
+        (``model.cauchy_closed_form(params, U_ip, U_ip_prev)`` for
+        CLOSED_FORM, ``model.cauchy(xi, xi_prev, params, U_ip,
+        U_ip_prev)`` for COUPLED). Returns a mode-specific dict of
+        jit'd public evaluators keyed by string names:
 
-        - CLOSED_FORM: ``"R"`` (residual only, returning ``R_blocks``)
-          and ``"R_and_dR_dU"`` (fused, returning
-          ``(R_blocks, dR_dU_blocks)``). Public-evaluator call shape
-          is ``(params, U, U_prev, shapes_ip, w, dv, ip_set)`` —
-          U-only because CLOSED_FORM evaluates stress through
-          ``model.cauchy_closed_form`` and never consults xi state.
-          The closure forwards xi/xi_prev as zero pytrees to the
-          underlying ``residual_fn`` so that contract is preserved
-          unchanged. ``R_blocks`` is a list with entry ``r`` shaped
-          ``(num_basis_fns_r, num_eqs_r)`` matching the GR's
-          residual_fn return; ``dR_dU_blocks`` is a list-of-lists
-          with ``dR_dU_blocks[r][s]`` shaped ``(num_basis_fns_r,
-          num_eqs_r, num_basis_fns_s, num_eqs_s)``. The fused
-          evaluator exists so XLA can CSE the shared work
-          (interpolation, kinematics, Cauchy stress) when both R and
-          its tangent are needed (Newton step); the R-only evaluator
-          covers cheap-residual paths (linesearch trial points,
-          perturbation probes). Standalone first-derivative
-          evaluators ``"dR_dU"``, ``"dR_dU_prev"``, ``"dR_dp"`` are
-          also returned: each is ``jacfwd`` / ``jacrev`` over the
-          U-only closure with respect to one differentiable input
-          (``U``, ``U_prev``, ``params`` respectively). ``"dR_dU"``
-          mirrors the ``dR_dU_blocks`` shape from the fused
-          evaluator (without R recomputation); ``"dR_dU_prev"`` has
-          the same block-pair shape; ``"dR_dp"`` returns a per-
-          residual-block pytree parallel to ``params``. These exist
-          for adjoint and gradient-assembly consumers that want a
-          named derivative without R recomputation.
-        - COUPLED: not yet implemented; raises NotImplementedError.
-          The coupled-mode evaluator must wrap the per-IP local
-          Newton solve in custom_vjp so the global outer Newton sees
-          the IFT-corrected ``dR/dU`` rather than differentiating
-          through the inner solver.
+        - CLOSED_FORM (5 keys, all 7-arg sig
+          ``(params, U, U_prev, shapes_ip, w, dv, ip_set)`` —
+          U-only because ``cauchy_closed_form`` never consults xi):
+          ``"R"`` (residual only, for linesearch trial points and
+          other cheap residual probes), ``"R_and_dR_dU"`` (fused
+          ``(R_blocks, dR_dU_blocks)`` with XLA CSE between R and
+          its tangent), and standalone first-derivative evaluators
+          ``"dR_dU"`` / ``"dR_dU_prev"`` / ``"dR_dp"`` (each is
+          ``jacfwd`` / ``jacrev`` over the U-only closure wrt one
+          differentiable input — for adjoint and gradient-assembly
+          consumers that don't need R recomputed). The closure
+          binds xi/xi_prev to zero pytrees so the underlying
+          ``residual_fn`` contract is preserved unchanged.
+          ``R_blocks`` is a list with entry ``r`` shaped
+          ``(num_basis_fns_r, num_eqs_r)``; ``dR_dU_blocks`` is a
+          list-of-lists with ``dR_dU_blocks[r][s]`` shaped
+          ``(num_basis_fns_r, num_eqs_r, num_basis_fns_s,
+          num_eqs_s)``; ``"dR_dp"`` returns a per-residual-block
+          pytree parallel to ``params``.
 
-        The same GR can be bound to multiple (model, mode) combinations
-        by repeated ``for_model`` calls; ``mode`` is not stored on the
-        instance.
+        - COUPLED (7 keys, mixed sigs). Raw partials at supplied ξ
+          (9-arg sig
+          ``(params, U, U_prev, xi, xi_prev, shapes_ip, w, dv,
+          ip_set)``): ``"R"``, ``"dR_dU_prev"``, ``"dR_dp"``,
+          ``"dR_dxi"``, ``"dR_dxi_prev"``. No local Newton, no IFT
+          correction — the consumer supplies xi at the public
+          boundary. Newton-running totals (8-arg sig
+          ``(params, U, U_prev, xi_prev, shapes_ip, w, dv,
+          ip_set)``; xi internally solved from ``xi_prev`` via
+          ``make_newton_solve`` wrapping ``model._residual``):
+          ``"dR_dU"`` (IFT-corrected total via ``custom_jvp`` —
+          the global tangent K, transpose K^T for the adjoint) and
+          the bundled ``"R_and_dR_dU_and_xi"`` returning
+          ``(R_blocks, dR_dU_blocks, xi_converged)`` for the FE-
+          Newton hot path (state-history storage at FE-Newton
+          convergence is the bundled call's third element — no
+          extra solve).
 
-        Raises ``NotImplementedError`` if ``mode == COUPLED``.
+        ``coupled_newton_kwargs`` (COUPLED only) is forwarded to
+        ``make_newton_solve`` as ``**kwargs``. Defaults
+        ``abs_tol=1e-12, rel_tol=1e-12, max_iters=20`` apply when
+        None. Passing this kwarg in CLOSED_FORM raises
+        ``ValueError`` to match the deck-pluck pattern (don't
+        accept-and-ignore).
+
+        A single GR instance binds to one mode at a time — calling
+        ``for_model`` again mutates ``self._mode``, so closures
+        from a previous binding will read the new mode. Tests that
+        compare both modes simultaneously construct two GR
+        instances.
+
         Raises ``ValueError`` if ``mode == CLOSED_FORM`` and
-        ``model.supports_closed_form_cauchy`` is False.
+        ``model.supports_closed_form_cauchy`` is False, or if
+        ``coupled_newton_kwargs`` is passed in CLOSED_FORM.
         """
-        if mode == GlobalResidualMode.COUPLED:
-            raise NotImplementedError(
-                "GlobalResidual.for_model COUPLED mode is not yet "
-                "implemented. The coupled-mode evaluator requires the "
-                "per-IP local Newton solve to be wrapped in "
-                "custom_vjp so the outer global Newton sees an "
-                "IFT-corrected dR/dU, not a differentiated solver. "
-                "Use CLOSED_FORM for now."
-            )
-        if (mode == GlobalResidualMode.CLOSED_FORM
-                and not model.supports_closed_form_cauchy):
-            raise ValueError(
-                f"CLOSED_FORM mode requires "
-                f"model.supports_closed_form_cauchy; got "
-                f"{type(model).__name__} with the flag False"
-            )
+        self._mode = mode
 
+        if mode == GlobalResidualMode.CLOSED_FORM:
+            if coupled_newton_kwargs is not None:
+                raise ValueError(
+                    "coupled_newton_kwargs is only valid in COUPLED "
+                    "mode; got non-None value with mode=CLOSED_FORM"
+                )
+            if not model.supports_closed_form_cauchy:
+                raise ValueError(
+                    f"CLOSED_FORM mode requires "
+                    f"model.supports_closed_form_cauchy; got "
+                    f"{type(model).__name__} with the flag False"
+                )
+            return self._for_model_closed_form(model)
+
+        if mode == GlobalResidualMode.COUPLED:
+            if coupled_newton_kwargs is None:
+                coupled_newton_kwargs = {
+                    "abs_tol": 1e-12,
+                    "rel_tol": 1e-12,
+                    "max_iters": 20,
+                }
+            return self._for_model_coupled(model, coupled_newton_kwargs)
+
+        raise ValueError(f"Unknown GlobalResidualMode: {mode}")
+
+    def _for_model_closed_form(self, model: Model) -> GREvaluators:
         residual_fn = self._residual_fn
 
         # CLOSED_FORM closures are U-only on the public boundary;
@@ -234,4 +273,79 @@ class GlobalResidual(ABC):
             "dR_dU": jit(dR_dU_at_ip),
             "dR_dU_prev": jit(dR_dU_prev_at_ip),
             "dR_dp": jit(dR_dp_at_ip),
+        }
+
+    def _for_model_coupled(
+            self,
+            model: Model,
+            coupled_newton_kwargs: dict[str, Any],
+    ) -> GREvaluators:
+        residual_fn = self._residual_fn
+
+        # ─── Raw closures (9-arg sig: xi as input) ────────────────
+        # Public-closure argnums:
+        #   params=0, U=1, U_prev=2, xi=3, xi_prev=4,
+        #   shapes_ip=5, w=6, dv=7, ip_set=8.
+        def r_at_supplied_xi(params, U, U_prev, xi, xi_prev,
+                             shapes_ip, w, dv, ip_set):
+            return residual_fn(
+                xi, xi_prev, params, U, U_prev,
+                model, shapes_ip, w, dv, ip_set,
+            )
+
+        dR_dU_prev_raw = jacfwd(r_at_supplied_xi, argnums=2)
+        dR_dp_raw = jacrev(r_at_supplied_xi, argnums=0)
+        dR_dxi_raw = jacfwd(r_at_supplied_xi, argnums=3)
+        dR_dxi_prev_raw = jacfwd(r_at_supplied_xi, argnums=4)
+
+        # ─── Newton-running closures (8-arg sig: no xi) ──────────
+        # `make_newton_solve` conflates init guess and held-in-
+        # residual x_prev (uses xi_prev as both); this matches
+        # xi_init = xi_prev path continuity for plasticity.
+        local_newton = make_newton_solve(
+            model._residual, **coupled_newton_kwargs,
+        )
+
+        # Public-closure argnums:
+        #   params=0, U=1, U_prev=2, xi_prev=3,
+        #   shapes_ip=4, w=5, dv=6, ip_set=7.
+        def coupled_r_total(params, U, U_prev, xi_prev,
+                            shapes_ip, w, dv, ip_set):
+            U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
+            U_ip_prev = self.interpolate_global_fields_at_ip(
+                U_prev, shapes_ip)
+            xi = local_newton(xi_prev, params, U_ip, U_ip_prev)
+            return residual_fn(
+                xi, xi_prev, params, U, U_prev,
+                model, shapes_ip, w, dv, ip_set,
+            )
+
+        dR_dU_total = jacfwd(coupled_r_total, argnums=1)
+
+        def r_and_dR_dU_and_xi_at_ip(params, U, U_prev, xi_prev,
+                                     shapes_ip, w, dv, ip_set):
+            U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
+            U_ip_prev = self.interpolate_global_fields_at_ip(
+                U_prev, shapes_ip)
+            xi = local_newton(xi_prev, params, U_ip, U_ip_prev)
+            R = residual_fn(
+                xi, xi_prev, params, U, U_prev,
+                model, shapes_ip, w, dv, ip_set,
+            )
+            dR_dU = dR_dU_total(
+                params, U, U_prev, xi_prev,
+                shapes_ip, w, dv, ip_set,
+            )
+            return R, dR_dU, xi
+
+        return {
+            # Raw partials at supplied ξ (9-arg sig)
+            "R": jit(r_at_supplied_xi),
+            "dR_dU_prev": jit(dR_dU_prev_raw),
+            "dR_dp": jit(dR_dp_raw),
+            "dR_dxi": jit(dR_dxi_raw),
+            "dR_dxi_prev": jit(dR_dxi_prev_raw),
+            # Newton-running totals (8-arg sig)
+            "dR_dU": jit(dR_dU_total),
+            "R_and_dR_dU_and_xi": jit(r_and_dR_dU_and_xi_at_ip),
         }

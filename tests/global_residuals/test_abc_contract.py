@@ -71,7 +71,10 @@ class _ToyEquilibrium(GlobalResidual):
                         model, shapes_ip, w, dv, ip_set):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(U_prev, shapes_ip)
-            sigma = model.cauchy_closed_form(params, U_ip, U_ip_prev)
+            if self._mode == GlobalResidualMode.CLOSED_FORM:
+                sigma = model.cauchy_closed_form(params, U_ip, U_ip_prev)
+            else:
+                sigma = model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)
             R = (shapes_ip[0].grad_N @ sigma) * w * dv   # (4, 3)
             return [R]
 
@@ -101,15 +104,6 @@ class TestGlobalResidualABC(unittest.TestCase):
             set(evaluators.keys()),
             {"R", "R_and_dR_dU", "dR_dU", "dR_dU_prev", "dR_dp"},
         )
-
-    def test_for_model_coupled_raises_not_implemented(self):
-        gr = _ToyEquilibrium()
-        model = _make_linear_elastic_model()
-        with self.assertRaises(NotImplementedError) as ctx:
-            gr.for_model(model, mode=GlobalResidualMode.COUPLED)
-        msg = str(ctx.exception)
-        self.assertIn("COUPLED", msg)
-        self.assertIn("custom_vjp", msg)
 
     def test_for_model_closed_form_rejects_incapable_model(self):
         gr = _ToyEquilibrium()

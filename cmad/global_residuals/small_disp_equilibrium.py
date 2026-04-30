@@ -2,6 +2,7 @@
 from typing import Any
 
 from cmad.global_residuals.global_residual import GlobalResidual
+from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.var_types import VarType
 from cmad.parameters.parameters import Parameters
 
@@ -10,24 +11,27 @@ class SmallDispEquilibrium(GlobalResidual):
     """3D u-only quasi-static small-deformation equilibrium.
 
     Per-IP residual: ``R_nodal[a, i] = grad_N_phys[a, j] *
-    sigma[j, i] * w * dv``, with sigma from
-    ``model.cauchy_closed_form(params, U_ip, U_ip_prev)``. The body-
-    force contribution ``f_ext = N · b · w · dv`` is applied by the
-    assembly layer (not inside residual_fn) so this GR stays internal
-    force only.
+    sigma[j, i] * w * dv``, with sigma sourced per
+    ``self._mode`` from ``model.cauchy_closed_form(params, U_ip,
+    U_ip_prev)`` (CLOSED_FORM) or ``model.cauchy(xi, xi_prev,
+    params, U_ip, U_ip_prev)`` (COUPLED). The body-force
+    contribution ``f_ext = N · b · w · dv`` is applied by the
+    assembly layer (not inside residual_fn) so this GR stays
+    internal-force only.
 
     Single residual block: ``resid_names[0] = "displacement"``,
     ``var_names[0] = "u"``. Per-element basis-fn count comes from the
     paired field's ``FiniteElement.num_dofs_per_element`` at FEProblem
     assembly time, so this GR is element-family-agnostic.
 
-    Pairs via ``for_model(model, mode=CLOSED_FORM)`` with a Model
-    exposing ``cauchy_closed_form`` (e.g. ``Elastic`` with
-    ``def_type=FULL_3D``); the per-IP local Newton is bypassed in
-    that mode. COUPLED-mode pairing — needed when plasticity threads
-    through the IFT chain — requires either a sibling subclass
-    calling ``model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)`` or
-    an internal mode dispatch; not supported here.
+    Pairs via ``for_model(model, mode)`` in either CLOSED_FORM or
+    COUPLED. CLOSED_FORM requires a Model exposing
+    ``cauchy_closed_form`` (e.g. ``Elastic`` with
+    ``def_type=FULL_3D``) and bypasses the per-IP local Newton.
+    COUPLED runs the local Newton inside ``for_model``'s closures
+    (``R_and_dR_dU_and_xi`` and ``dR_dU``) for path-dependent
+    plasticity, where ``model.cauchy(xi, xi_prev, ...)`` reads the
+    converged ξ.
     """
 
     def __init__(self, ndims: int = 3) -> None:
@@ -45,7 +49,10 @@ class SmallDispEquilibrium(GlobalResidual):
                         model, shapes_ip, w, dv, ip_set):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(U_prev, shapes_ip)
-            sigma = model.cauchy_closed_form(params, U_ip, U_ip_prev)
+            if self._mode == GlobalResidualMode.CLOSED_FORM:
+                sigma = model.cauchy_closed_form(params, U_ip, U_ip_prev)
+            else:
+                sigma = model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)
             R_internal = (shapes_ip[0].grad_N @ sigma) * w * dv
             return [R_internal]
 
