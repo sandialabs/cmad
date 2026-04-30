@@ -140,16 +140,16 @@ def _build_fe_problem(
         fe = P1_TET
     else:
         raise ValueError(f"unsupported element family {mesh.element_family}")
-    layout = GlobalFieldLayout(
-        name="u", finite_element=fe, num_dofs_per_basis_fn=3,
-    )
+    layout = GlobalFieldLayout(name="u", finite_element=fe)
     bc = DirichletBC(
         nodeset_name="all_boundary_nodes",
         field_name="u",
         dofs=(0, 1, 2),
         values=None,
     )
-    dof_map = build_dof_map(mesh, [layout], [bc])
+    dof_map = build_dof_map(
+        mesh, [layout], [bc], components_by_field={"u": 3},
+    )
     gr = SmallDispEquilibrium(
         num_basis_fns=fe.num_dofs_per_element, ndims=3,
     )
@@ -198,9 +198,8 @@ def _l2_h1_errors(
         grad_N_ref[ip] = np.asarray(sh.grad_N)
     w = np.asarray(norm_quad.w, dtype=np.float64)
 
-    layout = dof_map.field_layouts[0]
-    block_off = int(dof_map.block_offsets[0])
-    ndofs = layout.num_dofs_per_basis_fn
+    block_offset = dof_map.block_offsets[0]
+    ndofs = dof_map.num_dofs_per_basis_fn[0]
 
     L2_sq = 0.0
     H1_grad_sq = 0.0
@@ -209,7 +208,7 @@ def _l2_h1_errors(
         node_ids = mesh.connectivity[elem_idx]
         X_elem = mesh.nodes[node_ids]
         eq = (
-            block_off
+            block_offset
             + node_ids[:, None] * ndofs
             + np.arange(ndofs)[None, :]
         ).ravel()

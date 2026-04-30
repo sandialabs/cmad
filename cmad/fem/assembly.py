@@ -93,17 +93,17 @@ def _gather_element_U(
     num_dofs_per_basis_fn[f])`` ready for ``vmap`` over the leading
     element axis. Per-element basis-fn indices come from
     :func:`_element_basis_fns`; the eq formula is
-    ``eq = block_off + basis_fn * num_dofs_per_basis_fn + component``.
+    ``eq = block_offset + basis_fn * num_dofs_per_basis_fn + component``.
     """
     U_jax = jnp.asarray(U_global)
     out: list[JaxArray] = []
     for field_idx, layout in enumerate(dof_map.field_layouts):
         bf_per_elem = _element_basis_fns(layout, connectivity_block)
-        ndofs = layout.num_dofs_per_basis_fn
-        block_off = int(dof_map.block_offsets[field_idx])
+        ndofs = dof_map.num_dofs_per_basis_fn[field_idx]
+        block_offset = dof_map.block_offsets[field_idx]
         k_arr = np.arange(ndofs)
         eq_3d = (
-            block_off
+            block_offset
             + bf_per_elem[:, :, None] * ndofs
             + k_arr[None, None, :]
         )
@@ -125,12 +125,12 @@ def _element_eq_indices(
     """
     layout = dof_map.field_layouts[field_idx]
     bf_per_elem = _element_basis_fns(layout, connectivity_block)
-    ndofs = layout.num_dofs_per_basis_fn
-    block_off = int(dof_map.block_offsets[field_idx])
+    ndofs = dof_map.num_dofs_per_basis_fn[field_idx]
+    block_offset = dof_map.block_offsets[field_idx]
     n_elems = connectivity_block.shape[0]
     k_arr = np.arange(ndofs)
     eq = (
-        block_off
+        block_offset
         + bf_per_elem[:, :, None] * ndofs
         + k_arr[None, None, :]
     )

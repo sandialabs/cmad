@@ -119,13 +119,12 @@ def _build_unit_tet_mesh() -> Mesh:
 
 def _build_fe_problem() -> FEProblem:
     mesh = _build_unit_tet_mesh()
-    layout_u = GlobalFieldLayout(
-        name="u", finite_element=P1_TET, num_dofs_per_basis_fn=3,
+    layout_u = GlobalFieldLayout(name="u", finite_element=P1_TET)
+    layout_p = GlobalFieldLayout(name="p", finite_element=P1_TET)
+    dof_map = build_dof_map(
+        mesh, [layout_u, layout_p], [],
+        components_by_field={"u": 3, "p": 1},
     )
-    layout_p = GlobalFieldLayout(
-        name="p", finite_element=P1_TET, num_dofs_per_basis_fn=1,
-    )
-    dof_map = build_dof_map(mesh, [layout_u, layout_p], [])
     gr = _TwoBlockMockGR()
     evaluators: GREvaluators = {"R_and_dR_dU": _mock_R_and_dR_dU}
     return FEProblem(

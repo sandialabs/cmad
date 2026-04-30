@@ -19,6 +19,13 @@ the mesh's entity tables: ``mesh.entity_count(et) *
 fe.dofs_per_entity[et]`` summed across entity types. P1 / Q1 fields
 have ``{VERTEX: 1}`` and reduce to one basis-fn per mesh vertex.
 
+Per-field component counts (3 for a vector displacement field, 1 for a
+scalar pressure / temperature field) are owned by the GlobalResidual
+(``gr._num_eqs[r]`` keyed by residual block) and supplied to
+:func:`build_dof_map` via the ``components_by_field`` dict keyed by
+field name. The DofMap stores the resulting per-field array as
+``num_dofs_per_basis_fn`` for fast eq-formula lookup at scatter time.
+
 Multi-field layouts naturally support fields without any BCs (those
 fields contribute zero entries to ``prescribed_indices``).
 
@@ -58,22 +65,15 @@ class GlobalFieldLayout:
     must match the mesh's ``element_family``; this is checked at
     :func:`build_dof_map` time.
 
-    ``num_dofs_per_basis_fn`` is the components-per-basis-function
-    count (3 for a vector displacement field, 1 for a scalar pressure
-    / temperature field). Independent of the basis-fn topology owned
-    by ``finite_element``.
+    Component count (the per-basis-function DOF multiplicity, 3 for a
+    vector displacement field, 1 for a scalar pressure / temperature
+    field) is owned by the GlobalResidual (``gr._num_eqs[r]``) and
+    threaded into :func:`build_dof_map` via ``components_by_field``;
+    it lives on :class:`GlobalDofMap` rather than on the layout.
     """
 
     name: str
     finite_element: FiniteElement
-    num_dofs_per_basis_fn: int
-
-    def __post_init__(self) -> None:
-        if self.num_dofs_per_basis_fn < 1:
-            raise ValueError(
-                f"GlobalFieldLayout '{self.name}': num_dofs_per_basis_fn "
-                f"must be >= 1; got {self.num_dofs_per_basis_fn}"
-            )
 
 
 @dataclass(frozen=True)
@@ -101,6 +101,14 @@ class GlobalDofMap:
     ``field_layouts`` is the list of per-field layouts; index order is
     the field-major ordering of the global eq vector.
 
+    ``num_dofs_per_basis_fn`` is a length-``n_fields`` int array of
+    per-field component counts (3 for a vector displacement field, 1
+    for a scalar). Sourced from the ``components_by_field`` arg to
+    :func:`build_dof_map` (which in turn comes from
+    ``GlobalResidual._num_eqs``); stored here so the eq-formula
+    lookup and element scatter don't have to round-trip through the
+    GR.
+
     ``block_offsets`` has shape ``(n_fields + 1,)``;
     ``block_offsets[i]`` is the starting eq index for field ``i``, and
     the total DOF count is ``block_offsets[-1]``.
@@ -115,6 +123,7 @@ class GlobalDofMap:
     """
 
     field_layouts: list[GlobalFieldLayout]
+    num_dofs_per_basis_fn: NDArray[np.intp]
     block_offsets: NDArray[np.intp]
     prescribed_indices: NDArray[np.intp]
     resolved_bcs: list[_ResolvedBC]
@@ -139,10 +148,9 @@ class GlobalDofMap:
         Element scatter at the assembly layer computes the same expression
         vectorized per element.
         """
-        layout = self.field_layouts[field_idx]
-        return (
-            int(self.block_offsets[field_idx])
-            + basis_fn * layout.num_dofs_per_basis_fn
+        return int(
+            self.block_offsets[field_idx]
+            + basis_fn * self.num_dofs_per_basis_fn[field_idx]
             + dof
         )
 
@@ -197,19 +205,29 @@ def build_dof_map(
     mesh: Mesh,
     field_layouts: list[GlobalFieldLayout],
     bcs: list[DirichletBC],
+    components_by_field: dict[str, int],
 ) -> GlobalDofMap:
-    """Build a :class:`GlobalDofMap` from a mesh, field layouts, and BCs.
+    """Build a :class:`GlobalDofMap` from a mesh, field layouts, BCs, and
+    per-field component counts.
 
     Validates field-name uniqueness and per-field FE-family vs
-    mesh-family agreement, computes per-field DOF block sizes by walking
+    mesh-family agreement, validates ``components_by_field`` against
+    the field names, computes per-field DOF block sizes by walking
     the FE's ``dofs_per_entity`` against the mesh's entity counts,
     resolves each BC's nodeset to coord-and-eq-index arrays, detects
     double-prescription, and assembles the global flat
     ``prescribed_indices`` array.
 
+    ``components_by_field`` maps each field name to its component
+    multiplicity (3 for a vector displacement field, 1 for a scalar).
+    The DofMap stores it as ``num_dofs_per_basis_fn`` (intp array,
+    parallel to ``field_layouts``) rather than on the layout itself,
+    so the GR-owned per-residual ``_num_eqs`` is the single source of
+    truth for component counts.
+
     Field-major ordering: ``block_offsets[0] = 0``, and
     ``block_offsets[i+1] = block_offsets[i] +
-    n_basis_fns_for_field_i * field_layouts[i].num_dofs_per_basis_fn``,
+    n_basis_fns_for_field_i * components_by_field[field_layouts[i].name]``,
     where ``n_basis_fns_for_field_i = sum(mesh.entity_count(et) *
     fe.dofs_per_entity[et])``.
 
@@ -223,6 +241,8 @@ def build_dof_map(
         ValueError: if field-layout names are not unique;
                     if a layout's FE element_family doesn't match the
                     mesh's element_family;
+                    if ``components_by_field`` keys don't match the
+                    field-layout names, or any value is < 1;
                     if a BC references an unknown field;
                     if a BC's dofs index is out of range for its field;
                     if a BC targets a field whose FE has no VERTEX
@@ -250,9 +270,24 @@ def build_dof_map(
                 f"({mesh.element_family.name})"
             )
 
+    if set(components_by_field.keys()) != set(names):
+        raise ValueError(
+            f"components_by_field keys ({sorted(components_by_field)}) "
+            f"must match field-layout names ({sorted(names)})"
+        )
+    for fname, count in components_by_field.items():
+        if count < 1:
+            raise ValueError(
+                f"components_by_field['{fname}']={count}; must be >= 1"
+            )
+    num_dofs_per_basis_fn = np.array(
+        [components_by_field[fl.name] for fl in field_layouts],
+        dtype=np.intp,
+    )
+
     sizes = [
-        _num_basis_fns_in_mesh(fl, mesh) * fl.num_dofs_per_basis_fn
-        for fl in field_layouts
+        _num_basis_fns_in_mesh(fl, mesh) * num_dofs_per_basis_fn[i]
+        for i, fl in enumerate(field_layouts)
     ]
     block_offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.intp)
 
@@ -270,13 +305,13 @@ def build_dof_map(
         field_idx = name_to_idx[bc.field_name]
         layout = field_layouts[field_idx]
         fe = layout.finite_element
+        ndofs = num_dofs_per_basis_fn[field_idx]
 
         for dof in bc.dofs:
-            if dof < 0 or dof >= layout.num_dofs_per_basis_fn:
+            if dof < 0 or dof >= ndofs:
                 raise ValueError(
                     f"DirichletBC for field '{bc.field_name}' references "
-                    f"dof {dof} outside "
-                    f"[0, {layout.num_dofs_per_basis_fn})"
+                    f"dof {dof} outside [0, {ndofs})"
                 )
 
         if bc.nodeset_name not in mesh.node_sets:
@@ -305,11 +340,10 @@ def build_dof_map(
         # dofs_per_vertex == 1: basis_fn[v] = v (identity).
         basis_fns_for_set = set_nodes.astype(np.intp)
 
-        ndofs = layout.num_dofs_per_basis_fn
-        block_off = int(block_offsets[field_idx])
+        block_offset = block_offsets[field_idx]
         dofs_arr = np.asarray(list(bc.dofs), dtype=np.intp)
         eq_indices_2d = (
-            block_off
+            block_offset
             + basis_fns_for_set[:, None] * ndofs
             + dofs_arr[None, :]
         )
@@ -345,6 +379,7 @@ def build_dof_map(
 
     return GlobalDofMap(
         field_layouts=list(field_layouts),
+        num_dofs_per_basis_fn=num_dofs_per_basis_fn,
         block_offsets=block_offsets,
         prescribed_indices=prescribed_indices,
         resolved_bcs=resolved_bcs,

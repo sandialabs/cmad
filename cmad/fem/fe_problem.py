@@ -89,6 +89,15 @@ class FEProblem:
                     f"GlobalFieldLayout (known: {sorted(name_to_idx)})"
                 )
             idx = name_to_idx[var_name]
+            gr_neq = int(self.gr._num_eqs[r])
+            dm_neq = int(self.dof_map.num_dofs_per_basis_fn[idx])
+            if gr_neq != dm_neq:
+                raise ValueError(
+                    f"GR _num_eqs[{r}]={gr_neq} disagrees with "
+                    f"dof_map.num_dofs_per_basis_fn[{idx}]={dm_neq} for "
+                    f"field '{var_name}'; the components_by_field passed "
+                    f"to build_dof_map must match gr._num_eqs"
+                )
             idxs.append(idx)
             layouts.append(self.dof_map.field_layouts[idx])
         object.__setattr__(self, "field_layouts_per_block", layouts)

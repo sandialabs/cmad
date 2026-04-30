@@ -27,23 +27,27 @@ def _unit_cube_2x2x2():
     return StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
 
 
-class TestGlobalFieldLayoutValidation(unittest.TestCase):
+class TestComponentsByFieldValidation(unittest.TestCase):
 
-    def test_rejects_zero_ndofs_per_basis_fn(self):
-        with self.assertRaisesRegex(ValueError, "num_dofs_per_basis_fn"):
-            GlobalFieldLayout(
-                name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=0,
-            )
+    def test_rejects_zero_component_count(self):
+        mesh = _unit_cube_2x2x2()
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
+        with self.assertRaisesRegex(ValueError, "must be >= 1"):
+            build_dof_map(mesh, [u], [], components_by_field={"u": 0})
+
+    def test_rejects_mismatched_keys(self):
+        mesh = _unit_cube_2x2x2()
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
+        with self.assertRaisesRegex(ValueError, "must match field-layout"):
+            build_dof_map(mesh, [u], [], components_by_field={"v": 3})
 
 
 class TestGlobalDofMapFormula(unittest.TestCase):
 
     def test_eq_index_single_field(self):
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=3,
-        )
-        dm = build_dof_map(mesh, [u], [])
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
+        dm = build_dof_map(mesh, [u], [], components_by_field={"u": 3})
         # Field 0, basis_fn 5, component 2: 0 + 5*3 + 2 = 17
         self.assertEqual(dm.eq_index(0, 5, 2), 17)
         # Last basis_fn, last component: 0 + 26*3 + 2 = 80
@@ -51,13 +55,11 @@ class TestGlobalDofMapFormula(unittest.TestCase):
 
     def test_eq_index_multi_field(self):
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=3,
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
+        p = GlobalFieldLayout(name="p", finite_element=Q1_HEX)
+        dm = build_dof_map(
+            mesh, [u, p], [], components_by_field={"u": 3, "p": 1},
         )
-        p = GlobalFieldLayout(
-            name="p", finite_element=Q1_HEX, num_dofs_per_basis_fn=1,
-        )
-        dm = build_dof_map(mesh, [u, p], [])
         # Field 0 (u) occupies [0, 81); field 1 (p) occupies [81, 108).
         self.assertEqual(dm.eq_index(0, 0, 0), 0)
         self.assertEqual(dm.eq_index(1, 0, 0), 81)
@@ -65,27 +67,22 @@ class TestGlobalDofMapFormula(unittest.TestCase):
 
     def test_total_dof_count(self):
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=3,
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
+        p = GlobalFieldLayout(name="p", finite_element=Q1_HEX)
+        dm = build_dof_map(
+            mesh, [u, p], [], components_by_field={"u": 3, "p": 1},
         )
-        p = GlobalFieldLayout(
-            name="p", finite_element=Q1_HEX, num_dofs_per_basis_fn=1,
-        )
-        dm = build_dof_map(mesh, [u, p], [])
         self.assertEqual(dm.num_total_dofs, 81 + 27)
 
     def test_block_offsets_cumulative(self):
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=3,
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
+        p = GlobalFieldLayout(name="p", finite_element=Q1_HEX)
+        T = GlobalFieldLayout(name="T", finite_element=Q1_HEX)
+        dm = build_dof_map(
+            mesh, [u, p, T], [],
+            components_by_field={"u": 3, "p": 1, "T": 1},
         )
-        p = GlobalFieldLayout(
-            name="p", finite_element=Q1_HEX, num_dofs_per_basis_fn=1,
-        )
-        T = GlobalFieldLayout(
-            name="T", finite_element=Q1_HEX, num_dofs_per_basis_fn=1,
-        )
-        dm = build_dof_map(mesh, [u, p, T], [])
         np.testing.assert_array_equal(
             dm.block_offsets, np.array([0, 81, 108, 135], dtype=np.intp)
         )
@@ -95,9 +92,7 @@ class TestGlobalDofMapPartition(unittest.TestCase):
 
     def test_free_plus_prescribed_equals_total(self):
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=3,
-        )
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         # Disjoint per-face dof clamp — no double-prescription.
         bcs = [
             DirichletBC(nodeset_name="xmin_nodes", field_name="u",
@@ -107,7 +102,7 @@ class TestGlobalDofMapPartition(unittest.TestCase):
             DirichletBC(nodeset_name="zmin_nodes", field_name="u",
                         dofs=[2]),
         ]
-        dm = build_dof_map(mesh, [u], bcs)
+        dm = build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
         self.assertEqual(
             dm.num_free_dofs + dm.num_prescribed_dofs, dm.num_total_dofs
         )
@@ -115,17 +110,15 @@ class TestGlobalDofMapPartition(unittest.TestCase):
     def test_field_with_no_bcs_has_zero_prescribed(self):
         # Multi-field; BC on u only. p contributes no prescribed entries.
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=3,
-        )
-        p = GlobalFieldLayout(
-            name="p", finite_element=Q1_HEX, num_dofs_per_basis_fn=1,
-        )
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
+        p = GlobalFieldLayout(name="p", finite_element=Q1_HEX)
         bcs = [
             DirichletBC(nodeset_name="xmin_nodes", field_name="u",
                         dofs=[0]),
         ]
-        dm = build_dof_map(mesh, [u, p], bcs)
+        dm = build_dof_map(
+            mesh, [u, p], bcs, components_by_field={"u": 3, "p": 1},
+        )
         # All prescribed eqs lie inside u's range [0, 81).
         self.assertTrue(np.all(dm.prescribed_indices < 81))
 
@@ -135,14 +128,12 @@ class TestVertexBcResolution(unittest.TestCase):
     def test_xmin_clamp_resolves_to_correct_eqs(self):
         # Q1_HEX has dofs_per_entity[VERTEX]=1: identity basis_fn[v]=v.
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=3,
-        )
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         bcs = [
             DirichletBC(nodeset_name="xmin_nodes", field_name="u",
                         dofs=[0]),
         ]
-        dm = build_dof_map(mesh, [u], bcs)
+        dm = build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
         # xmin_nodes has 9 nodes, dofs=[0] -> 9 prescribed eqs.
         # Each at eq = node_idx * 3 + 0 (block_offset = 0).
         expected = mesh.node_sets["xmin_nodes"] * 3
@@ -155,14 +146,12 @@ class TestEvaluatePrescribedValues(unittest.TestCase):
 
     def _setup_clamped_xmin(self, values):
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=3,
-        )
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         bcs = [
             DirichletBC(nodeset_name="xmin_nodes", field_name="u",
                         dofs=[0, 1, 2], values=values),
         ]
-        return build_dof_map(mesh, [u], bcs)
+        return build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
 
     def test_homogeneous_zeros(self):
         dm = self._setup_clamped_xmin(values=None)
@@ -203,9 +192,7 @@ class TestEvaluatePrescribedValues(unittest.TestCase):
     def test_callable_time_dependent(self):
         # u_x = t * x on xmax face (where x = 1 always).
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=3,
-        )
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         def vals_fn(coords, t):
             n = coords.shape[0]
             out = np.zeros((n, 1))
@@ -215,7 +202,7 @@ class TestEvaluatePrescribedValues(unittest.TestCase):
             DirichletBC(nodeset_name="xmax_nodes", field_name="u",
                         dofs=[0], values=vals_fn),
         ]
-        dm = build_dof_map(mesh, [u], bcs)
+        dm = build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
         v0 = dm.evaluate_prescribed_values(t=0.0)
         v3 = dm.evaluate_prescribed_values(t=3.0)
         np.testing.assert_allclose(v0, np.zeros_like(v0))
@@ -226,9 +213,7 @@ class TestBuildDofMapErrors(unittest.TestCase):
 
     def test_double_prescription_raises(self):
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=3,
-        )
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         bcs = [
             DirichletBC(nodeset_name="xmin_nodes", field_name="u",
                         dofs=[0]),
@@ -236,55 +221,47 @@ class TestBuildDofMapErrors(unittest.TestCase):
                         dofs=[0]),
         ]
         with self.assertRaisesRegex(ValueError, "double-prescribed"):
-            build_dof_map(mesh, [u], bcs)
+            build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
 
     def test_unknown_field_name_raises(self):
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=3,
-        )
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         bcs = [
             DirichletBC(nodeset_name="xmin_nodes", field_name="temperature",
                         dofs=[0]),
         ]
         with self.assertRaisesRegex(ValueError, "unknown field"):
-            build_dof_map(mesh, [u], bcs)
+            build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
 
     def test_unknown_nodeset_name_raises(self):
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=3,
-        )
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         bcs = [
             DirichletBC(nodeset_name="not_a_real_nodeset", field_name="u",
                         dofs=[0]),
         ]
         with self.assertRaisesRegex(KeyError, "unknown nodeset"):
-            build_dof_map(mesh, [u], bcs)
+            build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
 
     def test_dof_index_out_of_range_raises(self):
         mesh = _unit_cube_2x2x2()
         # Scalar field; only dof 0 is valid.
-        T = GlobalFieldLayout(
-            name="T", finite_element=Q1_HEX, num_dofs_per_basis_fn=1,
-        )
+        T = GlobalFieldLayout(name="T", finite_element=Q1_HEX)
         bcs = [
             DirichletBC(nodeset_name="xmin_nodes", field_name="T",
                         dofs=[2]),
         ]
         with self.assertRaisesRegex(ValueError, "dof 2 outside"):
-            build_dof_map(mesh, [T], bcs)
+            build_dof_map(mesh, [T], bcs, components_by_field={"T": 1})
 
     def test_duplicate_field_names_raises(self):
         mesh = _unit_cube_2x2x2()
-        u1 = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=3,
-        )
-        u2 = GlobalFieldLayout(
-            name="u", finite_element=Q1_HEX, num_dofs_per_basis_fn=1,
-        )
+        u1 = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
+        u2 = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         with self.assertRaisesRegex(ValueError, "names must be unique"):
-            build_dof_map(mesh, [u1, u2], [])
+            build_dof_map(
+                mesh, [u1, u2], [], components_by_field={"u": 3},
+            )
 
 
 class TestFieldFamilyMatch(unittest.TestCase):
@@ -292,13 +269,11 @@ class TestFieldFamilyMatch(unittest.TestCase):
     def test_fe_family_must_match_mesh_family(self):
         # Hex mesh paired with a tet FE -> ValueError.
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u", finite_element=P1_TET, num_dofs_per_basis_fn=3,
-        )
+        u = GlobalFieldLayout(name="u", finite_element=P1_TET)
         with self.assertRaisesRegex(
             ValueError, "does not match mesh element_family"
         ):
-            build_dof_map(mesh, [u], [])
+            build_dof_map(mesh, [u], [], components_by_field={"u": 3})
 
 
 class TestBcOnFieldWithoutVertexDofs(unittest.TestCase):
@@ -314,17 +289,13 @@ class TestBcOnFieldWithoutVertexDofs(unittest.TestCase):
             interpolant_fn=hex_linear,
         )
         mesh = _unit_cube_2x2x2()
-        u = GlobalFieldLayout(
-            name="u",
-            finite_element=cell_only_hex,
-            num_dofs_per_basis_fn=3,
-        )
+        u = GlobalFieldLayout(name="u", finite_element=cell_only_hex)
         bcs = [
             DirichletBC(nodeset_name="xmin_nodes", field_name="u",
                         dofs=[0]),
         ]
         with self.assertRaisesRegex(ValueError, "no VERTEX DOFs"):
-            build_dof_map(mesh, [u], bcs)
+            build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
 
 
 if __name__ == "__main__":
