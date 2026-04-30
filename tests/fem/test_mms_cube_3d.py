@@ -34,10 +34,10 @@ from sympy import Matrix, eye, lambdify, pi, sin, symbols
 
 from cmad.fem.bcs import DirichletBC
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
+from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem, FEState, build_fe_problem
 from cmad.fem.interpolants import hex_linear, tet_linear
 from cmad.fem.mesh import (
-    ElementFamily,
     Mesh,
     StructuredHexMesh,
     hex_to_tet_split,

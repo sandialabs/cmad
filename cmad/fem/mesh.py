@@ -31,24 +31,11 @@ split along the body diagonal joining hex nodes 0 and 6 (Howell 1992
 pattern). All 6 tets have positive volume on a positively-oriented hex.
 """
 from dataclasses import dataclass
-from enum import IntEnum
 
 import numpy as np
 from numpy.typing import NDArray
 
-
-class ElementFamily(IntEnum):
-    """Element family tag; fixes nodes_per_element and faces_per_element.
-
-    HEX_LINEAR pairs with :func:`cmad.fem.interpolants.hex_linear` and
-    :func:`cmad.fem.quadrature.hex_quadrature`. TET_LINEAR pairs with
-    :func:`cmad.fem.interpolants.tet_linear` and
-    :func:`cmad.fem.quadrature.tet_quadrature`.
-    """
-
-    HEX_LINEAR = 0
-    TET_LINEAR = 1
-
+from cmad.fem.element_family import ElementFamily
 
 _NODES_PER_ELEMENT: dict[ElementFamily, int] = {
     ElementFamily.HEX_LINEAR: 8,

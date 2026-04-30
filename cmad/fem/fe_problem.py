@@ -6,8 +6,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from cmad.fem.dof import GlobalDofMap
+from cmad.fem.element_family import ElementFamily
 from cmad.fem.interpolants import hex_linear, tet_linear
-from cmad.fem.mesh import ElementFamily, Mesh
+from cmad.fem.mesh import Mesh
 from cmad.fem.quadrature import QuadratureRule, hex_quadrature, tet_quadrature
 from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.global_residuals.global_residual import GlobalResidual

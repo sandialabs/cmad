@@ -8,8 +8,8 @@ import unittest
 
 import numpy as np
 
+from cmad.fem.element_family import ElementFamily
 from cmad.fem.mesh import (
-    ElementFamily,
     Mesh,
     StructuredHexMesh,
     hex_to_tet_split,

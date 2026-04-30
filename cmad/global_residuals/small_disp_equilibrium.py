@@ -1,8 +1,6 @@
 """3D u-only quasi-static small-deformation equilibrium global residual."""
 from typing import Any
 
-import jax.numpy as jnp
-
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.models.var_types import VarType
 from cmad.parameters.parameters import Parameters

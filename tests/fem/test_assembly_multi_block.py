@@ -23,23 +23,23 @@ test. A 1-element / 1-IP setup makes per-IP contributions equal the
 final accumulated values (no quadrature scaling).
 """
 import unittest
-from typing import cast
+from typing import ClassVar, cast
 
 import jax.numpy as jnp
 import numpy as np
 
 from cmad.fem.assembly import assemble_element_block
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
+from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.interpolants import tet_linear
-from cmad.fem.mesh import ElementFamily, Mesh
+from cmad.fem.mesh import Mesh
 from cmad.fem.quadrature import tet_quadrature
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.model import Model
 from cmad.models.var_types import VarType
-from cmad.typing import GREvaluators, ResidualFnGR
-
+from cmad.typing import GREvaluators, JaxArray, ResidualFnGR
 
 _R_U_PER_IP = 1.0
 _R_P_PER_IP = 2.0
@@ -80,10 +80,10 @@ class _MockModel:
     """Minimal Model stand-in exposing only the attributes assembly reads."""
 
     class _Params:
-        values: dict[str, object] = {}
+        values: ClassVar[dict[str, object]] = {}
 
     parameters = _Params()
-    _init_xi = [jnp.zeros(0)]
+    _init_xi: ClassVar[list[JaxArray]] = [jnp.zeros(0)]
 
 
 def _mock_R_and_dR_dU(
