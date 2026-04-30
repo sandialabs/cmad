@@ -12,7 +12,7 @@ from cmad.fem.fe_problem import FEProblem
 from cmad.fem.finite_element import EntityType
 from cmad.fem.neumann import assemble_side_neumann
 from cmad.fem.shapes import ShapeFunctionsAtIP
-from cmad.typing import JaxArray, Params, RAndDRDUEvaluator, StateList
+from cmad.typing import JaxArray, Params, RAndDRDUEvaluator
 
 
 def iso_jac_at_ip(
@@ -156,8 +156,6 @@ def per_element_R_and_K(
         ]],
         residual_block_shapes: Sequence[tuple[int, int]],
         t: float,
-        xi_dummy: StateList,
-        xi_prev_dummy: StateList,
 ) -> tuple[list[JaxArray], list[list[JaxArray]]]:
     """Per-element ``(R_blocks, dR_dU_blocks)`` at all IPs of one element.
 
@@ -207,12 +205,14 @@ def per_element_R_and_K(
     FE strictly lower-order than each field FE) or mixed-basis
     (different field FE per block) setups they differ.
 
-    ``xi_dummy`` and ``xi_prev_dummy`` are zero-filled placeholders.
-    The CLOSED_FORM evaluator path uses ``model.cauchy_closed_form``,
-    which is U-only — state args are unused, so passing zeros is
-    correct. When COUPLED mode lands, the per-IP local Newton will
-    consume xi (plasticity etc.); these args become load-bearing and
-    assembly will need to gather/scatter actual element-IP state.
+    The kernel is U-only at the API boundary because the
+    CLOSED_FORM evaluator it consumes is U-only: stress comes from
+    ``model.cauchy_closed_form(params, U_ip, U_ip_prev)`` and the
+    per-IP local Newton is bypassed. A coupled-mode kernel that
+    threads xi gather/scatter through the per-element evaluation is
+    a separate function (parallel to this one), not an extension of
+    this kernel — the dispatch happens in
+    :func:`assemble_element_block` rather than per-IP.
     """
     num_blocks = len(residual_block_shapes)
     R_blocks = [
@@ -247,7 +247,7 @@ def per_element_R_and_K(
             ))
 
         R_ip, dR_dU_ip = R_and_dR_dU_evaluator(
-            xi_dummy, xi_prev_dummy, params, U_elem, U_prev_elem,
+            params, U_elem, U_prev_elem,
             field_shapes_phys_per_block, w_ref, dv, 0,
         )
 
@@ -328,9 +328,6 @@ def assemble_element_block(
         for fl in fe_problem.field_layouts_per_block
     ]
 
-    xi_dummy: StateList = [jnp.zeros_like(b) for b in model._init_xi]
-    xi_prev_dummy: StateList = [jnp.zeros_like(b) for b in model._init_xi]
-
     quad_xi = jnp.asarray(quad_rule.xi)
     quad_w = jnp.asarray(quad_rule.w)
 
@@ -342,7 +339,6 @@ def assemble_element_block(
             per_block_interpolant_fns,
             evaluators["R_and_dR_dU"],
             forcing_fns_by_block_idx, block_shapes, t,
-            xi_dummy, xi_prev_dummy,
         ),
     )(X_block, U_elem_block, U_prev_elem_block)
 

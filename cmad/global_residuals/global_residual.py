@@ -3,6 +3,7 @@ from abc import ABC
 from collections.abc import Sequence
 from typing import Any
 
+import jax.numpy as jnp
 import numpy as np
 from jax import jacfwd, jit
 from numpy.typing import NDArray
@@ -21,9 +22,10 @@ class GlobalResidual(ABC):
 
     Subclasses set up a residual function (pure, no side effects) and
     pass it to super().__init__(). See :data:`cmad.typing.ResidualFnGR`
-    for the required callable signature:
+    for the required underlying-callable signature:
 
-      (xi, xi_prev, params, U, U_prev, model, shapes_ip, w, dv) -> Sequence[Array]
+      (xi, xi_prev, params, U, U_prev, model, shapes_ip, w, dv,
+       ip_set) -> Sequence[Array]
 
     where xi/xi_prev are Model's per-integration-point local state
     (threaded through GR's call to model.cauchy; GR has no xi of its
@@ -34,18 +36,25 @@ class GlobalResidual(ABC):
     w/dv are the quadrature weight and reference-volume factor, and
     ip_set is the integration-point-set index dispatched by the
     assembly layer (single-ip_set GRs ignore it; multi-ip_set GRs
-    use it to dispatch term-specific contributions).
+    use it to dispatch term-specific contributions). The xi/xi_prev
+    args are part of the underlying-callable contract because they
+    are load-bearing for path-dependent mode-COUPLED bindings; in
+    CLOSED_FORM mode the per-GR body ignores them.
 
     Subclasses pair with a concrete Model via
     :meth:`for_model(model, mode)`, which returns a ``dict[str,
-    Callable]`` of jit'd evaluators closed over ``model._residual``
-    and the mode-selected cauchy method. CLOSED_FORM mode exposes
-    ``"R"`` (residual-only, for linesearch trial points and other
-    cheap residual probes) and ``"R_and_dR_dU"`` (fused R + tangent
-    for the Newton step). The string-key dict replaces Model's
-    mutable ``_deriv_mode`` state machine: FE assembly vmaps closures
-    over element batches, which works on pure functions but not on
-    methods that mutate instance state.
+    Callable]`` of jit'd public evaluators closed over
+    ``model._residual`` and the mode-selected cauchy method.
+    CLOSED_FORM mode exposes ``"R"`` (residual-only, for linesearch
+    trial points and other cheap residual probes) and
+    ``"R_and_dR_dU"`` (fused R + tangent for the Newton step). The
+    public closures are U-only — xi/xi_prev are bound to zeros
+    internally because CLOSED_FORM evaluates stress through
+    ``model.cauchy_closed_form`` and never consults state. The
+    string-key dict replaces Model's mutable ``_deriv_mode`` state
+    machine: FE assembly vmaps closures over element batches, which
+    works on pure functions but not on methods that mutate instance
+    state.
     """
 
     # ---- attributes the subclass must set before super().__init__() ----
@@ -121,20 +130,27 @@ class GlobalResidual(ABC):
             mode: GlobalResidualMode = GlobalResidualMode.COUPLED,
     ) -> GREvaluators:
         """Bind this GR to a concrete Model in a specific operational
-        mode. Returns a dict of jit'd evaluators keyed by string names:
+        mode. Returns a dict of jit'd public evaluators keyed by
+        string names:
 
         - CLOSED_FORM: ``"R"`` (residual only, returning ``R_blocks``)
           and ``"R_and_dR_dU"`` (fused, returning
-          ``(R_blocks, dR_dU_blocks)``). ``R_blocks`` is a list with
-          entry ``r`` shaped ``(num_basis_fns_r, num_eqs_r)`` matching
-          the GR's residual_fn return; ``dR_dU_blocks`` is a list-of-
-          lists with ``dR_dU_blocks[r][s]`` shaped
-          ``(num_basis_fns_r, num_eqs_r, num_basis_fns_s,
-          num_eqs_s)``. The fused evaluator exists so XLA can CSE
-          the shared work (interpolation, kinematics, Cauchy stress)
-          when both R and its tangent are needed (Newton step); the
-          R-only evaluator covers cheap-residual paths (linesearch
-          trial points, perturbation probes).
+          ``(R_blocks, dR_dU_blocks)``). Public-evaluator call shape
+          is ``(params, U, U_prev, shapes_ip, w, dv, ip_set)`` —
+          U-only because CLOSED_FORM evaluates stress through
+          ``model.cauchy_closed_form`` and never consults xi state.
+          The closure forwards xi/xi_prev as zero pytrees to the
+          underlying ``residual_fn`` so that contract is preserved
+          unchanged. ``R_blocks`` is a list with entry ``r`` shaped
+          ``(num_basis_fns_r, num_eqs_r)`` matching the GR's
+          residual_fn return; ``dR_dU_blocks`` is a list-of-lists
+          with ``dR_dU_blocks[r][s]`` shaped ``(num_basis_fns_r,
+          num_eqs_r, num_basis_fns_s, num_eqs_s)``. The fused
+          evaluator exists so XLA can CSE the shared work
+          (interpolation, kinematics, Cauchy stress) when both R and
+          its tangent are needed (Newton step); the R-only evaluator
+          covers cheap-residual paths (linesearch trial points,
+          perturbation probes).
         - COUPLED: not yet implemented; raises NotImplementedError.
           The coupled-mode evaluator must wrap the per-IP local
           Newton solve in custom_vjp so the global outer Newton sees
@@ -168,27 +184,31 @@ class GlobalResidual(ABC):
 
         residual_fn = self._residual_fn
 
-        # R-composed: close the model into the public residual function.
-        # Post-closure argnums: xi=0, xi_prev=1, params=2, U=3,
-        # U_prev=4, shapes_ip=5, w=6, dv=7, ip_set=8.
-        def r_at_ip(xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set):
+        # CLOSED_FORM closures are U-only on the public boundary;
+        # the underlying residual_fn keeps xi/xi_prev because the
+        # contract is shared with COUPLED-capable bindings. Bind
+        # zero pytrees once so both public closures capture the same
+        # reference.
+        xi_zeros = [jnp.zeros_like(b) for b in model._init_xi]
+
+        # Public-closure argnums: params=0, U=1, U_prev=2,
+        # shapes_ip=3, w=4, dv=5, ip_set=6.
+        def r_at_ip(params, U, U_prev, shapes_ip, w, dv, ip_set):
             return residual_fn(
-                xi, xi_prev, params, U, U_prev,
+                xi_zeros, xi_zeros, params, U, U_prev,
                 model, shapes_ip, w, dv, ip_set,
             )
 
-        dR_dU_at_ip = jacfwd(r_at_ip, argnums=3)
+        dR_dU_at_ip = jacfwd(r_at_ip, argnums=1)
 
         def r_and_dR_dU_at_ip(
-                xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set,
+                params, U, U_prev, shapes_ip, w, dv, ip_set,
         ):
             R = r_at_ip(
-                xi, xi_prev, params, U, U_prev,
-                shapes_ip, w, dv, ip_set,
+                params, U, U_prev, shapes_ip, w, dv, ip_set,
             )
             dR_dU = dR_dU_at_ip(
-                xi, xi_prev, params, U, U_prev,
-                shapes_ip, w, dv, ip_set,
+                params, U, U_prev, shapes_ip, w, dv, ip_set,
             )
             return R, dR_dU
 

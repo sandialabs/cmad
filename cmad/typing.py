@@ -110,7 +110,7 @@ divergence + pressure-mass terms) read it to dispatch term-specific
 residual contributions via lax.switch or per-ip_set branches."""
 
 REvaluator: TypeAlias = Callable[
-    [StateList, StateList, Params,
+    [Params,
      Sequence[JaxArray], Sequence[JaxArray],
      Sequence["ShapeFunctionsAtIP"],
      float | JaxArray, float | JaxArray,
@@ -118,14 +118,17 @@ REvaluator: TypeAlias = Callable[
     Sequence[JaxArray],
 ]
 """Signature of the model-closed R-only evaluator returned by
-GlobalResidual.for_model. Same call shape as ResidualFnGR with the
-``model`` argument bound away by the closure; returns the per-
-residual-block ``R_blocks`` list. ``w`` and ``dv`` accept Python
-floats (test-side scalars) or 0-d JaxArrays (assembly-side
-quadrature weights and Jacobian determinants)."""
+GlobalResidual.for_model in CLOSED_FORM mode. The closure binds the
+``model`` argument away and the U-only call shape — xi / xi_prev
+are not arguments because CLOSED_FORM evaluates stress through
+``model.cauchy_closed_form(params, U_ip, U_ip_prev)`` and never
+consults state. Returns the per-residual-block ``R_blocks`` list.
+``w`` and ``dv`` accept Python floats (test-side scalars) or 0-d
+JaxArrays (assembly-side quadrature weights and Jacobian
+determinants)."""
 
 RAndDRDUEvaluator: TypeAlias = Callable[
-    [StateList, StateList, Params,
+    [Params,
      Sequence[JaxArray], Sequence[JaxArray],
      Sequence["ShapeFunctionsAtIP"],
      float | JaxArray, float | JaxArray,
@@ -133,9 +136,11 @@ RAndDRDUEvaluator: TypeAlias = Callable[
     tuple[Sequence[JaxArray], Sequence[Sequence[JaxArray]]],
 ]
 """Signature of the fused R + dR/dU evaluator returned by
-GlobalResidual.for_model. Returns ``(R_blocks, dR_dU_blocks)`` where
-``R_blocks`` matches the REvaluator return and ``dR_dU_blocks`` is
-list-of-lists keyed by ``(residual_block_r, U_block_s)``."""
+GlobalResidual.for_model in CLOSED_FORM mode. Returns
+``(R_blocks, dR_dU_blocks)`` where ``R_blocks`` matches the
+REvaluator return and ``dR_dU_blocks`` is list-of-lists keyed by
+``(residual_block_r, U_block_s)``. U-only at the closure boundary
+for the same reason as REvaluator."""
 
 
 class GREvaluators(TypedDict, total=False):

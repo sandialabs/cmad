@@ -81,14 +81,12 @@ def _test_inputs(model: Elastic):
     displacements at two different nodes + components."""
     U = [jnp.zeros((4, 3)).at[1, 0].set(0.001).at[2, 1].set(0.0005)]
     U_prev = [jnp.zeros((4, 3))]
-    xi = [jnp.zeros(6)]
-    xi_prev = [jnp.zeros(6)]
     params = model.parameters.values
     shapes_ip = [_tet_barycenter_shapes()]
     w = 1.0
     dv = 1.0 / 6.0
     ip_set = 0
-    return xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set
+    return params, U, U_prev, shapes_ip, w, dv, ip_set
 
 
 class TestGlobalResidualABC(unittest.TestCase):
@@ -131,11 +129,11 @@ class TestGlobalResidualABC(unittest.TestCase):
         model = _make_linear_elastic_model()
         evaluators = gr.for_model(
             model, mode=GlobalResidualMode.CLOSED_FORM)
-        xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set = (
+        params, U, U_prev, shapes_ip, w, dv, ip_set = (
             _test_inputs(model))
 
         _, dR_dU = evaluators["R_and_dR_dU"](
-            xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set)
+            params, U, U_prev, shapes_ip, w, dv, ip_set)
         ad_arr = np.asarray(dR_dU[0][0])          # (4, 3, 4, 3)
 
         eps = 1e-6
@@ -145,10 +143,10 @@ class TestGlobalResidualABC(unittest.TestCase):
                 U_plus = [U[0].at[b, k].add(eps)]
                 U_minus = [U[0].at[b, k].add(-eps)]
                 R_plus = evaluators["R"](
-                    xi, xi_prev, params, U_plus, U_prev,
+                    params, U_plus, U_prev,
                     shapes_ip, w, dv, ip_set)
                 R_minus = evaluators["R"](
-                    xi, xi_prev, params, U_minus, U_prev,
+                    params, U_minus, U_prev,
                     shapes_ip, w, dv, ip_set)
                 fd_arr[:, :, b, k] = (R_plus[0] - R_minus[0]) / (2 * eps)
 
@@ -160,11 +158,11 @@ class TestGlobalResidualABC(unittest.TestCase):
         model = _make_linear_elastic_model()
         evaluators = gr.for_model(
             model, mode=GlobalResidualMode.CLOSED_FORM)
-        xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set = (
+        params, U, U_prev, shapes_ip, w, dv, ip_set = (
             _test_inputs(model))
 
         R0_blocks, dR_dU = evaluators["R_and_dR_dU"](
-            xi, xi_prev, params, U, U_prev, shapes_ip, w, dv, ip_set)
+            params, U, U_prev, shapes_ip, w, dv, ip_set)
         R0 = R0_blocks[0]
         K_full = dR_dU[0][0]
         # Free DOFs: node 3. K_ff: (3, 3). R_f: (3,).
@@ -174,7 +172,7 @@ class TestGlobalResidualABC(unittest.TestCase):
 
         U_new = [U[0].at[3].add(dU_f)]
         R1_blocks = evaluators["R"](
-            xi, xi_prev, params, U_new, U_prev, shapes_ip, w, dv, ip_set)
+            params, U_new, U_prev, shapes_ip, w, dv, ip_set)
         self.assertLess(float(jnp.linalg.norm(R1_blocks[0][3, :])), 1e-10)
 
 
