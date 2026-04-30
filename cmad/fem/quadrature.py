@@ -1,4 +1,4 @@
-"""Gauss-Legendre quadrature rules on reference 3D elements.
+"""Gauss-Legendre quadrature rules on reference finite elements.
 
 Factories :func:`hex_quadrature` and :func:`tet_quadrature` return a
 :class:`QuadratureRule` exact for polynomials up to the requested
@@ -29,24 +29,27 @@ from scipy.special import roots_legendre
 
 @dataclass(frozen=True)
 class QuadratureRule:
-    """A quadrature rule on a reference 3D element.
+    """A quadrature rule on a reference finite element.
 
-    ``xi`` has shape ``(npts, 3)`` — reference-element integration-point
-    coordinates. ``w`` has shape ``(npts,)`` — corresponding weights.
-    Both are numpy arrays; static configuration (not traced).
+    ``xi`` has shape ``(npts, ref_dim)`` — reference-element
+    integration-point coordinates, where ``ref_dim`` is the topological
+    dimension of the reference element (1 for line, 2 for tri/quad,
+    3 for tet/hex). ``w`` has shape ``(npts,)`` — corresponding
+    weights. Both are numpy arrays; static configuration (not traced).
     """
     xi: NDArray[np.floating]
     w: NDArray[np.floating]
 
 
-def _gauss_legendre_1d(
+def gauss_legendre_1d(
         n_points: int,
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
     """1D Gauss-Legendre rule on [-1, 1] with ``n_points`` points.
 
-    Module-private helper used by :func:`hex_quadrature` for the
-    tensor-product construction. Weights sum to 2 (interval length).
-    Kept private until a public 1D-element consumer materializes.
+    Returns ``(xi_1d, w_1d)`` flat numpy arrays of length ``n_points``.
+    Exact for polynomials of degree ``<= 2 * n_points - 1``; weights
+    sum to 2 (interval length). Building block for tensor-product
+    factories on Cartesian-product reference elements.
     """
     xi_1d, w_1d = roots_legendre(n_points)
     return np.asarray(xi_1d), np.asarray(w_1d)
@@ -67,7 +70,7 @@ def hex_quadrature(degree: int) -> QuadratureRule:
             f"hex_quadrature requires degree >= 1; got degree={degree}"
         )
     n = int(np.ceil((degree + 1) / 2))
-    xi_1d, w_1d = _gauss_legendre_1d(n)
+    xi_1d, w_1d = gauss_legendre_1d(n)
     xi_mesh = np.stack(
         np.meshgrid(xi_1d, xi_1d, xi_1d, indexing="ij"),
         axis=-1,
