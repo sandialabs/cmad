@@ -7,7 +7,7 @@ linear-element rates against a smooth manufactured solution: L² rate
 
 The manufactured displacement vanishes on the boundary of the unit
 cube, giving homogeneous Dirichlet on the union of all six face
-nodesets. The body force is derived symbolically (via sympy) from
+side sets. The body force is derived symbolically (via sympy) from
 ``-div(sigma(u_exact))`` using the same isotropic small-strain Cauchy
 formula as :class:`cmad.models.elastic.Elastic` —
 ``sigma = kappa * tr(epsilon) * I + 2 * mu * dev(epsilon)``,
@@ -23,7 +23,6 @@ pytest budget while still validating the tet assembly path end-to-end.
 """
 import unittest
 from collections.abc import Callable
-from dataclasses import replace
 
 import jax.numpy as jnp
 import numpy as np
@@ -113,23 +112,6 @@ def _build_mms_callables() -> tuple[
     return body_force_fn, u_exact, grad_u_exact
 
 
-def _add_boundary_nodeset(mesh: Mesh) -> Mesh:
-    """Augment ``mesh`` with ``"all_boundary_nodes"``: union of 6 faces.
-
-    S3 forward-compat handoff recipe (a): nodeset unions are constructed
-    at fixture level until a ``union_nodesets`` mesh helper materializes.
-    """
-    boundary = np.unique(np.concatenate([
-        mesh.node_sets["xmin_nodes"], mesh.node_sets["xmax_nodes"],
-        mesh.node_sets["ymin_nodes"], mesh.node_sets["ymax_nodes"],
-        mesh.node_sets["zmin_nodes"], mesh.node_sets["zmax_nodes"],
-    ]))
-    return replace(
-        mesh,
-        node_sets={**mesh.node_sets, "all_boundary_nodes": boundary},
-    )
-
-
 def _build_fe_problem(
         mesh: Mesh,
         body_force_fn: Callable[[JaxArray, float], JaxArray],
@@ -142,7 +124,11 @@ def _build_fe_problem(
         raise ValueError(f"unsupported element family {mesh.element_family}")
     layout = GlobalFieldLayout(name="u", finite_element=fe)
     bc = DirichletBC(
-        nodeset_name="all_boundary_nodes",
+        sideset_names=[
+            "xmin_sides", "xmax_sides",
+            "ymin_sides", "ymax_sides",
+            "zmin_sides", "zmax_sides",
+        ],
         field_name="u",
         dofs=(0, 1, 2),
         values=None,
@@ -266,9 +252,9 @@ class TestMmsCube3D(unittest.TestCase):
         L2_errs: list[float] = []
         H1_errs: list[float] = []
         for N in Ns:
-            mesh = _add_boundary_nodeset(StructuredHexMesh(
+            mesh = StructuredHexMesh(
                 lengths=(1.0, 1.0, 1.0), divisions=(N, N, N),
-            ))
+            )
             L2, H1 = self._solve_and_measure(mesh)
             L2_errs.append(L2)
             H1_errs.append(H1)
@@ -290,9 +276,9 @@ class TestMmsCube3D(unittest.TestCase):
         L2_errs: list[float] = []
         H1_errs: list[float] = []
         for N in Ns:
-            hex_mesh = _add_boundary_nodeset(StructuredHexMesh(
+            hex_mesh = StructuredHexMesh(
                 lengths=(1.0, 1.0, 1.0), divisions=(N, N, N),
-            ))
+            )
             tet_mesh = hex_to_tet_split(hex_mesh)
             L2, H1 = self._solve_and_measure(tet_mesh)
             L2_errs.append(L2)

@@ -2,8 +2,9 @@
 
 Covers `GlobalFieldLayout` validation, `GlobalDofMap` formula round-
 trips and counts, multi-field layouts, FE-family / mesh-family
-agreement, vertex-anchored BC resolution, time-dependent value
-evaluation, and `build_dof_map` error paths.
+agreement, sideset-keyed BC resolution (single + multi-sideset, with
+intra-BC dedup), time-dependent value evaluation, cross-BC value
+consistency check, and `build_dof_map` error paths.
 """
 import unittest
 
@@ -20,6 +21,12 @@ from cmad.fem.finite_element import (
 )
 from cmad.fem.interpolants import hex_linear
 from cmad.fem.mesh import StructuredHexMesh
+
+ALL_SIDES = [
+    "xmin_sides", "xmax_sides",
+    "ymin_sides", "ymax_sides",
+    "zmin_sides", "zmax_sides",
+]
 
 
 def _unit_cube_2x2x2():
@@ -95,11 +102,11 @@ class TestGlobalDofMapPartition(unittest.TestCase):
         u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         # Disjoint per-face dof clamp — no double-prescription.
         bcs = [
-            DirichletBC(nodeset_name="xmin_nodes", field_name="u",
+            DirichletBC(sideset_names=["xmin_sides"], field_name="u",
                         dofs=[0]),
-            DirichletBC(nodeset_name="ymin_nodes", field_name="u",
+            DirichletBC(sideset_names=["ymin_sides"], field_name="u",
                         dofs=[1]),
-            DirichletBC(nodeset_name="zmin_nodes", field_name="u",
+            DirichletBC(sideset_names=["zmin_sides"], field_name="u",
                         dofs=[2]),
         ]
         dm = build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
@@ -113,7 +120,7 @@ class TestGlobalDofMapPartition(unittest.TestCase):
         u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         p = GlobalFieldLayout(name="p", finite_element=Q1_HEX)
         bcs = [
-            DirichletBC(nodeset_name="xmin_nodes", field_name="u",
+            DirichletBC(sideset_names=["xmin_sides"], field_name="u",
                         dofs=[0]),
         ]
         dm = build_dof_map(
@@ -127,19 +134,36 @@ class TestVertexBcResolution(unittest.TestCase):
 
     def test_xmin_clamp_resolves_to_correct_eqs(self):
         # Q1_HEX has dofs_per_entity[VERTEX]=1: identity basis_fn[v]=v.
+        # xmin_sides walked + deduped recovers the 9 vertices on the
+        # x=0 face — same set as node_sets["xmin_nodes"].
         mesh = _unit_cube_2x2x2()
         u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         bcs = [
-            DirichletBC(nodeset_name="xmin_nodes", field_name="u",
+            DirichletBC(sideset_names=["xmin_sides"], field_name="u",
                         dofs=[0]),
         ]
         dm = build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
-        # xmin_nodes has 9 nodes, dofs=[0] -> 9 prescribed eqs.
-        # Each at eq = node_idx * 3 + 0 (block_offset = 0).
-        expected = mesh.node_sets["xmin_nodes"] * 3
-        np.testing.assert_array_equal(
-            np.sort(dm.prescribed_indices), np.sort(expected)
-        )
+        # 9 vertices on xmin face, dof 0 only -> 9 prescribed eqs at v*3+0.
+        expected = np.sort(mesh.node_sets["xmin_nodes"]) * 3
+        np.testing.assert_array_equal(dm.prescribed_indices, expected)
+
+    def test_multi_sideset_clamp_dedups_intra_bc(self):
+        # One BC clamping all 6 faces. Boundary vertices on shared
+        # edges/corners should appear once, not multiple times.
+        # For 2x2x2 mesh: 27 total nodes, 1 interior, 26 boundary.
+        # 3 components → 78 prescribed eqs.
+        mesh = _unit_cube_2x2x2()
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
+        bcs = [
+            DirichletBC(sideset_names=ALL_SIDES, field_name="u",
+                        dofs=[0, 1, 2]),
+        ]
+        dm = build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
+        self.assertEqual(dm.num_prescribed_dofs, 26 * 3)
+        # Interior vertex is index 13 (center of 3x3x3 grid). Its eqs
+        # 39, 40, 41 should NOT be in prescribed_indices.
+        for eq in (39, 40, 41):
+            self.assertNotIn(eq, dm.prescribed_indices)
 
 
 class TestEvaluatePrescribedValues(unittest.TestCase):
@@ -148,7 +172,7 @@ class TestEvaluatePrescribedValues(unittest.TestCase):
         mesh = _unit_cube_2x2x2()
         u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         bcs = [
-            DirichletBC(nodeset_name="xmin_nodes", field_name="u",
+            DirichletBC(sideset_names=["xmin_sides"], field_name="u",
                         dofs=[0, 1, 2], values=values),
         ]
         return build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
@@ -180,11 +204,11 @@ class TestEvaluatePrescribedValues(unittest.TestCase):
             return out
         dm = self._setup_clamped_xmin(values=vals_fn)
         vals = dm.evaluate_prescribed_values(t=0.0)
-        # xmin face has x=0, so u_x = 0 + y = y on that face.
-        # Per-node values aren't sorted; verify via reshape + element-wise.
-        coords_xmin = _unit_cube_2x2x2().nodes[
-            _unit_cube_2x2x2().node_sets["xmin_nodes"]
-        ]
+        # Use the BC's deduplicated coord order for the reference; the
+        # returned values flat ordering matches prescribed_indices,
+        # which for a single BC clamping a single face is exactly
+        # (sorted vertex)-major (dof)-minor.
+        coords_xmin = dm.resolved_bcs[0].set_coords
         expected = np.zeros((9, 3))
         expected[:, 0] = 0.5 * coords_xmin[:, 0] + coords_xmin[:, 1]
         np.testing.assert_allclose(vals.reshape(9, 3), expected)
@@ -199,7 +223,7 @@ class TestEvaluatePrescribedValues(unittest.TestCase):
             out[:, 0] = t * coords[:, 0]
             return out
         bcs = [
-            DirichletBC(nodeset_name="xmax_nodes", field_name="u",
+            DirichletBC(sideset_names=["xmax_sides"], field_name="u",
                         dofs=[0], values=vals_fn),
         ]
         dm = build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
@@ -209,38 +233,105 @@ class TestEvaluatePrescribedValues(unittest.TestCase):
         np.testing.assert_allclose(v3, np.full_like(v3, 3.0))
 
 
-class TestBuildDofMapErrors(unittest.TestCase):
+class TestCrossBcConsistency(unittest.TestCase):
 
-    def test_double_prescription_raises(self):
+    def test_overlapping_consistent_bcs_silent(self):
+        # Two BCs on the same sideset and same component, both
+        # homogeneous. Cross-BC overlap on every (vertex, dof=0) eq;
+        # values agree (zero); evaluate succeeds silently.
         mesh = _unit_cube_2x2x2()
         u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         bcs = [
-            DirichletBC(nodeset_name="xmin_nodes", field_name="u",
+            DirichletBC(sideset_names=["xmin_sides"], field_name="u",
                         dofs=[0]),
-            DirichletBC(nodeset_name="xmin_nodes", field_name="u",
+            DirichletBC(sideset_names=["xmin_sides"], field_name="u",
                         dofs=[0]),
         ]
-        with self.assertRaisesRegex(ValueError, "double-prescribed"):
-            build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
+        dm = build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
+        # Deduplicated: should have exactly 9 prescribed eqs, not 18.
+        self.assertEqual(dm.num_prescribed_dofs, 9)
+        np.testing.assert_array_equal(
+            dm.evaluate_prescribed_values(),
+            np.zeros(9, dtype=np.float64),
+        )
+
+    def test_overlapping_inconsistent_bcs_raise_at_evaluate(self):
+        # Two BCs on the same sideset and component with different
+        # constant values. Build succeeds (overlap detection is
+        # structural); evaluate raises with a diagnostic.
+        mesh = _unit_cube_2x2x2()
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
+        bcs = [
+            DirichletBC(sideset_names=["xmin_sides"], field_name="u",
+                        dofs=[0], values=[0.0]),
+            DirichletBC(sideset_names=["xmin_sides"], field_name="u",
+                        dofs=[0], values=[1.0]),
+        ]
+        dm = build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
+        with self.assertRaisesRegex(
+            ValueError, "inconsistent prescribed values"
+        ):
+            dm.evaluate_prescribed_values()
+
+    def test_partial_component_overlap_consistent(self):
+        # BC1 clamps dofs [0, 1] on xmin; BC2 clamps dofs [1, 2] on
+        # xmin. Overlap only on dof=1 with consistent values; BC1's
+        # dof=0 and BC2's dof=2 are uniquely prescribed.
+        mesh = _unit_cube_2x2x2()
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
+        bcs = [
+            DirichletBC(sideset_names=["xmin_sides"], field_name="u",
+                        dofs=[0, 1], values=[0.5, 1.0]),
+            DirichletBC(sideset_names=["xmin_sides"], field_name="u",
+                        dofs=[1, 2], values=[1.0, 2.0]),
+        ]
+        dm = build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
+        # Deduped: 9 vertices x 3 components = 27 prescribed eqs.
+        self.assertEqual(dm.num_prescribed_dofs, 27)
+        vals = dm.evaluate_prescribed_values()
+        # Per-vertex pattern is [0.5, 1.0, 2.0] for components 0/1/2.
+        np.testing.assert_allclose(
+            vals.reshape(9, 3),
+            np.broadcast_to([0.5, 1.0, 2.0], (9, 3)),
+        )
+
+    def test_partial_component_overlap_inconsistent_raises(self):
+        # Same as above but BC1 and BC2 disagree on dof=1.
+        mesh = _unit_cube_2x2x2()
+        u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
+        bcs = [
+            DirichletBC(sideset_names=["xmin_sides"], field_name="u",
+                        dofs=[0, 1], values=[0.5, 1.0]),
+            DirichletBC(sideset_names=["xmin_sides"], field_name="u",
+                        dofs=[1, 2], values=[5.0, 2.0]),
+        ]
+        dm = build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
+        with self.assertRaisesRegex(
+            ValueError, "inconsistent prescribed values"
+        ):
+            dm.evaluate_prescribed_values()
+
+
+class TestBuildDofMapErrors(unittest.TestCase):
 
     def test_unknown_field_name_raises(self):
         mesh = _unit_cube_2x2x2()
         u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         bcs = [
-            DirichletBC(nodeset_name="xmin_nodes", field_name="temperature",
+            DirichletBC(sideset_names=["xmin_sides"], field_name="temperature",
                         dofs=[0]),
         ]
         with self.assertRaisesRegex(ValueError, "unknown field"):
             build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
 
-    def test_unknown_nodeset_name_raises(self):
+    def test_unknown_sideset_name_raises(self):
         mesh = _unit_cube_2x2x2()
         u = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
         bcs = [
-            DirichletBC(nodeset_name="not_a_real_nodeset", field_name="u",
+            DirichletBC(sideset_names=["not_a_real_sideset"], field_name="u",
                         dofs=[0]),
         ]
-        with self.assertRaisesRegex(KeyError, "unknown nodeset"):
+        with self.assertRaisesRegex(KeyError, "unknown sideset"):
             build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
 
     def test_dof_index_out_of_range_raises(self):
@@ -248,7 +339,7 @@ class TestBuildDofMapErrors(unittest.TestCase):
         # Scalar field; only dof 0 is valid.
         T = GlobalFieldLayout(name="T", finite_element=Q1_HEX)
         bcs = [
-            DirichletBC(nodeset_name="xmin_nodes", field_name="T",
+            DirichletBC(sideset_names=["xmin_sides"], field_name="T",
                         dofs=[2]),
         ]
         with self.assertRaisesRegex(ValueError, "dof 2 outside"):
@@ -278,9 +369,9 @@ class TestFieldFamilyMatch(unittest.TestCase):
 
 class TestBcOnFieldWithoutVertexDofs(unittest.TestCase):
 
-    def test_nodeset_bc_on_cell_only_field_raises(self):
+    def test_sideset_bc_on_cell_only_field_raises(self):
         # Synthetic DG-style FE: all DOFs on the CELL entity, none on
-        # vertices. Nodeset-keyed BCs cannot resolve through a non-
+        # vertices. Sideset-keyed BCs cannot resolve through a non-
         # vertex DOF placement; build_dof_map must raise.
         cell_only_hex = FiniteElement(
             name="DG-cell-only-hex",
@@ -291,7 +382,7 @@ class TestBcOnFieldWithoutVertexDofs(unittest.TestCase):
         mesh = _unit_cube_2x2x2()
         u = GlobalFieldLayout(name="u", finite_element=cell_only_hex)
         bcs = [
-            DirichletBC(nodeset_name="xmin_nodes", field_name="u",
+            DirichletBC(sideset_names=["xmin_sides"], field_name="u",
                         dofs=[0]),
         ]
         with self.assertRaisesRegex(ValueError, "no VERTEX DOFs"):

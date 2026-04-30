@@ -10,7 +10,8 @@ prescribed status is tracked separately as a flat ``prescribed_indices``
 array, decoupling DOF numbering (structural) from BC enforcement
 (configurable). The DofMap commits to no particular enforcement
 strategy; consumers choose UF/UP reduction, symmetric strong
-enforcement, or matrix-free apply against the same metadata.
+enforcement (zero rows + cols), or matrix-free apply against the same
+metadata.
 
 Per-field :class:`GlobalFieldLayout` carries a :class:`FiniteElement`
 spec that says how many DOFs sit on each mesh entity type (vertex /
@@ -29,11 +30,28 @@ field name. The DofMap stores the resulting per-field array as
 Multi-field layouts naturally support fields without any BCs (those
 fields contribute zero entries to ``prescribed_indices``).
 
+Sideset-keyed BCs. Each :class:`~cmad.fem.bcs.DirichletBC` lists one
+or more side-set names; resolution walks every ``(elem,
+local_side_id)`` pair across the named sets, calls
+:meth:`~cmad.fem.finite_element.FiniteElement.side_basis_fns` for the
+per-element basis-fn indices on each side, gathers global vertex
+basis-fns through ``mesh.connectivity``, and deduplicates per-BC.
+Multi-sideset listing is the natural way to clamp a boundary patch
+covering several side sets without spurious intra-BC double-
+prescription on shared edges and corners.
+
+Cross-BC overlaps are allowed when their values agree at the queried
+time. ``prescribed_indices`` is the deduplicated sorted union of all
+BCs' prescribed eqs; the value-consistency check fires at
+:meth:`GlobalDofMap.evaluate_prescribed_values` time (per call,
+so time-dependent BCs surface inconsistency at the divergent step
+rather than at construction).
+
 Prescribed values are evaluated on demand via
 :meth:`GlobalDofMap.evaluate_prescribed_values`, supporting time-
 dependent BCs and expression-parser-backed callables. Each resolved BC
-caches its node set's coordinate slice at construction so re-evaluation
-is mesh-handle-free.
+caches its deduplicated boundary-vertex coordinate slice at
+construction so re-evaluation is mesh-handle-free.
 """
 from dataclasses import dataclass
 
@@ -80,12 +98,14 @@ class GlobalFieldLayout:
 class _ResolvedBC:
     """Internal: BC paired with cached coords and pre-computed eq indices.
 
-    ``set_coords`` is the ``(N_set, 3)`` slice of ``mesh.nodes`` for the
-    BC's nodeset. Cached so re-evaluation of values is mesh-handle-free.
+    ``set_coords`` is the ``(N_set, 3)`` slice of ``mesh.nodes`` for
+    the BC's deduplicated boundary-vertex set (after walking all
+    sidesets in ``bc.sideset_names`` and unique-ing the gathered
+    vertices). Cached so re-evaluation of values is mesh-handle-free.
 
-    ``eq_indices`` is the ``(N_set * len(dofs),)`` flat array of global
-    equation numbers in (basis_fn-major, dof-minor) order to match the
-    flatten convention used by
+    ``eq_indices`` is the ``(N_set * len(dofs),)`` flat array of
+    global equation numbers in (vertex-major, dof-minor) order to
+    match the flatten convention used by
     :meth:`GlobalDofMap.evaluate_prescribed_values`.
     """
 
@@ -114,12 +134,16 @@ class GlobalDofMap:
     the total DOF count is ``block_offsets[-1]``.
 
     ``prescribed_indices`` is a flat ``(P,)`` int array of global eq
-    numbers prescribed by Dirichlet BCs. ``num_free_dofs ==
-    num_total_dofs - len(prescribed_indices)``.
+    numbers prescribed by Dirichlet BCs, deduplicated across all BCs
+    and sorted ascending. ``num_free_dofs == num_total_dofs -
+    len(prescribed_indices)``.
 
     ``resolved_bcs`` holds the BC list with cached coords and per-BC
-    eq_indices for time-dependent re-evaluation via
-    :meth:`evaluate_prescribed_values`.
+    flat eq_indices for time-dependent re-evaluation via
+    :meth:`evaluate_prescribed_values`. Cross-BC overlap detection +
+    value-consistency check happens inside
+    :meth:`evaluate_prescribed_values`, not here, since values can
+    depend on ``t``.
     """
 
     field_layouts: list[GlobalFieldLayout]
@@ -154,6 +178,18 @@ class GlobalDofMap:
             + dof
         )
 
+    def _decode_eq(self, eq: int) -> tuple[int, int, int]:
+        """Inverse of :meth:`eq_index`: decode ``eq`` into
+        ``(field_idx, basis_fn, dof)``. Used by diagnostic messages
+        when the consistency check fires.
+        """
+        field_idx = int(
+            np.searchsorted(self.block_offsets, eq, side="right")
+        ) - 1
+        local_eq = eq - int(self.block_offsets[field_idx])
+        ndofs = int(self.num_dofs_per_basis_fn[field_idx])
+        return field_idx, local_eq // ndofs, local_eq % ndofs
+
     def evaluate_prescribed_values(
         self, t: float = 0.0
     ) -> NDArray[np.floating]:
@@ -161,32 +197,85 @@ class GlobalDofMap:
 
         Returns a flat ``(P,)`` float array aligned with
         ``prescribed_indices``. Re-evaluates each BC's value source
-        (``None`` / ``Sequence[float]`` / callable) using the cached set
-        coordinates. Time-independent BCs ignore ``t``.
+        (``None`` / ``Sequence[float]`` / callable) using the cached
+        deduplicated boundary-vertex coordinates. Time-independent
+        BCs ignore ``t``.
+
+        Cross-BC consistency check. For any prescribed eq written to
+        by more than one BC, all contributing values must compare
+        equal; otherwise raises ``ValueError`` with a diagnostic
+        naming the conflicting BCs and decoding the eq to its
+        ``(field, basis_fn, dof)`` triple. The check fires per call,
+        so time-dependent BCs that disagree at one ``t`` but not
+        another surface at the divergent step rather than at
+        construction.
         """
-        if len(self.prescribed_indices) == 0:
+        P = len(self.prescribed_indices)
+        if P == 0:
             return np.empty(0, dtype=np.float64)
-        chunks: list[NDArray[np.floating]] = []
-        for rbc in self.resolved_bcs:
-            n_set = rbc.set_coords.shape[0]
-            n_dofs = len(rbc.bc.dofs)
-            values = rbc.bc.values
-            if values is None:
-                vals = np.zeros((n_set, n_dofs), dtype=np.float64)
-            elif callable(values):
-                vals_arr = np.asarray(values(rbc.set_coords, t))
-                if vals_arr.shape != (n_set, n_dofs):
-                    raise ValueError(
-                        "DirichletBC values callable returned shape "
-                        f"{vals_arr.shape}; expected {(n_set, n_dofs)}"
-                    )
-                vals = vals_arr.astype(np.float64)
-            else:
-                vals = np.broadcast_to(
-                    np.asarray(values, dtype=np.float64), (n_set, n_dofs)
-                ).copy()
-            chunks.append(vals.ravel())
-        return np.concatenate(chunks)
+
+        values = np.empty(P, dtype=np.float64)
+        written = np.zeros(P, dtype=bool)
+        written_by = np.full(P, -1, dtype=np.intp)
+
+        for rbc_idx, rbc in enumerate(self.resolved_bcs):
+            bc_vals_flat = self._materialize_bc_values(rbc, t)
+            positions = np.searchsorted(
+                self.prescribed_indices, rbc.eq_indices,
+            )
+            for k in range(bc_vals_flat.size):
+                pos = int(positions[k])
+                val = float(bc_vals_flat[k])
+                if written[pos]:
+                    if val != values[pos]:
+                        eq = int(self.prescribed_indices[pos])
+                        field_idx, basis_fn, dof = self._decode_eq(eq)
+                        field_name = self.field_layouts[field_idx].name
+                        prior_idx = int(written_by[pos])
+                        prior_bc = self.resolved_bcs[prior_idx].bc
+                        raise ValueError(
+                            "DirichletBC inconsistent prescribed values "
+                            f"at eq {eq} (field='{field_name}', "
+                            f"basis_fn={basis_fn}, dof={dof}, t={t}): "
+                            f"BC #{prior_idx} (sideset_names="
+                            f"{list(prior_bc.sideset_names)}) gives "
+                            f"{values[pos]}; BC #{rbc_idx} "
+                            f"(sideset_names="
+                            f"{list(rbc.bc.sideset_names)}) gives "
+                            f"{val}"
+                        )
+                else:
+                    values[pos] = val
+                    written[pos] = True
+                    written_by[pos] = rbc_idx
+        return values
+
+    @staticmethod
+    def _materialize_bc_values(
+        rbc: _ResolvedBC, t: float,
+    ) -> NDArray[np.floating]:
+        """Evaluate one BC's value source into a flat
+        ``(N_set * len(dofs),)`` array in (vertex-major, dof-minor)
+        order, matching ``rbc.eq_indices``.
+        """
+        n_set = rbc.set_coords.shape[0]
+        n_dofs = len(rbc.bc.dofs)
+        bc_values = rbc.bc.values
+        if bc_values is None:
+            vals = np.zeros((n_set, n_dofs), dtype=np.float64)
+        elif callable(bc_values):
+            vals_arr = np.asarray(bc_values(rbc.set_coords, t))
+            if vals_arr.shape != (n_set, n_dofs):
+                raise ValueError(
+                    "DirichletBC values callable returned shape "
+                    f"{vals_arr.shape}; expected {(n_set, n_dofs)}"
+                )
+            vals = vals_arr.astype(np.float64)
+        else:
+            vals = np.broadcast_to(
+                np.asarray(bc_values, dtype=np.float64), (n_set, n_dofs),
+            ).copy()
+        return vals.ravel()
 
 
 def _num_basis_fns_in_mesh(
@@ -214,9 +303,10 @@ def build_dof_map(
     mesh-family agreement, validates ``components_by_field`` against
     the field names, computes per-field DOF block sizes by walking
     the FE's ``dofs_per_entity`` against the mesh's entity counts,
-    resolves each BC's nodeset to coord-and-eq-index arrays, detects
-    double-prescription, and assembles the global flat
-    ``prescribed_indices`` array.
+    resolves each BC's side sets to deduplicated boundary-vertex
+    coord-and-eq-index arrays, and assembles the global flat
+    ``prescribed_indices`` array (deduplicated across BCs, sorted
+    ascending).
 
     ``components_by_field`` maps each field name to its component
     multiplicity (3 for a vector displacement field, 1 for a scalar).
@@ -231,11 +321,22 @@ def build_dof_map(
     where ``n_basis_fns_for_field_i = sum(mesh.entity_count(et) *
     fe.dofs_per_entity[et])``.
 
-    BCs are nodeset-keyed and resolve through the field's VERTEX DOFs:
-    each mesh vertex in the nodeset contributes
-    ``dofs_per_entity[VERTEX]`` basis fns to the constrained set. Fields
-    whose FE has no VERTEX DOFs cannot be constrained via nodeset BCs;
-    sideset-keyed BCs for non-vertex DOFs are not yet supported.
+    BC resolution. For each BC, walk every ``(elem, local_side_id)``
+    pair across all listed ``sideset_names``; call the field's FE
+    :meth:`~cmad.fem.finite_element.FiniteElement.side_basis_fns`
+    per pair to get the per-element vertex slot indices on the side;
+    gather global basis-fns via ``mesh.connectivity[elem, slots]``;
+    deduplicate via ``np.unique`` (intra-BC). The deduplicated
+    boundary-vertex set drives both ``set_coords`` (for value
+    callables) and ``eq_indices``. Cross-BC: the union of all BCs'
+    eq_indices is deduplicated into ``prescribed_indices``; the
+    consistency check between contributors fires at
+    :meth:`GlobalDofMap.evaluate_prescribed_values` time, not here.
+
+    BCs only resolve through the field's VERTEX DOFs: each boundary
+    vertex contributes ``dofs_per_entity[VERTEX]`` basis fns to the
+    constrained set. Fields whose FE has no VERTEX DOFs cannot be
+    constrained via sideset BCs.
 
     Raises:
         ValueError: if field-layout names are not unique;
@@ -246,14 +347,12 @@ def build_dof_map(
                     if a BC references an unknown field;
                     if a BC's dofs index is out of range for its field;
                     if a BC targets a field whose FE has no VERTEX
-                    DOFs;
-                    if two BCs prescribe the same
-                    ``(field, basis_fn, dof)``.
+                    DOFs.
         NotImplementedError: if a BC targets a field whose FE has
                     ``dofs_per_entity[VERTEX] > 1`` (multiplicity beyond
                     1 per vertex needs a richer BC API).
-        KeyError:   if a BC references a nodeset name that's not in
-                    ``mesh.node_sets``.
+        KeyError:   if a BC references a sideset name that's not in
+                    ``mesh.side_sets``.
     """
     names = [fl.name for fl in field_layouts]
     if len(set(names)) != len(names):
@@ -293,7 +392,6 @@ def build_dof_map(
 
     name_to_idx = {fl.name: i for i, fl in enumerate(field_layouts)}
     resolved_bcs: list[_ResolvedBC] = []
-    prescribed_set: set[tuple[int, int, int]] = set()
     eq_chunks: list[NDArray[np.intp]] = []
 
     for bc in bcs:
@@ -314,54 +412,58 @@ def build_dof_map(
                     f"dof {dof} outside [0, {ndofs})"
                 )
 
-        if bc.nodeset_name not in mesh.node_sets:
-            raise KeyError(
-                f"DirichletBC references unknown nodeset "
-                f"'{bc.nodeset_name}'; known nodesets: "
-                f"{sorted(mesh.node_sets)}"
-            )
-        set_nodes = mesh.node_sets[bc.nodeset_name]
+        for sideset_name in bc.sideset_names:
+            if sideset_name not in mesh.side_sets:
+                raise KeyError(
+                    f"DirichletBC references unknown sideset "
+                    f"'{sideset_name}'; known sidesets: "
+                    f"{sorted(mesh.side_sets)}"
+                )
 
         dofs_per_vertex = fe.dofs_per_entity.get(EntityType.VERTEX, 0)
         if dofs_per_vertex == 0:
             raise ValueError(
-                f"DirichletBC on field '{bc.field_name}' targets nodeset "
-                f"'{bc.nodeset_name}', but the field's FiniteElement "
-                f"'{fe.name}' has no VERTEX DOFs. Sideset-keyed BCs for "
-                "non-vertex DOFs are not yet supported."
+                f"DirichletBC on field '{bc.field_name}' targets sidesets "
+                f"{list(bc.sideset_names)}, but the field's FiniteElement "
+                f"'{fe.name}' has no VERTEX DOFs. Sideset BCs only "
+                "address vertex-anchored DOFs."
             )
         if dofs_per_vertex > 1:
             raise NotImplementedError(
                 f"DirichletBC on field '{bc.field_name}': FiniteElement "
                 f"'{fe.name}' has dofs_per_entity[VERTEX]={dofs_per_vertex} "
-                "> 1; nodeset-keyed BCs only handle 1 DOF per vertex."
+                "> 1; sideset BCs only handle 1 DOF per vertex."
             )
 
-        # dofs_per_vertex == 1: basis_fn[v] = v (identity).
-        basis_fns_for_set = set_nodes.astype(np.intp)
+        # Walk every (elem, local_side_id) pair across all listed
+        # sidesets; gather global basis-fns via the side resolver and
+        # mesh.connectivity; deduplicate intra-BC.
+        per_pair_basis_fns: list[NDArray[np.intp]] = []
+        for sideset_name in bc.sideset_names:
+            pairs = mesh.side_sets[sideset_name]
+            for elem_id, local_side_id in pairs:
+                local_basis_fns = fe.side_basis_fns(int(local_side_id))
+                global_basis_fns = mesh.connectivity[
+                    int(elem_id), local_basis_fns,
+                ].astype(np.intp)
+                per_pair_basis_fns.append(global_basis_fns)
+        if per_pair_basis_fns:
+            bc_basis_fns = np.unique(
+                np.concatenate(per_pair_basis_fns)
+            ).astype(np.intp)
+        else:
+            bc_basis_fns = np.empty(0, dtype=np.intp)
 
         block_offset = block_offsets[field_idx]
         dofs_arr = np.asarray(list(bc.dofs), dtype=np.intp)
         eq_indices_2d = (
             block_offset
-            + basis_fns_for_set[:, None] * ndofs
+            + bc_basis_fns[:, None] * ndofs
             + dofs_arr[None, :]
         )
         eq_indices_flat = eq_indices_2d.ravel().astype(np.intp)
 
-        for bf_idx in basis_fns_for_set:
-            bf_int = int(bf_idx)
-            for dof_val in dofs_arr:
-                key = (field_idx, bf_int, int(dof_val))
-                if key in prescribed_set:
-                    raise ValueError(
-                        "double-prescribed DOF "
-                        f"(field='{bc.field_name}', basis_fn={bf_int}, "
-                        f"dof={int(dof_val)}) appears in two BCs"
-                    )
-                prescribed_set.add(key)
-
-        set_coords = mesh.nodes[set_nodes].astype(np.float64)
+        set_coords = mesh.nodes[bc_basis_fns].astype(np.float64)
 
         resolved_bcs.append(
             _ResolvedBC(
@@ -373,7 +475,9 @@ def build_dof_map(
         eq_chunks.append(eq_indices_flat)
 
     if eq_chunks:
-        prescribed_indices = np.concatenate(eq_chunks).astype(np.intp)
+        prescribed_indices = np.unique(
+            np.concatenate(eq_chunks)
+        ).astype(np.intp)
     else:
         prescribed_indices = np.empty(0, dtype=np.intp)
 
