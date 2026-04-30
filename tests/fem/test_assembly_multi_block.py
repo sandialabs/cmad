@@ -33,7 +33,6 @@ from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.finite_element import P1_TET
-from cmad.fem.interpolants import tet_linear
 from cmad.fem.mesh import Mesh
 from cmad.fem.quadrature import tet_quadrature
 from cmad.global_residuals.global_residual import GlobalResidual
@@ -140,7 +139,6 @@ def _build_fe_problem() -> FEProblem:
         assembly_quadrature={
             ElementFamily.TET_LINEAR: tet_quadrature(degree=1),
         },
-        interpolant_fn={ElementFamily.TET_LINEAR: tet_linear},
     )
 
 

@@ -144,7 +144,10 @@ def per_element_R_and_K(
         params: Params,
         quad_xi: NDArray[np.floating] | JaxArray,
         quad_w: NDArray[np.floating] | JaxArray,
-        interpolant_fn: Callable[[JaxArray], ShapeFunctionsAtIP],
+        geom_interpolant_fn: Callable[[JaxArray], ShapeFunctionsAtIP],
+        per_block_interpolant_fns: Sequence[
+            Callable[[JaxArray], ShapeFunctionsAtIP]
+        ],
         R_and_dR_dU_evaluator: RAndDRDUEvaluator,
         forcing_fns_by_block_idx: dict[int, Callable[
             [JaxArray | NDArray[np.floating], float],
@@ -157,14 +160,18 @@ def per_element_R_and_K(
 ) -> tuple[list[JaxArray], list[list[JaxArray]]]:
     """Per-element ``(R_blocks, dR_dU_blocks)`` at all IPs of one element.
 
-    For each IP: lift reference-frame shape gradients to physical-frame
-    via :func:`iso_jac_at_ip`, call ``R_and_dR_dU_evaluator`` for the
-    fused internal-force + tangent contribution, and accumulate.
-    Subtract the forcing contribution ``f_ext_r = N · f_r · w · dv``
-    from each residual block ``r`` listed in
-    ``forcing_fns_by_block_idx`` (sparse — absent block_idx means no
-    forcing on that block, e.g. the pressure block of a mixed u-p
-    method).
+    For each IP: evaluate the geometric interpolant to compute the
+    isoparametric Jacobian, then evaluate each residual block's field
+    interpolant and lift its reference-frame gradients to physical
+    frame via the shared ``inv(iso_jac)``. Call
+    ``R_and_dR_dU_evaluator`` with the per-block
+    ``field_shapes_phys_per_block`` for the fused internal-force +
+    tangent contribution, and accumulate. Subtract the forcing
+    contribution ``f_ext_r = N_r · f_r · w · dv`` (with ``N_r`` from
+    block ``r``'s field interpolant — Galerkin test function) from
+    each residual block ``r`` listed in ``forcing_fns_by_block_idx``
+    (sparse — absent block_idx means no forcing on that block, e.g.
+    the pressure block of a mixed u-p method).
 
     Returns ``(R_blocks, dR_dU_blocks)`` where ``R_blocks[r]`` has
     shape ``(num_basis_fns_r, num_eqs_r)`` and ``dR_dU_blocks[r][s]``
@@ -181,10 +188,23 @@ def per_element_R_and_K(
     ip_sets dispatch on the trailing arg inside their residual_fn
     body (see :data:`cmad.typing.ResidualFnGR`).
 
-    Single-element-family multi-block assumption: every residual block
-    shares the same physical-frame shape functions
-    ``ShapeFunctionsAtIP``. Multi-basis cases (Taylor-Hood Q2/Q1) will
-    require per-block interpolant lookups in a future change.
+    ``geom_interpolant_fn`` provides the reference-frame shapes for
+    the element geometry (typically the mesh's
+    ``geometric_finite_element.interpolant_fn``); it feeds the
+    isoparametric Jacobian (``iso_jac_det`` for the integration measure
+    ``dv = iso_jac_det · w``, ``inv(iso_jac)`` for the chain rule
+    that lifts each per-block ``grad_N_ref`` to physical frame) and
+    the IP-coordinate map ``coords_ip = N · X_elem`` consumed by
+    forcing callables. ``per_block_interpolant_fns[r]`` provides the
+    reference-frame shapes for residual block ``r``'s field; the
+    physical-frame versions assembled into
+    ``field_shapes_phys_per_block`` then drive both the evaluator
+    call and the ``f_ext`` test-function read. For isoparametric
+    setups (``mesh.geometric_finite_element`` matches every
+    ``layout.finite_element``) the geometric and per-block
+    interpolants are the same callable; for subparametric (geometry
+    FE strictly lower-order than each field FE) or mixed-basis
+    (different field FE per block) setups they differ.
 
     ``xi_dummy`` and ``xi_prev_dummy`` are zero-filled placeholders.
     The CLOSED_FORM evaluator path uses ``model.cauchy_closed_form``,
@@ -207,20 +227,27 @@ def per_element_R_and_K(
 
     nips = quad_xi.shape[0]
     for ip_idx in range(nips):
-        shapes_ref = interpolant_fn(quad_xi[ip_idx])
-        grad_N_phys, iso_jac_det, _ = iso_jac_at_ip(
-            shapes_ref.grad_N, X_elem,
+        geom_shapes_ref = geom_interpolant_fn(quad_xi[ip_idx])
+        _, iso_jac_det, iso_jac = iso_jac_at_ip(
+            geom_shapes_ref.grad_N, X_elem,
         )
-        shapes_phys = ShapeFunctionsAtIP(
-            N=shapes_ref.N, grad_N=grad_N_phys,
-        )
+        iso_jac_inv = jnp.linalg.inv(iso_jac)
         w_ref = quad_w[ip_idx]
         dv = iso_jac_det
 
-        shapes_phys_per_block = [shapes_phys] * num_blocks
+        field_shapes_phys_per_block: list[ShapeFunctionsAtIP] = []
+        for r in range(num_blocks):
+            field_shapes_ref_r = per_block_interpolant_fns[r](
+                quad_xi[ip_idx],
+            )
+            grad_N_phys_r = field_shapes_ref_r.grad_N @ iso_jac_inv
+            field_shapes_phys_per_block.append(ShapeFunctionsAtIP(
+                N=field_shapes_ref_r.N, grad_N=grad_N_phys_r,
+            ))
+
         R_ip, dR_dU_ip = R_and_dR_dU_evaluator(
             xi_dummy, xi_prev_dummy, params, U_elem, U_prev_elem,
-            shapes_phys_per_block, w_ref, dv, 0,
+            field_shapes_phys_per_block, w_ref, dv, 0,
         )
 
         for r in range(num_blocks):
@@ -229,11 +256,12 @@ def per_element_R_and_K(
                 dR_dU_blocks[r][s] = dR_dU_blocks[r][s] + dR_dU_ip[r][s]
 
         if forcing_fns_by_block_idx:
-            coords_ip = shapes_ref.N @ X_elem
+            coords_ip = geom_shapes_ref.N @ X_elem
             for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
                 f_ip = jnp.asarray(forcing_fn(coords_ip, t))
                 f_ext = jnp.einsum(
-                    "a,k->ak", shapes_ref.N, f_ip,
+                    "a,k->ak",
+                    field_shapes_phys_per_block[block_idx].N, f_ip,
                 ) * w_ref * dv
                 R_blocks[block_idx] = R_blocks[block_idx] - f_ext
 
@@ -286,8 +314,31 @@ def assemble_element_block(
     num_blocks = len(block_shapes)
 
     quad_rule = fe_problem.assembly_quadrature[mesh.element_family]
-    interpolant_fn = fe_problem.interpolant_fn[mesh.element_family]
     forcing_fns_by_block_idx = fe_problem.forcing_fns_by_block_idx or {}
+
+    assert mesh.geometric_finite_element is not None, (
+        "Mesh.geometric_finite_element is resolved in __post_init__"
+    )
+    geom_interpolant_fn = mesh.geometric_finite_element.interpolant_fn
+
+    name_to_field_idx = {
+        layout.name: i for i, layout in enumerate(dof_map.field_layouts)
+    }
+    field_idx_per_block: list[int] = []
+    per_block_interpolant_fns: list[
+        Callable[[JaxArray], ShapeFunctionsAtIP]
+    ] = []
+    for r in range(num_blocks):
+        var_name = gr.var_names[r]
+        assert var_name is not None, (
+            f"GR var_names[{r}] is None; fully-initialized GRs must "
+            f"populate every var_names entry"
+        )
+        field_idx = name_to_field_idx[var_name]
+        field_idx_per_block.append(field_idx)
+        per_block_interpolant_fns.append(
+            dof_map.field_layouts[field_idx].finite_element.interpolant_fn
+        )
 
     xi_dummy: StateList = [jnp.zeros_like(b) for b in model._init_xi]
     xi_prev_dummy: StateList = [jnp.zeros_like(b) for b in model._init_xi]
@@ -299,29 +350,21 @@ def assemble_element_block(
         lambda X, U, Up: per_element_R_and_K(
             X, U, Up, params,
             quad_xi, quad_w,
-            interpolant_fn,
+            geom_interpolant_fn,
+            per_block_interpolant_fns,
             evaluators["R_and_dR_dU"],
             forcing_fns_by_block_idx, block_shapes, t,
             xi_dummy, xi_prev_dummy,
         ),
     )(X_block, U_elem_block, U_prev_elem_block)
 
-    name_to_field_idx = {
-        layout.name: i for i, layout in enumerate(dof_map.field_layouts)
-    }
-    eq_indices_per_block: list[NDArray[np.intp]] = []
-    for r in range(num_blocks):
-        var_name = gr.var_names[r]
-        assert var_name is not None, (
-            f"GR var_names[{r}] is None; fully-initialized GRs must "
-            f"populate every var_names entry"
+    eq_indices_per_block: list[NDArray[np.intp]] = [
+        _element_eq_indices(
+            connectivity_block, dof_map,
+            field_idx=field_idx_per_block[r],
         )
-        eq_indices_per_block.append(
-            _element_eq_indices(
-                connectivity_block, dof_map,
-                field_idx=name_to_field_idx[var_name],
-            )
-        )
+        for r in range(num_blocks)
+    ]
 
     n_elems = connectivity_block.shape[0]
 

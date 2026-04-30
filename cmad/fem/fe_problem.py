@@ -7,21 +7,12 @@ from numpy.typing import NDArray
 
 from cmad.fem.dof import GlobalDofMap
 from cmad.fem.element_family import ElementFamily
-from cmad.fem.interpolants import hex_linear, tet_linear
 from cmad.fem.mesh import Mesh
 from cmad.fem.quadrature import QuadratureRule, hex_quadrature, tet_quadrature
-from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.model import Model
 from cmad.typing import GREvaluators, JaxArray
-
-_DEFAULT_INTERPOLANT_FN: dict[
-    ElementFamily, Callable[[JaxArray], ShapeFunctionsAtIP],
-] = {
-    ElementFamily.HEX_LINEAR: hex_linear,
-    ElementFamily.TET_LINEAR: tet_linear,
-}
 
 _DEFAULT_ASSEMBLY_QUADRATURE: dict[ElementFamily, QuadratureRule] = {
     ElementFamily.HEX_LINEAR: hex_quadrature(degree=2),
@@ -62,9 +53,6 @@ class FEProblem:
         NDArray[np.floating] | JaxArray,
     ]] | None
     assembly_quadrature: dict[ElementFamily, QuadratureRule]
-    interpolant_fn: dict[
-        ElementFamily, Callable[[JaxArray], ShapeFunctionsAtIP],
-    ]
 
     @property
     def ndims(self) -> int:
@@ -166,9 +154,6 @@ def build_fe_problem(
             NDArray[np.floating] | JaxArray,
         ]] | None = None,
         assembly_quadrature: dict[ElementFamily, QuadratureRule] | None = None,
-        interpolant_fn: dict[
-            ElementFamily, Callable[[JaxArray], ShapeFunctionsAtIP],
-        ] | None = None,
 ) -> FEProblem:
     """Validate FE inputs and build an immutable :class:`FEProblem`.
 
@@ -197,8 +182,6 @@ def build_fe_problem(
         }
     if assembly_quadrature is None:
         assembly_quadrature = dict(_DEFAULT_ASSEMBLY_QUADRATURE)
-    if interpolant_fn is None:
-        interpolant_fn = dict(_DEFAULT_INTERPOLANT_FN)
 
     block_names_mesh = set(mesh.element_blocks.keys())
     block_names_models = set(models_by_block.keys())
@@ -249,5 +232,4 @@ def build_fe_problem(
         evaluators_by_block=evaluators_by_block,
         forcing_fns_by_block_idx=forcing_fns_by_block_idx,
         assembly_quadrature=assembly_quadrature,
-        interpolant_fn=interpolant_fn,
     )
