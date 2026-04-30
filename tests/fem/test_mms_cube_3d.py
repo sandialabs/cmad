@@ -150,9 +150,7 @@ def _build_fe_problem(
     dof_map = build_dof_map(
         mesh, [layout], [bc], components_by_field={"u": 3},
     )
-    gr = SmallDispEquilibrium(
-        num_basis_fns=fe.num_dofs_per_element, ndims=3,
-    )
+    gr = SmallDispEquilibrium(ndims=3)
     elastic = Elastic(_make_parameters(), def_type=DefType.FULL_3D)
     return build_fe_problem(
         mesh=mesh,

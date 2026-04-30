@@ -62,10 +62,8 @@ class _ToyEquilibrium(GlobalResidual):
         self._init_residuals(1)
         self._var_types[0] = VarType.VECTOR
         self._num_eqs[0] = 3
-        self._num_basis_fns[0] = 4
         self.resid_names[0] = "displacement"
         self.var_names[0] = "u"
-        self._init_element_dof_layout()
 
         def residual_fn(xi, xi_prev, params, U, U_prev,
                         model, shapes_ip, w, dv, ip_set):

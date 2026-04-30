@@ -107,6 +107,26 @@ class FEProblem:
     def ndims(self) -> int:
         return int(self.mesh.nodes.shape[1])
 
+    @property
+    def block_shapes(self) -> list[tuple[int, int]]:
+        """Per-residual-block ``(num_basis_fns, num_eqs)`` tuples.
+
+        ``num_basis_fns`` is the per-element basis-fn count of the
+        field bound to residual block ``r``, sourced from
+        ``field_layouts_per_block[r].finite_element.num_dofs_per_element``
+        (resolved in :meth:`__post_init__`). ``num_eqs`` is
+        ``gr._num_eqs[r]``. Together they shape the per-element
+        residual and tangent buffers the assembly layer allocates.
+        """
+        return [
+            (
+                self.field_layouts_per_block[r]
+                .finite_element.num_dofs_per_element,
+                self.gr._num_eqs[r],
+            )
+            for r in range(self.gr.num_residuals)
+        ]
+
 
 @dataclass
 class FEState:

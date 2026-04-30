@@ -63,15 +63,12 @@ class _TwoBlockMockGR(GlobalResidual):
         self._init_residuals(2)
         self._var_types[0] = VarType.VECTOR
         self._num_eqs[0] = 3
-        self._num_basis_fns[0] = 4
         self.resid_names[0] = "displacement"
         self.var_names[0] = "u"
         self._var_types[1] = VarType.SCALAR
         self._num_eqs[1] = 1
-        self._num_basis_fns[1] = 4
         self.resid_names[1] = "pressure"
         self.var_names[1] = "p"
-        self._init_element_dof_layout()
 
         super().__init__(cast(ResidualFnGR, lambda *args: []))
 

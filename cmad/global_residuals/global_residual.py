@@ -52,7 +52,6 @@ class GlobalResidual(ABC):
     dtype: type
     _is_complex: bool
     _num_eqs: NDArray[np.intp]
-    _num_basis_fns: NDArray[np.intp]
     _var_types: NDArray[np.intp]
     _ndims: int
 
@@ -60,10 +59,6 @@ class GlobalResidual(ABC):
     num_residuals: int
     resid_names: list[str | None]
     var_names: list[str | None]
-
-    # ---- attributes set by self._init_element_dof_layout() ----
-    num_element_dofs: int
-    _block_offsets: NDArray[np.intp]
 
     # ---- attribute set by __init__() ----
     _residual_fn: ResidualFnGR
@@ -89,41 +84,9 @@ class GlobalResidual(ABC):
     def _init_residuals(self, num_residuals: int) -> None:
         self.num_residuals = num_residuals
         self._num_eqs = np.zeros(num_residuals, dtype=int)
-        self._num_basis_fns = np.zeros(num_residuals, dtype=int)
         self._var_types = np.zeros(num_residuals, dtype=int)
         self.resid_names = [None] * num_residuals
         self.var_names = [None] * num_residuals
-
-    def _init_element_dof_layout(self) -> None:
-        """Compute per-block flat-DOF offsets and the total element-DOF
-        count. Packing convention P1 (basis-outer, equation-inner within
-        a block — see :meth:`delta_U_offset`). Requires ``_num_eqs`` and
-        ``_num_basis_fns`` populated by the subclass.
-        """
-        self._block_offsets = np.zeros(self.num_residuals, dtype=int)
-        self.num_element_dofs = 0
-        for ii in range(self.num_residuals):
-            self._block_offsets[ii] = self.num_element_dofs
-            self.num_element_dofs += int(
-                self._num_basis_fns[ii] * self._num_eqs[ii]
-            )
-
-    def delta_U_offset(
-            self, res_idx: int, eq_idx: int, dof_idx: int,
-    ) -> int:
-        """Flat element-DOF offset for (block ``res_idx``, equation
-        ``eq_idx``, basis-coefficient ``dof_idx``).
-
-        Packing convention P1: basis-outer, equation-inner within a
-        block — standard FE-code convention (Calibr8 lineage). Keeps
-        element-stiffness sub-blocks contiguous in the
-        ``(num_eqs, num_basis_fns)`` sub-block layout used by assembly.
-        """
-        return (
-            int(self._block_offsets[res_idx])
-            + dof_idx * int(self._num_eqs[res_idx])
-            + eq_idx
-        )
 
     def var_type(self, residual: int) -> int:
         return int(self._var_types[residual])
@@ -151,19 +114,6 @@ class GlobalResidual(ABC):
         return interpolate_global_fields_at_ip(
             U, shapes_ip, self.var_names,
         )
-
-    @property
-    def block_shapes(self) -> list[tuple[int, int]]:
-        """Per-residual-block ``(num_basis_fns, num_eqs)`` tuples.
-
-        Used by the assembly layer to allocate per-element residual
-        and tangent buffers without inspecting the GR's internal arrays.
-        Order matches the residual-block index ``r``.
-        """
-        return [
-            (int(self._num_basis_fns[r]), int(self._num_eqs[r]))
-            for r in range(self.num_residuals)
-        ]
 
     def for_model(
             self,

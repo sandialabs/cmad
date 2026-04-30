@@ -179,7 +179,7 @@ def per_element_R_and_K(
     num_eqs_s)``, summed across IPs. ``residual_block_shapes`` is the
     list of ``(num_basis_fns, num_eqs)`` tuples per residual block,
     used to allocate the accumulator buffers (typically sourced from
-    ``gr.block_shapes``).
+    ``fe_problem.block_shapes``).
 
     Vmap-over-elements compatible: only ``X_elem``, ``U_elem``,
     ``U_prev_elem`` carry the leading element axis; the rest are
@@ -309,8 +309,7 @@ def assemble_element_block(
     model = fe_problem.models_by_block[block_name]
     params = model.parameters.values
     evaluators = fe_problem.evaluators_by_block[block_name]
-    gr = fe_problem.gr
-    block_shapes = gr.block_shapes
+    block_shapes = fe_problem.block_shapes
     num_blocks = len(block_shapes)
 
     quad_rule = fe_problem.assembly_quadrature[mesh.element_family]
