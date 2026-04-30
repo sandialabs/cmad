@@ -42,6 +42,7 @@ from cmad.fem.finite_element import (
     EntityType,
     FiniteElement,
 )
+from cmad.fem.topology import _LOCAL_FACES_PER_ELEMENT
 
 _NODES_PER_ELEMENT: dict[ElementFamily, int] = {
     ElementFamily.HEX_LINEAR: 8,
@@ -52,34 +53,6 @@ _FACES_PER_ELEMENT: dict[ElementFamily, int] = {
     ElementFamily.HEX_LINEAR: 6,
     ElementFamily.TET_LINEAR: 4,
 }
-
-
-# Hex face-to-node table. Each row lists the four hex-local node indices
-# of one face in CCW order from outside the element.
-_HEX_FACE_NODES: NDArray[np.intp] = np.array(
-    [
-        [0, 3, 2, 1],   # face 0: -z
-        [4, 5, 6, 7],   # face 1: +z
-        [0, 1, 5, 4],   # face 2: -y
-        [1, 2, 6, 5],   # face 3: +x
-        [2, 3, 7, 6],   # face 4: +y
-        [3, 0, 4, 7],   # face 5: -x
-    ],
-    dtype=np.intp,
-)
-
-
-# Tet face-to-node table. Each row lists the three tet-local node indices
-# of one face in CCW order from outside the element.
-_TET_FACE_NODES: NDArray[np.intp] = np.array(
-    [
-        [0, 1, 3],   # face 0: -y
-        [1, 2, 3],   # face 1: slant
-        [0, 3, 2],   # face 2: -x
-        [0, 2, 1],   # face 3: -z
-    ],
-    dtype=np.intp,
-)
 
 
 # Hex local-edge table. Each row lists the two hex-local node indices of
@@ -109,11 +82,6 @@ _TET_LOCAL_EDGES: NDArray[np.intp] = np.array(
 _LOCAL_EDGES_PER_ELEMENT: dict[ElementFamily, NDArray[np.intp]] = {
     ElementFamily.HEX_LINEAR: _HEX_LOCAL_EDGES,
     ElementFamily.TET_LINEAR: _TET_LOCAL_EDGES,
-}
-
-_LOCAL_FACES_PER_ELEMENT: dict[ElementFamily, NDArray[np.intp]] = {
-    ElementFamily.HEX_LINEAR: _HEX_FACE_NODES,
-    ElementFamily.TET_LINEAR: _TET_FACE_NODES,
 }
 
 _GEOMETRIC_FINITE_ELEMENT_PER_ELEMENT: dict[ElementFamily, FiniteElement] = {

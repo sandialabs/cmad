@@ -18,9 +18,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
 
+import numpy as np
+from numpy.typing import NDArray
+
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.interpolants import hex_linear, tet_linear
 from cmad.fem.shapes import ShapeFunctionsAtIP
+from cmad.fem.topology import _LOCAL_SIDES_PER_ELEMENT
 from cmad.typing import JaxArray
 
 
@@ -122,6 +126,59 @@ class FiniteElement:
             entity_counts[entity_type] * count
             for entity_type, count in self.dofs_per_entity.items()
         )
+
+    def side_basis_fns(self, local_side_id: int) -> NDArray[np.intp]:
+        """Per-element basis-fn local indices that lie on a local side.
+
+        Side restriction of the per-element basis-fn ordering: returns
+        the indices of basis functions whose support intersects the
+        side. The companion to assembly's ``_element_basis_fns``,
+        which gives global indices over the full element; this gives
+        local indices over a single side.
+
+        The "side" is the (d-1)-dim boundary entity of an element of
+        family dimension d: in 3D this is a face; in 2D (when 2D
+        families land) this would be an edge. Side indexing matches
+        the family's local-side ordering convention (Exodus 0-based
+        for 3D faces — see :mod:`cmad.fem.topology`).
+
+        For VERTEX-only DOF placement (P1 / Q1 and other vertex-
+        anchored fields), returns the family's local-side vertex
+        indices in the family's canonical order — e.g., for
+        ``HEX_LINEAR`` side 0 (face -z), returns ``[0, 3, 2, 1]``.
+
+        Edge / face / cell DOF placements (P2 with edge-DOFs, etc.)
+        require walking the side's sub-entity incidence to pick up
+        per-entity DOF basis-fns; those incidence tables don't yet
+        exist.
+
+        Raises:
+            NotImplementedError: if any non-VERTEX entry of
+                ``dofs_per_entity`` is positive.
+            ValueError: if ``local_side_id`` is out of range for the
+                family.
+        """
+        non_vertex_terms = [
+            et for et, count in self.dofs_per_entity.items()
+            if et != EntityType.VERTEX and count > 0
+        ]
+        if non_vertex_terms:
+            names = [et.name for et in non_vertex_terms]
+            raise NotImplementedError(
+                f"FiniteElement '{self.name}' has DOFs on {names} "
+                "entities; side_basis_fns only supports VERTEX-only "
+                "DOF placement. Sub-entity walks (edge/face/cell DOFs "
+                "on a side) lift with P2+ assembly support."
+            )
+        sides = _LOCAL_SIDES_PER_ELEMENT[self.element_family]
+        n_sides = sides.shape[0]
+        if not (0 <= local_side_id < n_sides):
+            raise ValueError(
+                f"FiniteElement '{self.name}' (family "
+                f"{self.element_family.name}): local_side_id "
+                f"{local_side_id} out of range [0, {n_sides})"
+            )
+        return sides[local_side_id]
 
 
 P1_TET = FiniteElement(
