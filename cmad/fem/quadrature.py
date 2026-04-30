@@ -1,9 +1,11 @@
 """Gauss-Legendre quadrature rules on reference finite elements.
 
-Factories :func:`hex_quadrature` and :func:`tet_quadrature` return a
-:class:`QuadratureRule` exact for polynomials up to the requested
-degree. Hex exactness is per-coordinate (tensor product of 1D
-Gauss-Legendre); tet exactness is total-degree (Keast tables).
+Factories return a :class:`QuadratureRule` exact for polynomials up to
+the requested degree. :func:`hex_quadrature` and
+:func:`quad_quadrature` are Gauss-Legendre tensor products on
+[-1, 1]^d (per-coordinate exactness). :func:`tet_quadrature` and
+:func:`tri_quadrature` use tabulated rules on the unit simplex /
+unit triangle (total-degree exactness).
 
 Quadrature data is stored as numpy arrays (static configuration; not
 traced). Callers pass IP coordinates through interpolants in
@@ -18,6 +20,16 @@ the tet centroid — the rules still integrate polynomials exactly to
 their stated degree, but negative weights can degrade mass-matrix
 positivity and nonlinear-iteration stability depending on the
 integrand. Use degrees 5 or 6 when positive-weight rules are
+required.
+
+Tri rules: degrees 1, 2, 4, 5, 6, 10 are Dunavant 1985 ("High degree
+efficient symmetrical Gaussian quadrature rules for the triangle",
+IJNME 21(6), 1129-1148), transcribed from the add_fem branch — all
+positive weights, cyclically symmetric. Degree 3 is the Hammer-Stroud
+4-point rule (Hammer, Marlowe, Stroud, "Numerical integration over
+simplexes and cones", Math. Tables Aids Comp. 10, 130-137, 1956),
+which has one negative weight at the centroid; use degree 4 (same
+point count, all-positive weights) when positive-weight rules are
 required.
 """
 from dataclasses import dataclass
@@ -256,4 +268,162 @@ def tet_quadrature(degree: int) -> QuadratureRule:
             f"tet_quadrature supports degrees 1..6; got degree={degree}"
         )
     xi, w = _TET_TABLES[degree]
+    return QuadratureRule(xi=xi, w=w)
+
+
+# ---- Tri tables (Dunavant 1985 + Hammer-Stroud degree 3) -------------------
+#
+# Domain is the unit triangle with vertices (0, 0)-(1, 0)-(0, 1); weights
+# sum to 1/2 (area). Dunavant rules (degrees 1, 2, 4, 5, 6, 10) transcribed
+# verbatim from add_fem's cmad/fem_utils/quadrature/quadrature_rule.py
+# entries for those degrees — all positive weights, cyclically symmetric.
+# Degree 3 is the Hammer-Stroud 4-point rule with one negative weight at
+# the centroid (-27/96); Dunavant 1985 deliberately omits degree-3 rules
+# because no symmetric positive-weight 3- or 4-point rule exists, so the
+# degree-3 entry is independently transcribed from Hammer-Stroud 1956.
+
+_TRI_XI_1 = np.array([[1.0 / 3.0, 1.0 / 3.0]])
+_TRI_W_1 = np.array([0.5])
+
+_TRI_XI_2 = np.array([
+    [2.0 / 3.0, 1.0 / 6.0],
+    [1.0 / 6.0, 2.0 / 3.0],
+    [1.0 / 6.0, 1.0 / 6.0],
+])
+_TRI_W_2 = np.array([1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0])
+
+_TRI_XI_3 = np.array([
+    [1.0 / 3.0, 1.0 / 3.0],
+    [1.0 / 5.0, 1.0 / 5.0],
+    [3.0 / 5.0, 1.0 / 5.0],
+    [1.0 / 5.0, 3.0 / 5.0],
+])
+_TRI_W_3 = np.array([
+    -27.0 / 96.0,
+    25.0 / 96.0, 25.0 / 96.0, 25.0 / 96.0,
+])
+
+_TRI_XI_4 = np.array([
+    [0.108103018168070, 0.445948490915965],
+    [0.445948490915965, 0.108103018168070],
+    [0.445948490915965, 0.445948490915965],
+    [0.816847572980459, 0.091576213509771],
+    [0.091576213509771, 0.816847572980459],
+    [0.091576213509771, 0.091576213509771],
+])
+_TRI_W_4 = np.array([
+    0.111690794839005, 0.111690794839005, 0.111690794839005,
+    0.054975871827661, 0.054975871827661, 0.054975871827661,
+])
+
+_TRI_XI_5 = np.array([
+    [0.333333333333333, 0.333333333333333],
+    [0.059715871789770, 0.470142064105115],
+    [0.470142064105115, 0.059715871789770],
+    [0.470142064105115, 0.470142064105115],
+    [0.797426985353087, 0.101286507323456],
+    [0.101286507323456, 0.797426985353087],
+    [0.101286507323456, 0.101286507323456],
+])
+_TRI_W_5 = np.array([
+    0.112500000000000,
+    0.066197076394253, 0.066197076394253, 0.066197076394253,
+    0.062969590272414, 0.062969590272414, 0.062969590272414,
+])
+
+_TRI_XI_6 = np.array([
+    [0.501426509658179, 0.249286745170910],
+    [0.249286745170910, 0.501426509658179],
+    [0.249286745170910, 0.249286745170910],
+    [0.873821971016996, 0.063089014491502],
+    [0.063089014491502, 0.873821971016996],
+    [0.063089014491502, 0.063089014491502],
+    [0.053145049844817, 0.310352451033784],
+    [0.636502499121399, 0.053145049844817],
+    [0.310352451033784, 0.636502499121399],
+    [0.053145049844817, 0.636502499121399],
+    [0.636502499121399, 0.310352451033784],
+    [0.310352451033784, 0.053145049844817],
+])
+_TRI_W_6 = np.array([
+    0.058393137863189, 0.058393137863189, 0.058393137863189,
+    0.025422453185104, 0.025422453185104, 0.025422453185104,
+    0.041425537809187, 0.041425537809187, 0.041425537809187,
+    0.041425537809187, 0.041425537809187, 0.041425537809187,
+])
+
+_TRI_XI_10 = np.array([
+    [0.333333333333333, 0.333333333333333],
+    [0.004269134091050, 0.497865432954475],
+    [0.497865432954475, 0.004269134091050],
+    [0.497865432954475, 0.497865432954475],
+    [0.143975100541888, 0.428012449729056],
+    [0.428012449729056, 0.143975100541888],
+    [0.428012449729056, 0.428012449729056],
+    [0.630487174513551, 0.184756412743225],
+    [0.184756412743225, 0.630487174513551],
+    [0.184756412743225, 0.184756412743225],
+    [0.959037562856645, 0.020481218571678],
+    [0.020481218571678, 0.959037562856645],
+    [0.020481218571678, 0.020481218571678],
+    [0.035002989897272, 0.136573576256033],
+    [0.136573576256033, 0.828423433846695],
+    [0.828423433846695, 0.035002989897272],
+    [0.136573576256033, 0.035002989897272],
+    [0.828423433846695, 0.136573576256033],
+    [0.035002989897272, 0.828423433846695],
+    [0.037549070258443, 0.332743600588639],
+    [0.332743600588639, 0.629707329152919],
+    [0.629707329152919, 0.037549070258443],
+    [0.332743600588639, 0.037549070258443],
+    [0.629707329152919, 0.332743600588639],
+    [0.037549070258443, 0.629707329152919],
+])
+_TRI_W_10 = np.array([
+    0.041761699902598,
+    0.003614925296028, 0.003614925296028, 0.003614925296028,
+    0.037246088960490, 0.037246088960490, 0.037246088960490,
+    0.039323236701554, 0.039323236701554, 0.039323236701554,
+    0.003464161543554, 0.003464161543554, 0.003464161543554,
+    0.014759160167390, 0.014759160167390, 0.014759160167390,
+    0.014759160167390, 0.014759160167390, 0.014759160167390,
+    0.019789683598031, 0.019789683598031, 0.019789683598031,
+    0.019789683598031, 0.019789683598031, 0.019789683598031,
+])
+
+_TRI_TABLES: dict[int, tuple[NDArray[np.floating], NDArray[np.floating]]] = {
+    1: (_TRI_XI_1, _TRI_W_1),
+    2: (_TRI_XI_2, _TRI_W_2),
+    3: (_TRI_XI_3, _TRI_W_3),
+    4: (_TRI_XI_4, _TRI_W_4),
+    5: (_TRI_XI_5, _TRI_W_5),
+    6: (_TRI_XI_6, _TRI_W_6),
+    10: (_TRI_XI_10, _TRI_W_10),
+}
+
+
+def tri_quadrature(degree: int) -> QuadratureRule:
+    """Symmetric quadrature rule on the unit triangle.
+
+    Domain: unit triangle with vertices (0,0)-(1,0)-(0,1). Exact for
+    polynomials of total degree <= ``degree``. Supported degrees:
+    1, 2, 3, 4, 5, 6, 10. Degrees 7-9 are not provided — the next
+    exact rule available in the source tables is degree 10.
+
+    Caveat: degree 3 carries one negative weight at the triangle
+    centroid (-27/96 ~= -0.281). The rule still integrates polynomials
+    exactly to total degree 3, but negative weights can degrade mass-
+    matrix positivity and nonlinear-iteration stability depending on
+    the integrand. Use degree 4 (six points, all positive) when
+    positive-weight rules are required.
+
+    Raises :class:`ValueError` if ``degree`` is not in
+    {1, 2, 3, 4, 5, 6, 10}.
+    """
+    if degree not in _TRI_TABLES:
+        raise ValueError(
+            f"tri_quadrature supports degrees 1..6 and 10; "
+            f"got degree={degree}"
+        )
+    xi, w = _TRI_TABLES[degree]
     return QuadratureRule(xi=xi, w=w)
