@@ -317,15 +317,32 @@ def _read_block_names(ds: netCDF4.Dataset) -> list[str]:
     return [f"block_{p}" for p in prop1]
 
 
-def _build_name_index(
-        ds: netCDF4.Dataset, name_var: str,
+def _build_nodal_name_index(
+        ds: netCDF4.Dataset,
 ) -> dict[str, int]:
-    """Decode a result-variable name array to a 1-based component-index
-    lookup. Returns ``{}`` when the name array is absent (file declared
-    no variables of that kind)."""
-    if name_var not in ds.variables:
+    """Decode ``name_nod_var`` to a 0-based component-axis lookup.
+
+    Nodal variables live in a single 3D ``vals_nod_var(time_step,
+    num_nod_var, num_nodes)`` array; the returned index is the
+    position along the ``num_nod_var`` axis.
+    """
+    if "name_nod_var" not in ds.variables:
         return {}
-    return {n: i + 1 for i, n in enumerate(_decode_names(ds[name_var]))}
+    return {n: i for i, n in enumerate(_decode_names(ds["name_nod_var"]))}
+
+
+def _build_elem_name_index(
+        ds: netCDF4.Dataset,
+) -> dict[str, int]:
+    """Decode ``name_elem_var`` to a 1-based component-index lookup.
+
+    Element variables retain the per-(component, block) named
+    layout ``vals_elem_var{N}eb{B}``; the returned index is the
+    1-based ``N`` that goes into that name.
+    """
+    if "name_elem_var" not in ds.variables:
+        return {}
+    return {n: i + 1 for i, n in enumerate(_decode_names(ds["name_elem_var"]))}
 
 
 def _read_nodal_vars(
@@ -336,7 +353,7 @@ def _read_nodal_vars(
 ) -> dict[str, NDArray[np.floating]]:
     if not nodal_specs:
         return {}
-    name_to_idx = _build_name_index(ds, "name_nod_var")
+    name_to_idx = _build_nodal_name_index(ds)
     out: dict[str, NDArray[np.floating]] = {}
     for spec in nodal_specs:
         disk_root = aliases.get(spec.name, spec.name)
@@ -350,7 +367,7 @@ def _read_nodal_vars(
                     f"in file (have {sorted(name_to_idx)})"
                 )
             n = name_to_idx[cname]
-            comps.append(np.asarray(ds[f"vals_nod_var{n}"][:]))
+            comps.append(np.asarray(ds["vals_nod_var"][:, n, :]))
         if spec.var_type == VarType.SCALAR:
             out[spec.name] = comps[0]
         else:
@@ -370,7 +387,7 @@ def _read_element_vars(
 ) -> dict[str, dict[str, NDArray[np.floating]]]:
     if not elem_specs_by_block:
         return {}
-    name_to_idx = _build_name_index(ds, "name_elem_var")
+    name_to_idx = _build_elem_name_index(ds)
     truth = (
         np.asarray(ds["elem_var_tab"][:])
         if "elem_var_tab" in ds.variables else None
@@ -724,18 +741,22 @@ def _write_nodal_var_schema(
 ) -> dict[str, list[int]]:
     """Create dimensions / variables for nodal result variables.
 
-    Returns ``var_indices``: spec name -> list of 1-based disk-side
-    component indices in disk (Exodus) order.
+    Returns ``var_indices``: spec name -> list of 0-based positions
+    along the ``num_nod_var`` axis of the single ``vals_nod_var``
+    array. (Element variables remain 1-based because their on-disk
+    names ``vals_elem_var{N}eb{B}`` still embed the index; nodal
+    variables collapse to one 3D array per the SEACAS-canonical
+    layout, so the index is just a numpy axis position.)
     """
     if not nodal_specs:
         return {}
     var_indices: dict[str, list[int]] = {}
-    next_idx = 1
+    next_idx = 0
     for spec in nodal_specs:
         n_comp = get_num_eqs(spec.var_type, ndims)
         var_indices[spec.name] = list(range(next_idx, next_idx + n_comp))
         next_idx += n_comp
-    n_components = next_idx - 1
+    n_components = next_idx
     decorated = _validate_nodal_specs(nodal_specs, ndims)
 
     ds.createDimension("num_nod_var", n_components)
@@ -744,10 +765,14 @@ def _write_nodal_var_schema(
     )
     name_nod_var[:] = _encode_names(decorated)
 
-    for n in range(1, n_components + 1):
-        ds.createVariable(
-            f"vals_nod_var{n}", "f8", ("time_step", "num_nodes"),
-        )
+    # Single 3D nodal-vars array, SEACAS-canonical layout. Per-
+    # component ``vals_nod_var{N}`` variables (the older alternative)
+    # are not recognized by Paraview's vtkExodusIIReader, which
+    # expects this single-array form.
+    ds.createVariable(
+        "vals_nod_var", "f8",
+        ("time_step", "num_nod_var", "num_nodes"),
+    )
     return var_indices
 
 
@@ -1017,7 +1042,7 @@ class ExodusWriter:
         self._ds["time_whole"][step_idx] = float(time)
         for name, perm in staged_nodal.items():
             for c, n in enumerate(self._nodal_var_indices[name]):
-                self._ds[f"vals_nod_var{n}"][step_idx, :] = perm[:, c]
+                self._ds["vals_nod_var"][step_idx, n, :] = perm[:, c]
         for block_name, block_staged in staged_elem.items():
             b = self._elem_block_idx[block_name]
             for name, perm in block_staged.items():

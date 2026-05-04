@@ -256,8 +256,13 @@ class TestWriteStepSchema(unittest.TestCase):
                         "displacement_z", "temperature",
                     ],
                 )
-                for n in range(1, 5):
-                    self.assertIn(f"vals_nod_var{n}", ds.variables)
+                # SEACAS-canonical layout: single 3D nodal-vars array
+                # indexed (time_step, num_nod_var, num_nodes).
+                self.assertIn("vals_nod_var", ds.variables)
+                self.assertEqual(
+                    ds["vals_nod_var"].dimensions,
+                    ("time_step", "num_nod_var", "num_nodes"),
+                )
 
     def test_element_schema_truth_table_sparsity(self):
         # Two-block mesh: block_a declares cauchy (SYM_TENSOR);
@@ -335,20 +340,17 @@ class TestWriteStepSchema(unittest.TestCase):
                 np.testing.assert_allclose(
                     np.asarray(ds["time_whole"][:]), [0.0, 0.25],
                 )
-                self.assertEqual(
-                    np.asarray(ds["vals_nod_var1"][1, :]).tolist(),
-                    [0.0] * n_nodes,
+                vals = np.asarray(ds["vals_nod_var"][:])
+                self.assertEqual(vals.shape, (2, 4, n_nodes))
+                self.assertEqual(vals[1, 0, :].tolist(), [0.0] * n_nodes)
+                np.testing.assert_allclose(
+                    vals[1, 1, :], np.full(n_nodes, 1.0),
                 )
                 np.testing.assert_allclose(
-                    np.asarray(ds["vals_nod_var2"][1, :]),
-                    np.full(n_nodes, 1.0),
+                    vals[1, 2, :], np.full(n_nodes, 2.0),
                 )
                 np.testing.assert_allclose(
-                    np.asarray(ds["vals_nod_var3"][1, :]),
-                    np.full(n_nodes, 2.0),
-                )
-                np.testing.assert_allclose(
-                    np.asarray(ds["vals_nod_var4"][1, :]),
+                    vals[1, 3, :],
                     0.5 * np.arange(n_nodes, dtype=np.float64),
                 )
 
@@ -370,24 +372,16 @@ class TestWriteStepSchema(unittest.TestCase):
             ) as w:
                 w.write_step(1.0, {"cauchy": internal})
             with netCDF4.Dataset(str(path)) as ds:
-                self.assertEqual(
-                    float(ds["vals_nod_var1"][0, 0]), 10.0,
-                )
-                self.assertEqual(
-                    float(ds["vals_nod_var2"][0, 0]), 22.0,
-                )
-                self.assertEqual(
-                    float(ds["vals_nod_var3"][0, 0]), 33.0,
-                )
-                self.assertEqual(
-                    float(ds["vals_nod_var4"][0, 0]), 12.0,
-                )
-                self.assertEqual(
-                    float(ds["vals_nod_var5"][0, 0]), 13.0,
-                )
-                self.assertEqual(
-                    float(ds["vals_nod_var6"][0, 0]), 23.0,
-                )
+                # vals_nod_var[step, comp, node]; comps in disk order
+                # [xx, yy, zz, xy, xz, yz] for SYM_TENSOR.
+                vals = np.asarray(ds["vals_nod_var"][:])
+                self.assertEqual(vals.shape, (1, 6, n_nodes))
+                self.assertEqual(float(vals[0, 0, 0]), 10.0)  # xx
+                self.assertEqual(float(vals[0, 1, 0]), 22.0)  # yy
+                self.assertEqual(float(vals[0, 2, 0]), 33.0)  # zz
+                self.assertEqual(float(vals[0, 3, 0]), 12.0)  # xy
+                self.assertEqual(float(vals[0, 4, 0]), 13.0)  # xz
+                self.assertEqual(float(vals[0, 5, 0]), 23.0)  # yz
 
     def test_write_step_rejects_extra_data_keys(self):
         mesh = self._mesh()
@@ -445,8 +439,8 @@ class TestWriteStepSchema(unittest.TestCase):
                     np.asarray(ds["time_whole"][:]).shape, (0,),
                 )
                 self.assertEqual(
-                    np.asarray(ds["vals_nod_var1"][:]).shape,
-                    (0, mesh.nodes.shape[0]),
+                    np.asarray(ds["vals_nod_var"][:]).shape,
+                    (0, 3, mesh.nodes.shape[0]),
                 )
 
     def test_constructor_rejects_unknown_block(self):
