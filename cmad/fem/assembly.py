@@ -1,6 +1,5 @@
 """Element + global FE assembly machinery."""
 from collections.abc import Callable, Sequence
-from typing import NamedTuple
 
 import jax.numpy as jnp
 import numpy as np
@@ -13,6 +12,10 @@ from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.finite_element import EntityType
 from cmad.fem.neumann import assemble_side_neumann
+from cmad.fem.precompute import (
+    BlockIPGeometryPerElem,
+    BlockIPGeometryShared,
+)
 from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.typing import (
@@ -47,52 +50,6 @@ def iso_jac_at_ip(
     iso_jac_det = jnp.linalg.det(iso_jac)
     grad_N_phys = grad_N_ref @ jnp.linalg.inv(iso_jac)
     return grad_N_phys, iso_jac_det, iso_jac
-
-
-class _IPGeometry(NamedTuple):
-    """Per-IP geometry quantities shared between CLOSED_FORM and COUPLED kernels."""
-    field_shapes_phys_per_block: list[ShapeFunctionsAtIP]
-    dv: JaxArray
-    coords_ip: JaxArray
-
-
-def _per_ip_geometry(
-        quad_xi_ip: JaxArray,
-        X_elem: JaxArray,
-        geom_interpolant_fn: Callable[[JaxArray], ShapeFunctionsAtIP],
-        per_block_interpolant_fns: Sequence[
-            Callable[[JaxArray], ShapeFunctionsAtIP]
-        ],
-) -> _IPGeometry:
-    """One IP's iso-Jacobian-derived quantities consumed by both kernels.
-
-    Computes the geometric interpolant + isoparametric Jacobian once,
-    lifts each per-block field interpolant's reference-frame gradients
-    to physical frame via the shared ``inv(iso_jac)``, and returns the
-    integration-measure factor ``dv = iso_jac_det`` plus the IP's
-    physical-frame coordinates ``coords_ip = N · X_elem`` (used by
-    forcing-fn callables — computed unconditionally, cheap matmul,
-    kept symmetric across kernels regardless of whether forcing is
-    active).
-    """
-    geom_shapes_ref = geom_interpolant_fn(quad_xi_ip)
-    _, iso_jac_det, iso_jac = iso_jac_at_ip(
-        geom_shapes_ref.grad_N, X_elem,
-    )
-    iso_jac_inv = jnp.linalg.inv(iso_jac)
-    field_shapes_phys_per_block: list[ShapeFunctionsAtIP] = []
-    for r in range(len(per_block_interpolant_fns)):
-        field_shapes_ref_r = per_block_interpolant_fns[r](quad_xi_ip)
-        grad_N_phys_r = field_shapes_ref_r.grad_N @ iso_jac_inv
-        field_shapes_phys_per_block.append(ShapeFunctionsAtIP(
-            N=field_shapes_ref_r.N, grad_N=grad_N_phys_r,
-        ))
-    coords_ip = geom_shapes_ref.N @ X_elem
-    return _IPGeometry(
-        field_shapes_phys_per_block=field_shapes_phys_per_block,
-        dv=iso_jac_det,
-        coords_ip=coords_ip,
-    )
 
 
 def _element_basis_fns(
@@ -194,16 +151,11 @@ def _element_eq_indices(
 
 
 def per_element_R_and_K(
-        X_elem: JaxArray,
         U_elem: Sequence[JaxArray],
         U_prev_elem: Sequence[JaxArray],
         params: Params,
-        quad_xi: NDArray[np.floating] | JaxArray,
-        quad_w: NDArray[np.floating] | JaxArray,
-        geom_interpolant_fn: Callable[[JaxArray], ShapeFunctionsAtIP],
-        per_block_interpolant_fns: Sequence[
-            Callable[[JaxArray], ShapeFunctionsAtIP]
-        ],
+        geom_per_elem: BlockIPGeometryPerElem,
+        geom_shared: BlockIPGeometryShared,
         R_and_dR_dU_evaluator: RAndDRDUEvaluator,
         forcing_fns_by_block_idx: dict[int, Callable[
             [JaxArray | NDArray[np.floating], float],
@@ -214,11 +166,9 @@ def per_element_R_and_K(
 ) -> tuple[list[JaxArray], list[list[JaxArray]]]:
     """Per-element ``(R_blocks, dR_dU_blocks)`` at all IPs of one element.
 
-    For each IP: evaluate the geometric interpolant to compute the
-    isoparametric Jacobian, then evaluate each residual block's field
-    interpolant and lift its reference-frame gradients to physical
-    frame via the shared ``inv(iso_jac)``. Call
-    ``R_and_dR_dU_evaluator`` with the per-block
+    For each IP: read the cached per-block physical-frame field
+    shapes and integration measure from ``geom_per_elem`` /
+    ``geom_shared``, call ``R_and_dR_dU_evaluator`` with the per-block
     ``field_shapes_phys_per_block`` for the fused internal-force +
     tangent contribution, and accumulate. Subtract the forcing
     contribution ``f_ext_r = N_r · f_r · w · dv`` (with ``N_r`` from
@@ -235,30 +185,27 @@ def per_element_R_and_K(
     used to allocate the accumulator buffers (typically sourced from
     ``fe_problem.block_shapes``).
 
-    Vmap-over-elements compatible: only ``X_elem``, ``U_elem``,
-    ``U_prev_elem`` carry the leading element axis; the rest are
-    element-invariant. The Python-level IP loop unrolls under jit.
-    ``ip_set=0`` is always passed to the evaluator; GRs with multiple
-    ip_sets dispatch on the trailing arg inside their residual_fn
-    body (see :data:`cmad.typing.ResidualFnGR`).
+    Vmap-over-elements compatible: ``U_elem``, ``U_prev_elem``, and
+    ``geom_per_elem`` carry the leading element axis; ``geom_shared``
+    is element-invariant (passed with ``in_axes=None``). The
+    Python-level IP loop unrolls under jit. ``ip_set=0`` is always
+    passed to the evaluator; GRs with multiple ip_sets dispatch on
+    the trailing arg inside their residual_fn body (see
+    :data:`cmad.typing.ResidualFnGR`).
 
-    ``geom_interpolant_fn`` provides the reference-frame shapes for
-    the element geometry (typically the mesh's
-    ``geometric_finite_element.interpolant_fn``); it feeds the
-    isoparametric Jacobian (``iso_jac_det`` for the integration measure
-    ``dv = iso_jac_det · w``, ``inv(iso_jac)`` for the chain rule
-    that lifts each per-block ``grad_N_ref`` to physical frame) and
-    the IP-coordinate map ``coords_ip = N · X_elem`` consumed by
-    forcing callables. ``per_block_interpolant_fns[r]`` provides the
-    reference-frame shapes for residual block ``r``'s field; the
-    physical-frame versions assembled into
-    ``field_shapes_phys_per_block`` then drive both the evaluator
-    call and the ``f_ext`` test-function read. For isoparametric
-    setups (``mesh.geometric_finite_element`` matches every
-    ``layout.finite_element``) the geometric and per-block
-    interpolants are the same callable; for subparametric (geometry
-    FE strictly lower-order than each field FE) or mixed-basis
-    (different field FE per block) setups they differ.
+    ``geom_per_elem`` packs the per-element-IP arrays — signed
+    ``iso_jac_det`` (the integration measure ``dv = iso_jac_det·w``),
+    physical-frame field-shape gradients (one entry per residual
+    block, lifted via ``inv(iso_jac)`` from the geometric basis) and
+    physical IP coordinates (``coords_ip = N_geom · X_elem``) consumed
+    by forcing callables. ``geom_shared`` packs the mesh-uniform
+    arrays — quadrature weights and per-block reference-frame field-
+    shape values. Both are populated by
+    :func:`cmad.fem.precompute.precompute_block_geometry` at
+    ``FEProblem`` build time and consumed unchanged by both the
+    CLOSED_FORM and COUPLED kernels; the geometric and field
+    interpolants live entirely inside the precompute step, so the
+    kernel sees only the lifted physical-frame arrays.
 
     The kernel is U-only at the API boundary because the
     CLOSED_FORM evaluator it consumes is U-only: stress comes from
@@ -281,18 +228,24 @@ def per_element_R_and_K(
         for nb_r, neq_r in residual_block_shapes
     ]
 
-    nips = quad_xi.shape[0]
+    nips = geom_shared.quad_w.shape[0]
     for ip_idx in range(nips):
-        geom = _per_ip_geometry(
-            quad_xi[ip_idx], X_elem,
-            geom_interpolant_fn, per_block_interpolant_fns,
-        )
-        w_ref = quad_w[ip_idx]
-        dv = geom.dv
+        field_shapes_phys_per_block = [
+            ShapeFunctionsAtIP(
+                N=geom_shared.field_N_per_block[r][ip_idx],
+                grad_N=(
+                    geom_per_elem
+                    .field_grad_N_phys_per_block[r][ip_idx]
+                ),
+            )
+            for r in range(num_blocks)
+        ]
+        w_ref = geom_shared.quad_w[ip_idx]
+        dv = geom_per_elem.iso_jac_det[ip_idx]
 
         R_ip, dR_dU_ip = R_and_dR_dU_evaluator(
             params, U_elem, U_prev_elem,
-            geom.field_shapes_phys_per_block, w_ref, dv, 0,
+            field_shapes_phys_per_block, w_ref, dv, 0,
         )
 
         for r in range(num_blocks):
@@ -301,11 +254,12 @@ def per_element_R_and_K(
                 dR_dU_blocks[r][s] = dR_dU_blocks[r][s] + dR_dU_ip[r][s]
 
         if forcing_fns_by_block_idx:
+            coords_ip = geom_per_elem.coords_ip[ip_idx]
             for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
-                f_ip = jnp.asarray(forcing_fn(geom.coords_ip, t))
+                f_ip = jnp.asarray(forcing_fn(coords_ip, t))
                 f_ext = jnp.einsum(
                     "a,k->ak",
-                    geom.field_shapes_phys_per_block[block_idx].N, f_ip,
+                    field_shapes_phys_per_block[block_idx].N, f_ip,
                 ) * w_ref * dv
                 R_blocks[block_idx] = R_blocks[block_idx] - f_ext
 
@@ -313,17 +267,12 @@ def per_element_R_and_K(
 
 
 def per_element_R_and_K_coupled(
-        X_elem: JaxArray,
         U_elem: Sequence[JaxArray],
         U_prev_elem: Sequence[JaxArray],
         params: Params,
         xi_prev_per_ip: JaxArray,
-        quad_xi: NDArray[np.floating] | JaxArray,
-        quad_w: NDArray[np.floating] | JaxArray,
-        geom_interpolant_fn: Callable[[JaxArray], ShapeFunctionsAtIP],
-        per_block_interpolant_fns: Sequence[
-            Callable[[JaxArray], ShapeFunctionsAtIP]
-        ],
+        geom_per_elem: BlockIPGeometryPerElem,
+        geom_shared: BlockIPGeometryShared,
         R_and_dR_dU_and_xi_evaluator: RAndDRDUAndXiEvaluator,
         unravel_xi: Callable[[JaxArray], StateList],
         forcing_fns_by_block_idx: dict[int, Callable[
@@ -364,11 +313,12 @@ def per_element_R_and_K_coupled(
     unrolls under jit, so the closure is seen as ordinary Python
     by JAX.
 
-    Vmap-over-elements compatible: ``X_elem``, ``U_elem``,
-    ``U_prev_elem``, and ``xi_prev_per_ip`` carry the leading
-    element axis when the caller vmaps; everything else is
-    element-invariant. ``ip_set=0`` is always passed to the
-    evaluator; multi-ip_set GRs dispatch on the trailing arg
+    Vmap-over-elements compatible: ``U_elem``, ``U_prev_elem``,
+    ``xi_prev_per_ip``, and ``geom_per_elem`` carry the leading
+    element axis when the caller vmaps; ``geom_shared`` and the rest
+    are element-invariant. See :func:`per_element_R_and_K` for the
+    cache contract; identical here. ``ip_set=0`` is always passed
+    to the evaluator; multi-ip_set GRs dispatch on the trailing arg
     inside their residual_fn body (see
     :data:`cmad.typing.ResidualFnGR`).
     """
@@ -384,22 +334,28 @@ def per_element_R_and_K_coupled(
         for nb_r, neq_r in residual_block_shapes
     ]
 
-    nips = quad_xi.shape[0]
+    nips = geom_shared.quad_w.shape[0]
     total_xi_dofs = xi_prev_per_ip.shape[1]
     xi_solved_per_ip = jnp.zeros((nips, total_xi_dofs))
 
     for ip_idx in range(nips):
-        geom = _per_ip_geometry(
-            quad_xi[ip_idx], X_elem,
-            geom_interpolant_fn, per_block_interpolant_fns,
-        )
-        w_ref = quad_w[ip_idx]
-        dv = geom.dv
+        field_shapes_phys_per_block = [
+            ShapeFunctionsAtIP(
+                N=geom_shared.field_N_per_block[r][ip_idx],
+                grad_N=(
+                    geom_per_elem
+                    .field_grad_N_phys_per_block[r][ip_idx]
+                ),
+            )
+            for r in range(num_blocks)
+        ]
+        w_ref = geom_shared.quad_w[ip_idx]
+        dv = geom_per_elem.iso_jac_det[ip_idx]
 
         xi_prev_blocks = unravel_xi(xi_prev_per_ip[ip_idx])
         R_ip, dR_dU_ip, xi_blocks = R_and_dR_dU_and_xi_evaluator(
             params, U_elem, U_prev_elem, xi_prev_blocks,
-            geom.field_shapes_phys_per_block, w_ref, dv, 0,
+            field_shapes_phys_per_block, w_ref, dv, 0,
         )
 
         for r in range(num_blocks):
@@ -415,11 +371,12 @@ def per_element_R_and_K_coupled(
         xi_solved_per_ip = xi_solved_per_ip.at[ip_idx].set(xi_flat)
 
         if forcing_fns_by_block_idx:
+            coords_ip = geom_per_elem.coords_ip[ip_idx]
             for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
-                f_ip = jnp.asarray(forcing_fn(geom.coords_ip, t))
+                f_ip = jnp.asarray(forcing_fn(coords_ip, t))
                 f_ext = jnp.einsum(
                     "a,k->ak",
-                    geom.field_shapes_phys_per_block[block_idx].N,
+                    field_shapes_phys_per_block[block_idx].N,
                     f_ip,
                 ) * w_ref * dv
                 R_blocks[block_idx] = R_blocks[block_idx] - f_ext
@@ -471,7 +428,6 @@ def assemble_element_block(
     dof_map = fe_problem.dof_map
     elem_indices = mesh.element_blocks[block_name]
     connectivity_block = mesh.connectivity[elem_indices]
-    X_block = jnp.asarray(mesh.nodes[connectivity_block])
 
     U_elem_block = _gather_element_U(U_global, dof_map, connectivity_block)
     U_prev_elem_block = _gather_element_U(
@@ -484,25 +440,10 @@ def assemble_element_block(
     mode = fe_problem.modes_by_block[block_name]
     block_shapes = fe_problem.block_shapes
     num_blocks = len(block_shapes)
-
-    quad_rule = fe_problem.assembly_quadrature[mesh.element_family]
+    field_idx_per_block = fe_problem.field_idx_per_block
     forcing_fns_by_block_idx = fe_problem.forcing_fns_by_block_idx or {}
 
-    assert mesh.geometric_finite_element is not None, (
-        "Mesh.geometric_finite_element is resolved in __post_init__"
-    )
-    geom_interpolant_fn = mesh.geometric_finite_element.interpolant_fn
-
-    field_idx_per_block = fe_problem.field_idx_per_block
-    per_block_interpolant_fns: list[
-        Callable[[JaxArray], ShapeFunctionsAtIP]
-    ] = [
-        fl.finite_element.interpolant_fn
-        for fl in fe_problem.field_layouts_per_block
-    ]
-
-    quad_xi = jnp.asarray(quad_rule.xi)
-    quad_w = jnp.asarray(quad_rule.w)
+    geom_cache = fe_problem.geometry_cache[block_name]
 
     xi_solved_per_block: NDArray[np.floating] | None
     if mode == GlobalResidualMode.COUPLED:
@@ -514,28 +455,29 @@ def assemble_element_block(
         unravel_xi = fe_problem.unravel_xi_by_block[block_name]
         xi_prev_jax = jnp.asarray(xi_prev_per_block)
         R_per_elem_blocks, K_per_elem_blocks, xi_solved_per_elem = vmap(
-            lambda X, U, Up, xi_prev: per_element_R_and_K_coupled(
-                X, U, Up, params, xi_prev,
-                quad_xi, quad_w,
-                geom_interpolant_fn,
-                per_block_interpolant_fns,
+            lambda U, Up, geom, xi_prev: per_element_R_and_K_coupled(
+                U, Up, params, xi_prev,
+                geom, geom_cache.shared,
                 evaluators["R_and_dR_dU_and_xi"],
                 unravel_xi,
                 forcing_fns_by_block_idx, block_shapes, t,
             ),
-        )(X_block, U_elem_block, U_prev_elem_block, xi_prev_jax)
+            in_axes=(0, 0, 0, 0),
+        )(
+            U_elem_block, U_prev_elem_block,
+            geom_cache.per_elem, xi_prev_jax,
+        )
         xi_solved_per_block = np.asarray(xi_solved_per_elem)
     else:
         R_per_elem_blocks, K_per_elem_blocks = vmap(
-            lambda X, U, Up: per_element_R_and_K(
-                X, U, Up, params,
-                quad_xi, quad_w,
-                geom_interpolant_fn,
-                per_block_interpolant_fns,
+            lambda U, Up, geom: per_element_R_and_K(
+                U, Up, params,
+                geom, geom_cache.shared,
                 evaluators["R_and_dR_dU"],
                 forcing_fns_by_block_idx, block_shapes, t,
             ),
-        )(X_block, U_elem_block, U_prev_elem_block)
+            in_axes=(0, 0, 0),
+        )(U_elem_block, U_prev_elem_block, geom_cache.per_elem)
         xi_solved_per_block = None
 
     eq_indices_per_block: list[NDArray[np.intp]] = [

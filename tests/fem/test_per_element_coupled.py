@@ -19,7 +19,12 @@ from cmad.fem.assembly import (
     per_element_R_and_K,
     per_element_R_and_K_coupled,
 )
+from cmad.fem.dof import GlobalFieldLayout
+from cmad.fem.element_family import ElementFamily
+from cmad.fem.finite_element import Q1_HEX
 from cmad.fem.interpolants import hex_linear
+from cmad.fem.mesh import StructuredHexMesh
+from cmad.fem.precompute import precompute_block_geometry
 from cmad.fem.quadrature import hex_quadrature
 from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.global_residuals import (
@@ -134,13 +139,26 @@ class _ToyEquilibrium(GlobalResidual):
 
 def _kernel_common_kwargs(quad):
     """Per-element kwargs shared across both kernels — only the
-    evaluator + xi_prev_per_ip + unravel_xi differ between modes."""
+    evaluator + xi_prev_per_ip + unravel_xi differ between modes.
+
+    Builds a 1-element ``BlockIPGeometryCache`` over the reference hex
+    (same node coords as ``_HEX_REF_X``) and unpacks the per-element
+    slice for the direct kernel call."""
+    from jax.tree_util import tree_map
+
+    mesh = StructuredHexMesh(
+        (2.0, 2.0, 2.0), (1, 1, 1), origin=(-1.0, -1.0, -1.0),
+    )
+    cache = precompute_block_geometry(
+        mesh,
+        {ElementFamily.HEX_LINEAR: quad},
+        [GlobalFieldLayout(name="u", finite_element=Q1_HEX)],
+    )
+    block_cache = cache["all"]
+    geom_per_elem = tree_map(lambda x: x[0], block_cache.per_elem)
     return {
-        "X_elem": _HEX_REF_X,
-        "quad_xi": jnp.asarray(quad.xi),
-        "quad_w": jnp.asarray(quad.w),
-        "geom_interpolant_fn": hex_linear,
-        "per_block_interpolant_fns": [hex_linear],
+        "geom_per_elem": geom_per_elem,
+        "geom_shared": block_cache.shared,
         "forcing_fns_by_block_idx": {},
         "residual_block_shapes": [(8, 3)],
         "t": 0.0,

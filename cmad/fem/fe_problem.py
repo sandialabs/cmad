@@ -11,6 +11,10 @@ from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.mesh import Mesh
 from cmad.fem.neumann import ResolvedNeumannBC, resolve_neumann_bcs
+from cmad.fem.precompute import (
+    BlockIPGeometryCache,
+    precompute_block_geometry,
+)
 from cmad.fem.quadrature import (
     QuadratureRule,
     hex_quadrature,
@@ -82,6 +86,16 @@ class FEProblem:
     the COUPLED kernel's per-element vmap doesn't re-derive the
     pytree treedef every Newton iteration. CLOSED_FORM blocks have
     no entry; the dict is empty for CLOSED_FORM-only problems.
+
+    ``geometry_cache`` holds per-element-block reference-frame geometry
+    (``iso_jac_det``, physical-frame field-shape gradients, IP
+    coordinates, and the shared per-IP shape values + quadrature
+    weights). Computed once at construction by
+    :func:`cmad.fem.precompute.precompute_block_geometry` and consumed
+    by the FE assembly kernels in lieu of recomputing from
+    interpolants on every call. For total-Lagrangian formulations
+    (cmad's current pipeline) this geometry is solution-independent;
+    updated-Lagrangian kernels would bypass the cache.
     """
     mesh: Mesh
     dof_map: GlobalDofMap
@@ -107,6 +121,9 @@ class FEProblem:
         init=False, default_factory=list,
     )
     unravel_xi_by_block: dict[str, Callable[[JaxArray], StateList]] = field(
+        init=False, default_factory=dict,
+    )
+    geometry_cache: dict[str, BlockIPGeometryCache] = field(
         init=False, default_factory=dict,
     )
 
@@ -158,6 +175,11 @@ class FEProblem:
         object.__setattr__(
             self, "unravel_xi_by_block", unravel_xi_by_block,
         )
+
+        geometry_cache = precompute_block_geometry(
+            self.mesh, self.assembly_quadrature, layouts,
+        )
+        object.__setattr__(self, "geometry_cache", geometry_cache)
 
     @property
     def ndims(self) -> int:
