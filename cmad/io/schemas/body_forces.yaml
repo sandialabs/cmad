@@ -6,9 +6,8 @@ properties:
     type: object
     additionalProperties:
       type: array
-      minItems: 3
+      minItems: 2
       prefixItems:
-        - type: string
         - type: string
       items:
         oneOf:
