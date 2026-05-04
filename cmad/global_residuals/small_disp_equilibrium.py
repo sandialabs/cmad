@@ -1,9 +1,15 @@
 """3D u-only quasi-static small-deformation equilibrium global residual."""
 from typing import Any
 
+import numpy as np
+from numpy.typing import NDArray
+
+from cmad.fem.fe_problem import FEProblem, FEState
+from cmad.fem.postprocess import evaluate_cauchy_at_ips
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.registry import register_global_residual
+from cmad.io.results import FieldSpec, ip_average_to_element
 from cmad.models.var_types import VarType
 
 
@@ -58,6 +64,45 @@ class SmallDispEquilibrium(GlobalResidual):
             return [R_internal]
 
         super().__init__(residual_fn)
+
+    def default_output_fields(self) -> dict[str, list[FieldSpec]]:
+        return {
+            "nodal": [FieldSpec("displacement", VarType.VECTOR)],
+            "element": [FieldSpec("cauchy", VarType.SYM_TENSOR)],
+        }
+
+    def evaluate_nodal_field(
+            self,
+            name: str,
+            fe_problem: FEProblem,
+            fe_state: FEState,
+            step: int,
+    ) -> NDArray[np.floating]:
+        if name == "displacement":
+            U = np.asarray(fe_state.U_at(step))
+            return U.reshape(-1, int(self._num_eqs[0]))
+        return super().evaluate_nodal_field(
+            name, fe_problem, fe_state, step,
+        )
+
+    def evaluate_element_field(
+            self,
+            name: str,
+            fe_problem: FEProblem,
+            fe_state: FEState,
+            step: int,
+            block: str,
+    ) -> NDArray[np.floating]:
+        if name == "cauchy":
+            ip_data = evaluate_cauchy_at_ips(
+                fe_problem, fe_state, step, block,
+            )
+            return ip_average_to_element(
+                ip_data, fe_problem.geometry_cache, block,
+            )
+        return super().evaluate_element_field(
+            name, fe_problem, fe_state, step, block,
+        )
 
     @classmethod
     def from_deck(
