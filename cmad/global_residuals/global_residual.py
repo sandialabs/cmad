@@ -25,27 +25,29 @@ class GlobalResidual(ABC):
     pass it to super().__init__(). See :data:`cmad.typing.ResidualFnGR`
     for the required underlying-callable signature:
 
-      (xi, xi_prev, params, U, U_prev, model, shapes_ip, w, dv,
-       ip_set) -> Sequence[Array]
+      (xi, xi_prev, params, U, U_prev, model, mode, shapes_ip, w,
+       dv, ip_set) -> Sequence[Array]
 
     where xi/xi_prev are Model's per-integration-point local state
     (threaded through GR's call to model.cauchy; GR has no xi of its
     own), U/U_prev are per-residual-block lists of element-local
     basis-coefficient arrays with ``U[i].shape ==
-    (num_basis_fns[i], num_eqs[i])``, shapes_ip is a per-block list of
-    :class:`ShapeFunctionsAtIP`, model is the bound :class:`Model`,
-    w/dv are the quadrature weight and reference-volume factor, and
-    ip_set is the integration-point-set index dispatched by the
-    assembly layer (single-ip_set GRs ignore it; multi-ip_set GRs
-    use it to dispatch term-specific contributions). The xi/xi_prev
-    args are part of the underlying-callable contract because they
-    are load-bearing for path-dependent mode-COUPLED bindings; in
-    CLOSED_FORM mode the per-GR body ignores them.
+    (num_basis_fns[i], num_eqs[i])``, model is the bound
+    :class:`Model`, mode is the :class:`GlobalResidualMode` value the
+    closure was built for (the body branches on it to dispatch the
+    per-physics flux call), shapes_ip is a per-block list of
+    :class:`ShapeFunctionsAtIP`, w/dv are the quadrature weight and
+    reference-volume factor, and ip_set is the integration-point-set
+    index dispatched by the assembly layer (single-ip_set GRs ignore
+    it; multi-ip_set GRs use it to dispatch term-specific
+    contributions). The xi/xi_prev args are part of the underlying-
+    callable contract because they are load-bearing for path-
+    dependent mode-COUPLED bindings; in CLOSED_FORM mode the per-GR
+    body ignores them.
 
     Subclasses pair with a concrete Model via
-    :meth:`for_model(model, mode)`, which sets ``self._mode`` (so
-    the GR subclass ``residual_fn`` body can branch on it for
-    cauchy dispatch) and returns a mode-specific ``dict[str,
+    :meth:`for_model(model, mode)`, which captures ``mode`` lexically
+    in the closures it builds and returns a mode-specific ``dict[str,
     Callable]`` of jit'd public evaluators closed over
     ``model._residual``. CLOSED_FORM mode exposes 5 keys: ``"R"``
     (residual-only, for linesearch trial points and other cheap
@@ -60,12 +62,15 @@ class GlobalResidual(ABC):
     mode exposes a different 7-key dict mixing raw partials at
     supplied ξ (9-arg sig including xi) with Newton-running totals
     (8-arg sig; xi internally solved from ``xi_prev``); see
-    :meth:`for_model` for the full contract. A single GR instance
-    binds to one mode at a time — repeated ``for_model`` calls
-    mutate ``self._mode``. The string-key dict replaces Model's
-    mutable ``_deriv_mode`` state machine: FE assembly vmaps
-    closures over element batches, which works on pure functions
-    but not on methods that mutate instance state.
+    :meth:`for_model` for the full contract. Multiple ``for_model``
+    calls on the same GR instance produce independent closures —
+    each captures its own ``mode`` value, so a mixed-mode FE problem
+    that binds the same GR per block (CLOSED_FORM on one, COUPLED
+    on another) works without instance-state contamination. The
+    string-key dict replaces Model's mutable ``_deriv_mode`` state
+    machine: FE assembly vmaps closures over element batches, which
+    works on pure functions but not on methods that mutate instance
+    state.
     """
 
     # ---- attributes the subclass must set before super().__init__() ----
@@ -82,9 +87,6 @@ class GlobalResidual(ABC):
 
     # ---- attribute set by __init__() ----
     _residual_fn: ResidualFnGR
-
-    # ---- attribute set by for_model() ----
-    _mode: GlobalResidualMode
 
     @classmethod
     def from_deck(
@@ -145,8 +147,10 @@ class GlobalResidual(ABC):
             coupled_newton_kwargs: dict[str, Any] | None = None,
     ) -> GREvaluators:
         """Bind this GR to a concrete Model in a specific operational
-        mode. Sets ``self._mode = mode`` so the GR subclass
-        ``residual_fn`` body can branch on it for cauchy dispatch
+        mode. ``mode`` is captured lexically in the closures this
+        method returns and threaded as a positional arg into every
+        call of the GR's ``residual_fn``; the residual body branches
+        on it for the per-physics flux dispatch
         (``model.cauchy_closed_form(params, U_ip, U_ip_prev)`` for
         CLOSED_FORM, ``model.cauchy(xi, xi_prev, params, U_ip,
         U_ip_prev)`` for COUPLED). Returns a mode-specific dict of
@@ -197,18 +201,16 @@ class GlobalResidual(ABC):
         ``ValueError`` to match the deck-pluck pattern (don't
         accept-and-ignore).
 
-        A single GR instance binds to one mode at a time — calling
-        ``for_model`` again mutates ``self._mode``, so closures
-        from a previous binding will read the new mode. Tests that
-        compare both modes simultaneously construct two GR
-        instances.
+        Multiple ``for_model`` calls on the same GR instance produce
+        independent closures, each with its own captured ``mode``;
+        a mixed-mode FE problem that binds the same GR per block
+        (one CLOSED_FORM, one COUPLED) works without
+        instance-state contamination.
 
         Raises ``ValueError`` if ``mode == CLOSED_FORM`` and
         ``model.supports_closed_form_cauchy`` is False, or if
         ``coupled_newton_kwargs`` is passed in CLOSED_FORM.
         """
-        self._mode = mode
-
         if mode == GlobalResidualMode.CLOSED_FORM:
             if coupled_newton_kwargs is not None:
                 raise ValueError(
@@ -249,7 +251,8 @@ class GlobalResidual(ABC):
         def r_at_ip(params, U, U_prev, shapes_ip, w, dv, ip_set):
             return residual_fn(
                 xi_zeros, xi_zeros, params, U, U_prev,
-                model, shapes_ip, w, dv, ip_set,
+                model, GlobalResidualMode.CLOSED_FORM,
+                shapes_ip, w, dv, ip_set,
             )
 
         dR_dU_at_ip = jacfwd(r_at_ip, argnums=1)
@@ -290,7 +293,8 @@ class GlobalResidual(ABC):
                              shapes_ip, w, dv, ip_set):
             return residual_fn(
                 xi, xi_prev, params, U, U_prev,
-                model, shapes_ip, w, dv, ip_set,
+                model, GlobalResidualMode.COUPLED,
+                shapes_ip, w, dv, ip_set,
             )
 
         dR_dU_prev_raw = jacfwd(r_at_supplied_xi, argnums=2)
@@ -317,7 +321,8 @@ class GlobalResidual(ABC):
             xi = local_newton(xi_prev, params, U_ip, U_ip_prev)
             return residual_fn(
                 xi, xi_prev, params, U, U_prev,
-                model, shapes_ip, w, dv, ip_set,
+                model, GlobalResidualMode.COUPLED,
+                shapes_ip, w, dv, ip_set,
             )
 
         dR_dU_total = jacfwd(coupled_r_total, argnums=1)
@@ -330,7 +335,8 @@ class GlobalResidual(ABC):
             xi = local_newton(xi_prev, params, U_ip, U_ip_prev)
             R = residual_fn(
                 xi, xi_prev, params, U, U_prev,
-                model, shapes_ip, w, dv, ip_set,
+                model, GlobalResidualMode.COUPLED,
+                shapes_ip, w, dv, ip_set,
             )
             dR_dU = dR_dU_total(
                 params, U, U_prev, xi_prev,

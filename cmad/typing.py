@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 
 if TYPE_CHECKING:
     from cmad.fem.shapes import ShapeFunctionsAtIP
+    from cmad.global_residuals.modes import GlobalResidualMode
     from cmad.models.global_fields import GlobalFieldsAtPoint
     from cmad.models.model import Model
 
@@ -91,7 +92,7 @@ QoIFn: TypeAlias = Callable[
 ResidualFnGR: TypeAlias = Callable[
     [StateList, StateList, Params,
      Sequence[JaxArray], Sequence[JaxArray],
-     "Model",
+     "Model", "GlobalResidualMode",
      Sequence["ShapeFunctionsAtIP"],
      float, float,
      int],
@@ -101,13 +102,18 @@ ResidualFnGR: TypeAlias = Callable[
 GlobalResidual.__init__. Returns a per-residual-block sequence:
 entry ``r`` has shape ``(n_basis_fns_r, n_eqs_r)``, allowing
 different blocks to have different shapes (Taylor-Hood u/p, etc.).
-U/U_prev and shapes_ip are also per-residual-block sequences. ``w``
-and ``dv`` are the quadrature weight and reference-volume factor at
-the IP. The trailing int is the integration-point-set index
-dispatched by the assembly layer; single-ip_set GRs ignore it,
-multi-ip_set GRs (e.g. mixed u-p with two quadrature orders for
-divergence + pressure-mass terms) read it to dispatch term-specific
-residual contributions via lax.switch or per-ip_set branches."""
+U/U_prev and shapes_ip are also per-residual-block sequences.
+``mode`` is the operational mode (CLOSED_FORM or COUPLED); the
+body branches on it to dispatch the per-physics flux call.
+``GlobalResidual.for_model`` captures one mode per closure, so
+independent bindings on the same GR don't share state. ``w``
+and ``dv`` are the quadrature weight and reference-volume
+factor at the IP. The trailing int is the integration-point-set
+index dispatched by the assembly layer; single-ip_set GRs ignore
+it, multi-ip_set GRs (e.g. mixed u-p with two quadrature orders
+for divergence + pressure-mass terms) read it to dispatch term-
+specific residual contributions via lax.switch or per-ip_set
+branches."""
 
 REvaluator: TypeAlias = Callable[
     [Params,

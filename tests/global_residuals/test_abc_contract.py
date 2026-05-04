@@ -68,10 +68,10 @@ class _ToyEquilibrium(GlobalResidual):
         self.var_names[0] = "u"
 
         def residual_fn(xi, xi_prev, params, U, U_prev,
-                        model, shapes_ip, w, dv, ip_set):
+                        model, mode, shapes_ip, w, dv, ip_set):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(U_prev, shapes_ip)
-            if self._mode == GlobalResidualMode.CLOSED_FORM:
+            if mode == GlobalResidualMode.CLOSED_FORM:
                 sigma = model.cauchy_closed_form(params, U_ip, U_ip_prev)
             else:
                 sigma = model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)

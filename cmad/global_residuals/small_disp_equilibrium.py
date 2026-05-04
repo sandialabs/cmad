@@ -11,13 +11,13 @@ class SmallDispEquilibrium(GlobalResidual):
     """3D u-only quasi-static small-deformation equilibrium.
 
     Per-IP residual: ``R_nodal[a, i] = grad_N_phys[a, j] *
-    sigma[j, i] * w * dv``, with sigma sourced per
-    ``self._mode`` from ``model.cauchy_closed_form(params, U_ip,
-    U_ip_prev)`` (CLOSED_FORM) or ``model.cauchy(xi, xi_prev,
-    params, U_ip, U_ip_prev)`` (COUPLED). The body-force
-    contribution ``f_ext = N · b · w · dv`` is applied by the
-    assembly layer (not inside residual_fn) so this GR stays
-    internal-force only.
+    sigma[j, i] * w * dv``, with sigma sourced per the ``mode``
+    arg from ``model.cauchy_closed_form(params, U_ip, U_ip_prev)``
+    (CLOSED_FORM) or ``model.cauchy(xi, xi_prev, params, U_ip,
+    U_ip_prev)`` (COUPLED). The body-force contribution
+    ``f_ext = N · b · w · dv`` is applied by the assembly layer
+    (not inside residual_fn) so this GR stays internal-force
+    only.
 
     Single residual block: ``resid_names[0] = "displacement"``,
     ``var_names[0] = "u"``. Per-element basis-fn count comes from the
@@ -46,10 +46,10 @@ class SmallDispEquilibrium(GlobalResidual):
         self.var_names[0] = "u"
 
         def residual_fn(xi, xi_prev, params, U, U_prev,
-                        model, shapes_ip, w, dv, ip_set):
+                        model, mode, shapes_ip, w, dv, ip_set):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(U_prev, shapes_ip)
-            if self._mode == GlobalResidualMode.CLOSED_FORM:
+            if mode == GlobalResidualMode.CLOSED_FORM:
                 sigma = model.cauchy_closed_form(params, U_ip, U_ip_prev)
             else:
                 sigma = model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)

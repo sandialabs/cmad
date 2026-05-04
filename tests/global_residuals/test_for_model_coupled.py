@@ -2,8 +2,9 @@
 GlobalResidual.for_model COUPLED mode.
 
 Bundles a small toy 3D u-only quasi-static equilibrium GR (mirror
-of test_abc_contract.py's _ToyEquilibrium, mode-aware via
-self._mode) and exercises the COUPLED branch's 7-key dict shape,
+of test_abc_contract.py's _ToyEquilibrium, mode-aware via the
+``mode`` arg threaded through residual_fn) and exercises the
+COUPLED branch's 7-key dict shape,
 mixed argument signatures (9-arg raw vs 8-arg Newton-running),
 the R + dR/dU equivalence between CLOSED_FORM and COUPLED bindings
 on a closed-form-capable Elastic model, and J2 raw-partial
@@ -85,10 +86,10 @@ def _j2_plastic_inputs(model: SmallElasticPlastic):
 class _ToyEquilibrium(GlobalResidual):
     """3D u-only quasi-static equilibrium, small-def kinematics.
 
-    Mode-aware via ``self._mode``: CLOSED_FORM dispatches to
-    ``model.cauchy_closed_form``, COUPLED dispatches to
-    ``model.cauchy(xi, xi_prev, ...)``. Mirror of the same-named
-    class in ``test_abc_contract.py``.
+    Mode-aware via the ``mode`` arg threaded through ``residual_fn``:
+    CLOSED_FORM dispatches to ``model.cauchy_closed_form``, COUPLED
+    dispatches to ``model.cauchy(xi, xi_prev, ...)``. Mirror of the
+    same-named class in ``test_abc_contract.py``.
     """
     def __init__(self) -> None:
         self._is_complex = False
@@ -102,10 +103,10 @@ class _ToyEquilibrium(GlobalResidual):
         self.var_names[0] = "u"
 
         def residual_fn(xi, xi_prev, params, U, U_prev,
-                        model, shapes_ip, w, dv, ip_set):
+                        model, mode, shapes_ip, w, dv, ip_set):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(U_prev, shapes_ip)
-            if self._mode == GlobalResidualMode.CLOSED_FORM:
+            if mode == GlobalResidualMode.CLOSED_FORM:
                 sigma = model.cauchy_closed_form(params, U_ip, U_ip_prev)
             else:
                 sigma = model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)
@@ -213,7 +214,6 @@ class TestForModelCoupledClosedFormEquivalence(unittest.TestCase):
     to roundoff.
     """
     def test_R_and_dR_dU_match_to_1e_minus_12(self):
-        # One GR per mode — ``for_model`` mutates ``self._mode``.
         gr_closed = _ToyEquilibrium()
         gr_coupled = _ToyEquilibrium()
         model = _make_linear_elastic_model()
@@ -381,6 +381,75 @@ class TestForModelCoupledJVPvsFD(unittest.TestCase):
 
         self.assertTrue(np.allclose(
             ad_arr, fd_arr, rtol=1e-5, atol=1e-7))
+
+
+class TestForModelMixedModeBindings(unittest.TestCase):
+    """Two ``for_model`` calls on the same GR instance produce
+    independent closures — the second binding does not corrupt the
+    first. Regression for the late-binding bug where ``self._mode``
+    was mutated on the GR instance and the first closure's body
+    read the second binding's mode at call time, taking the wrong
+    branch.
+
+    Distinguisher with Elastic: CLOSED_FORM's ``R`` evaluator calls
+    ``cauchy_closed_form`` and produces nonzero stress at nonzero U;
+    COUPLED's raw ``R`` evaluator at xi=zeros calls ``cauchy(xi=0,
+    ...)`` which returns the held xi (= zero), giving zero stress.
+    The two evaluators must therefore produce *different* R values
+    at the same (U, U_prev) — and each must match a single-binding
+    fresh-GR reference.
+    """
+
+    def test_two_bindings_same_GR_dont_share_state(self):
+        gr = _ToyEquilibrium()
+        model = _make_linear_elastic_model()
+
+        ev_closed = gr.for_model(
+            model, mode=GlobalResidualMode.CLOSED_FORM)
+        ev_coupled = gr.for_model(
+            model, mode=GlobalResidualMode.COUPLED)
+
+        params, U, U_prev, shapes_ip, w, dv, ip_set = (
+            _test_inputs(model))
+
+        R_closed = ev_closed["R"](
+            params, U, U_prev, shapes_ip, w, dv, ip_set)
+        xi_zeros = [jnp.zeros_like(b) for b in model._init_xi]
+        R_coupled_raw_at_zero_xi = ev_coupled["R"](
+            params, U, U_prev, xi_zeros, xi_zeros,
+            shapes_ip, w, dv, ip_set)
+
+        # Reference: fresh single-binding GRs.
+        gr_closed_ref = _ToyEquilibrium()
+        gr_coupled_ref = _ToyEquilibrium()
+        ev_closed_ref = gr_closed_ref.for_model(
+            model, mode=GlobalResidualMode.CLOSED_FORM)
+        ev_coupled_ref = gr_coupled_ref.for_model(
+            model, mode=GlobalResidualMode.COUPLED)
+
+        R_closed_ref = ev_closed_ref["R"](
+            params, U, U_prev, shapes_ip, w, dv, ip_set)
+        R_coupled_ref = ev_coupled_ref["R"](
+            params, U, U_prev, xi_zeros, xi_zeros,
+            shapes_ip, w, dv, ip_set)
+
+        # Each binding's R matches its single-binding fresh-GR
+        # reference — proves the second for_model call did not
+        # corrupt the first closure.
+        self.assertTrue(np.allclose(
+            np.asarray(R_closed[0]), np.asarray(R_closed_ref[0]),
+            atol=1e-12))
+        self.assertTrue(np.allclose(
+            np.asarray(R_coupled_raw_at_zero_xi[0]),
+            np.asarray(R_coupled_ref[0]), atol=1e-12))
+
+        # Sanity: the two bindings produce *different* R values
+        # (otherwise the test would pass trivially with both
+        # closures running CLOSED_FORM or both running COUPLED).
+        self.assertFalse(np.allclose(
+            np.asarray(R_closed[0]),
+            np.asarray(R_coupled_raw_at_zero_xi[0]),
+            atol=1e-6))
 
 
 if __name__ == "__main__":
