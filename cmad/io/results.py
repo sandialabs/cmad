@@ -10,7 +10,6 @@ here too; both rely on the per-element-block geometry cache populated
 by :func:`cmad.fem.precompute.precompute_block_geometry` at FEProblem
 build time.
 """
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -22,7 +21,7 @@ from cmad.fem.precompute import (
     BlockIPGeometryCache,
     compute_ip_quadrature_weights,
 )
-from cmad.models.var_types import VarType, get_num_eqs
+from cmad.models.var_types import VarType
 from cmad.typing import JaxArray
 
 if TYPE_CHECKING:

@@ -1059,7 +1059,7 @@ class ExodusWriter:
             self._ds.close()
             self._ds = None
 
-    def __enter__(self) -> "ExodusWriter":
+    def __enter__(self) -> ExodusWriter:
         return self
 
     def __exit__(self, *exc: object) -> None:

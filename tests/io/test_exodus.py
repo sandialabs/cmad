@@ -390,15 +390,14 @@ class TestWriteStepSchema(unittest.TestCase):
             path = Path(tmp) / "extra.exo"
             with ExodusWriter(
                 path, mesh, nodal_field_specs=specs,
-            ) as w:
-                with self.assertRaises(ValueError):
-                    w.write_step(
-                        0.0,
-                        {
-                            "u": np.zeros((mesh.nodes.shape[0], 3)),
-                            "extra": np.zeros((mesh.nodes.shape[0], 3)),
-                        },
-                    )
+            ) as w, self.assertRaises(ValueError):
+                w.write_step(
+                    0.0,
+                    {
+                        "u": np.zeros((mesh.nodes.shape[0], 3)),
+                        "extra": np.zeros((mesh.nodes.shape[0], 3)),
+                    },
+                )
 
     def test_write_step_rejects_shape_mismatch(self):
         mesh = self._mesh()
@@ -407,20 +406,18 @@ class TestWriteStepSchema(unittest.TestCase):
             path = Path(tmp) / "shape.exo"
             with ExodusWriter(
                 path, mesh, nodal_field_specs=specs,
-            ) as w:
-                with self.assertRaises(ValueError):
-                    w.write_step(
-                        0.0,
-                        {"u": np.zeros((mesh.nodes.shape[0], 4))},
-                    )
+            ) as w, self.assertRaises(ValueError):
+                w.write_step(
+                    0.0,
+                    {"u": np.zeros((mesh.nodes.shape[0], 4))},
+                )
 
     def test_write_step_rejects_when_no_specs(self):
         mesh = self._mesh()
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "nospecs.exo"
-            with ExodusWriter(path, mesh) as w:
-                with self.assertRaises(ValueError):
-                    w.write_step(0.0, {})
+            with ExodusWriter(path, mesh) as w, self.assertRaises(ValueError):
+                w.write_step(0.0, {})
 
     def test_zero_steps_writer_close_does_not_corrupt_file(self):
         mesh = self._mesh()
