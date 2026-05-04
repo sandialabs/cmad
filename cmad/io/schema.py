@@ -33,7 +33,7 @@ import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from cmad.io.deck import maybe_unwrap_top_level, strip_calibr8_only
+from cmad.io.deck import unwrap_top_level, strip_calibr8_only
 from cmad.io.registry import (
     registered_global_residuals,
     registered_models,
@@ -81,7 +81,7 @@ _SECTIONS: dict[tuple[str, str], tuple[list[str], list[str]]] = {
 
 def validate_deck(deck: dict[str, Any], subcommand: str) -> None:
     """Validate the deck against the composed schema for ``subcommand``."""
-    deck = maybe_unwrap_top_level(deck)
+    deck = unwrap_top_level(deck)
     deck = strip_calibr8_only(deck)
 
     problem_section = deck.get("problem")

@@ -10,7 +10,7 @@ residual.nonlinear*``, no ``output.format`` field, etc.) validates
 cleanly and so ``deck.resolved.yaml`` reflects the values actually used.
 The three passes are:
 
-1. **Top-level wrapper auto-unwrap** via :func:`maybe_unwrap_top_level`.
+1. **Top-level wrapper auto-unwrap** via :func:`unwrap_top_level`.
    Calibr8 decks open with a single problem-name key whose value is the
    deck body (``cube_elastic: {problem: ..., ...}``); cmad accepts both
    wrapped and flat forms.
@@ -91,7 +91,7 @@ def load_deck(path: Path) -> dict[str, Any]:
     return cast(dict[str, Any], data)
 
 
-def maybe_unwrap_top_level(deck: dict[str, Any]) -> dict[str, Any]:
+def unwrap_top_level(deck: dict[str, Any]) -> dict[str, Any]:
     """Auto-unwrap a single-key top-level wrapper if present.
 
     A wrapped deck has exactly one top-level key whose value is a
@@ -141,7 +141,7 @@ def apply_deck_defaults(deck: dict[str, Any]) -> dict[str, Any]:
     actually used.
     """
     resolved = copy.deepcopy(deck)
-    resolved = maybe_unwrap_top_level(resolved)
+    resolved = unwrap_top_level(resolved)
     resolved = strip_calibr8_only(resolved)
 
     problem_type = resolved.get("problem", {}).get("type")

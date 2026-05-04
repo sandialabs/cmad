@@ -15,6 +15,7 @@ from pathlib import Path
 
 from cmad.cli.common import build_mp_problem, resolve_output
 from cmad.cli.sensitivity import build_sensitivity_driver
+from cmad.io.deck import load_deck, unwrap_top_level
 from cmad.io.writers import (
     write_grad,
     write_hessian,
@@ -25,6 +26,18 @@ from cmad.io.writers import (
 
 def run_hessian(deck_path: Path) -> int:
     """Execute the hessian subcommand on ``deck_path``. Returns an exit code."""
+    deck = unwrap_top_level(load_deck(deck_path))
+    problem_type = deck["problem"]["type"]
+    if problem_type == "fe":
+        raise NotImplementedError(
+            "cmad hessian with problem.type='fe' is not yet supported"
+        )
+    if problem_type != "material_point":
+        raise ValueError(
+            f"unsupported problem.type {problem_type!r}; expected "
+            f"'material_point' or 'fe'"
+        )
+
     graph = build_mp_problem(deck_path, "hessian")
     qoi = graph.qoi
     assert qoi is not None

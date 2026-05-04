@@ -6,7 +6,7 @@ from typing import Any
 
 from cmad.io.deck import (
     apply_deck_defaults,
-    maybe_unwrap_top_level,
+    unwrap_top_level,
     strip_calibr8_only,
 )
 from cmad.io.schema import validate_deck
@@ -193,16 +193,16 @@ class TestTopLevelWrapper(unittest.TestCase):
 
     def test_unwrap_helper_idempotent(self) -> None:
         deck = _minimal_fe_deck()
-        self.assertIs(maybe_unwrap_top_level(deck), deck)
+        self.assertIs(unwrap_top_level(deck), deck)
         wrapped = {"x": deck}
-        self.assertIs(maybe_unwrap_top_level(wrapped), deck)
-        self.assertIs(maybe_unwrap_top_level(maybe_unwrap_top_level(wrapped)), deck)
+        self.assertIs(unwrap_top_level(wrapped), deck)
+        self.assertIs(unwrap_top_level(unwrap_top_level(wrapped)), deck)
 
     def test_single_key_without_problem_not_unwrapped(self) -> None:
         # A deck with a single top-level key whose value lacks `problem`
         # is NOT auto-unwrapped (e.g. malformed deck).
         not_wrapped = {"only_key": {"unrelated": 1}}
-        self.assertIs(maybe_unwrap_top_level(not_wrapped), not_wrapped)
+        self.assertIs(unwrap_top_level(not_wrapped), not_wrapped)
 
 
 class TestCalibr8OnlySections(unittest.TestCase):

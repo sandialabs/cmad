@@ -20,7 +20,7 @@ from cmad.cli.common import (
     resolve_output,
 )
 from cmad.fem.driver import fe_quasistatic_drive
-from cmad.io.deck import load_deck, maybe_unwrap_top_level
+from cmad.io.deck import load_deck, unwrap_top_level
 from cmad.io.writers import (
     write_cauchy,
     write_fe_exodus,
@@ -42,7 +42,7 @@ def run_primal(deck_path: Path) -> int:
     the FE forward solve and writes Exodus II results. Both branches
     share the ``solver.json`` and ``deck.resolved.yaml`` writers.
     """
-    deck = maybe_unwrap_top_level(load_deck(deck_path))
+    deck = unwrap_top_level(load_deck(deck_path))
     problem_type = deck["problem"]["type"]
     if problem_type == "material_point":
         return _run_primal_mp(deck_path)
