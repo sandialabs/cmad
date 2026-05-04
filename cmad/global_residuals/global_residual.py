@@ -1,7 +1,7 @@
 """Global-residual abstract contract and composed-helper builder."""
 from abc import ABC
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 import numpy as np
@@ -11,10 +11,14 @@ from numpy.typing import NDArray
 from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.global_residuals.interpolation import interpolate_global_fields_at_ip
 from cmad.global_residuals.modes import GlobalResidualMode
+from cmad.io.results import FieldSpec
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.model import Model
 from cmad.solver.nonlinear_solver import make_newton_solve
 from cmad.typing import GREvaluators, JaxArray, ResidualFnGR
+
+if TYPE_CHECKING:
+    from cmad.fem.fe_problem import FEProblem, FEState
 
 
 class GlobalResidual(ABC):
@@ -138,6 +142,81 @@ class GlobalResidual(ABC):
         """
         return interpolate_global_fields_at_ip(
             U, shapes_ip, self.var_names,
+        )
+
+    def default_output_fields(self) -> dict[str, list[FieldSpec]]:
+        """Default Exodus-output catalog for this GR.
+
+        Two-key dict keyed by writer destination — ``"nodal"`` for
+        per-vertex fields and ``"element"`` for per-element fields.
+        The element bucket is the union of model-derived flux fields
+        (e.g. ``cauchy``) and per-IP-local-state-derived fields (e.g.
+        an element-averaged ``eqps`` for COUPLED-bound plasticity);
+        the writer does not distinguish provenance, so neither does
+        this dict. Each :class:`FieldSpec` names a field whose
+        evaluator the GR exposes via :meth:`evaluate_nodal_field` or
+        :meth:`evaluate_element_field`. Order within each list is
+        GR-controlled and is the order in which the writer emits
+        variables when the deck omits an explicit selection.
+
+        Default returns empty for both buckets. Subclasses override
+        to declare their post-processing surface.
+        """
+        return {"nodal": [], "element": []}
+
+    def evaluate_nodal_field(
+            self,
+            name: str,
+            fe_problem: "FEProblem",
+            fe_state: "FEState",
+            step: int,
+    ) -> NDArray[np.floating]:
+        """Materialize one nodal field at one history step.
+
+        ``step`` indexes ``fe_state.U_history`` /
+        ``fe_state.t_history``. The returned array has shape
+        ``(n_nodes, *components)`` with component count and meaning
+        consistent with the field's :class:`FieldSpec` ``var_type``;
+        components are in cmad-internal order (the writer permutes
+        SYM_TENSOR to Exodus order on the way out).
+
+        Default raises ``ValueError``. Subclasses dispatch on
+        ``name`` against their declared
+        ``default_output_fields()["nodal"]`` entries.
+        """
+        raise ValueError(
+            f"{type(self).__name__} does not implement nodal field "
+            f"{name!r}; subclasses override evaluate_nodal_field to "
+            f"dispatch on default_output_fields()['nodal']"
+        )
+
+    def evaluate_element_field(
+            self,
+            name: str,
+            fe_problem: "FEProblem",
+            fe_state: "FEState",
+            step: int,
+            block: str,
+    ) -> NDArray[np.floating]:
+        """Materialize one per-element field on one block at one step.
+
+        ``step`` indexes the history; ``block`` is a key into
+        ``fe_problem.mesh.element_blocks``. The returned array has
+        shape ``(n_elems_in_block, *components)`` in cmad-internal
+        component order. Subclasses implementing per-IP-derived
+        fields (model fluxes or COUPLED-Model local-state averages)
+        IP-reduce here using ``fe_problem.geometry_cache[block]`` and
+        ``fe_problem.unravel_xi_by_block[block]`` (COUPLED) before
+        returning.
+
+        Default raises ``ValueError``. Subclasses dispatch on
+        ``name`` against their declared
+        ``default_output_fields()["element"]`` entries.
+        """
+        raise ValueError(
+            f"{type(self).__name__} does not implement element field "
+            f"{name!r}; subclasses override evaluate_element_field to "
+            f"dispatch on default_output_fields()['element']"
         )
 
     def for_model(
