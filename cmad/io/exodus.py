@@ -45,8 +45,10 @@ from numpy.typing import NDArray
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.mesh import Mesh
 from cmad.io.results import (
+    ExodusResults,
     FieldSpec,
     component_names,
+    from_exodus_storage,
     to_exodus_storage,
 )
 from cmad.models.var_types import VarType, get_num_eqs
@@ -291,6 +293,196 @@ def read_mesh(path: str | Path) -> Mesh:
         node_set_ids=node_set_ids,
         side_set_ids=side_set_ids,
     )
+
+
+def _read_block_names(ds: netCDF4.Dataset) -> list[str]:
+    """Block names as the writer would have produced them.
+
+    Mirrors the default-name fallback in :func:`_read_blocks` so that
+    ``read_results`` resolves ``element_field_specs`` keys against the
+    same names a caller would see from :func:`read_mesh`.
+    """
+    if "num_el_blk" not in ds.dimensions:
+        return []
+    n_blocks = len(ds.dimensions["num_el_blk"])
+    if n_blocks == 0:
+        return []
+    if "eb_prop1" in ds.variables:
+        prop1 = np.asarray(ds["eb_prop1"][:]).astype(int).tolist()
+    else:
+        prop1 = list(range(1, n_blocks + 1))
+    if "eb_names" in ds.variables:
+        raw = _decode_names(ds["eb_names"])
+        return [n if n else f"block_{prop1[i]}" for i, n in enumerate(raw)]
+    return [f"block_{p}" for p in prop1]
+
+
+def _build_name_index(
+        ds: netCDF4.Dataset, name_var: str,
+) -> dict[str, int]:
+    """Decode a result-variable name array to a 1-based component-index
+    lookup. Returns ``{}`` when the name array is absent (file declared
+    no variables of that kind)."""
+    if name_var not in ds.variables:
+        return {}
+    return {n: i + 1 for i, n in enumerate(_decode_names(ds[name_var]))}
+
+
+def _read_nodal_vars(
+        ds: netCDF4.Dataset,
+        nodal_specs: Sequence[FieldSpec],
+        aliases: dict[str, str],
+        ndims: int,
+) -> dict[str, NDArray[np.floating]]:
+    if not nodal_specs:
+        return {}
+    name_to_idx = _build_name_index(ds, "name_nod_var")
+    out: dict[str, NDArray[np.floating]] = {}
+    for spec in nodal_specs:
+        disk_root = aliases.get(spec.name, spec.name)
+        synthetic = FieldSpec(name=disk_root, var_type=spec.var_type)
+        decorated = component_names(synthetic, ndims)
+        comps: list[NDArray[np.floating]] = []
+        for cname in decorated:
+            if cname not in name_to_idx:
+                raise ExodusFormatError(
+                    f"requested nodal component {cname!r} not found "
+                    f"in file (have {sorted(name_to_idx)})"
+                )
+            n = name_to_idx[cname]
+            comps.append(np.asarray(ds[f"vals_nod_var{n}"][:]))
+        if spec.var_type == VarType.SCALAR:
+            out[spec.name] = comps[0]
+        else:
+            stacked = np.stack(comps, axis=-1)
+            out[spec.name] = np.asarray(
+                from_exodus_storage(stacked, spec.var_type),
+            )
+    return out
+
+
+def _read_element_vars(
+        ds: netCDF4.Dataset,
+        elem_specs_by_block: dict[str, Sequence[FieldSpec]],
+        aliases: dict[str, str],
+        ndims: int,
+        block_idx_by_name: dict[str, int],
+) -> dict[str, dict[str, NDArray[np.floating]]]:
+    if not elem_specs_by_block:
+        return {}
+    name_to_idx = _build_name_index(ds, "name_elem_var")
+    truth = (
+        np.asarray(ds["elem_var_tab"][:])
+        if "elem_var_tab" in ds.variables else None
+    )
+    out: dict[str, dict[str, NDArray[np.floating]]] = {}
+    for block_name, specs in elem_specs_by_block.items():
+        if block_name not in block_idx_by_name:
+            raise ExodusFormatError(
+                f"element_field_specs key '{block_name}' is not a "
+                f"block in the file ({sorted(block_idx_by_name)})"
+            )
+        b = block_idx_by_name[block_name]
+        block_out: dict[str, NDArray[np.floating]] = {}
+        for spec in specs:
+            disk_root = aliases.get(spec.name, spec.name)
+            synthetic = FieldSpec(name=disk_root, var_type=spec.var_type)
+            decorated = component_names(synthetic, ndims)
+            comps: list[NDArray[np.floating]] = []
+            for cname in decorated:
+                if cname not in name_to_idx:
+                    raise ExodusFormatError(
+                        f"requested element component {cname!r} not "
+                        f"found in file (have {sorted(name_to_idx)})"
+                    )
+                n = name_to_idx[cname]
+                if truth is not None and not truth[b - 1, n - 1]:
+                    raise ExodusFormatError(
+                        f"element variable {cname!r} not declared on "
+                        f"block '{block_name}' (truth-table bit is 0)"
+                    )
+                comps.append(np.asarray(ds[f"vals_elem_var{n}eb{b}"][:]))
+            if spec.var_type == VarType.SCALAR:
+                block_out[spec.name] = comps[0]
+            else:
+                stacked = np.stack(comps, axis=-1)
+                block_out[spec.name] = np.asarray(
+                    from_exodus_storage(stacked, spec.var_type),
+                )
+        out[block_name] = block_out
+    return out
+
+
+def read_results(
+        path: str | Path,
+        *,
+        nodal_field_specs: Sequence[FieldSpec] = (),
+        element_field_specs: dict[
+            str, Sequence[FieldSpec]
+        ] | None = None,
+        field_name_aliases: dict[str, str] | None = None,
+) -> ExodusResults:
+    """Read time-stepped Exodus result variables for the declared specs.
+
+    Caller declares the schema to read; the reader resolves disk-side
+    decorated component names via
+    :func:`cmad.io.results.component_names`. Component axes in the
+    returned arrays are in cmad-internal order (SYM_TENSOR is
+    un-permuted from disk on the way out).
+
+    ``field_name_aliases`` maps cmad-side spec name -> Exodus-side
+    on-disk root name. For each spec the reader looks up the disk root
+    as ``aliases.get(spec.name, spec.name)``. Returned dict keys are
+    always the cmad-side ``spec.name`` regardless of alias. Aliases are
+    read-side only — :class:`ExodusWriter` always uses spec names as
+    on-disk roots.
+
+    Returned shapes: ``time`` is ``(n_steps,)``; SCALAR specs return
+    ``(n_steps, n_rows)``; other VarTypes return
+    ``(n_steps, n_rows, n_components)`` where ``n_rows`` is ``n_nodes``
+    for nodal specs and ``n_elems_in_block`` for element specs.
+
+    Raises :class:`ExodusFormatError` if a requested component is
+    missing on disk, if an element variable's truth-table bit is 0
+    on the requested block, if a requested block name is not a block
+    in the file, or if an alias references a name that no spec
+    declared.
+    """
+    if element_field_specs is None:
+        element_field_specs = {}
+    aliases = field_name_aliases or {}
+    declared_names: set[str] = {s.name for s in nodal_field_specs}
+    for block_specs in element_field_specs.values():
+        declared_names.update(s.name for s in block_specs)
+    for k in aliases:
+        if k not in declared_names:
+            raise ExodusFormatError(
+                f"field_name_aliases key '{k}' does not match any "
+                f"declared spec ({sorted(declared_names)})"
+            )
+
+    path = Path(path)
+    with netCDF4.Dataset(str(path), "r") as ds:
+        if "num_dim" not in ds.dimensions:
+            raise ExodusFormatError("missing dimension 'num_dim'")
+        ndims = len(ds.dimensions["num_dim"])
+        if "time_whole" in ds.variables:
+            time = np.asarray(ds["time_whole"][:]).astype(
+                np.float64, copy=False,
+            )
+        else:
+            time = np.zeros((0,), dtype=np.float64)
+        block_names = _read_block_names(ds)
+        block_idx_by_name = {
+            name: i + 1 for i, name in enumerate(block_names)
+        }
+        nodal = _read_nodal_vars(
+            ds, nodal_field_specs, aliases, ndims,
+        )
+        element = _read_element_vars(
+            ds, element_field_specs, aliases, ndims, block_idx_by_name,
+        )
+    return ExodusResults(time=time, nodal=nodal, element=element)
 
 
 def _encode_names(

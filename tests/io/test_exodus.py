@@ -17,7 +17,12 @@ import numpy as np
 
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.mesh import Mesh, StructuredHexMesh, hex_to_tet_split
-from cmad.io.exodus import ExodusFormatError, ExodusWriter, read_mesh
+from cmad.io.exodus import (
+    ExodusFormatError,
+    ExodusWriter,
+    read_mesh,
+    read_results,
+)
 from cmad.io.results import FieldSpec
 from cmad.models.var_types import VarType
 
@@ -473,6 +478,287 @@ class TestWriteStepSchema(unittest.TestCase):
             path = Path(tmp) / "mismatch.exo"
             with self.assertRaises(ExodusFormatError):
                 ExodusWriter(path, mesh, element_field_specs=specs)
+
+
+class TestResultRoundTrip(unittest.TestCase):
+    """End-to-end ExodusWriter.write_step + read_results round-trip."""
+
+    def _mesh(self):
+        return StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+
+    def _two_block_mesh(self):
+        base = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+        return Mesh(
+            nodes=base.nodes,
+            connectivity=base.connectivity,
+            element_family=base.element_family,
+            element_blocks={
+                "block_a": np.arange(0, 4, dtype=np.intp),
+                "block_b": np.arange(4, 8, dtype=np.intp),
+            },
+            node_sets={},
+            side_sets={},
+        )
+
+    def test_nodal_only_round_trip(self):
+        mesh = self._mesh()
+        n_nodes = mesh.nodes.shape[0]
+        specs = [
+            FieldSpec("displacement", VarType.VECTOR),
+            FieldSpec("temperature", VarType.SCALAR),
+        ]
+        rng = np.random.default_rng(0)
+        u = rng.standard_normal((3, n_nodes, 3))
+        T = rng.standard_normal((3, n_nodes))
+        times = [0.0, 0.1, 0.25]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nodal_rt.exo"
+            with ExodusWriter(
+                path, mesh, nodal_field_specs=specs,
+            ) as w:
+                for s, t in enumerate(times):
+                    w.write_step(
+                        t,
+                        {"displacement": u[s], "temperature": T[s]},
+                    )
+            results = read_results(
+                path,
+                nodal_field_specs=specs,
+            )
+        np.testing.assert_allclose(results.time, times)
+        self.assertEqual(set(results.nodal), {"displacement", "temperature"})
+        self.assertEqual(results.element, {})
+        self.assertEqual(results.nodal["displacement"].shape, (3, n_nodes, 3))
+        self.assertEqual(results.nodal["temperature"].shape, (3, n_nodes))
+        np.testing.assert_allclose(results.nodal["displacement"], u)
+        np.testing.assert_allclose(results.nodal["temperature"], T)
+
+    def test_element_only_round_trip_sym_tensor_permutation(self):
+        # Two blocks; SYM_TENSOR + SCALAR per block. Verifies that
+        # internal-order data written is read back as internal-order
+        # (permutation goes to disk and back).
+        mesh = self._two_block_mesh()
+        specs = {
+            "block_a": [
+                FieldSpec("cauchy", VarType.SYM_TENSOR),
+                FieldSpec("alpha", VarType.SCALAR),
+            ],
+            "block_b": [
+                FieldSpec("cauchy", VarType.SYM_TENSOR),
+                FieldSpec("alpha", VarType.SCALAR),
+            ],
+        }
+        rng = np.random.default_rng(1)
+        cauchy_a = rng.standard_normal((2, 4, 6))
+        cauchy_b = rng.standard_normal((2, 4, 6))
+        alpha_a = rng.standard_normal((2, 4))
+        alpha_b = rng.standard_normal((2, 4))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "elem_rt.exo"
+            with ExodusWriter(
+                path, mesh, element_field_specs=specs,
+            ) as w:
+                for s in range(2):
+                    w.write_step(
+                        float(s),
+                        element_data={
+                            "block_a": {
+                                "cauchy": cauchy_a[s],
+                                "alpha": alpha_a[s],
+                            },
+                            "block_b": {
+                                "cauchy": cauchy_b[s],
+                                "alpha": alpha_b[s],
+                            },
+                        },
+                    )
+            results = read_results(
+                path, element_field_specs=specs,
+            )
+        np.testing.assert_allclose(results.time, [0.0, 1.0])
+        self.assertEqual(results.nodal, {})
+        self.assertEqual(set(results.element), {"block_a", "block_b"})
+        np.testing.assert_allclose(
+            results.element["block_a"]["cauchy"], cauchy_a,
+        )
+        np.testing.assert_allclose(
+            results.element["block_a"]["alpha"], alpha_a,
+        )
+        np.testing.assert_allclose(
+            results.element["block_b"]["cauchy"], cauchy_b,
+        )
+        np.testing.assert_allclose(
+            results.element["block_b"]["alpha"], alpha_b,
+        )
+
+    def test_combined_all_var_types(self):
+        mesh = self._mesh()
+        n_nodes = mesh.nodes.shape[0]
+        n_elem = int(mesh.element_blocks["all"].shape[0])
+        nodal = [
+            FieldSpec("u", VarType.VECTOR),
+            FieldSpec("T", VarType.SCALAR),
+        ]
+        elem = {
+            "all": [
+                FieldSpec("cauchy", VarType.SYM_TENSOR),
+                FieldSpec("F", VarType.TENSOR),
+            ],
+        }
+        rng = np.random.default_rng(2)
+        u = rng.standard_normal((n_nodes, 3))
+        T = rng.standard_normal(n_nodes)
+        cauchy = rng.standard_normal((n_elem, 6))
+        F = rng.standard_normal((n_elem, 9))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "combined.exo"
+            with ExodusWriter(
+                path, mesh,
+                nodal_field_specs=nodal,
+                element_field_specs=elem,
+            ) as w:
+                w.write_step(
+                    0.5,
+                    {"u": u, "T": T},
+                    {"all": {"cauchy": cauchy, "F": F}},
+                )
+            results = read_results(
+                path,
+                nodal_field_specs=nodal,
+                element_field_specs=elem,
+            )
+        np.testing.assert_allclose(results.time, [0.5])
+        np.testing.assert_allclose(results.nodal["u"], u[None, ...])
+        np.testing.assert_allclose(results.nodal["T"], T[None, ...])
+        np.testing.assert_allclose(
+            results.element["all"]["cauchy"], cauchy[None, ...],
+        )
+        np.testing.assert_allclose(
+            results.element["all"]["F"], F[None, ...],
+        )
+
+    def test_alias_renames_on_read(self):
+        # Writer uses on-disk root "displacement_measured"; reader
+        # asks for "displacement" with an alias and gets that key back.
+        mesh = self._mesh()
+        n_nodes = mesh.nodes.shape[0]
+        on_disk = [FieldSpec("displacement_measured", VarType.VECTOR)]
+        cmad_side = [FieldSpec("displacement", VarType.VECTOR)]
+        rng = np.random.default_rng(3)
+        u = rng.standard_normal((n_nodes, 3))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "alias.exo"
+            with ExodusWriter(
+                path, mesh, nodal_field_specs=on_disk,
+            ) as w:
+                w.write_step(0.0, {"displacement_measured": u})
+            results = read_results(
+                path,
+                nodal_field_specs=cmad_side,
+                field_name_aliases={
+                    "displacement": "displacement_measured",
+                },
+            )
+        self.assertEqual(set(results.nodal), {"displacement"})
+        np.testing.assert_allclose(
+            results.nodal["displacement"], u[None, ...],
+        )
+
+    def test_per_block_truth_table_sparsity(self):
+        # block_a declares cauchy; block_b does not. Reading block_a
+        # works; asking the reader for cauchy on block_b raises.
+        mesh = self._two_block_mesh()
+        write_specs = {
+            "block_a": [FieldSpec("cauchy", VarType.SYM_TENSOR)],
+        }
+        rng = np.random.default_rng(4)
+        cauchy_a = rng.standard_normal((4, 6))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sparse.exo"
+            with ExodusWriter(
+                path, mesh, element_field_specs=write_specs,
+            ) as w:
+                w.write_step(
+                    0.0,
+                    element_data={
+                        "block_a": {"cauchy": cauchy_a},
+                    },
+                )
+            results = read_results(
+                path,
+                element_field_specs={
+                    "block_a": [FieldSpec("cauchy", VarType.SYM_TENSOR)],
+                },
+            )
+            np.testing.assert_allclose(
+                results.element["block_a"]["cauchy"], cauchy_a[None, ...],
+            )
+            with self.assertRaises(ExodusFormatError):
+                read_results(
+                    path,
+                    element_field_specs={
+                        "block_b": [
+                            FieldSpec("cauchy", VarType.SYM_TENSOR),
+                        ],
+                    },
+                )
+
+    def test_zero_steps_round_trip(self):
+        mesh = self._mesh()
+        specs = [FieldSpec("u", VarType.VECTOR)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "zero.exo"
+            with ExodusWriter(
+                path, mesh, nodal_field_specs=specs,
+            ):
+                pass
+            results = read_results(path, nodal_field_specs=specs)
+        self.assertEqual(results.time.shape, (0,))
+        self.assertEqual(
+            results.nodal["u"].shape, (0, mesh.nodes.shape[0], 3),
+        )
+
+    def test_alias_rejects_unknown_spec_key(self):
+        mesh = self._mesh()
+        specs = [FieldSpec("u", VarType.VECTOR)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad_alias.exo"
+            with ExodusWriter(
+                path, mesh, nodal_field_specs=specs,
+            ):
+                pass
+            with self.assertRaises(ExodusFormatError):
+                read_results(
+                    path,
+                    nodal_field_specs=specs,
+                    field_name_aliases={"not_a_spec": "u"},
+                )
+
+    def test_read_rejects_missing_nodal_component(self):
+        mesh = self._mesh()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "missing.exo"
+            with ExodusWriter(path, mesh):
+                pass
+            with self.assertRaises(ExodusFormatError):
+                read_results(
+                    path,
+                    nodal_field_specs=[FieldSpec("u", VarType.VECTOR)],
+                )
+
+    def test_read_rejects_unknown_block(self):
+        mesh = self._two_block_mesh()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad_block.exo"
+            with ExodusWriter(path, mesh):
+                pass
+            with self.assertRaises(ExodusFormatError):
+                read_results(
+                    path,
+                    element_field_specs={
+                        "nope": [FieldSpec("foo", VarType.SCALAR)],
+                    },
+                )
 
 
 if __name__ == "__main__":
