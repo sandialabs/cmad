@@ -3,10 +3,11 @@ from typing import Any
 
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
+from cmad.io.registry import register_global_residual
 from cmad.models.var_types import VarType
-from cmad.parameters.parameters import Parameters
 
 
+@register_global_residual("small_disp_equilibrium")
 class SmallDispEquilibrium(GlobalResidual):
     """3D u-only quasi-static small-deformation equilibrium.
 
@@ -62,9 +63,14 @@ class SmallDispEquilibrium(GlobalResidual):
     def from_deck(
             cls,
             gr_section: dict[str, Any],
-            parameters: Parameters,
+            ndims: int,
     ) -> "SmallDispEquilibrium":
-        raise NotImplementedError(
-            "SmallDispEquilibrium.from_deck is wired by the FE "
-            "schema/registry layer when it lands"
-        )
+        """Construct from the resolved ``residuals.global residual`` section.
+
+        ``gr_section`` carries the GR-side fields (``type``, nonlinear-
+        solver kwargs); ``ndims`` is sourced from the mesh by the deck-
+        side builder. This GR has no GR-specific config beyond ``ndims``,
+        so the section dict is unread; future GRs that need extra deck
+        keys will read them here.
+        """
+        return cls(ndims=ndims)

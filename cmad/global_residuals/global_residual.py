@@ -13,7 +13,6 @@ from cmad.global_residuals.interpolation import interpolate_global_fields_at_ip
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.model import Model
-from cmad.parameters.parameters import Parameters
 from cmad.solver.nonlinear_solver import make_newton_solve
 from cmad.typing import GREvaluators, JaxArray, ResidualFnGR
 
@@ -92,10 +91,11 @@ class GlobalResidual(ABC):
     def from_deck(
             cls,
             gr_section: dict[str, Any],
-            parameters: Parameters,
+            ndims: int,
     ) -> "GlobalResidual":
         """Build a :class:`GlobalResidual` instance from the deck's
-        ``global_residual:`` section. The base stub raises
+        ``residuals.global residual`` section. ``ndims`` is sourced
+        from the mesh by the deck-side builder. The base stub raises
         ``NotImplementedError`` so concrete subclasses are forced to
         override; the stub exists so the registry's
         ``type[GlobalResidual]`` return is statically callable via
