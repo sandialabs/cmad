@@ -85,7 +85,7 @@ def run_primal_pass(
         cauchy[:, :, step] = model.Sigma().copy()
         xi_trajectory.append([np.asarray(x).copy() for x in model.xi()])
         solver_log.append(
-            {"step": step, "iters": iters, "final_residual": final_res},
+            {"iters": iters, "final_residual": final_res},
         )
         if qoi is not None:
             model.seed_none()

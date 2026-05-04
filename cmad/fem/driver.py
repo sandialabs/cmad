@@ -1,5 +1,6 @@
 """Quasi-static time-loop driver populating an :class:`FEState`."""
 from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -13,8 +14,9 @@ def fe_quasistatic_drive(
         fe_problem: FEProblem,
         t_schedule: Sequence[float],
         U_init: NDArray[np.floating] | None = None,
-) -> FEState:
-    """Run a quasi-static time loop and return the populated FEState.
+        **solver_kwargs: Any,
+) -> tuple[FEState, list[dict[str, Any]]]:
+    """Run a quasi-static time loop and return populated state + log.
 
     ``t_schedule[0]`` is the initial time and ``t_schedule[1:]`` are
     the step times; the schedule must have at least two entries (an
@@ -37,6 +39,15 @@ def fe_quasistatic_drive(
     the init-tile from :meth:`FEState.from_problem`). This keeps
     every block's xi-history list aligned at length
     ``len(t_schedule)``.
+
+    ``solver_kwargs`` are forwarded to ``fe_newton_solve`` (accepts
+    ``max_iters``, ``abs_tol``, ``rel_tol``); the orchestrator threads
+    deck-supplied global-Newton settings through this slot.
+
+    Returns ``(state, solver_log)``. ``solver_log`` holds one entry
+    per non-initial step keyed ``{"iters": int, "final_residual":
+    float}`` — the step index is the entry's position in the list
+    (with a +1 offset against ``t_schedule``).
     """
     if len(t_schedule) < 2:
         raise ValueError(
@@ -54,17 +65,20 @@ def fe_quasistatic_drive(
         if m == GlobalResidualMode.COUPLED
     ]
 
+    solver_log: list[dict[str, Any]] = []
+
     for t in t_schedule[1:]:
         prev_idx = state.step_idx
         U_prev = state.U_at(prev_idx)
         xi_prev_by_block = {
             b: state.xi_at(prev_idx, b) for b in coupled_blocks
         }
-        U_solved, xi_solved_by_block, _, _ = fe_newton_solve(
+        U_solved, xi_solved_by_block, iters, final_R_norm = fe_newton_solve(
             fe_problem,
             U_prev=U_prev,
             t=t,
             xi_prev_by_block=xi_prev_by_block,
+            **solver_kwargs,
         )
         xi_by_block = {
             b: (
@@ -75,5 +89,8 @@ def fe_quasistatic_drive(
             for b, m in fe_problem.modes_by_block.items()
         }
         state.append(U_solved, xi_by_block, t_new=t)
+        solver_log.append(
+            {"iters": iters, "final_residual": final_R_norm},
+        )
 
-    return state
+    return state, solver_log

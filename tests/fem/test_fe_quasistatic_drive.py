@@ -151,7 +151,7 @@ class TestDriveSingleStepClosedForm(unittest.TestCase):
         )
         t_schedule = [0.0, 1.0]
 
-        state = fe_quasistatic_drive(fe_problem, t_schedule)
+        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
 
         n_dofs = fe_problem.dof_map.num_total_dofs
         U_prev_zeros = np.zeros(n_dofs, dtype=np.float64)
@@ -185,7 +185,7 @@ class TestDriveMultiStepCoupledElastic(unittest.TestCase):
         )
         t_schedule = [0.0, 0.5, 1.0]
 
-        state = fe_quasistatic_drive(fe_problem, t_schedule)
+        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
 
         self.assertEqual(len(state.U_history), 3)
         self.assertEqual(len(state.xi_history_by_block["all"]), 3)
@@ -230,7 +230,7 @@ class TestDriveXiRestartConsistency(unittest.TestCase):
             slope=1.5e-3,
         )
         t_schedule = [0.0, 1.0, 2.0]
-        state = fe_quasistatic_drive(fe_problem, t_schedule)
+        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
 
         # Sanity: at least one IP plastic (alpha > 0) at step 2.
         # SmallElasticPlastic FULL_3D xi = [vec_cauchy(6), alpha(1)],
@@ -279,7 +279,7 @@ class TestDriveMixedModeFEState(unittest.TestCase):
             slope=5e-4,
         )
         t_schedule = [0.0, 0.5, 1.0]
-        state = fe_quasistatic_drive(fe_problem, t_schedule)
+        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
 
         self.assertEqual(len(state.U_history), 3)
         self.assertEqual(len(state.xi_history_by_block["left"]), 3)
@@ -294,6 +294,40 @@ class TestDriveMixedModeFEState(unittest.TestCase):
                 state.xi_at(step, "left"),
                 np.zeros((1, 8, 6), dtype=np.float64),
             )
+
+
+class TestSolverLog(unittest.TestCase):
+    """``fe_quasistatic_drive`` returns a per-step solver log and
+    forwards solver-tuning kwargs to ``fe_newton_solve``."""
+
+    def _build_elastic_problem(self) -> FEProblem:
+        mesh = StructuredHexMesh(
+            lengths=(1.0, 1.0, 1.0), divisions=(1, 1, 1),
+        )
+        models_by_block: dict[str, Model] = {"all": _make_elastic_model()}
+        return _build_uniaxial_fe_problem(
+            mesh,
+            models_by_block,
+            {"all": GlobalResidualMode.CLOSED_FORM},
+            slope=5e-4,
+        )
+
+    def test_solver_log_shape_matches_t_schedule(self) -> None:
+        fe_problem = self._build_elastic_problem()
+        t_schedule = [0.0, 0.5, 1.0]
+        _, solver_log = fe_quasistatic_drive(fe_problem, t_schedule)
+        self.assertEqual(len(solver_log), 2)
+        for entry in solver_log:
+            self.assertEqual(set(entry.keys()), {"iters", "final_residual"})
+            self.assertGreaterEqual(entry["iters"], 1)
+            self.assertGreaterEqual(entry["final_residual"], 0.0)
+
+    def test_solver_kwargs_forwarded_max_iters(self) -> None:
+        fe_problem = self._build_elastic_problem()
+        t_schedule = [0.0, 1.0]
+        with self.assertRaises(RuntimeError) as ctx:
+            fe_quasistatic_drive(fe_problem, t_schedule, max_iters=1)
+        self.assertIn("did not converge in 1 iters", str(ctx.exception))
 
 
 if __name__ == "__main__":
