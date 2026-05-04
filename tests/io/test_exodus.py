@@ -1,20 +1,22 @@
 """Tests for :mod:`cmad.io.exodus`.
 
-Stage A covers ``read_mesh`` against the meshio-generated fixture
-``tests/io/fixtures/small_hex.exo`` (a 2x2x2 hex mesh on the unit cube
-with one element block and two nodesets). The fixture has no sidesets
-because meshio has no first-class sideset concept; sideset-reader
-coverage rides on Stage B+ round-trip via cmad's own writer.
+External-fixture coverage uses ``tests/io/fixtures/small_hex.exo``
+(a 2x2x2 hex mesh on the unit cube, one element block, two nodesets,
+no sidesets — meshio has no first-class sideset concept). Internal
+round-trip tests exercise the writer + reader together on
+``StructuredHexMesh`` instances that include all six built-in sidesets.
 """
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
 
 from cmad.fem.element_family import ElementFamily
-from cmad.io.exodus import ExodusFormatError, read_mesh
+from cmad.fem.mesh import StructuredHexMesh, hex_to_tet_split
+from cmad.io.exodus import ExodusFormatError, ExodusWriter, read_mesh
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "small_hex.exo"
 
@@ -88,6 +90,67 @@ class TestReadMeshErrors(unittest.TestCase):
     def test_missing_file_raises(self):
         with self.assertRaises((FileNotFoundError, OSError)):
             read_mesh(_FIXTURE.parent / "does_not_exist.exo")
+
+
+def _assert_meshes_equal(test: unittest.TestCase, expected, actual):
+    np.testing.assert_allclose(actual.nodes, expected.nodes)
+    np.testing.assert_array_equal(actual.connectivity, expected.connectivity)
+    test.assertEqual(actual.element_family, expected.element_family)
+
+    test.assertEqual(set(actual.element_blocks), set(expected.element_blocks))
+    for name in expected.element_blocks:
+        np.testing.assert_array_equal(
+            actual.element_blocks[name], expected.element_blocks[name]
+        )
+
+    test.assertEqual(set(actual.node_sets), set(expected.node_sets))
+    for name in expected.node_sets:
+        np.testing.assert_array_equal(
+            np.sort(actual.node_sets[name]),
+            np.sort(expected.node_sets[name]),
+        )
+
+    test.assertEqual(set(actual.side_sets), set(expected.side_sets))
+    for name in expected.side_sets:
+        np.testing.assert_array_equal(
+            actual.side_sets[name], expected.side_sets[name]
+        )
+
+
+class TestWriterReaderRoundTrip(unittest.TestCase):
+
+    def test_structured_hex_mesh_with_sidesets(self):
+        mesh = StructuredHexMesh(
+            lengths=(1.0, 2.0, 3.0),
+            divisions=(2, 3, 4),
+            origin=(0.5, 1.0, 1.5),
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "rt_hex.exo"
+            with ExodusWriter(path, mesh, title="hex round-trip"):
+                pass
+            rt = read_mesh(path)
+        _assert_meshes_equal(self, mesh, rt)
+        # Sanity: 6 named sidesets survived the round trip.
+        self.assertEqual(
+            sorted(rt.side_sets),
+            sorted([
+                "xmin_sides", "xmax_sides",
+                "ymin_sides", "ymax_sides",
+                "zmin_sides", "zmax_sides",
+            ]),
+        )
+
+    def test_tet_mesh_round_trip(self):
+        hex_mesh = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+        tet_mesh = hex_to_tet_split(hex_mesh)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "rt_tet.exo"
+            with ExodusWriter(path, tet_mesh):
+                pass
+            rt = read_mesh(path)
+        _assert_meshes_equal(self, tet_mesh, rt)
+        self.assertEqual(rt.element_family, ElementFamily.TET_LINEAR)
 
 
 if __name__ == "__main__":
