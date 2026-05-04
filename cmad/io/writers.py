@@ -36,12 +36,18 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import yaml
 from numpy.typing import NDArray
+
+from cmad.fem.fe_problem import FEProblem, FEState
+from cmad.io.exodus import ExodusWriter
+from cmad.io.results import FieldSpec
+from cmad.models.var_types import VarType
 
 _CAUCHY_HEADER = "S11 S12 S13 S21 S22 S23 S31 S32 S33"
 
@@ -169,6 +175,109 @@ def write_resolved_deck(
         yaml.safe_dump(
             resolved_deck, f, default_flow_style=False, sort_keys=False,
         )
+
+
+_VAR_TYPE_BY_DECK_NAME: dict[str, VarType] = {
+    "scalar": VarType.SCALAR,
+    "vector": VarType.VECTOR,
+    "sym_tensor": VarType.SYM_TENSOR,
+    "tensor": VarType.TENSOR,
+}
+
+
+def _field_spec_from_deck(d: dict[str, Any]) -> FieldSpec:
+    return FieldSpec(
+        name=d["name"],
+        var_type=_VAR_TYPE_BY_DECK_NAME[d["var_type"]],
+    )
+
+
+def _resolve_fe_field_specs(
+        output_section: dict[str, Any],
+        fe_problem: FEProblem,
+) -> tuple[list[FieldSpec], dict[str, Sequence[FieldSpec]]]:
+    """Resolve writer field specs from deck or GR defaults.
+
+    Each (nodal, element) bucket independently falls back to
+    ``fe_problem.gr.default_output_fields()`` when the deck omits it.
+    Element defaults are replicated across every key in
+    ``fe_problem.mesh.element_blocks``; deck-supplied element specs
+    are taken as-is, letting the user emit different fields on
+    different blocks.
+    """
+    gr_defaults = fe_problem.gr.default_output_fields()
+    blocks = list(fe_problem.mesh.element_blocks)
+
+    nodal_deck = output_section.get("nodal fields")
+    nodal_specs = (
+        list(gr_defaults["nodal"]) if nodal_deck is None
+        else [_field_spec_from_deck(d) for d in nodal_deck]
+    )
+
+    element_specs_by_block: dict[str, Sequence[FieldSpec]]
+    element_deck = output_section.get("element fields by block")
+    if element_deck is None:
+        element_specs_by_block = {
+            block: list(gr_defaults["element"]) for block in blocks
+        }
+    else:
+        element_specs_by_block = {
+            block: [_field_spec_from_deck(d) for d in specs]
+            for block, specs in element_deck.items()
+        }
+    return nodal_specs, element_specs_by_block
+
+
+def write_fe_exodus(
+        out_dir: Path,
+        prefix: str,
+        fe_problem: FEProblem,
+        fe_state: FEState,
+        output_section: dict[str, Any],
+) -> None:
+    """Write FE primal results to an Exodus II file.
+
+    Resolves nodal + per-block element :class:`FieldSpec` lists from
+    the deck's ``output`` section; when either bucket is omitted,
+    falls back to ``fe_problem.gr.default_output_fields()`` (element
+    defaults replicated across every mesh element block). Opens an
+    :class:`ExodusWriter` at ``out_dir / f"{prefix}primal.exo"`` and
+    iterates over ``fe_state.t_history`` calling
+    ``gr.evaluate_nodal_field`` and ``gr.evaluate_element_field`` per
+    declared spec at each step.
+    """
+    nodal_specs, element_specs_by_block = _resolve_fe_field_specs(
+        output_section, fe_problem,
+    )
+    out_path = out_dir / f"{prefix}primal.exo"
+    gr = fe_problem.gr
+    with ExodusWriter(
+            out_path,
+            mesh=fe_problem.mesh,
+            nodal_field_specs=nodal_specs,
+            element_field_specs=element_specs_by_block,
+    ) as writer:
+        for step in range(len(fe_state.t_history)):
+            nodal_data = {
+                spec.name: gr.evaluate_nodal_field(
+                    spec.name, fe_problem, fe_state, step,
+                )
+                for spec in nodal_specs
+            }
+            element_data = {
+                block: {
+                    spec.name: gr.evaluate_element_field(
+                        spec.name, fe_problem, fe_state, step, block,
+                    )
+                    for spec in specs
+                }
+                for block, specs in element_specs_by_block.items()
+            }
+            writer.write_step(
+                fe_state.t_history[step],
+                nodal_data=nodal_data,
+                element_data=element_data,
+            )
 
 
 def write_opt_history(
