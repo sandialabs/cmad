@@ -123,14 +123,17 @@ def _read_blocks(
     if "eb_prop1" not in ds.variables:
         raise ExodusFormatError("missing 'eb_prop1' (block IDs)")
 
-    block_ids = np.asarray(ds["eb_prop1"][:]).astype(int)
+    # Default names use the 1-based positional index (i + 1), not the
+    # original `eb_prop1` IDs. The writer always renumbers IDs sequentially
+    # from 1; using the original ID in default names creates name/prop1
+    # mismatches that crash some Exodus readers (notably Paraview's IOSS).
     if "eb_names" in ds.variables:
         raw = _decode_names(ds["eb_names"])
         block_names = [
-            n if n else f"block_{block_ids[i]}" for i, n in enumerate(raw)
+            n if n else f"block_{i + 1}" for i, n in enumerate(raw)
         ]
     else:
-        block_names = [f"block_{bid}" for bid in block_ids]
+        block_names = [f"block_{i + 1}" for i in range(n_blocks)]
 
     families: list[ElementFamily] = []
     conns: list[NDArray[np.intp]] = []
@@ -173,14 +176,14 @@ def _read_node_sets(
 ) -> dict[str, NDArray[np.intp]]:
     if n_sets == 0:
         return {}
-    ids = np.asarray(ds["ns_prop1"][:]).astype(int)
+    # Default names use 1-based positional index; see _read_blocks comment.
     if "ns_names" in ds.variables:
         raw = _decode_names(ds["ns_names"])
         names = [
-            n if n else f"nodeset_{ids[i]}" for i, n in enumerate(raw)
+            n if n else f"nodeset_{i + 1}" for i, n in enumerate(raw)
         ]
     else:
-        names = [f"nodeset_{sid}" for sid in ids]
+        names = [f"nodeset_{i + 1}" for i in range(n_sets)]
 
     out: dict[str, NDArray[np.intp]] = {}
     for i, name in enumerate(names):
@@ -195,14 +198,14 @@ def _read_side_sets(
 ) -> dict[str, NDArray[np.intp]]:
     if n_sets == 0:
         return {}
-    ids = np.asarray(ds["ss_prop1"][:]).astype(int)
+    # Default names use 1-based positional index; see _read_blocks comment.
     if "ss_names" in ds.variables:
         raw = _decode_names(ds["ss_names"])
         names = [
-            n if n else f"sideset_{ids[i]}" for i, n in enumerate(raw)
+            n if n else f"sideset_{i + 1}" for i, n in enumerate(raw)
         ]
     else:
-        names = [f"sideset_{sid}" for sid in ids]
+        names = [f"sideset_{i + 1}" for i in range(n_sets)]
 
     out: dict[str, NDArray[np.intp]] = {}
     for i, name in enumerate(names):

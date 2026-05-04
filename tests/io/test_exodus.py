@@ -56,10 +56,10 @@ class TestReadMeshSmallHex(unittest.TestCase):
         np.testing.assert_allclose(actual, expected)
 
     def test_single_element_block_default_named(self):
-        # meshio writes eb_prop1=[0] with no eb_names; reader defaults to "block_0"
-        self.assertEqual(list(self.mesh.element_blocks), ["block_0"])
+        # No eb_names in meshio output; reader defaults to "block_{i+1}".
+        self.assertEqual(list(self.mesh.element_blocks), ["block_1"])
         np.testing.assert_array_equal(
-            self.mesh.element_blocks["block_0"], np.arange(8)
+            self.mesh.element_blocks["block_1"], np.arange(8)
         )
 
     def test_node_sets_decoded_and_zero_based(self):
