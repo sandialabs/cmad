@@ -84,16 +84,15 @@ def fe_newton_solve(
         fe_problem: FEProblem,
         U_prev: NDArray[np.floating],
         t: float = 0.0,
-        U_init: NDArray[np.floating] | None = None,
         xi_prev_by_block: dict[str, NDArray[np.floating]] | None = None,
         max_iters: int = 20,
         abs_tol: float = 1e-10,
         rel_tol: float = 1e-10,
 ) -> tuple[
     NDArray[np.floating],
+    dict[str, NDArray[np.floating]],
     int,
     float,
-    dict[str, NDArray[np.floating]],
 ]:
     """Quasi-static global Newton driver for the FE forward problem.
 
@@ -107,16 +106,18 @@ def fe_newton_solve(
     by strong enforcement, and solves the sparse system
     ``K_csr @ dU = -R_enforced`` via direct factorization
     (``scipy.sparse.linalg.spsolve``). Returns
-    ``(U_solved, n_iters, final_R_norm, xi_solved_by_block)``.
+    ``(U_solved, xi_solved_by_block, n_iters, final_R_norm)``.
 
-    The initial ``U`` defaults to zeros over all dofs and has its
-    prescribed-dof entries overwritten with the BC target evaluated at
-    ``t`` via ``DofMap.evaluate_prescribed_values(t)``.
-    ``U[prescribed]`` stays at the BC target across iterations because
-    strong enforcement zeros the corresponding rows of ``dU``
-    (``dbc_residual = 0`` since ``U[prescribed] - bc_target = 0``
-    after pre-loading) — the same driver pattern handles both
-    homogeneous and non-homogeneous Dirichlet.
+    The Newton's initial iterate is ``U_prev`` with prescribed-dof
+    entries overwritten by ``DofMap.evaluate_prescribed_values(t)``,
+    giving a quasi-static warm start: interior values from the
+    previous step, boundary values at the current step's BC targets.
+    ``U[prescribed]`` stays at the BC target across iterations
+    because strong enforcement zeros the corresponding rows of
+    ``dU`` (``dbc_residual = 0`` since
+    ``U[prescribed] - bc_target = 0`` after pre-loading), so the
+    same driver handles both homogeneous and non-homogeneous
+    Dirichlet.
 
     ``xi_prev_by_block`` is the previous time-step's converged xi
     keyed by COUPLED block; required when the FE problem has any
@@ -138,12 +139,7 @@ def fe_newton_solve(
     caller appends ``(U_solved, xi_by_block, t)`` into the
     :class:`FEState` history; this driver is stateless.
     """
-    n_dofs = fe_problem.dof_map.num_total_dofs
-    U = (
-        np.zeros(n_dofs, dtype=np.float64)
-        if U_init is None
-        else U_init.astype(np.float64).copy()
-    )
+    U = U_prev.astype(np.float64).copy()
     prescribed_values = fe_problem.dof_map.evaluate_prescribed_values(t)
     U[fe_problem.dof_map.prescribed_indices] = prescribed_values
 
@@ -171,7 +167,7 @@ def fe_newton_solve(
             R_norm_0 = R_norm if R_norm > 0.0 else 1.0
 
         if R_norm < abs_tol or R_norm / R_norm_0 < rel_tol:
-            return U, it, R_norm, xi_solved_by_block
+            return U, xi_solved_by_block, it, R_norm
 
         dU = np.asarray(
             scipy.sparse.linalg.spsolve(K_csr.tocsc(), -R_enforced),

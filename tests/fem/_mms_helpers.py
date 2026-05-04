@@ -203,7 +203,7 @@ def solve_and_measure(
     the returned ``n_iters``.
     """
     state = FEState.from_problem(fe_problem)
-    U_solved, n_iters, _, _ = fe_newton_solve(
+    U_solved, _, n_iters, _ = fe_newton_solve(
         fe_problem, U_prev=state.U_at(0), t=t,
     )
     L2, H1 = l2_h1_errors(fe_problem, U_solved, u_exact, grad_u_exact)
