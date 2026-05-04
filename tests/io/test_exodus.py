@@ -16,8 +16,10 @@ import netCDF4
 import numpy as np
 
 from cmad.fem.element_family import ElementFamily
-from cmad.fem.mesh import StructuredHexMesh, hex_to_tet_split
+from cmad.fem.mesh import Mesh, StructuredHexMesh, hex_to_tet_split
 from cmad.io.exodus import ExodusFormatError, ExodusWriter, read_mesh
+from cmad.io.results import FieldSpec
+from cmad.models.var_types import VarType
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "small_hex.exo"
 
@@ -206,6 +208,271 @@ class TestSetIdPreservation(unittest.TestCase):
                 "zmax_sides": 6,
             },
         )
+
+
+class TestWriteStepSchema(unittest.TestCase):
+    """Verify ExodusWriter.write_step lays down the expected
+    netCDF4 structure (dimensions, name vars, truth table, value
+    arrays). Inspects the file via netCDF4.Dataset directly; the
+    full round-trip via read_results lands in a follow-on commit."""
+
+    def _mesh(self):
+        return StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+
+    def test_writer_with_no_specs_emits_no_var_dims(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "no_vars.exo"
+            with ExodusWriter(path, self._mesh()):
+                pass
+            with netCDF4.Dataset(str(path)) as ds:
+                self.assertNotIn("num_nod_var", ds.dimensions)
+                self.assertNotIn("num_elem_var", ds.dimensions)
+
+    def test_nodal_schema_dims_and_names(self):
+        mesh = self._mesh()
+        specs = [
+            FieldSpec("displacement", VarType.VECTOR),
+            FieldSpec("temperature", VarType.SCALAR),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nodal.exo"
+            with ExodusWriter(path, mesh, nodal_field_specs=specs):
+                pass
+            with netCDF4.Dataset(str(path)) as ds:
+                self.assertEqual(int(ds.dimensions["num_nod_var"].size), 4)
+                names = [
+                    ds["name_nod_var"][i].tobytes().rstrip(b"\x00").decode()
+                    for i in range(4)
+                ]
+                self.assertEqual(
+                    names,
+                    [
+                        "displacement_x", "displacement_y",
+                        "displacement_z", "temperature",
+                    ],
+                )
+                for n in range(1, 5):
+                    self.assertIn(f"vals_nod_var{n}", ds.variables)
+
+    def test_element_schema_truth_table_sparsity(self):
+        # Two-block mesh: block_a declares cauchy (SYM_TENSOR);
+        # block_b declares damage (SCALAR). Truth table reflects this.
+        base = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+        mesh = Mesh(
+            nodes=base.nodes,
+            connectivity=base.connectivity,
+            element_family=base.element_family,
+            element_blocks={
+                "block_a": np.arange(0, 4, dtype=np.intp),
+                "block_b": np.arange(4, 8, dtype=np.intp),
+            },
+            node_sets={},
+            side_sets={},
+        )
+        specs = {
+            "block_a": [FieldSpec("cauchy", VarType.SYM_TENSOR)],
+            "block_b": [FieldSpec("damage", VarType.SCALAR)],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "elem.exo"
+            with ExodusWriter(path, mesh, element_field_specs=specs):
+                pass
+            with netCDF4.Dataset(str(path)) as ds:
+                self.assertEqual(
+                    int(ds.dimensions["num_elem_var"].size), 7,
+                )
+                names = [
+                    ds["name_elem_var"][i].tobytes().rstrip(b"\x00").decode()
+                    for i in range(7)
+                ]
+                self.assertEqual(
+                    names,
+                    [
+                        "cauchy_xx", "cauchy_yy", "cauchy_zz",
+                        "cauchy_xy", "cauchy_xz", "cauchy_yz",
+                        "damage",
+                    ],
+                )
+                truth = np.asarray(ds["elem_var_tab"][:])
+                self.assertEqual(truth.shape, (2, 7))
+                np.testing.assert_array_equal(
+                    truth[0], [1, 1, 1, 1, 1, 1, 0],
+                )
+                np.testing.assert_array_equal(
+                    truth[1], [0, 0, 0, 0, 0, 0, 1],
+                )
+                for n in range(1, 7):
+                    self.assertIn(f"vals_elem_var{n}eb1", ds.variables)
+                self.assertNotIn("vals_elem_var7eb1", ds.variables)
+                self.assertIn("vals_elem_var7eb2", ds.variables)
+                for n in range(1, 7):
+                    self.assertNotIn(f"vals_elem_var{n}eb2", ds.variables)
+
+    def test_write_step_appends_time_and_values(self):
+        mesh = self._mesh()
+        n_nodes = mesh.nodes.shape[0]
+        nodal_specs = [
+            FieldSpec("u", VarType.VECTOR),
+            FieldSpec("T", VarType.SCALAR),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "step.exo"
+            with ExodusWriter(
+                path, mesh, nodal_field_specs=nodal_specs,
+            ) as w:
+                u_step0 = np.zeros((n_nodes, 3))
+                T_step0 = np.zeros(n_nodes)
+                w.write_step(0.0, {"u": u_step0, "T": T_step0})
+                u_step1 = np.tile(np.arange(3.0), (n_nodes, 1))
+                T_step1 = 0.5 * np.arange(n_nodes, dtype=np.float64)
+                w.write_step(0.25, {"u": u_step1, "T": T_step1})
+            with netCDF4.Dataset(str(path)) as ds:
+                np.testing.assert_allclose(
+                    np.asarray(ds["time_whole"][:]), [0.0, 0.25],
+                )
+                self.assertEqual(
+                    np.asarray(ds["vals_nod_var1"][1, :]).tolist(),
+                    [0.0] * n_nodes,
+                )
+                np.testing.assert_allclose(
+                    np.asarray(ds["vals_nod_var2"][1, :]),
+                    np.full(n_nodes, 1.0),
+                )
+                np.testing.assert_allclose(
+                    np.asarray(ds["vals_nod_var3"][1, :]),
+                    np.full(n_nodes, 2.0),
+                )
+                np.testing.assert_allclose(
+                    np.asarray(ds["vals_nod_var4"][1, :]),
+                    0.5 * np.arange(n_nodes, dtype=np.float64),
+                )
+
+    def test_write_step_sym_tensor_disk_permutation(self):
+        # Internal sym-tensor input becomes Exodus-order on disk.
+        mesh = self._mesh()
+        n_nodes = mesh.nodes.shape[0]
+        specs = [FieldSpec("cauchy", VarType.SYM_TENSOR)]
+        # internal: [xx, xy, xz, yy, yz, zz] = [10, 12, 13, 22, 23, 33]
+        # exodus:   [xx, yy, zz, xy, xz, yz] = [10, 22, 33, 12, 13, 23]
+        internal = np.broadcast_to(
+            np.array([10.0, 12.0, 13.0, 22.0, 23.0, 33.0]),
+            (n_nodes, 6),
+        ).copy()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sym.exo"
+            with ExodusWriter(
+                path, mesh, nodal_field_specs=specs,
+            ) as w:
+                w.write_step(1.0, {"cauchy": internal})
+            with netCDF4.Dataset(str(path)) as ds:
+                self.assertEqual(
+                    float(ds["vals_nod_var1"][0, 0]), 10.0,
+                )
+                self.assertEqual(
+                    float(ds["vals_nod_var2"][0, 0]), 22.0,
+                )
+                self.assertEqual(
+                    float(ds["vals_nod_var3"][0, 0]), 33.0,
+                )
+                self.assertEqual(
+                    float(ds["vals_nod_var4"][0, 0]), 12.0,
+                )
+                self.assertEqual(
+                    float(ds["vals_nod_var5"][0, 0]), 13.0,
+                )
+                self.assertEqual(
+                    float(ds["vals_nod_var6"][0, 0]), 23.0,
+                )
+
+    def test_write_step_rejects_extra_data_keys(self):
+        mesh = self._mesh()
+        specs = [FieldSpec("u", VarType.VECTOR)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "extra.exo"
+            with ExodusWriter(
+                path, mesh, nodal_field_specs=specs,
+            ) as w:
+                with self.assertRaises(ValueError):
+                    w.write_step(
+                        0.0,
+                        {
+                            "u": np.zeros((mesh.nodes.shape[0], 3)),
+                            "extra": np.zeros((mesh.nodes.shape[0], 3)),
+                        },
+                    )
+
+    def test_write_step_rejects_shape_mismatch(self):
+        mesh = self._mesh()
+        specs = [FieldSpec("u", VarType.VECTOR)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "shape.exo"
+            with ExodusWriter(
+                path, mesh, nodal_field_specs=specs,
+            ) as w:
+                with self.assertRaises(ValueError):
+                    w.write_step(
+                        0.0,
+                        {"u": np.zeros((mesh.nodes.shape[0], 4))},
+                    )
+
+    def test_write_step_rejects_when_no_specs(self):
+        mesh = self._mesh()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nospecs.exo"
+            with ExodusWriter(path, mesh) as w:
+                with self.assertRaises(ValueError):
+                    w.write_step(0.0, {})
+
+    def test_zero_steps_writer_close_does_not_corrupt_file(self):
+        mesh = self._mesh()
+        specs = [FieldSpec("u", VarType.VECTOR)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "zerosteps.exo"
+            with ExodusWriter(
+                path, mesh, nodal_field_specs=specs,
+            ):
+                pass
+            with netCDF4.Dataset(str(path)) as ds:
+                self.assertEqual(
+                    int(ds.dimensions["num_nod_var"].size), 3,
+                )
+                self.assertEqual(
+                    np.asarray(ds["time_whole"][:]).shape, (0,),
+                )
+                self.assertEqual(
+                    np.asarray(ds["vals_nod_var1"][:]).shape,
+                    (0, mesh.nodes.shape[0]),
+                )
+
+    def test_constructor_rejects_unknown_block(self):
+        mesh = self._mesh()
+        specs = {"nope": [FieldSpec("foo", VarType.SCALAR)]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "badblock.exo"
+            with self.assertRaises(ExodusFormatError):
+                ExodusWriter(path, mesh, element_field_specs=specs)
+
+    def test_constructor_rejects_var_type_mismatch_across_blocks(self):
+        base = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+        mesh = Mesh(
+            nodes=base.nodes,
+            connectivity=base.connectivity,
+            element_family=base.element_family,
+            element_blocks={
+                "block_a": np.arange(0, 4, dtype=np.intp),
+                "block_b": np.arange(4, 8, dtype=np.intp),
+            },
+            node_sets={},
+            side_sets={},
+        )
+        specs = {
+            "block_a": [FieldSpec("stress", VarType.SYM_TENSOR)],
+            "block_b": [FieldSpec("stress", VarType.SCALAR)],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mismatch.exo"
+            with self.assertRaises(ExodusFormatError):
+                ExodusWriter(path, mesh, element_field_specs=specs)
 
 
 if __name__ == "__main__":

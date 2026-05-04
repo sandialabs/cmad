@@ -44,6 +44,12 @@ from numpy.typing import NDArray
 
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.mesh import Mesh
+from cmad.io.results import (
+    FieldSpec,
+    component_names,
+    to_exodus_storage,
+)
+from cmad.models.var_types import VarType, get_num_eqs
 
 # SEACAS MAX_NAME_LENGTH; buffer size including the null terminator,
 # so the longest writable name is 255 chars.
@@ -436,8 +442,192 @@ def _write_side_sets(ds: netCDF4.Dataset, mesh: Mesh) -> None:
         side_var[:] = (pairs[:, 1] + 1).astype(np.int32)
 
 
+def _validate_nodal_specs(
+        nodal_specs: Sequence[FieldSpec], ndims: int,
+) -> list[str]:
+    """Validate uniqueness + name-length for nodal specs; return the
+    flat decorated-name list in disk order."""
+    decorated: list[str] = []
+    seen_roots: set[str] = set()
+    for spec in nodal_specs:
+        if spec.name in seen_roots:
+            raise ExodusFormatError(
+                f"duplicate nodal field name '{spec.name}'"
+            )
+        seen_roots.add(spec.name)
+        for cname in component_names(spec, ndims):
+            if len(cname.encode("utf-8")) >= _LEN_STRING:
+                raise ExodusFormatError(
+                    f"decorated component name {cname!r} does not fit "
+                    f"in len_string={_LEN_STRING}"
+                )
+            decorated.append(cname)
+    if len(set(decorated)) != len(decorated):
+        raise ExodusFormatError(
+            "nodal component names collide across specs: "
+            f"{sorted(set(d for d in decorated if decorated.count(d) > 1))}"
+        )
+    return decorated
+
+
+def _validate_element_specs(
+        mesh: Mesh,
+        elem_specs_by_block: dict[str, Sequence[FieldSpec]],
+        ndims: int,
+) -> tuple[list[str], dict[str, VarType], list[str]]:
+    """Validate element-spec inputs; return the flat decorated-name
+    list (disk order), the root -> VarType map, and the union root-name
+    list (disk-insertion order)."""
+    for block_name in elem_specs_by_block:
+        if block_name not in mesh.element_blocks:
+            raise ExodusFormatError(
+                f"element_field_specs key '{block_name}' is not in "
+                f"mesh.element_blocks ({sorted(mesh.element_blocks)})"
+            )
+    root_var_types: dict[str, VarType] = {}
+    root_order: list[str] = []
+    for block_name, specs in elem_specs_by_block.items():
+        seen_in_block: set[str] = set()
+        for spec in specs:
+            if spec.name in seen_in_block:
+                raise ExodusFormatError(
+                    f"duplicate element field name '{spec.name}' in "
+                    f"block '{block_name}'"
+                )
+            seen_in_block.add(spec.name)
+            if spec.name in root_var_types:
+                if root_var_types[spec.name] != spec.var_type:
+                    raise ExodusFormatError(
+                        f"element field '{spec.name}' has VarType "
+                        f"{spec.var_type.name} on block '{block_name}' "
+                        f"but {root_var_types[spec.name].name} on an "
+                        f"earlier block; var_types must agree across "
+                        f"blocks for the same name"
+                    )
+            else:
+                root_var_types[spec.name] = spec.var_type
+                root_order.append(spec.name)
+    decorated: list[str] = []
+    for root in root_order:
+        synthetic = FieldSpec(name=root, var_type=root_var_types[root])
+        for cname in component_names(synthetic, ndims):
+            if len(cname.encode("utf-8")) >= _LEN_STRING:
+                raise ExodusFormatError(
+                    f"decorated component name {cname!r} does not fit "
+                    f"in len_string={_LEN_STRING}"
+                )
+            decorated.append(cname)
+    if len(set(decorated)) != len(decorated):
+        raise ExodusFormatError(
+            "element component names collide across specs: "
+            f"{sorted(set(d for d in decorated if decorated.count(d) > 1))}"
+        )
+    return decorated, root_var_types, root_order
+
+
+def _write_nodal_var_schema(
+        ds: netCDF4.Dataset,
+        nodal_specs: Sequence[FieldSpec],
+        ndims: int,
+) -> dict[str, list[int]]:
+    """Create dimensions / variables for nodal result variables.
+
+    Returns ``var_indices``: spec name -> list of 1-based disk-side
+    component indices in disk (Exodus) order.
+    """
+    if not nodal_specs:
+        return {}
+    var_indices: dict[str, list[int]] = {}
+    next_idx = 1
+    for spec in nodal_specs:
+        n_comp = get_num_eqs(spec.var_type, ndims)
+        var_indices[spec.name] = list(range(next_idx, next_idx + n_comp))
+        next_idx += n_comp
+    n_components = next_idx - 1
+    decorated = _validate_nodal_specs(nodal_specs, ndims)
+
+    ds.createDimension("num_nod_var", n_components)
+    name_nod_var = ds.createVariable(
+        "name_nod_var", "S1", ("num_nod_var", "len_string"),
+    )
+    name_nod_var[:] = _encode_names(decorated)
+
+    for n in range(1, n_components + 1):
+        ds.createVariable(
+            f"vals_nod_var{n}", "f8", ("time_step", "num_nodes"),
+        )
+    return var_indices
+
+
+def _write_element_var_schema(
+        ds: netCDF4.Dataset,
+        mesh: Mesh,
+        elem_specs_by_block: dict[str, Sequence[FieldSpec]],
+        ndims: int,
+) -> tuple[dict[str, dict[str, list[int]]], dict[str, int]]:
+    """Create dimensions / variables for element result variables.
+
+    Returns ``(var_indices_by_block, block_idx_by_name)`` where the
+    inner ``list[int]`` is 1-based disk-side component indices in
+    disk order, and ``block_idx_by_name`` is the 1-based ``eb{B}``
+    index per element-block name.
+    """
+    block_names_in_mesh = list(mesh.element_blocks)
+    block_idx_by_name = {
+        name: i + 1 for i, name in enumerate(block_names_in_mesh)
+    }
+    if not any(specs for specs in elem_specs_by_block.values()):
+        return {}, block_idx_by_name
+
+    decorated, root_var_types, root_order = _validate_element_specs(
+        mesh, elem_specs_by_block, ndims,
+    )
+
+    # Map each root name to its disk-side component-index list.
+    root_to_indices: dict[str, list[int]] = {}
+    next_idx = 1
+    for root in root_order:
+        n_comp = get_num_eqs(root_var_types[root], ndims)
+        root_to_indices[root] = list(range(next_idx, next_idx + n_comp))
+        next_idx += n_comp
+    n_components = len(decorated)
+    n_blocks = len(block_names_in_mesh)
+
+    ds.createDimension("num_elem_var", n_components)
+    name_elem_var = ds.createVariable(
+        "name_elem_var", "S1", ("num_elem_var", "len_string"),
+    )
+    name_elem_var[:] = _encode_names(decorated)
+
+    truth = np.zeros((n_blocks, n_components), dtype=np.int32)
+    for block_name, specs in elem_specs_by_block.items():
+        b = block_idx_by_name[block_name] - 1
+        for spec in specs:
+            for n in root_to_indices[spec.name]:
+                truth[b, n - 1] = 1
+    elem_var_tab = ds.createVariable(
+        "elem_var_tab", "i4", ("num_el_blk", "num_elem_var"),
+    )
+    elem_var_tab[:] = truth
+
+    var_indices_by_block: dict[str, dict[str, list[int]]] = {}
+    for block_name, specs in elem_specs_by_block.items():
+        block_var_indices: dict[str, list[int]] = {}
+        b = block_idx_by_name[block_name]
+        for spec in specs:
+            indices = root_to_indices[spec.name]
+            block_var_indices[spec.name] = indices
+            for n in indices:
+                ds.createVariable(
+                    f"vals_elem_var{n}eb{b}", "f8",
+                    ("time_step", f"num_el_in_blk{b}"),
+                )
+        var_indices_by_block[block_name] = block_var_indices
+    return var_indices_by_block, block_idx_by_name
+
+
 class ExodusWriter:
-    """Writes an Exodus II file's mesh skeleton.
+    """Writes an Exodus II file's mesh skeleton + time-stepped results.
 
     On construction, opens ``path`` and writes coordinates, per-block
     connectivity, node sets, and side sets in NETCDF4 format. Block /
@@ -448,8 +638,24 @@ class ExodusWriter:
     order. Element type strings emitted: ``HEX8`` for HEX_LINEAR,
     ``TETRA4`` for TET_LINEAR.
 
+    ``nodal_field_specs`` and ``element_field_specs`` declare the
+    result-variable schema at construction (Exodus's variable-name
+    list is fixed once the file is opened). Each :class:`FieldSpec`
+    carries ``(name, var_type)``; the writer derives Exodus-side
+    decorated component names via
+    :func:`cmad.io.results.component_names` and lays out
+    ``vals_nod_var{N}`` / ``vals_elem_var{N}eb{B}`` arrays empty
+    along the unlimited time axis. ``element_field_specs`` keys are
+    element-block names. The same root name on different blocks must
+    carry the same VarType; the truth table ``elem_var_tab`` records
+    which (block, variable) pairs are populated.
+
+    Each :meth:`write_step` call appends one time row across all
+    declared variables. Internally cmad's sym-tensor vec order is
+    ``[xx, xy, xz, yy, yz, zz]``; the writer permutes to the Exodus
+    disk order ``[xx, yy, zz, xy, xz, yz]`` before emitting.
+
     Caller must call :meth:`close` (or use as a context manager).
-    Time-stepped result variables are not yet supported.
     """
 
     def __init__(
@@ -457,10 +663,29 @@ class ExodusWriter:
             path: str | Path,
             mesh: Mesh,
             title: str = "",
+            *,
+            nodal_field_specs: Sequence[FieldSpec] = (),
+            element_field_specs: dict[
+                str, Sequence[FieldSpec]
+            ] | None = None,
     ) -> None:
         self._path = Path(path)
         self._mesh = mesh
         self._ds: netCDF4.Dataset | None = None
+
+        if element_field_specs is None:
+            element_field_specs = {}
+        self._nodal_specs: dict[str, FieldSpec] = {
+            s.name: s for s in nodal_field_specs
+        }
+        self._elem_specs: dict[str, dict[str, FieldSpec]] = {
+            block: {s.name: s for s in specs}
+            for block, specs in element_field_specs.items()
+        }
+        ndims = int(mesh.nodes.shape[1])
+        self._ndims = ndims
+        self._step_count = 0
+
         ds = netCDF4.Dataset(str(self._path), "w", format="NETCDF4")
         try:
             _write_metadata(ds, title)
@@ -469,10 +694,148 @@ class ExodusWriter:
             _write_blocks(ds, mesh)
             _write_node_sets(ds, mesh)
             _write_side_sets(ds, mesh)
+            self._nodal_var_indices = _write_nodal_var_schema(
+                ds, list(nodal_field_specs), ndims,
+            )
+            (
+                self._elem_var_indices,
+                self._elem_block_idx,
+            ) = _write_element_var_schema(
+                ds, mesh, element_field_specs, ndims,
+            )
         except Exception:
             ds.close()
             raise
         self._ds = ds
+
+    def write_step(
+            self,
+            time: float,
+            nodal_data: dict[
+                str, NDArray[np.floating]
+            ] | None = None,
+            element_data: dict[
+                str, dict[str, NDArray[np.floating]]
+            ] | None = None,
+    ) -> None:
+        """Append one time step of result-variable data.
+
+        ``nodal_data[name]`` shape ``(n_nodes, *components)`` matches
+        the spec's VarType (SCALAR accepts both ``(n_nodes,)`` and
+        ``(n_nodes, 1)``). The trailing component axis is in cmad's
+        internal order; the writer permutes to the Exodus disk order
+        for SYM_TENSOR. ``element_data[block][name]`` is the per-block
+        analogue with shape ``(n_elems_in_block, *components)``.
+
+        Each call writes exactly the declared specs; missing or extra
+        keys raise. Constructing the writer with no specs and calling
+        ``write_step`` raises — mesh-only files write zero time rows.
+
+        The writer does not auto-emit an initial-condition step:
+        ``n_steps_in_file == number_of_write_step_calls``. Caller is
+        responsible for writing step 0 explicitly when wanted (e.g.
+        for Paraview-consistent animations).
+
+        Caller is responsible for aligning nodal arrays to
+        ``mesh.nodes``. For a Q1-on-Q1 mesh this is trivial; for a
+        non-vertex basis (subparametric / Q2) the caller projects
+        from basis coefficients to mesh nodes upstream.
+        """
+        if self._ds is None:
+            raise ValueError("ExodusWriter is closed")
+        if not self._nodal_specs and not self._elem_specs:
+            raise ValueError(
+                "ExodusWriter constructed with no result-variable "
+                "specs; no time-stepped data to write"
+            )
+
+        nodal_data = nodal_data or {}
+        element_data = element_data or {}
+
+        if set(nodal_data.keys()) != set(self._nodal_specs.keys()):
+            raise ValueError(
+                f"nodal_data keys {sorted(nodal_data.keys())} do not "
+                f"match declared nodal specs "
+                f"{sorted(self._nodal_specs.keys())}"
+            )
+        if set(element_data.keys()) != set(self._elem_specs.keys()):
+            raise ValueError(
+                f"element_data block keys {sorted(element_data.keys())}"
+                f" do not match declared element-spec blocks "
+                f"{sorted(self._elem_specs.keys())}"
+            )
+        for block_name, declared in self._elem_specs.items():
+            if set(element_data[block_name].keys()) != set(declared):
+                raise ValueError(
+                    f"element_data[{block_name!r}] keys "
+                    f"{sorted(element_data[block_name].keys())} do not "
+                    f"match declared specs {sorted(declared)}"
+                )
+
+        n_nodes = self._mesh.nodes.shape[0]
+        ndims = self._ndims
+
+        def _canonicalize(
+                values, n_rows: int, var_type: VarType, what: str,
+        ) -> NDArray[np.floating]:
+            arr = np.asarray(values, dtype=np.float64)
+            n_comp = get_num_eqs(var_type, ndims)
+            if var_type == VarType.SCALAR:
+                if arr.shape == (n_rows,):
+                    arr = arr[:, None]
+                if arr.shape != (n_rows, 1):
+                    raise ValueError(
+                        f"{what}: SCALAR expects ({n_rows},) or "
+                        f"({n_rows}, 1); got {arr.shape}"
+                    )
+            else:
+                if arr.shape != (n_rows, n_comp):
+                    raise ValueError(
+                        f"{what}: {var_type.name} expects "
+                        f"({n_rows}, {n_comp}); got {arr.shape}"
+                    )
+            return arr
+
+        # Stage all canonicalized + permuted arrays first so any shape
+        # error raises before we touch the file.
+        staged_nodal: dict[str, NDArray[np.floating]] = {}
+        for name, raw in nodal_data.items():
+            spec = self._nodal_specs[name]
+            arr = _canonicalize(raw, n_nodes, spec.var_type, f"nodal[{name!r}]")
+            staged_nodal[name] = np.asarray(
+                to_exodus_storage(arr, spec.var_type),
+            )
+        staged_elem: dict[str, dict[str, NDArray[np.floating]]] = {}
+        for block_name, declared in self._elem_specs.items():
+            n_elem = int(self._mesh.element_blocks[block_name].shape[0])
+            block_staged: dict[str, NDArray[np.floating]] = {}
+            for name in declared:
+                spec = declared[name]
+                arr = _canonicalize(
+                    element_data[block_name][name],
+                    n_elem, spec.var_type,
+                    f"element[{block_name!r}][{name!r}]",
+                )
+                block_staged[name] = np.asarray(
+                    to_exodus_storage(arr, spec.var_type),
+                )
+            staged_elem[block_name] = block_staged
+
+        step_idx = self._step_count
+        self._ds["time_whole"][step_idx] = float(time)
+        for name, perm in staged_nodal.items():
+            for c, n in enumerate(self._nodal_var_indices[name]):
+                self._ds[f"vals_nod_var{n}"][step_idx, :] = perm[:, c]
+        for block_name, block_staged in staged_elem.items():
+            b = self._elem_block_idx[block_name]
+            for name, perm in block_staged.items():
+                for c, n in enumerate(
+                    self._elem_var_indices[block_name][name],
+                ):
+                    self._ds[f"vals_elem_var{n}eb{b}"][step_idx, :] = (
+                        perm[:, c]
+                    )
+        self._step_count += 1
 
     def close(self) -> None:
         if self._ds is not None:
