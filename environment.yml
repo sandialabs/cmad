@@ -3,7 +3,7 @@ channels:
   - defaults
   - conda-forge
 dependencies:
-  - python>=3.10
+  - python>=3.11,<3.14
   - numpy>=1.23
   - matplotlib
   - scipy>=1.7
@@ -19,12 +19,5 @@ dependencies:
   - sympy
   - jsonschema
   - pyyaml
-  # documentation
-  - sphinx
-  - sphinx-gallery
   - pip:
-    - sphinx_copybutton
-    - sphinx_rtd_theme
-    - numpydoc
-    - sphinx_automodapi
     - jax[cpu]>=0.4.20
