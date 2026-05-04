@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import netCDF4
 import numpy as np
 
 from cmad.fem.element_family import ElementFamily
@@ -56,11 +57,13 @@ class TestReadMeshSmallHex(unittest.TestCase):
         np.testing.assert_allclose(actual, expected)
 
     def test_single_element_block_default_named(self):
-        # No eb_names in meshio output; reader defaults to "block_{i+1}".
+        # No eb_names in meshio output; reader defaults to
+        # f"block_{eb_prop1[i]}" — the fixture has eb_prop1 = [1].
         self.assertEqual(list(self.mesh.element_blocks), ["block_1"])
         np.testing.assert_array_equal(
             self.mesh.element_blocks["block_1"], np.arange(8)
         )
+        self.assertEqual(self.mesh.element_block_ids["block_1"], 1)
 
     def test_node_sets_decoded_and_zero_based(self):
         self.assertEqual(
@@ -151,6 +154,58 @@ class TestWriterReaderRoundTrip(unittest.TestCase):
             rt = read_mesh(path)
         _assert_meshes_equal(self, tet_mesh, rt)
         self.assertEqual(rt.element_family, ElementFamily.TET_LINEAR)
+
+
+class TestSetIdPreservation(unittest.TestCase):
+
+    def test_round_trip_preserves_non_sequential_side_set_ids(self):
+        # Build a mesh with cmad's writer (sequential IDs by default),
+        # then mutate the file: set ss_prop1 to non-sequential values and
+        # blank ss_names so the reader exercises the f"sideset_{id}"
+        # default-name path. Read with read_mesh, write again, read again,
+        # and confirm IDs survived the second round-trip.
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (1, 1, 1))
+        non_seq_ids = [3, 1, 7, 4, 5, 6]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "non_seq_in.exo"
+            with ExodusWriter(path, mesh):
+                pass
+            with netCDF4.Dataset(str(path), "r+") as ds:
+                ds["ss_prop1"][:] = np.array(non_seq_ids, dtype=np.int32)
+                ds["ss_names"][:] = np.zeros(
+                    ds["ss_names"].shape, dtype="S1"
+                )
+            in_mesh = read_mesh(path)
+            expected = {f"sideset_{i}": i for i in non_seq_ids}
+            self.assertEqual(in_mesh.side_set_ids, expected)
+
+            out_path = Path(tmpdir) / "non_seq_rt.exo"
+            with ExodusWriter(out_path, in_mesh):
+                pass
+            rt = read_mesh(out_path)
+        self.assertEqual(rt.side_set_ids, expected)
+
+    def test_in_house_mesh_writer_assigns_sequential_ids_when_ids_empty(self):
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+        self.assertEqual(mesh.element_block_ids, {})
+        self.assertEqual(mesh.node_set_ids, {})
+        self.assertEqual(mesh.side_set_ids, {})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "in_house.exo"
+            with ExodusWriter(path, mesh):
+                pass
+            rt = read_mesh(path)
+        self.assertEqual(
+            rt.side_set_ids,
+            {
+                "xmin_sides": 1,
+                "xmax_sides": 2,
+                "ymin_sides": 3,
+                "ymax_sides": 4,
+                "zmin_sides": 5,
+                "zmax_sides": 6,
+            },
+        )
 
 
 if __name__ == "__main__":

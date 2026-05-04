@@ -205,6 +205,19 @@ class Mesh:
     ``(elem_id, local_face_id)`` pairs (Exodus side sets). Used as
     Neumann BC attach handles and for Exodus mesh round-trip.
 
+    ``element_block_ids``, ``node_set_ids``, ``side_set_ids`` (default
+    empty) are parallel name-keyed dicts of integer IDs preserved for
+    Exodus interchange — cmad's own code never reads them. The reader
+    populates these from the file's ``*_prop1`` so external meshes
+    round-trip with their original IDs intact; in-house builders
+    (:func:`StructuredHexMesh`, :func:`hex_to_tet_split`) leave them
+    empty and the writer falls back to sequential ``1..N``. When a
+    dict is non-empty its keys must equal the corresponding sets
+    dict's keys (all-or-nothing); values must be ``>= 1`` (Exodus
+    1-based convention) and unique within the kind. Cross-kind
+    uniqueness is not required: Exodus treats block / nodeset /
+    sideset IDs as independent namespaces.
+
     ``geometric_finite_element`` is the :class:`FiniteElement` whose
     reference-frame interpolant maps reference-element coords to
     physical coords. Defaults (when ``None`` is passed) to a P1
@@ -230,6 +243,9 @@ class Mesh:
     element_blocks: dict[str, NDArray[np.intp]]
     node_sets: dict[str, NDArray[np.intp]]
     side_sets: dict[str, NDArray[np.intp]]
+    element_block_ids: dict[str, int] = field(default_factory=dict)
+    node_set_ids: dict[str, int] = field(default_factory=dict)
+    side_set_ids: dict[str, int] = field(default_factory=dict)
     geometric_finite_element: FiniteElement | None = None
     edges: NDArray[np.intp] = field(
         init=False,
@@ -344,6 +360,33 @@ class Mesh:
                         f"side_sets['{name}'] local_face_ids out of range "
                         f"[0, {n_faces}) for {self.element_family.name}"
                     )
+
+        # Optional Exodus-interchange IDs: empty by default. When non-empty,
+        # keys must match the corresponding sets dict (all-or-nothing) and
+        # values must be 1-based positive integers, unique within the kind.
+        for sets, ids, kind in (
+            (self.element_blocks, self.element_block_ids, "element_block_ids"),
+            (self.node_sets, self.node_set_ids, "node_set_ids"),
+            (self.side_sets, self.side_set_ids, "side_set_ids"),
+        ):
+            if not ids:
+                continue
+            if set(ids) != set(sets):
+                raise ValueError(
+                    f"{kind} keys must match the corresponding sets "
+                    f"dict (all-or-nothing); got {sorted(ids)} vs "
+                    f"{sorted(sets)}"
+                )
+            values = list(ids.values())
+            if any(v < 1 for v in values):
+                raise ValueError(
+                    f"{kind} values must be >= 1 (Exodus convention); "
+                    f"got {values}"
+                )
+            if len(set(values)) != len(values):
+                raise ValueError(
+                    f"{kind} contains duplicate IDs: {values}"
+                )
 
         edges, element_edges = _enumerate_edges(
             self.connectivity,
@@ -484,6 +527,9 @@ def hex_to_tet_split(mesh: Mesh) -> Mesh:
     tets at indices ``[6 * hex_id, 6 * hex_id + 5]``. Node sets carry over
     unchanged. Side sets remap through the hex-face-to-tet-face
     correspondence (each hex face splits into 2 triangular tet faces).
+    Exodus-interchange IDs (``element_block_ids``, ``node_set_ids``,
+    ``side_set_ids``) carry through verbatim because set names are
+    unchanged.
 
     Raises :class:`ValueError` if the input mesh is not HEX_LINEAR.
     """
@@ -530,4 +576,7 @@ def hex_to_tet_split(mesh: Mesh) -> Mesh:
         element_blocks=element_blocks_tet,
         node_sets=node_sets_tet,
         side_sets=side_sets_tet,
+        element_block_ids=dict(mesh.element_block_ids),
+        node_set_ids=dict(mesh.node_set_ids),
+        side_set_ids=dict(mesh.side_set_ids),
     )

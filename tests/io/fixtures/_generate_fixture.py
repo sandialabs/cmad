@@ -10,13 +10,21 @@ Run from a one-shot meshio environment so cmad's env stays clean::
 The fixture is a 2x2x2 hex mesh on the unit cube, with one element
 block ("all") and two nodesets ("xmin_nodes", "xmax_nodes"). meshio
 does not have a first-class sideset concept; sideset reading is
-covered by Stage B+ round-trip via cmad's own writer.
+covered by round-trip tests via cmad's own writer.
+
+meshio writes ``eb_prop1=[0]`` and ``ns_prop1=[0, 1]``, which violates
+Exodus's 1-based-positive ID convention and would be rejected by
+:class:`cmad.fem.mesh.Mesh.__post_init__`. The script post-processes
+the meshio output via :mod:`netCDF4` to bump those values to 1-based
+(meshio depends on netCDF4 internally so it's already in the
+generation env).
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 import meshio
+import netCDF4
 import numpy as np
 
 
@@ -63,6 +71,13 @@ def main() -> None:
 
     out_path = Path(__file__).parent / "small_hex.exo"
     meshio.write(out_path, mesh, file_format="exodus")
+
+    # meshio writes 0-based prop1 IDs; Exodus convention is 1-based
+    # positive integers and cmad's reader enforces this. Bump in place.
+    with netCDF4.Dataset(str(out_path), "r+") as ds:
+        ds["eb_prop1"][:] = np.array([1], dtype=ds["eb_prop1"].dtype)
+        ds["ns_prop1"][:] = np.array([1, 2], dtype=ds["ns_prop1"].dtype)
+
     print(f"Wrote {out_path}")
 
 

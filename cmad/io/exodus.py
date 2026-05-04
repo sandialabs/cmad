@@ -23,6 +23,11 @@ Read-side schema mapping
   ``ss_prop1`` + optional ``ss_names``. Names default to
   ``f"sideset_{id}"``. Distribution factors are read but not retained.
 
+The reader populates :class:`Mesh.element_block_ids` /
+:class:`Mesh.node_set_ids` / :class:`Mesh.side_set_ids` from each
+kind's ``*_prop1`` so the original IDs survive a round-trip through
+:class:`ExodusWriter`.
+
 Out of scope (raises or ignores; revisit by extending this module):
 mixed element families per mesh, higher-order elements, element /
 node attributes, ID maps beyond natural ordering, QA records, info
@@ -114,26 +119,28 @@ def _read_blocks(
     NDArray[np.intp],
     ElementFamily,
     dict[str, NDArray[np.intp]],
+    dict[str, int],
 ]:
     """Read all element blocks. Returns concatenated connectivity (0-based),
-    the uniform element family, and the per-name index partition.
+    the uniform element family, the per-name index partition, and the
+    per-name ``eb_prop1`` IDs.
     """
     if n_blocks < 1:
         raise ExodusFormatError("file has zero element blocks")
     if "eb_prop1" not in ds.variables:
         raise ExodusFormatError("missing 'eb_prop1' (block IDs)")
+    prop1 = np.asarray(ds["eb_prop1"][:]).astype(int).tolist()
 
-    # Default names use the 1-based positional index (i + 1), not the
-    # original `eb_prop1` IDs. The writer always renumbers IDs sequentially
-    # from 1; using the original ID in default names creates name/prop1
-    # mismatches that crash some Exodus readers (notably Paraview's IOSS).
+    # Default names use the original ``eb_prop1`` ID. Safe because the
+    # writer preserves IDs through the parallel ``element_block_ids`` dict,
+    # so default names and ``eb_prop1`` always agree on round-trip.
     if "eb_names" in ds.variables:
         raw = _decode_names(ds["eb_names"])
         block_names = [
-            n if n else f"block_{i + 1}" for i, n in enumerate(raw)
+            n if n else f"block_{prop1[i]}" for i, n in enumerate(raw)
         ]
     else:
-        block_names = [f"block_{i + 1}" for i in range(n_blocks)]
+        block_names = [f"block_{p}" for p in prop1]
 
     families: list[ElementFamily] = []
     conns: list[NDArray[np.intp]] = []
@@ -162,57 +169,71 @@ def _read_blocks(
     connectivity = np.concatenate(conns, axis=0).astype(np.intp)
 
     element_blocks: dict[str, NDArray[np.intp]] = {}
+    element_block_ids: dict[str, int] = {}
     start = 0
-    for name, sz in zip(block_names, sizes, strict=True):
+    for name, sz, p in zip(block_names, sizes, prop1, strict=True):
         element_blocks[name] = np.arange(start, start + sz, dtype=np.intp)
+        element_block_ids[name] = p
         start += sz
 
-    return connectivity, family, element_blocks
+    return connectivity, family, element_blocks, element_block_ids
 
 
 def _read_node_sets(
         ds: netCDF4.Dataset,
         n_sets: int,
-) -> dict[str, NDArray[np.intp]]:
+) -> tuple[dict[str, NDArray[np.intp]], dict[str, int]]:
     if n_sets == 0:
-        return {}
-    # Default names use 1-based positional index; see _read_blocks comment.
+        return {}, {}
+    if "ns_prop1" not in ds.variables:
+        raise ExodusFormatError("missing 'ns_prop1' (node-set IDs)")
+    prop1 = np.asarray(ds["ns_prop1"][:]).astype(int).tolist()
+
+    # Default names use the original ``ns_prop1`` ID; see _read_blocks.
     if "ns_names" in ds.variables:
         raw = _decode_names(ds["ns_names"])
         names = [
-            n if n else f"nodeset_{i + 1}" for i, n in enumerate(raw)
+            n if n else f"nodeset_{prop1[i]}" for i, n in enumerate(raw)
         ]
     else:
-        names = [f"nodeset_{i + 1}" for i in range(n_sets)]
+        names = [f"nodeset_{p}" for p in prop1]
 
     out: dict[str, NDArray[np.intp]] = {}
-    for i, name in enumerate(names):
+    ids: dict[str, int] = {}
+    for i, (name, p) in enumerate(zip(names, prop1, strict=True)):
         nodes_1based = np.asarray(ds[f"node_ns{i + 1}"][:]).astype(np.intp)
         out[name] = nodes_1based - 1
-    return out
+        ids[name] = p
+    return out, ids
 
 
 def _read_side_sets(
         ds: netCDF4.Dataset,
         n_sets: int,
-) -> dict[str, NDArray[np.intp]]:
+) -> tuple[dict[str, NDArray[np.intp]], dict[str, int]]:
     if n_sets == 0:
-        return {}
-    # Default names use 1-based positional index; see _read_blocks comment.
+        return {}, {}
+    if "ss_prop1" not in ds.variables:
+        raise ExodusFormatError("missing 'ss_prop1' (side-set IDs)")
+    prop1 = np.asarray(ds["ss_prop1"][:]).astype(int).tolist()
+
+    # Default names use the original ``ss_prop1`` ID; see _read_blocks.
     if "ss_names" in ds.variables:
         raw = _decode_names(ds["ss_names"])
         names = [
-            n if n else f"sideset_{i + 1}" for i, n in enumerate(raw)
+            n if n else f"sideset_{prop1[i]}" for i, n in enumerate(raw)
         ]
     else:
-        names = [f"sideset_{i + 1}" for i in range(n_sets)]
+        names = [f"sideset_{p}" for p in prop1]
 
     out: dict[str, NDArray[np.intp]] = {}
-    for i, name in enumerate(names):
+    ids: dict[str, int] = {}
+    for i, (name, p) in enumerate(zip(names, prop1, strict=True)):
         elems = np.asarray(ds[f"elem_ss{i + 1}"][:]).astype(np.intp) - 1
         sides = np.asarray(ds[f"side_ss{i + 1}"][:]).astype(np.intp) - 1
         out[name] = np.column_stack([elems, sides]).astype(np.intp)
-    return out
+        ids[name] = p
+    return out, ids
 
 
 def read_mesh(path: str | Path) -> Mesh:
@@ -247,9 +268,11 @@ def read_mesh(path: str | Path) -> Mesh:
         )
 
         nodes = _read_coords(ds)
-        connectivity, family, element_blocks = _read_blocks(ds, n_blocks)
-        node_sets = _read_node_sets(ds, n_node_sets)
-        side_sets = _read_side_sets(ds, n_side_sets)
+        connectivity, family, element_blocks, element_block_ids = (
+            _read_blocks(ds, n_blocks)
+        )
+        node_sets, node_set_ids = _read_node_sets(ds, n_node_sets)
+        side_sets, side_set_ids = _read_side_sets(ds, n_side_sets)
 
     return Mesh(
         nodes=nodes,
@@ -258,6 +281,9 @@ def read_mesh(path: str | Path) -> Mesh:
         element_blocks=element_blocks,
         node_sets=node_sets,
         side_sets=side_sets,
+        element_block_ids=element_block_ids,
+        node_set_ids=node_set_ids,
+        side_set_ids=side_set_ids,
     )
 
 
@@ -319,7 +345,13 @@ def _write_blocks(ds: netCDF4.Dataset, mesh: Mesh) -> None:
     n_blocks = len(block_names)
 
     eb_prop1 = ds.createVariable("eb_prop1", "i4", ("num_el_blk",))
-    eb_prop1[:] = np.arange(1, n_blocks + 1, dtype=np.int32)
+    if mesh.element_block_ids:
+        eb_prop1[:] = np.array(
+            [mesh.element_block_ids[name] for name in block_names],
+            dtype=np.int32,
+        )
+    else:
+        eb_prop1[:] = np.arange(1, n_blocks + 1, dtype=np.int32)
 
     eb_names = ds.createVariable(
         "eb_names", "S1", ("num_el_blk", "len_string")
@@ -348,7 +380,13 @@ def _write_node_sets(ds: netCDF4.Dataset, mesh: Mesh) -> None:
     n_sets = len(ns_names)
 
     ns_prop1 = ds.createVariable("ns_prop1", "i4", ("num_node_sets",))
-    ns_prop1[:] = np.arange(1, n_sets + 1, dtype=np.int32)
+    if mesh.node_set_ids:
+        ns_prop1[:] = np.array(
+            [mesh.node_set_ids[name] for name in ns_names],
+            dtype=np.int32,
+        )
+    else:
+        ns_prop1[:] = np.arange(1, n_sets + 1, dtype=np.int32)
 
     ns_names_var = ds.createVariable(
         "ns_names", "S1", ("num_node_sets", "len_string")
@@ -371,7 +409,13 @@ def _write_side_sets(ds: netCDF4.Dataset, mesh: Mesh) -> None:
     n_sets = len(ss_names)
 
     ss_prop1 = ds.createVariable("ss_prop1", "i4", ("num_side_sets",))
-    ss_prop1[:] = np.arange(1, n_sets + 1, dtype=np.int32)
+    if mesh.side_set_ids:
+        ss_prop1[:] = np.array(
+            [mesh.side_set_ids[name] for name in ss_names],
+            dtype=np.int32,
+        )
+    else:
+        ss_prop1[:] = np.arange(1, n_sets + 1, dtype=np.int32)
 
     ss_names_var = ds.createVariable(
         "ss_names", "S1", ("num_side_sets", "len_string")
@@ -397,7 +441,9 @@ class ExodusWriter:
 
     On construction, opens ``path`` and writes coordinates, per-block
     connectivity, node sets, and side sets in NETCDF4 format. Block /
-    nodeset / sideset IDs are assigned sequentially starting at 1 in
+    nodeset / sideset IDs come from ``mesh.element_block_ids`` /
+    ``node_set_ids`` / ``side_set_ids`` if non-empty, otherwise are
+    assigned sequentially starting at 1 in
     ``mesh.element_blocks`` / ``node_sets`` / ``side_sets`` insertion
     order. Element type strings emitted: ``HEX8`` for HEX_LINEAR,
     ``TETRA4`` for TET_LINEAR.
