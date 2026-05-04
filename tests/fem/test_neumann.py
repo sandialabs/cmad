@@ -363,7 +363,7 @@ class TestNeumannBCThreading(unittest.TestCase):
         fe_problem = _build_unit_hex_fe_problem(neumann_bcs=(bc,))
         n_dofs = fe_problem.dof_map.num_total_dofs
         U_zero = np.zeros(n_dofs, dtype=np.float64)
-        _, R = assemble_global(fe_problem, U_zero, U_zero, t=0.0)
+        _, R, _ = assemble_global(fe_problem, U_zero, U_zero, t=0.0)
         local_zmax = np.array([4, 5, 6, 7])
         global_zmax = fe_problem.mesh.connectivity[0, local_zmax]
         for g in global_zmax:

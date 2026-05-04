@@ -85,10 +85,16 @@ def fe_newton_solve(
         U_prev: NDArray[np.floating],
         t: float = 0.0,
         U_init: NDArray[np.floating] | None = None,
+        xi_prev_by_block: dict[str, NDArray[np.floating]] | None = None,
         max_iters: int = 20,
         abs_tol: float = 1e-10,
         rel_tol: float = 1e-10,
-) -> tuple[NDArray[np.floating], int, float]:
+) -> tuple[
+    NDArray[np.floating],
+    int,
+    float,
+    dict[str, NDArray[np.floating]],
+]:
     """Quasi-static global Newton driver for the FE forward problem.
 
     Nonlinear convention: ``K = dR/dU`` is the tangent stiffness and
@@ -96,12 +102,12 @@ def fe_newton_solve(
     ``R`` by the assembly — no separate ``F`` vector). Each Newton step
     solves ``K · dU = -R``.
 
-    Each iteration assembles the global ``(K, R)`` via
-    :func:`assemble_global`, applies Dirichlet boundary conditions by
-    strong enforcement, and solves the sparse system
+    Each iteration assembles the global ``(K, R, xi_solved_by_block)``
+    via :func:`assemble_global`, applies Dirichlet boundary conditions
+    by strong enforcement, and solves the sparse system
     ``K_csr @ dU = -R_enforced`` via direct factorization
     (``scipy.sparse.linalg.spsolve``). Returns
-    ``(U_solved, n_iters, final_R_norm)``.
+    ``(U_solved, n_iters, final_R_norm, xi_solved_by_block)``.
 
     The initial ``U`` defaults to zeros over all dofs and has its
     prescribed-dof entries overwritten with the BC target evaluated at
@@ -111,6 +117,20 @@ def fe_newton_solve(
     (``dbc_residual = 0`` since ``U[prescribed] - bc_target = 0``
     after pre-loading) — the same driver pattern handles both
     homogeneous and non-homogeneous Dirichlet.
+
+    ``xi_prev_by_block`` is the previous time-step's converged xi
+    keyed by COUPLED block; required when the FE problem has any
+    COUPLED block, ignored otherwise. ``xi_prev`` stays fixed across
+    global Newton iterations (it's an input to the time step, not a
+    function of the current ``U`` iterate); the per-IP local Newton
+    inside the COUPLED kernel re-solves for ``xi(U_iter, xi_prev)``
+    every iteration. The returned ``xi_solved_by_block`` is the
+    converged-iteration value — the time step's xi output, fed into
+    the next step's ``xi_prev_by_block``. Empty dict for
+    CLOSED_FORM-only problems. A missing COUPLED-block entry surfaces
+    as a ``ValueError`` from
+    :func:`cmad.fem.assembly.assemble_element_block` on the first
+    iteration.
 
     For linear-elastic + closed-form Cauchy the residual is linear in
     U and Newton converges in one iteration; the loop is structured to
@@ -132,9 +152,13 @@ def fe_newton_solve(
     dbc_residual = np.zeros(
         fe_problem.dof_map.num_prescribed_dofs, dtype=np.float64,
     )
+    xi_solved_by_block: dict[str, NDArray[np.floating]] = {}
 
     for it in range(max_iters):
-        K_coo, R = assemble_global(fe_problem, U, U_prev, t)
+        K_coo, R, xi_solved_by_block = assemble_global(
+            fe_problem, U, U_prev, t,
+            xi_prev_by_block=xi_prev_by_block,
+        )
 
         K_csr, R_enforced, _ = apply_strong_dirichlet(
             K_coo, R,
@@ -147,7 +171,7 @@ def fe_newton_solve(
             R_norm_0 = R_norm if R_norm > 0.0 else 1.0
 
         if R_norm < abs_tol or R_norm / R_norm_0 < rel_tol:
-            return U, it, R_norm
+            return U, it, R_norm, xi_solved_by_block
 
         dU = np.asarray(
             scipy.sparse.linalg.spsolve(K_csr.tocsc(), -R_enforced),

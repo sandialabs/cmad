@@ -3,6 +3,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
+from jax.flatten_util import ravel_pytree
 from numpy.typing import NDArray
 
 from cmad.fem.bcs import NeumannBC
@@ -20,7 +21,7 @@ from cmad.fem.quadrature import (
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.model import Model
-from cmad.typing import GREvaluators, JaxArray
+from cmad.typing import GREvaluators, JaxArray, StateList
 
 _DEFAULT_ASSEMBLY_QUADRATURE: dict[ElementFamily, QuadratureRule] = {
     ElementFamily.HEX_LINEAR: hex_quadrature(degree=2),
@@ -72,6 +73,15 @@ class FEProblem:
     name → layout dict on every call. Population happens in
     :meth:`__post_init__` and raises ``ValueError`` on a missing or
     unmatched ``var_name``.
+
+    ``unravel_xi_by_block`` caches each COUPLED block's
+    ``ravel_pytree(model._init_xi)[1]`` unravel callable, which
+    bridges the FEState's flat-trailing per-IP xi storage and the
+    pytree-keyed ``StateList`` consumed by ``model._residual``'s
+    block-by-block contract. Built once in :meth:`__post_init__` so
+    the COUPLED kernel's per-element vmap doesn't re-derive the
+    pytree treedef every Newton iteration. CLOSED_FORM blocks have
+    no entry; the dict is empty for CLOSED_FORM-only problems.
     """
     mesh: Mesh
     dof_map: GlobalDofMap
@@ -95,6 +105,9 @@ class FEProblem:
     )
     resolved_neumann_bcs: list[ResolvedNeumannBC] = field(
         init=False, default_factory=list,
+    )
+    unravel_xi_by_block: dict[str, Callable[[JaxArray], StateList]] = field(
+        init=False, default_factory=dict,
     )
 
     def __post_init__(self) -> None:
@@ -134,6 +147,17 @@ class FEProblem:
             self.mesh, self.dof_map, self.neumann_bcs,
         )
         object.__setattr__(self, "resolved_neumann_bcs", resolved)
+
+        unravel_xi_by_block: dict[
+            str, Callable[[JaxArray], StateList],
+        ] = {}
+        for block, mode in self.modes_by_block.items():
+            if mode == GlobalResidualMode.COUPLED:
+                model = self.models_by_block[block]
+                unravel_xi_by_block[block] = ravel_pytree(model._init_xi)[1]
+        object.__setattr__(
+            self, "unravel_xi_by_block", unravel_xi_by_block,
+        )
 
     @property
     def ndims(self) -> int:

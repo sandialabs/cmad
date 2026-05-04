@@ -14,6 +14,7 @@ from cmad.fem.fe_problem import FEProblem
 from cmad.fem.finite_element import EntityType
 from cmad.fem.neumann import assemble_side_neumann
 from cmad.fem.shapes import ShapeFunctionsAtIP
+from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.typing import (
     JaxArray,
     Params,
@@ -433,17 +434,31 @@ def assemble_element_block(
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
         t: float,
+        xi_prev_per_block: NDArray[np.floating] | None = None,
 ) -> tuple[
     NDArray[np.intp],
     NDArray[np.intp],
     NDArray[np.floating],
+    NDArray[np.floating] | None,
 ]:
     """Assemble one element block's COO triplets and scatter R in place.
 
-    Vmaps :func:`per_element_R_and_K` over the block's elements,
-    brings the per-element results back to numpy, scatters the per-
-    element residuals into ``R_global`` in place via ``np.add.at``,
-    and returns ``(rows, cols, vals)`` for the global COO build.
+    Dispatches on ``fe_problem.modes_by_block[block_name]``. The
+    CLOSED_FORM branch vmaps :func:`per_element_R_and_K`; the COUPLED
+    branch vmaps :func:`per_element_R_and_K_coupled` and threads
+    ``xi_prev_per_block`` (shape ``(n_elems_block, n_ips,
+    total_xi_dofs)``) through the per-IP local Newton, returning the
+    converged xi at the same shape. Both branches scatter the per-
+    element residuals into ``R_global`` in place via ``np.add.at``
+    and emit the block's ``(rows, cols, vals)`` COO stream. The
+    fourth return slot is ``xi_solved_per_block`` — the converged
+    xi array for COUPLED, ``None`` for CLOSED_FORM.
+
+    ``xi_prev_per_block`` is required when the block is COUPLED and
+    must match the cached layout
+    ``(n_elems_block, n_ips, total_xi_dofs)``;
+    ``total_xi_dofs == ravel_pytree(model._init_xi)[0].shape[0]``.
+    For CLOSED_FORM blocks the kwarg is ignored and may be ``None``.
 
     Multi-residual-block GRs scatter via nested loops over
     ``(r, s)`` residual-block / U-block pairs; each pair scatters the
@@ -466,6 +481,7 @@ def assemble_element_block(
     model = fe_problem.models_by_block[block_name]
     params = model.parameters.values
     evaluators = fe_problem.evaluators_by_block[block_name]
+    mode = fe_problem.modes_by_block[block_name]
     block_shapes = fe_problem.block_shapes
     num_blocks = len(block_shapes)
 
@@ -488,16 +504,39 @@ def assemble_element_block(
     quad_xi = jnp.asarray(quad_rule.xi)
     quad_w = jnp.asarray(quad_rule.w)
 
-    R_per_elem_blocks, K_per_elem_blocks = vmap(
-        lambda X, U, Up: per_element_R_and_K(
-            X, U, Up, params,
-            quad_xi, quad_w,
-            geom_interpolant_fn,
-            per_block_interpolant_fns,
-            evaluators["R_and_dR_dU"],
-            forcing_fns_by_block_idx, block_shapes, t,
-        ),
-    )(X_block, U_elem_block, U_prev_elem_block)
+    xi_solved_per_block: NDArray[np.floating] | None
+    if mode == GlobalResidualMode.COUPLED:
+        if xi_prev_per_block is None:
+            raise ValueError(
+                f"COUPLED block '{block_name}' requires "
+                f"xi_prev_per_block; got None"
+            )
+        unravel_xi = fe_problem.unravel_xi_by_block[block_name]
+        xi_prev_jax = jnp.asarray(xi_prev_per_block)
+        R_per_elem_blocks, K_per_elem_blocks, xi_solved_per_elem = vmap(
+            lambda X, U, Up, xi_prev: per_element_R_and_K_coupled(
+                X, U, Up, params, xi_prev,
+                quad_xi, quad_w,
+                geom_interpolant_fn,
+                per_block_interpolant_fns,
+                evaluators["R_and_dR_dU_and_xi"],
+                unravel_xi,
+                forcing_fns_by_block_idx, block_shapes, t,
+            ),
+        )(X_block, U_elem_block, U_prev_elem_block, xi_prev_jax)
+        xi_solved_per_block = np.asarray(xi_solved_per_elem)
+    else:
+        R_per_elem_blocks, K_per_elem_blocks = vmap(
+            lambda X, U, Up: per_element_R_and_K(
+                X, U, Up, params,
+                quad_xi, quad_w,
+                geom_interpolant_fn,
+                per_block_interpolant_fns,
+                evaluators["R_and_dR_dU"],
+                forcing_fns_by_block_idx, block_shapes, t,
+            ),
+        )(X_block, U_elem_block, U_prev_elem_block)
+        xi_solved_per_block = None
 
     eq_indices_per_block: list[NDArray[np.intp]] = [
         _element_eq_indices(
@@ -542,6 +581,7 @@ def assemble_element_block(
         np.concatenate(rows_all),
         np.concatenate(cols_all),
         np.concatenate(vals_all),
+        xi_solved_per_block,
     )
 
 
@@ -550,16 +590,27 @@ def assemble_global(
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
         t: float,
-) -> tuple[scipy.sparse.coo_matrix, NDArray[np.floating]]:
-    """Walk all element blocks and emit the global ``(K_coo, R)`` pair.
+        xi_prev_by_block: dict[str, NDArray[np.floating]] | None = None,
+) -> tuple[
+    scipy.sparse.coo_matrix,
+    NDArray[np.floating],
+    dict[str, NDArray[np.floating]],
+]:
+    """Walk all element blocks and emit the global ``(K_coo, R, xi_solved)``.
 
     ``K_coo`` is the global tangent ``dR/dU`` as a
     ``scipy.sparse.coo_matrix`` of shape ``(n_dofs, n_dofs)``; ``R``
     is the flat residual vector of length ``n_dofs``, dtype float64.
+    ``xi_solved_by_block`` is the per-block converged-xi dict — keys
+    are exactly the set of blocks whose mode is COUPLED, each entry
+    shaped ``(n_elems_block, n_ips, total_xi_dofs)``. CLOSED_FORM-
+    only problems get an empty dict.
+
     Nonlinear-FE convention: ``R(U) = R_int(U) - F_ext`` (body-force
     and surface-flux contributions folded into ``R``, no separate
     ``F`` vector). Body forces accumulate at the per-element level
-    inside :func:`per_element_R_and_K`; surface fluxes accumulate
+    inside :func:`per_element_R_and_K` /
+    :func:`per_element_R_and_K_coupled`; surface fluxes accumulate
     via :func:`cmad.fem.neumann.assemble_side_neumann` after the
     volume walk. The Newton driver in
     :func:`cmad.fem.nonlinear_solver.fe_newton_solve` solves
@@ -568,30 +619,47 @@ def assemble_global(
     Neumann fluxes are U-independent, so ``K`` gets no surface
     contribution.
 
+    ``xi_prev_by_block`` carries the previous-step converged xi for
+    each COUPLED block; the per-IP local Newton uses ``xi_prev`` as
+    both initial guess and held-in-residual ``x_prev`` (path
+    continuity for plasticity). ``None`` is valid only when the
+    problem has no COUPLED blocks. When a COUPLED block's entry is
+    missing, :func:`assemble_element_block` raises ``ValueError``
+    with a clear message; shape mismatches surface as JAX vmap
+    leading-axis errors when the kernel runs.
+
     Implementation note: each block's per-element residual scatters
     into ``R_global`` in place via :func:`assemble_element_block`,
-    which also returns the block's ``(rows, cols, vals)`` COO stream;
-    this function concatenates the streams across blocks and builds
-    the COO matrix once at the bottom (duplicate ``(row, col)``
-    entries accumulate naturally on ``.tocsr()``). Surface fluxes
+    which also returns the block's
+    ``(rows, cols, vals, xi_solved_per_block)``. The COO streams
+    concatenate across blocks and build the COO matrix once at the
+    bottom (duplicate ``(row, col)`` entries accumulate naturally
+    on ``.tocsr()``). Non-None ``xi_solved_per_block`` returns
+    populate the ``xi_solved_by_block`` dict. Surface fluxes
     likewise scatter into ``R_global`` in place via
     :func:`cmad.fem.neumann.assemble_side_neumann` after the volume
     walk.
     """
+    xi_prev = xi_prev_by_block or {}
+
     n_dofs = fe_problem.dof_map.num_total_dofs
     rows_all: list[NDArray[np.intp]] = []
     cols_all: list[NDArray[np.intp]] = []
     vals_all: list[NDArray[np.floating]] = []
     R_global = np.zeros(n_dofs, dtype=np.float64)
+    xi_solved_by_block: dict[str, NDArray[np.floating]] = {}
 
     for block_name in fe_problem.evaluators_by_block:
-        rows, cols, vals = assemble_element_block(
+        rows, cols, vals, xi_solved = assemble_element_block(
             R_global, fe_problem, block_name,
             U_global, U_prev_global, t,
+            xi_prev_per_block=xi_prev.get(block_name),
         )
         rows_all.append(rows)
         cols_all.append(cols)
         vals_all.append(vals)
+        if xi_solved is not None:
+            xi_solved_by_block[block_name] = xi_solved
 
     assemble_side_neumann(
         R_global,
@@ -607,4 +675,4 @@ def assemble_global(
          (np.concatenate(rows_all), np.concatenate(cols_all))),
         shape=(n_dofs, n_dofs),
     )
-    return K_coo, R_global
+    return K_coo, R_global, xi_solved_by_block

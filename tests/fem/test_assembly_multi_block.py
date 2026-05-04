@@ -167,7 +167,7 @@ class TestAssemblyMultiBlock(unittest.TestCase):
     def test_K_scatter_populates_all_four_block_pairs(self) -> None:
         n_dofs = self.fe_problem.dof_map.num_total_dofs
         R = np.zeros(n_dofs, dtype=np.float64)
-        rows, cols, vals = assemble_element_block(
+        rows, cols, vals, _ = assemble_element_block(
             R, self.fe_problem, "all", self.U, self.U_prev, t=0.0,
         )
         u_rows = rows < self.n_dofs_u
@@ -194,7 +194,7 @@ class TestAssemblyMultiBlock(unittest.TestCase):
         """up entries: u-eq rows, p-eq cols. pu entries: p-eq rows, u-eq cols."""
         n_dofs = self.fe_problem.dof_map.num_total_dofs
         R = np.zeros(n_dofs, dtype=np.float64)
-        rows, cols, _ = assemble_element_block(
+        rows, cols, _, _ = assemble_element_block(
             R, self.fe_problem, "all", self.U, self.U_prev, t=0.0,
         )
         u_rows = rows < self.n_dofs_u
