@@ -4,4 +4,6 @@ required: [type]
 additionalProperties: false
 properties:
   type:
-    enum: [material_point]
+    enum: [material_point, fe]
+  name:
+    type: string

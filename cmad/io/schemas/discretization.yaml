@@ -1,0 +1,17 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+required: [mesh file]
+additionalProperties: false
+properties:
+  mesh file: {type: string}
+  num steps: {type: integer, minimum: 1}
+  step size: {type: number, exclusiveMinimum: 0}
+  times file: {type: string}
+  times:
+    type: array
+    minItems: 2
+    items: {type: number}
+oneOf:
+  - required: [num steps, step size]
+  - required: [times file]
+  - required: [times]

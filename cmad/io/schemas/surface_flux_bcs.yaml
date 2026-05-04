@@ -1,0 +1,16 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+additionalProperties: false
+properties:
+  expression:
+    type: object
+    additionalProperties:
+      type: array
+      minItems: 3
+      prefixItems:
+        - type: string
+        - type: string
+      items:
+        oneOf:
+          - type: number
+          - type: string

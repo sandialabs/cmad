@@ -1,0 +1,61 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$defs:
+  leaf:
+    type: object
+    additionalProperties: false
+    required: [value]
+    properties:
+      value: {}
+      active:
+        type: boolean
+      transform:
+        oneOf:
+          - type: 'null'
+          - type: object
+            additionalProperties: false
+            required: [bounds]
+            properties:
+              bounds:
+                type: array
+                minItems: 2
+                maxItems: 2
+                items: {type: number}
+          - type: object
+            additionalProperties: false
+            required: [log]
+            properties:
+              log: {type: number}
+  node:
+    oneOf:
+      - type: number
+      - type: 'null'
+      - type: array
+      - type: object
+        if:
+          required: [value]
+        then:
+          $ref: '#/$defs/leaf'
+        else:
+          additionalProperties:
+            $ref: '#/$defs/node'
+type: object
+required: [global residual, local residual]
+additionalProperties: false
+properties:
+  global residual:
+    type: object
+    required: [type]
+    properties:
+      type: {type: string}
+  local residual:
+    type: object
+    required: [type, materials]
+    properties:
+      type: {type: string}
+      nonlinear max iters: {type: integer, minimum: 1}
+      nonlinear absolute tol: {type: number, exclusiveMinimum: 0}
+      nonlinear relative tol: {type: number, exclusiveMinimum: 0}
+      materials:
+        type: object
+        additionalProperties:
+          $ref: '#/$defs/node'
