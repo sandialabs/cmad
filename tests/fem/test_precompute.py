@@ -15,7 +15,10 @@ from cmad.fem.assembly import iso_jac_at_ip
 from cmad.fem.dof import GlobalFieldLayout
 from cmad.fem.finite_element import P1_TET, Q1_HEX
 from cmad.fem.mesh import StructuredHexMesh, hex_to_tet_split
-from cmad.fem.precompute import precompute_block_geometry
+from cmad.fem.precompute import (
+    compute_ip_quadrature_weights,
+    precompute_block_geometry,
+)
 from cmad.fem.quadrature import hex_quadrature, tet_quadrature
 
 
@@ -156,6 +159,27 @@ class TestVolumeSanity(unittest.TestCase):
             tet_mesh, _tet_quadrature_by_family(), layouts,
         )
         np.testing.assert_allclose(_total_volume(cache), 1.0, rtol=1e-12)
+
+
+class TestComputeIpQuadratureWeights(unittest.TestCase):
+
+    def test_shape_and_sum_to_volume(self):
+        mesh = StructuredHexMesh(
+            (2.0, 3.0, 5.0), (3, 2, 4), origin=(1.0, 1.0, 1.0),
+        )
+        layouts = [GlobalFieldLayout(name="u", finite_element=Q1_HEX)]
+        cache = precompute_block_geometry(
+            mesh, _hex_quadrature_by_family(), layouts,
+        )
+        weights = compute_ip_quadrature_weights(cache)
+
+        self.assertEqual(set(weights.keys()), set(cache.keys()))
+        n_b = 3 * 2 * 4
+        n_ip = cache["all"].shared.quad_w.shape[0]
+        self.assertEqual(weights["all"].shape, (n_b, n_ip))
+
+        total = sum(float(w.sum()) for w in weights.values())
+        np.testing.assert_allclose(total, 30.0, rtol=1e-12)
 
 
 if __name__ == "__main__":

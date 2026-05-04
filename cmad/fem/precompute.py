@@ -34,8 +34,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import jax.numpy as jnp
+import numpy as np
 from jax import vmap
 from jax.tree_util import register_pytree_node_class
+from numpy.typing import NDArray
 
 from cmad.fem.dof import GlobalFieldLayout
 from cmad.fem.element_family import ElementFamily
@@ -232,3 +234,28 @@ def precompute_block_geometry(
         )
 
     return cache
+
+
+def compute_ip_quadrature_weights(
+        geometry_cache: dict[str, BlockIPGeometryCache],
+) -> dict[str, NDArray[np.floating]]:
+    """Per-element-block ``iso_jac_det · w`` arrays.
+
+    For each block, returns an array of shape ``(n_elems, n_ip)`` whose
+    sum is the block's volume. Pure projection of the cache; no
+    geometry recomputed. Intended for I/O consumers that need the
+    integration measure to volume-weight per-IP quantities (e.g.
+    integral-average reductions for element-output writers).
+
+    The cache is typically pulled from ``fe_problem.geometry_cache``;
+    accepting the dict directly avoids a circular dependency on
+    :class:`cmad.fem.fe_problem.FEProblem` and lets callers project
+    out of any cache, including hand-built ones in tests.
+    """
+    out: dict[str, NDArray[np.floating]] = {}
+    for block_name, cache in geometry_cache.items():
+        w_ip_jac = (
+            cache.per_elem.iso_jac_det * cache.shared.quad_w[None, :]
+        )
+        out[block_name] = np.asarray(w_ip_jac)
+    return out
