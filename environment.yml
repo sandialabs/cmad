@@ -12,6 +12,7 @@ dependencies:
   - coverage>=6.4
   - pytest-cov
   - mypy
+  - netcdf4
   - ruff
   - pip
   - setuptools
