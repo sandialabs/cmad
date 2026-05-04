@@ -11,6 +11,15 @@ properties:
     type: array
     minItems: 2
     items: {type: number}
+  finite elements:
+    type: object
+    additionalProperties: {type: string}
+  quadrature:
+    type: object
+    additionalProperties: false
+    properties:
+      volume degree: {type: integer, minimum: 1}
+      surface degree: {type: integer, minimum: 1}
 oneOf:
   - required: [num steps, step size]
   - required: [times file]
