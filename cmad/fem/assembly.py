@@ -217,51 +217,48 @@ def per_element_R_and_K(
     :func:`assemble_element_block` rather than per-IP.
     """
     num_blocks = len(residual_block_shapes)
-    R_blocks = [
-        jnp.zeros((nb, neq)) for nb, neq in residual_block_shapes
-    ]
-    dR_dU_blocks = [
-        [
-            jnp.zeros((nb_r, neq_r, nb_s, neq_s))
-            for nb_s, neq_s in residual_block_shapes
-        ]
-        for nb_r, neq_r in residual_block_shapes
-    ]
 
-    nips = geom_shared.quad_w.shape[0]
-    for ip_idx in range(nips):
+    def per_ip(quad_w_ip, iso_jac_det_ip, coords_ip,
+               field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block):
         field_shapes_phys_per_block = [
             ShapeFunctionsAtIP(
-                N=geom_shared.field_N_per_block[r][ip_idx],
-                grad_N=(
-                    geom_per_elem
-                    .field_grad_N_phys_per_block[r][ip_idx]
-                ),
+                N=field_N_at_ip_per_block[r],
+                grad_N=field_grad_N_phys_at_ip_per_block[r],
             )
             for r in range(num_blocks)
         ]
-        w_ref = geom_shared.quad_w[ip_idx]
-        dv = geom_per_elem.iso_jac_det[ip_idx]
-
         R_ip, dR_dU_ip = R_and_dR_dU_evaluator(
             params, U_elem, U_prev_elem,
-            field_shapes_phys_per_block, w_ref, dv, 0,
+            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip, 0,
         )
+        body_force_ip_per_block = {
+            block_idx: jnp.einsum(
+                "a,k->ak",
+                field_shapes_phys_per_block[block_idx].N,
+                jnp.asarray(forcing_fn(coords_ip, t)),
+            ) * quad_w_ip * iso_jac_det_ip
+            for block_idx, forcing_fn in forcing_fns_by_block_idx.items()
+        }
+        return R_ip, dR_dU_ip, body_force_ip_per_block
 
-        for r in range(num_blocks):
-            R_blocks[r] = R_blocks[r] + R_ip[r]
-            for s in range(num_blocks):
-                dR_dU_blocks[r][s] = dR_dU_blocks[r][s] + dR_dU_ip[r][s]
+    R_per_ip, dR_dU_per_ip, body_force_per_ip = vmap(per_ip)(
+        geom_shared.quad_w,
+        geom_per_elem.iso_jac_det,
+        geom_per_elem.coords_ip,
+        [geom_shared.field_N_per_block[r] for r in range(num_blocks)],
+        [
+            geom_per_elem.field_grad_N_phys_per_block[r]
+            for r in range(num_blocks)
+        ],
+    )
 
-        if forcing_fns_by_block_idx:
-            coords_ip = geom_per_elem.coords_ip[ip_idx]
-            for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
-                f_ip = jnp.asarray(forcing_fn(coords_ip, t))
-                f_ext = jnp.einsum(
-                    "a,k->ak",
-                    field_shapes_phys_per_block[block_idx].N, f_ip,
-                ) * w_ref * dv
-                R_blocks[block_idx] = R_blocks[block_idx] - f_ext
+    R_blocks = [R_per_ip[r].sum(axis=0) for r in range(num_blocks)]
+    dR_dU_blocks = [
+        [dR_dU_per_ip[r][s].sum(axis=0) for s in range(num_blocks)]
+        for r in range(num_blocks)
+    ]
+    for block_idx, bf_stacked in body_force_per_ip.items():
+        R_blocks[block_idx] = R_blocks[block_idx] - bf_stacked.sum(axis=0)
 
     return R_blocks, dR_dU_blocks
 
@@ -323,63 +320,56 @@ def per_element_R_and_K_coupled(
     :data:`cmad.typing.ResidualFnGR`).
     """
     num_blocks = len(residual_block_shapes)
-    R_blocks = [
-        jnp.zeros((nb, neq)) for nb, neq in residual_block_shapes
-    ]
-    dR_dU_blocks = [
-        [
-            jnp.zeros((nb_r, neq_r, nb_s, neq_s))
-            for nb_s, neq_s in residual_block_shapes
-        ]
-        for nb_r, neq_r in residual_block_shapes
-    ]
 
-    nips = geom_shared.quad_w.shape[0]
-    total_xi_dofs = xi_prev_per_ip.shape[1]
-    xi_solved_per_ip = jnp.zeros((nips, total_xi_dofs))
-
-    for ip_idx in range(nips):
+    def per_ip(quad_w_ip, iso_jac_det_ip, coords_ip,
+               xi_prev_at_ip,
+               field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block):
         field_shapes_phys_per_block = [
             ShapeFunctionsAtIP(
-                N=geom_shared.field_N_per_block[r][ip_idx],
-                grad_N=(
-                    geom_per_elem
-                    .field_grad_N_phys_per_block[r][ip_idx]
-                ),
+                N=field_N_at_ip_per_block[r],
+                grad_N=field_grad_N_phys_at_ip_per_block[r],
             )
             for r in range(num_blocks)
         ]
-        w_ref = geom_shared.quad_w[ip_idx]
-        dv = geom_per_elem.iso_jac_det[ip_idx]
-
-        xi_prev_blocks = unravel_xi(xi_prev_per_ip[ip_idx])
+        xi_prev_blocks = unravel_xi(xi_prev_at_ip)
         R_ip, dR_dU_ip, xi_blocks = R_and_dR_dU_and_xi_evaluator(
             params, U_elem, U_prev_elem, xi_prev_blocks,
-            field_shapes_phys_per_block, w_ref, dv, 0,
+            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip, 0,
         )
-
-        for r in range(num_blocks):
-            R_blocks[r] = R_blocks[r] + R_ip[r]
-            for s in range(num_blocks):
-                dR_dU_blocks[r][s] = (
-                    dR_dU_blocks[r][s] + dR_dU_ip[r][s]
-                )
-
         # Discard the unravel callable; xi treedef is fixed by
-        # the closure in ``unravel_xi`` already.
+        # the ``unravel_xi`` closure already.
         xi_flat, _ = ravel_pytree(xi_blocks)
-        xi_solved_per_ip = xi_solved_per_ip.at[ip_idx].set(xi_flat)
+        body_force_ip_per_block = {
+            block_idx: jnp.einsum(
+                "a,k->ak",
+                field_shapes_phys_per_block[block_idx].N,
+                jnp.asarray(forcing_fn(coords_ip, t)),
+            ) * quad_w_ip * iso_jac_det_ip
+            for block_idx, forcing_fn in forcing_fns_by_block_idx.items()
+        }
+        return R_ip, dR_dU_ip, xi_flat, body_force_ip_per_block
 
-        if forcing_fns_by_block_idx:
-            coords_ip = geom_per_elem.coords_ip[ip_idx]
-            for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
-                f_ip = jnp.asarray(forcing_fn(coords_ip, t))
-                f_ext = jnp.einsum(
-                    "a,k->ak",
-                    field_shapes_phys_per_block[block_idx].N,
-                    f_ip,
-                ) * w_ref * dv
-                R_blocks[block_idx] = R_blocks[block_idx] - f_ext
+    R_per_ip, dR_dU_per_ip, xi_solved_per_ip, body_force_per_ip = (
+        vmap(per_ip)(
+            geom_shared.quad_w,
+            geom_per_elem.iso_jac_det,
+            geom_per_elem.coords_ip,
+            xi_prev_per_ip,
+            [geom_shared.field_N_per_block[r] for r in range(num_blocks)],
+            [
+                geom_per_elem.field_grad_N_phys_per_block[r]
+                for r in range(num_blocks)
+            ],
+        )
+    )
+
+    R_blocks = [R_per_ip[r].sum(axis=0) for r in range(num_blocks)]
+    dR_dU_blocks = [
+        [dR_dU_per_ip[r][s].sum(axis=0) for s in range(num_blocks)]
+        for r in range(num_blocks)
+    ]
+    for block_idx, bf_stacked in body_force_per_ip.items():
+        R_blocks[block_idx] = R_blocks[block_idx] - bf_stacked.sum(axis=0)
 
     return R_blocks, dR_dU_blocks, xi_solved_per_ip
 

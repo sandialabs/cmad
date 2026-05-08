@@ -241,11 +241,7 @@ def per_side_neumann_R(
     :func:`cmad.fem.assembly.per_element_R_and_K` — external loads
     subtract from R so the Newton driver solves ``K · dU = -R``.
     """
-    R_elem = jnp.zeros((num_basis_fns, num_components))
-    nips = side_xi.shape[0]
-    for ip in range(nips):
-        st = side_xi[ip]
-        w_ip = side_w[ip]
+    def per_ip(st, w_ip):
         xi_volume = origin + tangents @ st
         geom_shapes = geom_interpolant_fn(xi_volume)
         field_shapes = field_interpolant_fn(xi_volume)
@@ -256,9 +252,12 @@ def per_side_neumann_R(
         coords_ip = geom_shapes.N @ X_elem
         t_bar = jnp.asarray(values_fn(coords_ip[None, :], t))[0]
         N_side = field_shapes.N[side_basis_fns]
-        contrib = jnp.einsum("a,c->ac", N_side, t_bar) * dA * w_ip
-        R_elem = R_elem.at[side_basis_fns].add(-contrib)
-    return R_elem
+        return jnp.einsum("a,c->ac", N_side, t_bar) * dA * w_ip
+
+    contrib_per_ip = vmap(per_ip)(side_xi, side_w)
+    contrib_total = contrib_per_ip.sum(axis=0)
+    R_elem = jnp.zeros((num_basis_fns, num_components))
+    return R_elem.at[side_basis_fns].add(-contrib_total)
 
 
 def assemble_side_neumann(
