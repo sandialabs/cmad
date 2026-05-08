@@ -140,7 +140,7 @@ class TestSpsolveJaxVJP(unittest.TestCase):
         def f(K_data_, b_):
             return spsolve_jax(K_data_, K_rows, K_cols, n, b_)
 
-        x, vjp_fn = jax.vjp(f, K_data, b)
+        _, vjp_fn = jax.vjp(f, K_data, b)
         gK, gb = vjp_fn(x_bar)
 
         def J(K_data_, b_):

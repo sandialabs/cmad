@@ -72,15 +72,15 @@ def spsolve_jax(
     :func:`jax.lax.custom_linear_solve` from the ``(matvec, solve,
     transpose_solve)`` triple:
 
-    - **Forward-mode JVP.** ``x_dot = solve(b_dot − matvec_dot(x))``
+    - **Forward-mode JVP.** ``x_dot = solve(b_dot - matvec_dot(x))``
       where ``matvec_dot(x)`` is JAX's JVP of ``matvec`` at ``x``
       along ``K_data_dot`` — exactly the textbook ``K_dot · x``
       sensitivity term, computed by JAX through plain forward-mode
       AD on the COO scatter-add.
     - **Reverse-mode VJP.** ``λ = transpose_solve(x_bar)``;
       ``b_bar = λ``; the ``K_data`` cotangent comes from
-      ``jax.vjp(matvec, x)(−λ)`` which evaluates to
-      ``−λ[K_rows] · x[K_cols]`` on ``K_data`` — the canonical
+      ``jax.vjp(matvec, x)(-λ)`` which evaluates to
+      ``-λ[K_rows] · x[K_cols]`` on ``K_data`` — the canonical
       sparse VJP formula.
 
     Composes for HVPs via forward-over-reverse: the outer JVP through
