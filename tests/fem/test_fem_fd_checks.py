@@ -1,30 +1,37 @@
-"""JAX-traced FE forward solve: ``jax.grad`` vs central-difference smoke tests.
+"""FD-vs-AD checks for ``jax.grad`` and ``jax.hessian`` on a JAX-traced FE
+forward solve.
 
-Five tests verifying ``jax.grad(J)(p)`` matches central-difference FD on
-a JAX-traced FE primal that mirrors the production data flow:
+Five test classes (CLOSED_FORM single/multi step + COUPLED single/multi
+step simple/all-paths), each with a ``test_grad_matches_fd`` and a
+``test_hessian_matches_fd``. Each test compares AD against a directional-
+difference FD across a logspace ``hs`` range, asserting the FD-error
+log10 drop exceeds a threshold (clean V-shaped FD convergence). Mirrors
+the MP-side ``tests/objectives/test_J2_fd_checks.py`` pattern.
+
+Pieces under test:
 
 - Per-element kernels: ``per_element_R_and_K`` /
-  ``per_element_R_and_K_coupled`` reused verbatim (already pure-JAX,
-  per-IP/per-element AD-tested in ``tests/fem/test_per_element_coupled``).
+  ``per_element_R_and_K_coupled`` from ``cmad.fem.assembly`` (already
+  pure-JAX, per-IP/per-element AD-tested in
+  ``tests/fem/test_per_element_coupled``).
 - Per-IP local Newton (COUPLED): ``make_newton_solve`` wired via
-  ``GR.for_model(model, COUPLED)``; ``@custom_jvp`` IFT rule unchanged.
+  ``GR.for_model(model, COUPLED)``; ``@custom_jvp`` IFT rule.
 - Strong DBC enforcement: row/col zero + scaled-identity on the
   diagonal + ``R[prescribed] = 0``, expressed in JAX (mirrors
   ``cmad.fem.nonlinear_solver.apply_strong_dirichlet`` step-for-step).
-- Outer Newton: ``lax.custom_root`` — opaque-to-AD imperative forward
+- Outer Newton: ``lax.custom_root`` -- opaque-to-AD imperative forward
   via ``lax.while_loop``; ``tangent_solve`` provides IFT-correct
   gradients via dense ``jnp.linalg.solve`` on the converged enforced
-  Jacobian. (Production solves with ``scipy.sparse.linalg.spsolve``;
-  a JAX-side equivalent can swap that in via ``jax.pure_callback``
-  later — same matvec contract, different backend.)
+  Jacobian.
 
 The tests are arranged as boundary-isolation diagnostics: each adds
 one new AD boundary on top of the previous, so a failure localizes
 which boundary broke. The final test is the everything-composes
-capstone — if individual boundaries pass and the capstone fails, the
+capstone: if individual boundaries pass and the capstone fails, the
 cross-paths between boundaries are wrong, not the boundaries themselves.
 """
 import unittest
+from collections.abc import Callable
 from typing import Any, cast
 
 import jax
@@ -52,7 +59,6 @@ from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.parameters.parameters import Parameters
 from cmad.typing import PyTreeDict
 from tests.support.test_problems import J2AnalyticalProblem
-
 
 # ============================================================
 # Module-level fixtures (cribbed from existing 2x2x2 tests)
@@ -118,13 +124,13 @@ def _build_fe_problem_2x2x2(model, mode: GlobalResidualMode, slope: float):
 # ============================================================
 
 def _assemble_R_K_closed_jax(fe_problem, params, U, U_prev, t):
-    """Dense JAX mirror of ``assemble_global`` for CLOSED_FORM blocks.
+    """Dense JAX assembly of ``R`` and ``K`` for CLOSED_FORM blocks.
 
-    Vmaps the production ``per_element_R_and_K`` per element, then
-    scatters into dense ``(n_dofs,)`` R and ``(n_dofs, n_dofs)`` K via
+    Vmaps ``per_element_R_and_K`` per element, then scatters into
+    dense ``(n_dofs,)`` R and ``(n_dofs, n_dofs)`` K via
     ``jnp.zeros(...).at[idx].add(...)`` (no scipy.sparse, no
     ``np.add.at``). Body forces from ``forcing_fns_by_block_idx``
-    accumulate inside the per-element kernel as in production.
+    accumulate inside the per-element kernel.
     """
     dof_map = fe_problem.dof_map
     mesh = fe_problem.mesh
@@ -177,13 +183,13 @@ def _assemble_R_K_closed_jax(fe_problem, params, U, U_prev, t):
 
 
 def _free_diag_scale(K, prescribed_indices):
-    """``mean(|diag(K)|[free])`` — production's spectrum-balancing scale.
+    """``mean(|diag(K)|[free])`` -- the spectrum-balancing scale.
 
     Used as the prescribed-row weight in two places that must agree:
-    ``_apply_strong_dirichlet_jax`` (production-style enforcement for
-    the forward solve) and the embedded-BC residual in
-    ``_solve_step_closed.f`` (AD-visible). Computing both from the same
-    ``K(U)`` keeps them numerically identical.
+    ``_apply_strong_dirichlet_jax`` (forward-solve enforcement) and
+    the embedded-BC residual in ``_solve_step_closed.f`` (AD-visible).
+    Computing both from the same ``K(U)`` keeps them numerically
+    identical.
     """
     n = K.shape[0]
     p_mask = jnp.zeros(n, dtype=bool).at[prescribed_indices].set(True)
@@ -219,11 +225,11 @@ def _solve_step_closed(fe_problem, params, U_prev, t):
     ``tangent_solve`` provides IFT-correct gradients via dense
     ``jnp.linalg.solve`` on the converged enforced Jacobian.
 
-    Mirrors ``cmad.fem.nonlinear_solver.fe_newton_solve`` step-for-step
-    except for: dense JAX K assembly (vs scipy.sparse COO),
+    Differs from ``cmad.fem.nonlinear_solver.fe_newton_solve`` only in
+    backend choice: dense JAX K assembly (vs scipy.sparse COO),
     ``jnp.linalg.solve`` (vs ``scipy.sparse.linalg.spsolve``), and
-    ``lax.while_loop`` (vs Python ``for`` loop). All per-IP / per-element
-    physics + strong-DBC enforcement is identical to production.
+    ``lax.while_loop`` (vs Python ``for`` loop). Per-IP / per-element
+    physics + strong-DBC enforcement is identical.
     """
     dof_map = fe_problem.dof_map
     n_dofs = dof_map.num_total_dofs
@@ -241,10 +247,11 @@ def _solve_step_closed(fe_problem, params, U_prev, t):
 
         ``f[free] = R[free]``, ``f[prescribed] =
         scale * (U[prescribed] - prescribed_vals)``. The scale factor
-        ``mean(|diag(K)|[free])`` matches production's
-        ``apply_strong_dirichlet`` and keeps the prescribed block of
-        ``df/dU`` non-singular (without it, ``df/dU`` has zero rows at
-        prescribed dofs → singular → IFT yields NaN).
+        ``mean(|diag(K)|[free])`` matches
+        ``cmad.fem.nonlinear_solver.apply_strong_dirichlet`` and keeps
+        the prescribed block of ``df/dU`` non-singular (without it,
+        ``df/dU`` has zero rows at prescribed dofs -> singular -> IFT
+        yields NaN).
         """
         R, K = _assemble_R_K_closed_jax(
             fe_problem, params, U, U_prev, t,
@@ -300,11 +307,11 @@ def _solve_step_closed(fe_problem, params, U_prev, t):
 def _assemble_R_K_coupled_jax(
         fe_problem, params, U, U_prev, xi_prev_by_block, t,
 ):
-    """Dense JAX mirror of ``assemble_global`` for COUPLED blocks.
+    """Dense JAX assembly of ``R``, ``K``, and converged xi for COUPLED
+    blocks.
 
-    Vmaps the production ``per_element_R_and_K_coupled`` per element
-    (which runs the per-IP local Newton via the
-    ``R_and_dR_dU_and_xi`` evaluator from
+    Vmaps ``per_element_R_and_K_coupled`` per element (which runs the
+    per-IP local Newton via the ``R_and_dR_dU_and_xi`` evaluator from
     ``GR.for_model(model, COUPLED)``; ``make_newton_solve``'s
     ``@custom_jvp`` rule supplies the IFT-correct local tangent),
     then scatters into dense ``(n_dofs,)`` R and ``(n_dofs, n_dofs)``
@@ -391,11 +398,11 @@ def _solve_step_coupled(
     rel_tol = 1e-10
 
     def f(U):
-        # Prescribed-row scale is forward-solve conditioning only —
+        # Prescribed-row scale is forward-solve conditioning only --
         # AD-irrelevant at convergence (the prescribed block of
         # ``df/dU`` is decoupled and prescribed values don't depend on
         # parameters, so ``dU*/dp`` is scale-independent). Hardcoding
-        # ``s=1`` here keeps K out of f's output, so the production
+        # ``s=1`` here keeps K out of f's output, so the COUPLED
         # kernel's internal ``dR_dU = jacfwd(coupled_r_total)`` branch
         # has zero cotangent and JAX skips its transpose synthesis.
         R, _, _ = _assemble_R_K_coupled_jax(
@@ -517,16 +524,22 @@ def _solve_history_closed(fe_problem, params, ts):
 # ============================================================
 
 class TestClosedFormSingleStep(unittest.TestCase):
-    """``jax.grad`` of a scalar QoI through a single-step CLOSED_FORM
-    Elastic forward solve matches central-difference. Validates the
-    outer ``lax.custom_root`` AD rule alone — no inner ``custom_jvp``
-    invoked, no time history.
+    """``jax.grad`` and ``jax.hessian`` of a scalar QoI through a
+    single-step CLOSED_FORM Elastic forward solve match central-
+    difference. Validates the outer ``lax.custom_root`` AD rule alone
+    -- no inner ``custom_jvp`` invoked, no time history.
     """
 
-    def test_grad_kappa_mu_matches_fd(self) -> None:
+    J: Callable[[PyTreeDict], jax.Array]
+    grad_J: Callable[[PyTreeDict], PyTreeDict]
+    hess_J: Callable[[PyTreeDict], PyTreeDict]
+    params_at: PyTreeDict
+    paths: tuple[tuple[str, ...], ...]
+
+    @classmethod
+    def setUpClass(cls) -> None:
         slope = 5e-4
         t = 1.0
-
         # Build problem once with concrete (irrelevant for AD) params;
         # parameter dependence flows through the explicit ``params``
         # arg into ``_solve_step_closed``.
@@ -537,31 +550,26 @@ class TestClosedFormSingleStep(unittest.TestCase):
         )
         n_dofs = fe_problem.dof_map.num_total_dofs
 
-        def J(params: dict[str, Any]) -> jax.Array:
+        def _J(params: dict[str, Any]) -> jax.Array:
             U_prev = jnp.zeros(n_dofs)
             U_star = _solve_step_closed(fe_problem, params, U_prev, t)
             return jnp.sum(U_star ** 2)
 
-        params_at = {"elastic": {"kappa": 100.0, "mu": 50.0}}
-        grad_J = jax.grad(J)(params_at)
+        cls.J = staticmethod(jax.jit(_J))
+        cls.grad_J = staticmethod(jax.jit(jax.grad(_J)))
+        cls.hess_J = staticmethod(jax.jit(jax.hessian(_J)))
+        cls.params_at = {"elastic": {"kappa": 100.0, "mu": 50.0}}
+        cls.paths = (("elastic", "kappa"), ("elastic", "mu"))
 
-        eps = 1e-6
-        for key in ("kappa", "mu"):
-            params_plus = {"elastic": dict(params_at["elastic"])}
-            params_plus["elastic"][key] = params_at["elastic"][key] + eps
-            params_minus = {"elastic": dict(params_at["elastic"])}
-            params_minus["elastic"][key] = params_at["elastic"][key] - eps
-            J_plus = float(J(params_plus))
-            J_minus = float(J(params_minus))
-            fd = (J_plus - J_minus) / (2 * eps)
-            ad = float(grad_J["elastic"][key])
-            np.testing.assert_allclose(
-                ad, fd, rtol=1e-5, atol=1e-7,
-                err_msg=(
-                    f"AD vs FD mismatch for {key}: "
-                    f"AD={ad}, FD={fd}, rel_err={abs(ad-fd)/abs(fd):.2e}"
-                ),
-            )
+    def test_grad_matches_fd(self) -> None:
+        _compare_ad_vs_fd(
+            self, self.J, self.grad_J, self.params_at, self.paths,
+        )
+
+    def test_hessian_matches_fd(self) -> None:
+        _compare_hessian_ad_vs_fd(
+            self, self.J, self.hess_J, self.params_at, self.paths,
+        )
 
 
 # ============================================================
@@ -569,50 +577,55 @@ class TestClosedFormSingleStep(unittest.TestCase):
 # ============================================================
 
 class TestClosedFormMultiStep(unittest.TestCase):
-    """``jax.grad`` of a sum-over-steps QoI through a 3-step
-    CLOSED_FORM Elastic forward solve matches central-difference.
-    Validates that vjp through the time loop composes with the outer
-    ``lax.custom_root`` AD rule at each step.
+    """``jax.grad`` and ``jax.hessian`` of a sum-over-steps QoI
+    through a 3-step CLOSED_FORM Elastic forward solve match
+    central-difference. Validates that vjp through the time loop
+    composes with the outer ``lax.custom_root`` AD rule at each step.
     """
 
-    def test_grad_kappa_mu_matches_fd(self) -> None:
+    J: Callable[[PyTreeDict], jax.Array]
+    grad_J: Callable[[PyTreeDict], PyTreeDict]
+    hess_J: Callable[[PyTreeDict], PyTreeDict]
+    params_at: PyTreeDict
+    paths: tuple[tuple[str, ...], ...]
+
+    @classmethod
+    def setUpClass(cls) -> None:
         slope = 5e-4
         ts = (0.5, 1.0, 1.5)
-
         fe_problem = _build_fe_problem_2x2x2(
             _make_elastic_model(),
             GlobalResidualMode.CLOSED_FORM,
             slope,
         )
 
-        def J(params: dict[str, Any]) -> jax.Array:
+        def _J(params: dict[str, Any]) -> jax.Array:
             U_history = _solve_history_closed(fe_problem, params, ts)
-            return sum(jnp.sum(U_n ** 2) for U_n in U_history)
+            return sum((jnp.sum(U_n ** 2) for U_n in U_history),
+                       start=jnp.array(0.0))
 
-        params_at = {"elastic": {"kappa": 100.0, "mu": 50.0}}
-        grad_J = jax.grad(J)(params_at)
+        cls.J = staticmethod(jax.jit(_J))
+        cls.grad_J = staticmethod(jax.jit(jax.grad(_J)))
+        cls.hess_J = staticmethod(jax.jit(jax.hessian(_J)))
+        cls.params_at = {"elastic": {"kappa": 100.0, "mu": 50.0}}
+        cls.paths = (("elastic", "kappa"), ("elastic", "mu"))
 
-        eps = 1e-6
-        for key in ("kappa", "mu"):
-            params_plus = {"elastic": dict(params_at["elastic"])}
-            params_plus["elastic"][key] = params_at["elastic"][key] + eps
-            params_minus = {"elastic": dict(params_at["elastic"])}
-            params_minus["elastic"][key] = params_at["elastic"][key] - eps
-            J_plus = float(J(params_plus))
-            J_minus = float(J(params_minus))
-            fd = (J_plus - J_minus) / (2 * eps)
-            ad = float(grad_J["elastic"][key])
-            np.testing.assert_allclose(
-                ad, fd, rtol=1e-5, atol=1e-7,
-                err_msg=(
-                    f"AD vs FD mismatch for {key}: "
-                    f"AD={ad}, FD={fd}, rel_err={abs(ad-fd)/abs(fd):.2e}"
-                ),
-            )
+    def test_grad_matches_fd(self) -> None:
+        _compare_ad_vs_fd(
+            self, self.J, self.grad_J, self.params_at, self.paths,
+        )
+
+    def test_hessian_matches_fd(self) -> None:
+        # Trim the small-h tail where FD signal drops below the
+        # Newton-convergence floor and reads as a constant plateau.
+        _compare_hessian_ad_vs_fd(
+            self, self.J, self.hess_J, self.params_at, self.paths,
+            hs=np.logspace(0, -7, 15),
+        )
 
 
 # ============================================================
-# COUPLED — helpers shared by 0c / 0d / 0e
+# Shared FD / Hessian helpers
 # ============================================================
 
 def _set_param_at(params, path, value):
@@ -645,33 +658,144 @@ _J2_FD_PARAM_PATHS = (
 )
 
 
-def _compare_ad_vs_fd(test_case, J, params_at, paths, eps=1e-3,
-                      rtol=5e-4, atol=1e-6):
-    """Central-difference vs ``jax.grad`` along each path in
-    ``paths``. The default ``eps`` is loose because the J2 return-map
-    is mildly non-smooth near the yield surface; tightening too far
-    surfaces FD truncation noise rather than genuine AD/FD
-    disagreement."""
-    grad_J = jax.grad(J)(params_at)
-    for path in paths:
-        v0 = _get_param_at(params_at, path)
-        params_plus = _set_param_at(params_at, path, v0 + eps)
-        params_minus = _set_param_at(params_at, path, v0 - eps)
-        J_plus = float(J(params_plus))
-        J_minus = float(J(params_minus))
-        fd = (J_plus - J_minus) / (2 * eps)
-        ad_leaf = grad_J
-        for k in path:
-            ad_leaf = ad_leaf[k]
-        ad = float(ad_leaf)
-        np.testing.assert_allclose(
-            ad, fd, rtol=rtol, atol=atol,
-            err_msg=(
-                f"AD vs FD mismatch for {'.'.join(path)}: "
-                f"AD={ad}, FD={fd}, "
-                f"rel_err={abs(ad-fd)/max(abs(fd), 1e-30):.2e}"
-            ),
-        )
+def _apply_step(params_at, paths, steps):
+    """Return a copy of ``params_at`` with ``steps[k]`` added to leaf
+    at ``paths[k]`` for each k.
+    """
+    new_params = params_at
+    for path, step in zip(paths, steps, strict=True):
+        v0 = _get_param_at(new_params, path)
+        new_params = _set_param_at(new_params, path, v0 + step)
+    return new_params
+
+
+def _hessian_to_dense(hess_pytree, paths):
+    """Flatten a ``jax.hessian`` pytree to dense ``(n, n)`` over ``paths``.
+
+    ``jax.hessian(J)(params)`` carries the params pytree structure
+    twice nested; ``H[i, j]`` is the second mixed partial along
+    ``paths[i]`` then ``paths[j]``.
+    """
+    n = len(paths)
+    H = np.zeros((n, n))
+    for i, path_i in enumerate(paths):
+        sub = hess_pytree
+        for k in path_i:
+            sub = sub[k]
+        for j, path_j in enumerate(paths):
+            H[i, j] = _get_param_at(sub, path_j)
+    return H
+
+
+def _param_scales(params_at, paths):
+    """Per-path scaling factor: ``|params_at[path]|`` (or 1.0 if zero).
+
+    Multiplying the FD step by this scaling makes ``h`` a *relative*
+    perturbation regardless of the parameter's raw magnitude, so a
+    single ``hs = logspace(-2, -10, 9)`` range gives clean FD
+    convergence behavior across params with very different scales
+    (e.g. ``E ~ 2e5`` vs ``Y ~ 2e2``).
+    """
+    raw = np.array([abs(_get_param_at(params_at, p)) for p in paths])
+    return np.where(raw > 0, raw, 1.0)
+
+
+def _fd_grad_dir_deriv_errors(J_fn, grad_fn, params_at, paths,
+                              hs, seed):
+    """FD-vs-AD directional-derivative errors across an ``hs`` range.
+
+    Picks a random direction ``d`` in scaled space, then for each
+    ``h`` computes the central-difference of ``J_fn`` along
+    ``scales * d`` and compares to the AD reference
+    ``(scales * d) @ grad``.
+    """
+    n = len(paths)
+    rng = np.random.default_rng(seed)
+    d = rng.uniform(-1.0, 1.0, size=n)
+    scales = _param_scales(params_at, paths)
+    sd = scales * d
+
+    grad_at = grad_fn(params_at)
+    grad_flat = np.array([_get_param_at(grad_at, p) for p in paths])
+    dir_deriv_ref = float(sd @ grad_flat)
+
+    fd_errors = np.zeros(len(hs))
+    for ii, h in enumerate(hs):
+        params_plus = _apply_step(params_at, paths, h * sd)
+        params_minus = _apply_step(params_at, paths, -h * sd)
+        J_plus = float(J_fn(params_plus))
+        J_minus = float(J_fn(params_minus))
+        fd_dir_deriv = (J_plus - J_minus) / (2 * h)
+        fd_errors[ii] = abs(fd_dir_deriv - dir_deriv_ref)
+    return fd_errors
+
+
+def _fd_hessian_dir_deriv_errors(J_fn, hess_fn, params_at, paths,
+                                 hs, seed):
+    """FD-vs-AD Hessian-directional-derivative errors across ``hs``.
+
+    Picks a random direction ``d`` in scaled space, then for each
+    ``h`` computes the central second-difference
+    ``(J(p + h*scales*d) + J(p - h*scales*d) - 2*J(p)) / h**2``
+    and compares to the AD reference ``(scales*d) @ H @ (scales*d)``.
+    """
+    n = len(paths)
+    rng = np.random.default_rng(seed)
+    d = rng.uniform(-1.0, 1.0, size=n)
+    scales = _param_scales(params_at, paths)
+    sd = scales * d
+
+    H_dense = _hessian_to_dense(hess_fn(params_at), paths)
+    dir_deriv_ref = float(sd @ H_dense @ sd)
+    J_ref = float(J_fn(params_at))
+
+    fd_errors = np.zeros(len(hs))
+    for ii, h in enumerate(hs):
+        params_plus = _apply_step(params_at, paths, h * sd)
+        params_minus = _apply_step(params_at, paths, -h * sd)
+        J_plus = float(J_fn(params_plus))
+        J_minus = float(J_fn(params_minus))
+        fd_dir_deriv = (J_plus + J_minus - 2 * J_ref) / h**2
+        fd_errors[ii] = abs(fd_dir_deriv - dir_deriv_ref)
+    return fd_errors
+
+
+_DEFAULT_HS = np.logspace(0, -10, 20)
+
+
+def _assert_fd_drop(test_case, fd_errors, hs, error_drop_tol):
+    """Assert the log10 drop of FD errors across ``hs`` exceeds
+    ``error_drop_tol``. A clean V-shaped FD-error curve has a wide
+    drop; a flat curve indicates AD/FD disagreement (truncation
+    error not converging) and fails."""
+    log10_drop = float(np.log10(np.max(fd_errors) / np.min(fd_errors)))
+    test_case.assertGreater(
+        log10_drop, error_drop_tol,
+        msg=(
+            f"FD log10 error drop {log10_drop:.2f} <= {error_drop_tol}; "
+            f"FD didn't converge well. "
+            f"hs={hs.tolist()}, errors={fd_errors.tolist()}"
+        ),
+    )
+
+
+def _compare_ad_vs_fd(test_case, J_fn, grad_fn, params_at, paths,
+                      hs=_DEFAULT_HS, seed=22, error_drop_tol=5.0):
+    """Range-based directional-derivative FD check on AD gradient."""
+    fd_errors = _fd_grad_dir_deriv_errors(
+        J_fn, grad_fn, params_at, paths, hs, seed,
+    )
+    _assert_fd_drop(test_case, fd_errors, hs, error_drop_tol)
+
+
+def _compare_hessian_ad_vs_fd(test_case, J_fn, hess_fn, params_at,
+                              paths, hs=_DEFAULT_HS, seed=22,
+                              error_drop_tol=5.0):
+    """Range-based directional-derivative FD check on AD Hessian."""
+    fd_errors = _fd_hessian_dir_deriv_errors(
+        J_fn, hess_fn, params_at, paths, hs, seed,
+    )
+    _assert_fd_drop(test_case, fd_errors, hs, error_drop_tol)
 
 
 # ============================================================
@@ -679,24 +803,28 @@ def _compare_ad_vs_fd(test_case, J, params_at, paths, eps=1e-3,
 # ============================================================
 
 class TestCoupledSingleStep(unittest.TestCase):
-    """``jax.grad`` of a scalar QoI through a single-step COUPLED
-    SmallElasticPlastic forward solve matches central-difference.
-    Validates that the outer ``lax.custom_root`` AD rule composes
-    with the inner per-IP ``@custom_jvp`` (its tangent rule fires
-    twice in one gradient call: once during forward K-assembly, once
-    during reverse via JAX-synthesized vjp from the same custom_jvp).
+    """``jax.grad`` and ``jax.hessian`` of a scalar QoI through a
+    single-step COUPLED SmallElasticPlastic forward solve match
+    central-difference. Validates that the outer ``lax.custom_root``
+    AD rule composes with the inner per-IP ``@custom_jvp``.
     """
 
-    def test_grad_matches_fd(self) -> None:
+    J: Callable[[PyTreeDict], jax.Array]
+    grad_J: Callable[[PyTreeDict], PyTreeDict]
+    hess_J: Callable[[PyTreeDict], PyTreeDict]
+    params_at: PyTreeDict
+
+    @classmethod
+    def setUpClass(cls) -> None:
         slope = 2e-3  # peak eps_x = 2e-3 = 2x yield (Y/E = 1e-3)
         t = 1.0
         model = _make_J2_model()
         fe_problem = _build_fe_problem_2x2x2(
             model, GlobalResidualMode.COUPLED, slope,
         )
-        params_at = model.parameters.values
+        cls.params_at = model.parameters.values
 
-        def J(params: dict[str, Any]) -> jax.Array:
+        def _J(params: dict[str, Any]) -> jax.Array:
             n_dofs = fe_problem.dof_map.num_total_dofs
             U_prev = jnp.zeros(n_dofs)
             xi_prev = _initial_xi_by_block(fe_problem)
@@ -705,7 +833,21 @@ class TestCoupledSingleStep(unittest.TestCase):
             )
             return jnp.sum(U_star ** 2)
 
-        _compare_ad_vs_fd(self, J, params_at, _J2_FD_PARAM_PATHS)
+        cls.J = staticmethod(jax.jit(_J))
+        cls.grad_J = staticmethod(jax.jit(jax.grad(_J)))
+        cls.hess_J = staticmethod(jax.jit(jax.hessian(_J)))
+
+    def test_grad_matches_fd(self) -> None:
+        _compare_ad_vs_fd(
+            self, self.J, self.grad_J, self.params_at,
+            _J2_FD_PARAM_PATHS,
+        )
+
+    def test_hessian_matches_fd(self) -> None:
+        _compare_hessian_ad_vs_fd(
+            self, self.J, self.hess_J, self.params_at,
+            _J2_FD_PARAM_PATHS,
+        )
 
 
 # ============================================================
@@ -713,30 +855,53 @@ class TestCoupledSingleStep(unittest.TestCase):
 # ============================================================
 
 class TestCoupledMultiStepSimple(unittest.TestCase):
-    """``jax.grad`` of a sum-over-steps QoI (depends only on each
-    step's U) through a 3-step COUPLED forward solve matches
-    central-difference. Step times chosen so steps 2 and 3 fall in
-    the plastic regime — exercises the cross-step xi-history adjoint
-    chain (``xi_{n-1}`` cotangents flowing backward across the inner
-    custom_jvp boundary).
+    """``jax.grad`` and ``jax.hessian`` of a sum-over-steps QoI
+    (depends only on each step's U) through a multi-step COUPLED
+    forward solve match central-difference. Step times span
+    elastic and plastic regimes, exercising the cross-step
+    xi-history adjoint chain (``xi_{n-1}`` cotangents flowing
+    backward across the inner custom_jvp boundary).
     """
 
-    def test_grad_matches_fd(self) -> None:
+    J: Callable[[PyTreeDict], jax.Array]
+    grad_J: Callable[[PyTreeDict], PyTreeDict]
+    hess_J: Callable[[PyTreeDict], PyTreeDict]
+    params_at: PyTreeDict
+
+    @classmethod
+    def setUpClass(cls) -> None:
         slope = 2e-3
-        ts = (0.5, 1.0, 1.5)  # eps_x peaks ~ [1e-3, 2e-3, 3e-3]
+        # 2 elastic + 3 plastic, none on the yield boundary (eps = 1e-3
+        # at t = 0.5). Strains: [4e-4, 8e-4, 1.2e-3, 1.6e-3, 2e-3].
+        ts = (0.2, 0.4, 0.6, 0.8, 1.0)
         model = _make_J2_model()
         fe_problem = _build_fe_problem_2x2x2(
             model, GlobalResidualMode.COUPLED, slope,
         )
-        params_at = model.parameters.values
+        cls.params_at = model.parameters.values
 
-        def J(params: dict[str, Any]) -> jax.Array:
+        def _J(params: dict[str, Any]) -> jax.Array:
             U_history, _ = _solve_history_coupled(
                 fe_problem, params, ts,
             )
-            return sum(jnp.sum(U_n ** 2) for U_n in U_history)
+            return sum((jnp.sum(U_n ** 2) for U_n in U_history),
+                       start=jnp.array(0.0))
 
-        _compare_ad_vs_fd(self, J, params_at, _J2_FD_PARAM_PATHS)
+        cls.J = staticmethod(jax.jit(_J))
+        cls.grad_J = staticmethod(jax.jit(jax.grad(_J)))
+        cls.hess_J = staticmethod(jax.jit(jax.hessian(_J)))
+
+    def test_grad_matches_fd(self) -> None:
+        _compare_ad_vs_fd(
+            self, self.J, self.grad_J, self.params_at,
+            _J2_FD_PARAM_PATHS,
+        )
+
+    def test_hessian_matches_fd(self) -> None:
+        _compare_hessian_ad_vs_fd(
+            self, self.J, self.hess_J, self.params_at,
+            _J2_FD_PARAM_PATHS,
+        )
 
 
 # ============================================================
@@ -744,33 +909,41 @@ class TestCoupledMultiStepSimple(unittest.TestCase):
 # ============================================================
 
 class TestCoupledMultiStepAllPaths(unittest.TestCase):
-    """``jax.grad`` of an all-five-inputs QoI through a 3-step
-    COUPLED forward solve matches central-difference. The QoI
-    couples to ``U_n``, ``U_{n-1}``, ``xi_n``, ``xi_{n-1}``, and
-    ``p`` directly, so every cotangent path contributes
-    non-trivially. If 0c–0d pass and this fails, the boundaries
-    individually work but the cross-path summation is wrong.
+    """``jax.grad`` and ``jax.hessian`` of an all-five-inputs QoI
+    through a multi-step COUPLED forward solve match central-
+    difference. The QoI couples to ``U_n``, ``U_{n-1}``, ``xi_n``,
+    ``xi_{n-1}``, and ``p`` directly, so every cotangent path
+    contributes non-trivially. If the simpler tests pass and this
+    fails, the boundaries individually work but the cross-path
+    summation is wrong.
     """
 
-    def test_grad_matches_fd(self) -> None:
+    J: Callable[[PyTreeDict], jax.Array]
+    grad_J: Callable[[PyTreeDict], PyTreeDict]
+    hess_J: Callable[[PyTreeDict], PyTreeDict]
+    params_at: PyTreeDict
+
+    @classmethod
+    def setUpClass(cls) -> None:
         slope = 2e-3
-        ts = (0.5, 1.0, 1.5)
+        # 2 elastic + 3 plastic, none on the yield boundary.
+        ts = (0.2, 0.4, 0.6, 0.8, 1.0)
         model = _make_J2_model()
         fe_problem = _build_fe_problem_2x2x2(
             model, GlobalResidualMode.COUPLED, slope,
         )
-        params_at = model.parameters.values
+        cls.params_at = model.parameters.values
 
         c_U, c_Up, c_xi, c_xp, c_p = 1.0, 0.7, 0.3, 0.5, 1e-4
 
-        def J(params: dict[str, Any]) -> jax.Array:
+        def _J(params: dict[str, Any]) -> jax.Array:
             n_dofs = fe_problem.dof_map.num_total_dofs
             U_history, xi_history = _solve_history_coupled(
                 fe_problem, params, ts,
             )
-            U_prev_seq = [jnp.zeros(n_dofs)] + U_history[:-1]
-            xi_prev_seq = ([_initial_xi_by_block(fe_problem)]
-                           + xi_history[:-1])
+            U_prev_seq = [jnp.zeros(n_dofs), *U_history[:-1]]
+            xi_prev_seq = [_initial_xi_by_block(fe_problem),
+                           *xi_history[:-1]]
             total = jnp.array(0.0)
             for U_n, U_p, xi_n, xi_p in zip(
                     U_history, U_prev_seq,
@@ -787,7 +960,26 @@ class TestCoupledMultiStepAllPaths(unittest.TestCase):
                                        "initial yield"]["Y"] ** 2)
             return total
 
-        _compare_ad_vs_fd(self, J, params_at, _J2_FD_PARAM_PATHS)
+        cls.J = staticmethod(jax.jit(_J))
+        cls.grad_J = staticmethod(jax.jit(jax.grad(_J)))
+        cls.hess_J = staticmethod(jax.jit(jax.hessian(_J)))
+
+    def test_grad_matches_fd(self) -> None:
+        _compare_ad_vs_fd(
+            self, self.J, self.grad_J, self.params_at,
+            _J2_FD_PARAM_PATHS,
+        )
+
+    def test_hessian_matches_fd(self) -> None:
+        # Shift hs upward: the all-paths capstone's V min sits at
+        # h~5e-2 with steep noise blowup below — extend down only as
+        # far as h=1e-5 (still well into the noise regime) so the V
+        # is well-resolved without the noise plateau dragging the
+        # drop.
+        _compare_hessian_ad_vs_fd(
+            self, self.J, self.hess_J, self.params_at,
+            _J2_FD_PARAM_PATHS, hs=np.logspace(0, -5, 11),
+        )
 
 
 if __name__ == "__main__":
