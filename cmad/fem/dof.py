@@ -60,12 +60,15 @@ construction so re-evaluation is mesh-handle-free.
 """
 from dataclasses import dataclass
 
+import jax.numpy as jnp
 import numpy as np
+from jax.core import Tracer
 from numpy.typing import NDArray
 
 from cmad.fem.bcs import DirichletBC
 from cmad.fem.finite_element import EntityType, FiniteElement
 from cmad.fem.mesh import Mesh
+from cmad.typing import JaxArray
 
 
 @dataclass(frozen=True)
@@ -231,9 +234,9 @@ class GlobalDofMap:
         return field_idx, local_eq // ndofs, local_eq % ndofs
 
     def evaluate_prescribed_values(
-        self, t: float = 0.0
-    ) -> NDArray[np.floating]:
-        """Materialize prescribed values at time ``t``.
+        self, t: float | JaxArray = 0.0,
+    ) -> JaxArray:
+        """Materialize prescribed values at time ``t`` as a JAX array.
 
         Three-step path:
 
@@ -243,9 +246,10 @@ class GlobalDofMap:
            ``t``.
         2. Bulk-scatter every BC into the prescribed-values array,
            locating each BC's entries via
-           ``np.searchsorted(prescribed_indices, rbc.eq_indices)``.
-           Last-writer-wins where multiple BCs target the same
-           equation; step 3 confirms agreement.
+           ``jnp.searchsorted(prescribed_indices, rbc.eq_indices)``
+           and applying ``.at[positions].set(vals)``. Last-writer-
+           wins across BCs targeting the same equation; step 3
+           confirms agreement.
         3. Validate ``overprescribed_dbc_groups`` (small build-time
            set): for each group, every contributing BC must agree at
            this ``t`` (``np.isclose`` with ``rtol=atol=1e-12`` to
@@ -254,74 +258,84 @@ class GlobalDofMap:
            the conflicting BCs and decoding the offending global
            equation to its ``(field, basis_fn, dof)`` triple.
 
-        The validation set is identified once at build (structural)
-        and reused on every call; only the value comparison is
-        per-call, so time-dependent BCs that disagree at one ``t``
-        but not another surface at the divergent step rather than at
-        construction.
+        Validation is gated on ``t`` being concrete (i.e., not a
+        :class:`jax.core.Tracer`). Inside a JAX trace —
+        :func:`jax.lax.scan`, :func:`jax.jit`, or any AD pass — the
+        ``float(...)`` cast in the comparison would fail on a
+        tracer, so the validation skips. Callers that want
+        per-``t`` consistency checking under tracing are expected
+        to validate eagerly outside the trace using concrete
+        schedule values; the imperative driver in
+        :func:`cmad.fem.driver.fe_quasistatic_drive` does this for
+        every step in ``t_schedule`` before entering its scan.
         """
         n_prescribed = len(self.prescribed_indices)
         if n_prescribed == 0:
-            return np.empty(0, dtype=np.float64)
+            return jnp.empty(0, dtype=jnp.float64)
 
         bc_vals = [
             self._materialize_bc_values(rbc, t) for rbc in self.resolved_bcs
         ]
 
-        values = np.empty(n_prescribed, dtype=np.float64)
+        presc_idx_jax = jnp.asarray(self.prescribed_indices)
+        values = jnp.zeros(n_prescribed, dtype=jnp.float64)
         for rbc, vals in zip(self.resolved_bcs, bc_vals, strict=True):
-            positions = np.searchsorted(
-                self.prescribed_indices, rbc.eq_indices,
-            )
-            values[positions] = vals
+            positions = jnp.searchsorted(presc_idx_jax, rbc.eq_indices)
+            values = values.at[positions].set(vals)
 
-        for group in self.overprescribed_dbc_groups:
-            ref_bc_idx, ref_bc_eq_idx = group.contributors[0]
-            ref = float(bc_vals[ref_bc_idx][ref_bc_eq_idx])
-            for bc_idx, bc_eq_idx in group.contributors[1:]:
-                v = float(bc_vals[bc_idx][bc_eq_idx])
-                if not np.isclose(v, ref, rtol=1e-12, atol=1e-12):
-                    eq = int(self.prescribed_indices[group.position])
-                    field_idx, basis_fn, dof = self._decode_eq(eq)
-                    field_name = self.field_layouts[field_idx].name
-                    ref_bc = self.resolved_bcs[ref_bc_idx].bc
-                    cur_bc = self.resolved_bcs[bc_idx].bc
-                    raise ValueError(
-                        "DirichletBC inconsistent prescribed values "
-                        f"at eq {eq} (field='{field_name}', "
-                        f"basis_fn={basis_fn}, dof={dof}, t={t}): "
-                        f"BC #{ref_bc_idx} (sideset_names="
-                        f"{list(ref_bc.sideset_names)}) gives {ref}; "
-                        f"BC #{bc_idx} (sideset_names="
-                        f"{list(cur_bc.sideset_names)}) gives {v}"
-                    )
+        if not isinstance(t, Tracer):
+            for group in self.overprescribed_dbc_groups:
+                ref_bc_idx, ref_bc_eq_idx = group.contributors[0]
+                ref = float(bc_vals[ref_bc_idx][ref_bc_eq_idx])
+                for bc_idx, bc_eq_idx in group.contributors[1:]:
+                    v = float(bc_vals[bc_idx][bc_eq_idx])
+                    if not np.isclose(v, ref, rtol=1e-12, atol=1e-12):
+                        eq = int(self.prescribed_indices[group.position])
+                        field_idx, basis_fn, dof = self._decode_eq(eq)
+                        field_name = self.field_layouts[field_idx].name
+                        ref_bc = self.resolved_bcs[ref_bc_idx].bc
+                        cur_bc = self.resolved_bcs[bc_idx].bc
+                        raise ValueError(
+                            "DirichletBC inconsistent prescribed values "
+                            f"at eq {eq} (field='{field_name}', "
+                            f"basis_fn={basis_fn}, dof={dof}, t={t}): "
+                            f"BC #{ref_bc_idx} (sideset_names="
+                            f"{list(ref_bc.sideset_names)}) gives {ref}; "
+                            f"BC #{bc_idx} (sideset_names="
+                            f"{list(cur_bc.sideset_names)}) gives {v}"
+                        )
         return values
 
     @staticmethod
     def _materialize_bc_values(
-        rbc: _ResolvedBC, t: float,
-    ) -> NDArray[np.floating]:
+        rbc: _ResolvedBC, t: float | JaxArray,
+    ) -> JaxArray:
         """Evaluate one BC's value source into a flat
-        ``(N_set * len(dofs),)`` array in (vertex-major, dof-minor)
+        ``(N_set * len(dofs),)`` JAX array in (vertex-major, dof-minor)
         order, matching ``rbc.eq_indices``.
+
+        Callable BC values produced via :func:`cmad.io.expressions`
+        are sympy-lambdified with ``modules="jax"``, so they accept
+        traced ``t`` and return JAX-compatible outputs; a tracer
+        passed in as ``t`` flows through unchanged.
         """
         n_set = rbc.set_coords.shape[0]
         n_dofs = len(rbc.bc.dofs)
         bc_values = rbc.bc.values
         if bc_values is None:
-            vals = np.zeros((n_set, n_dofs), dtype=np.float64)
+            vals = jnp.zeros((n_set, n_dofs), dtype=jnp.float64)
         elif callable(bc_values):
-            vals_arr = np.asarray(bc_values(rbc.set_coords, t))
+            vals_arr = jnp.asarray(bc_values(rbc.set_coords, t))
             if vals_arr.shape != (n_set, n_dofs):
                 raise ValueError(
                     "DirichletBC values callable returned shape "
                     f"{vals_arr.shape}; expected {(n_set, n_dofs)}"
                 )
-            vals = vals_arr.astype(np.float64)
+            vals = vals_arr.astype(jnp.float64)
         else:
-            vals = np.broadcast_to(
-                np.asarray(bc_values, dtype=np.float64), (n_set, n_dofs),
-            ).copy()
+            vals = jnp.broadcast_to(
+                jnp.asarray(bc_values, dtype=jnp.float64), (n_set, n_dofs),
+            )
         return vals.ravel()
 
 
