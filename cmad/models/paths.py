@@ -1,29 +1,27 @@
 import jax.numpy as jnp
-from jax.lax import cond
 
 from cmad.typing import JaxArray
-
-
-def elastic_path(
-        yield_fun: JaxArray, C_elastic: JaxArray,
-        C_plastic: JaxArray, tol: float,
-) -> JaxArray:
-    return C_elastic
-
-
-def plastic_path(
-        yield_fun: JaxArray, C_elastic: JaxArray,
-        C_plastic: JaxArray, tol: float,
-) -> JaxArray:
-    return C_plastic
 
 
 def cond_residual(
         f: JaxArray, C_e: JaxArray, C_p: JaxArray, tol: float,
 ) -> JaxArray:
-    def inner_cond_residual(f, C_e, C_p, tol): return cond(
-        jnp.abs(f) < tol, plastic_path, elastic_path, f, C_e, C_p, tol)
+    """Select ``C_p`` (plastic-branch residual) when the yield function
+    indicates yielding, otherwise ``C_e`` (elastic).
 
-    def outer_cond_residual(f, C_e, C_p, tol): return cond(
-        f > tol, plastic_path, inner_cond_residual, f, C_e, C_p, tol)
-    return outer_cond_residual(f, C_e, C_p, tol)
+    Plastic if ``f > tol`` or ``|f| < tol``; elastic otherwise. The
+    ``|f| < tol`` band keeps the residual on the plastic branch within
+    a small neighbourhood of the yield surface (numerical robustness
+    around ``f ≈ 0``); outside that band the sign of ``f`` decides.
+
+    Implemented with ``jnp.where`` (smooth pointwise select) rather
+    than ``lax.cond``: both ``C_e`` and ``C_p`` are pure value
+    expressions evaluated unconditionally upstream, so there is no
+    branch-pruning benefit from ``lax.cond`` here, and ``jnp.where``
+    auto-transposes cleanly under arbitrarily deep AD nesting (whereas
+    ``lax.cond``'s transposition introduces an internal
+    ``stop_gradient`` that cannot be transposed when this routine is
+    composed inside an outer implicit solver's reverse-mode rule).
+    """
+    is_plastic = jnp.logical_or(f > tol, jnp.abs(f) < tol)
+    return jnp.where(is_plastic, C_p, C_e)
