@@ -80,6 +80,10 @@ _SECTIONS: dict[tuple[str, str], tuple[list[str], list[str]]] = {
         ["problem", "discretization", "residuals", "qoi", "output"],
         ["dirichlet bcs", "surface flux bcs", "body forces"],
     ),
+    ("fe", "gradient"): (
+        ["problem", "discretization", "residuals", "qoi", "output"],
+        ["dirichlet bcs", "surface flux bcs", "body forces"],
+    ),
 }
 
 

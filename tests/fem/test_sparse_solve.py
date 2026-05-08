@@ -165,10 +165,10 @@ class TestSpsolveJaxVJP(unittest.TestCase):
 class TestSpsolveJaxHVP(unittest.TestCase):
     """Hessian-vector product correctness via forward-over-reverse.
 
-    Exercises the full Layer-1 AD-composition path end-to-end:
+    Exercises the full AD-composition path end-to-end:
     ``jax.jvp(jax.grad(J), …)`` re-enters ``spsolve_jax``'s JVP rule
-    with non-zero ``K_data_dot`` (the path HVPs through the FE
-    adjoint will trigger in substage 2).
+    with non-zero ``K_data_dot`` — the same path HVPs through the FE
+    adjoint will exercise once that lands.
     """
 
     def test_hvp_K(self) -> None:

@@ -21,8 +21,9 @@ from numpy.typing import NDArray
 
 from cmad.fem.bcs import DirichletBC, NeumannBC
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
+from cmad.fem.driver import fe_quasistatic_trajectory
 from cmad.fem.element_family import ElementFamily
-from cmad.fem.fe_problem import FEProblem, build_fe_problem
+from cmad.fem.fe_problem import FEProblem, FEState, build_fe_problem
 from cmad.fem.finite_element import P1_TET, Q1_HEX, FiniteElement
 from cmad.fem.quadrature import (
     QuadratureRule,
@@ -117,6 +118,104 @@ def resolve_output(
         out_dir = deck_path.parent / out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir, resolved["output"]["prefix"], resolved["output"]["format"]
+
+
+def build_fe_J_of_params_flat(
+        bundle: FEProblemBundle,
+) -> tuple[
+    NDArray[np.float64],
+    Callable[[JaxArray], JaxArray],
+]:
+    """Build the ``(params_flat_init, J_of_params_flat)`` pair for
+    ``cmad gradient`` / ``cmad hessian`` on FE problems.
+
+    ``params_flat`` is the concatenation of each mesh element block's
+    flat-active canonical parameter vector
+    (``Parameters.flat_active_values(return_canonical=True)``); inactive
+    parameters are held at their stored values and don't appear in
+    ``params_flat``. AD only flows through the active components: each
+    block's ``Parameters.get_params_pytree_from_flat_canonical_active``
+    overlays the traced active values onto the closure-captured full
+    init vector before reconstructing the pytree, so inactive entries
+    are JAX constants. Hessians are therefore
+    ``(num_active, num_active)``, not ``(num_total, num_total)``.
+
+    The closure reconstructs ``params_by_block`` per block, invokes
+    :meth:`FEQoI.step_contribution` to build the per-step QoI closure
+    against those reconstructed params, and runs the FE forward solve
+    via :func:`cmad.fem.driver.fe_quasistatic_trajectory`. The returned
+    scalar ``J`` is the QoI accumulated across the time loop, suitable
+    for ``jax.grad`` / ``jax.hessian``.
+
+    ``bundle.qoi`` must be non-None; the FE-side
+    ``build_fe_problem_from_deck`` populates it for ``"gradient"`` and
+    ``"hessian"`` subcommands.
+    """
+    fe_problem = bundle.fe_problem
+    qoi = bundle.qoi
+    if qoi is None:
+        raise ValueError(
+            "build_fe_J_of_params_flat requires bundle.qoi to be set; "
+            "FEProblemBundle from a 'primal' build has no QoI"
+        )
+    gr_section = bundle.resolved["residuals"]["global residual"]
+
+    state = FEState.from_problem(
+        fe_problem, t_init=float(bundle.t_schedule[0]),
+    )
+    U_init = jnp.asarray(state.U_at(0), dtype=jnp.float64)
+    xi_init: dict[str, JaxArray] = {
+        b: jnp.asarray(state.xi_at(0, b))
+        for b in fe_problem.models_by_block
+    }
+    t_schedule_jax = jnp.asarray(bundle.t_schedule, dtype=jnp.float64)
+
+    for t in bundle.t_schedule[1:]:
+        fe_problem.dof_map.evaluate_prescribed_values(float(t))
+
+    block_names = list(fe_problem.models_by_block.keys())
+    per_block_init: list[NDArray[np.float64]] = []
+    per_block_lengths: list[int] = []
+    for b in block_names:
+        params_obj = fe_problem.models_by_block[b].parameters
+        flat_active = params_obj.flat_active_values(return_canonical=True)
+        per_block_init.append(np.asarray(flat_active, dtype=np.float64))
+        per_block_lengths.append(int(flat_active.shape[0]))
+    params_flat_init = (
+        np.concatenate(per_block_init).astype(np.float64)
+        if per_block_init else np.zeros((0,), dtype=np.float64)
+    )
+    boundaries = np.cumsum([0, *per_block_lengths])
+
+    max_iters = int(gr_section["nonlinear max iters"])
+    abs_tol = float(gr_section["nonlinear absolute tol"])
+    rel_tol = float(gr_section["nonlinear relative tol"])
+
+    def J_of_params_flat(params_flat: JaxArray) -> JaxArray:
+        params_by_block: dict[str, Any] = {}
+        for i, b in enumerate(block_names):
+            sub_flat = params_flat[boundaries[i]:boundaries[i + 1]]
+            params_obj = fe_problem.models_by_block[b].parameters
+            params_by_block[b] = (
+                params_obj.get_params_pytree_from_flat_canonical_active(
+                    sub_flat,
+                )
+            )
+        qoi_step_contribution = qoi.step_contribution(params_by_block)
+        _, _, J = fe_quasistatic_trajectory(
+            fe_problem,
+            params_by_block,
+            U_init,
+            xi_init,
+            t_schedule_jax,
+            qoi_step_contribution=qoi_step_contribution,
+            max_iters=max_iters,
+            abs_tol=abs_tol,
+            rel_tol=rel_tol,
+        )
+        return J
+
+    return params_flat_init, J_of_params_flat
 
 
 _DEFAULT_FE_PER_FAMILY: dict[ElementFamily, FiniteElement] = {
