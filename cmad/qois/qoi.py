@@ -1,6 +1,6 @@
 from abc import ABC
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import numpy as np
 from jax import hessian, jacfwd, jacrev, jit
@@ -10,10 +10,13 @@ from numpy.typing import NDArray
 from cmad.models.deriv_types import DerivType
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.model import Model
+from cmad.qois.qoi_base import QoIBase
 from cmad.typing import JaxArray, Params, PyTree, QoIFn, StateList, Step
 
 
-class QoI(ABC):
+class QoI(QoIBase, ABC):
+    problem_type: ClassVar[str] = "material_point"
+
     # ---- set in QoI.__init__ ----
     _qoi: Callable[..., JaxArray]
     _dqoi: list[Callable[..., PyTree]]

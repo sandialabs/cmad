@@ -34,15 +34,15 @@ from typing import TYPE_CHECKING, TypeVar
 if TYPE_CHECKING:
     from cmad.global_residuals.global_residual import GlobalResidual
     from cmad.models.model import Model
-    from cmad.qois.qoi import QoI
+    from cmad.qois.qoi_base import QoIBase
 
 
 ModelT = TypeVar("ModelT", bound="Model")
-QoIT = TypeVar("QoIT", bound="QoI")
+QoIT = TypeVar("QoIT", bound="QoIBase")
 GRT = TypeVar("GRT", bound="GlobalResidual")
 
 _REGISTRY: dict[str, type[Model]] = {}
-_QOI_REGISTRY: dict[str, type[QoI]] = {}
+_QOI_REGISTRY: dict[str, type[QoIBase]] = {}
 _GR_REGISTRY: dict[str, type[GlobalResidual]] = {}
 _SCHEMAS_MODELS_DIR = Path(__file__).parent / "schemas" / "models"
 _SCHEMAS_QOIS_DIR = Path(__file__).parent / "schemas" / "qois"
@@ -121,13 +121,21 @@ def register_qoi(name: str) -> Callable[[type[QoIT]], type[QoIT]]:
     return decorator
 
 
-def resolve_qoi(name: str) -> type[QoI]:
+def resolve_qoi(name: str) -> type[QoIBase]:
     """Look up a registered QoI class by deck name, importing on demand.
 
     The module path convention is ``cmad.qois.<name>``. If the schema
     fragment for ``name`` exists but the module path has no
     registration, the "not registered" error still fires after the
     import attempt.
+
+    Returns ``type[QoIBase]`` since the registry is shared by the MP
+    (:class:`cmad.qois.qoi.QoI`) and FE
+    (:class:`cmad.qois.fe_qoi.FEQoI`) hierarchies. Callers
+    (``build_mp_problem`` / ``build_fe_problem_from_deck``) check
+    ``cls.problem_type`` against ``deck["problem"]["type"]`` and raise
+    if they disagree, so the deck-driver layer enforces the
+    QoI-hierarchy ↔ problem-type pairing rather than the registry.
     """
     if name in _QOI_REGISTRY:
         return _QOI_REGISTRY[name]
