@@ -60,7 +60,7 @@ def _build_traction_callable(
         coord_syms: Sequence[Any],
         n_hat: Sequence[float],
 ) -> Callable[
-    [NDArray[np.floating] | JaxArray, float],
+    [NDArray[np.floating] | JaxArray, float | JaxArray],
     NDArray[np.floating] | JaxArray,
 ]:
     """Lambdify ``sigma·n̂`` for an axis-aligned outward unit normal.
@@ -76,7 +76,8 @@ def _build_traction_callable(
     t_callable = lambdify(tuple(coord_syms), t_sym, modules="jax")
 
     def traction_fn(
-            coords: NDArray[np.floating] | JaxArray, _t: float,
+            coords: NDArray[np.floating] | JaxArray,
+            _t: float | JaxArray,
     ) -> NDArray[np.floating] | JaxArray:
         def at_point(coord: JaxArray) -> JaxArray:
             return jnp.asarray(
@@ -90,15 +91,15 @@ def _build_traction_callable(
 def _build_fe_problem(
         mesh: Mesh,
         body_force_fn: Callable[
-            [NDArray[np.floating] | JaxArray, float],
+            [NDArray[np.floating] | JaxArray, float | JaxArray],
             NDArray[np.floating] | JaxArray,
         ],
         traction_xmax_fn: Callable[
-            [NDArray[np.floating] | JaxArray, float],
+            [NDArray[np.floating] | JaxArray, float | JaxArray],
             NDArray[np.floating] | JaxArray,
         ],
         traction_ymax_fn: Callable[
-            [NDArray[np.floating] | JaxArray, float],
+            [NDArray[np.floating] | JaxArray, float | JaxArray],
             NDArray[np.floating] | JaxArray,
         ],
 ) -> FEProblem:
@@ -148,15 +149,15 @@ def _build_fe_problem(
 class TestMmsCube3DNeumann(unittest.TestCase):
 
     body_force_fn: Callable[
-        [NDArray[np.floating] | JaxArray, float],
+        [NDArray[np.floating] | JaxArray, float | JaxArray],
         NDArray[np.floating] | JaxArray,
     ]
     traction_xmax_fn: Callable[
-        [NDArray[np.floating] | JaxArray, float],
+        [NDArray[np.floating] | JaxArray, float | JaxArray],
         NDArray[np.floating] | JaxArray,
     ]
     traction_ymax_fn: Callable[
-        [NDArray[np.floating] | JaxArray, float],
+        [NDArray[np.floating] | JaxArray, float | JaxArray],
         NDArray[np.floating] | JaxArray,
     ]
     u_exact: Callable[[NDArray[np.floating]], NDArray[np.floating]]
@@ -187,13 +188,8 @@ class TestMmsCube3DNeumann(unittest.TestCase):
             type(self).traction_xmax_fn,
             type(self).traction_ymax_fn,
         )
-        L2, H1, n_iters = solve_and_measure(
+        L2, H1 = solve_and_measure(
             fe_problem, type(self).u_exact, type(self).grad_u_exact,
-        )
-        self.assertLessEqual(
-            n_iters, 2,
-            "linear elastic + closed-form Cauchy + analytic traction "
-            f"should converge in one Newton iteration; got {n_iters}",
         )
         return L2, H1
 

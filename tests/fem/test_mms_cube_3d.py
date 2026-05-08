@@ -120,13 +120,8 @@ class TestMmsCube3D(unittest.TestCase):
 
     def _solve_and_measure(self, mesh: Mesh) -> tuple[float, float]:
         fe_problem = _build_fe_problem(mesh, type(self).body_force_fn)
-        L2, H1, n_iters = solve_and_measure(
+        L2, H1 = solve_and_measure(
             fe_problem, type(self).u_exact, type(self).grad_u_exact,
-        )
-        self.assertLessEqual(
-            n_iters, 2,
-            "linear elastic + closed-form Cauchy should converge in one "
-            f"Newton iteration; got {n_iters}",
         )
         return L2, H1
 

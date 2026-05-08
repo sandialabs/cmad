@@ -104,16 +104,14 @@ def _fe_newton_primal(
         max_iters: int,
         abs_tol: float,
         rel_tol: float,
-) -> tuple[JaxArray, JaxArray]:
+) -> JaxArray:
     """Forward Newton iteration: ``lax.while_loop`` + ``spsolve_jax``.
 
     Each body iteration assembles ``(K_bcoo, R)`` once, builds the
     embedded-BC tangent via :func:`_embedded_bc_enforce`, and solves
     ``K · dU = -r`` via :func:`spsolve_jax`. The convergence check is
     on ``r`` at the iterate ``U_n`` (computed alongside ``K`` in the
-    same assembly), so each iter costs one ``assemble_global``;
-    the returned ``U_*`` is one Newton step ahead of the reported
-    ``R_norm``.
+    same assembly), so each iter costs one ``assemble_global``.
     """
     dof_map = fe_problem.dof_map
     presc_idx = jnp.asarray(dof_map.prescribed_indices)
@@ -147,10 +145,10 @@ def _fe_newton_primal(
         U_new = U + dU
         return (i + 1, U_new, jnp.linalg.norm(r), R_norm_0)
 
-    _, U_star, R_norm_final, _ = lax.while_loop(
+    _, U_star, _, _ = lax.while_loop(
         cond, body, (0, U_init, R0, R0),
     )
-    return U_star, R_norm_final
+    return U_star
 
 
 def fe_newton_solve(
@@ -163,7 +161,7 @@ def fe_newton_solve(
         max_iters: int = 20,
         abs_tol: float = 1e-10,
         rel_tol: float = 1e-10,
-) -> tuple[JaxArray, dict[str, JaxArray], int, JaxArray]:
+) -> tuple[JaxArray, dict[str, JaxArray]]:
     """Quasi-static global Newton driver for the FE forward problem.
 
     Nonlinear convention: ``K = dR/dU`` is the tangent stiffness and
@@ -220,11 +218,8 @@ def fe_newton_solve(
     :func:`cmad.fem.assembly.assemble_element_block` on the first
     body iteration.
 
-    Returns ``(U_solved, xi_solved_by_block, n_iters, R_norm)``.
-    Outputs are JAX arrays. ``n_iters`` is ``-1`` (the
-    ``lax.while_loop`` counter doesn't escape the inner driver);
-    concrete callers that previously logged iteration counts
-    should fall back to ``R_norm`` for convergence reporting.
+    Returns ``(U_solved, xi_solved_by_block)``. Outputs are JAX
+    arrays.
     """
     U_prev_jax = jnp.asarray(U_prev, dtype=jnp.float64)
     xi_prev_jax: dict[str, JaxArray] = (
@@ -247,7 +242,7 @@ def _fe_newton_solve_ad(
         max_iters: int,
         abs_tol: float,
         rel_tol: float,
-) -> tuple[JaxArray, dict[str, JaxArray], int, JaxArray]:
+) -> tuple[JaxArray, dict[str, JaxArray]]:
     """AD-decorated inner driver. JaxArray inputs only.
 
     Splitting the public ``fe_newton_solve`` from this inner form
@@ -255,7 +250,7 @@ def _fe_newton_solve_ad(
     outside the ``custom_jvp``-tracked function body, so the diff
     args are uniformly typed for the JVP rule.
     """
-    U_star, R_norm = _fe_newton_primal(
+    U_star = _fe_newton_primal(
         fe_problem, params_by_block, U_prev, t, xi_prev_by_block,
         max_iters, abs_tol, rel_tol,
     )
@@ -263,7 +258,7 @@ def _fe_newton_solve_ad(
         fe_problem, params_by_block, U_star, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
-    return U_star, xi_solved, -1, R_norm
+    return U_star, xi_solved
 
 
 @_fe_newton_solve_ad.defjvp
@@ -288,7 +283,7 @@ def _fe_newton_solve_ad_jvp(
     params_by_block, U_prev, t, xi_prev_by_block = primals
     p_dot = tangents
 
-    U_star, xi_solved, n_iters, R_norm = _fe_newton_solve_ad(
+    U_star, xi_solved = _fe_newton_solve_ad(
         fe_problem, params_by_block, U_prev, t, xi_prev_by_block,
         max_iters, abs_tol, rel_tol,
     )
@@ -331,14 +326,6 @@ def _fe_newton_solve_ad_jvp(
         (U_star_dot, *p_dot),
     )
 
-    primals_out = (U_star, xi_solved, n_iters, R_norm)
-    # n_iters is a non-differentiable integer output; JAX requires its
-    # tangent to use the float0 sentinel dtype rather than the primal's
-    # int dtype. (Without this, the custom_jvp rule errors with
-    # "primal int64[] with tangent int64[], expecting tangent float0[]".)
-    tangents_out = (
-        U_star_dot, xi_solved_dot,
-        jnp.zeros((), dtype=jax.dtypes.float0),
-        jnp.zeros_like(R_norm),
-    )
+    primals_out = (U_star, xi_solved)
+    tangents_out = (U_star_dot, xi_solved_dot)
     return primals_out, tangents_out

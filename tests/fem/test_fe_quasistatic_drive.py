@@ -154,11 +154,11 @@ class TestDriveSingleStepClosedForm(unittest.TestCase):
         )
         t_schedule = [0.0, 1.0]
 
-        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
+        state = fe_quasistatic_drive(fe_problem, t_schedule)
 
         n_dofs = fe_problem.dof_map.num_total_dofs
         U_prev_zeros = np.zeros(n_dofs, dtype=np.float64)
-        U_direct, _, _, _ = fe_newton_solve(
+        U_direct, _ = fe_newton_solve(
             fe_problem, params_by_block_from_models(fe_problem),
             U_prev=U_prev_zeros, t=1.0,
         )
@@ -189,13 +189,13 @@ class TestDriveMultiStepCoupledElastic(unittest.TestCase):
         )
         t_schedule = [0.0, 0.5, 1.0]
 
-        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
+        state = fe_quasistatic_drive(fe_problem, t_schedule)
 
         self.assertEqual(len(state.U_history), 3)
         self.assertEqual(len(state.xi_history_by_block["all"]), 3)
         self.assertEqual(state.xi_at(1, "all").shape, (1, 8, 6))
 
-        U_direct, xi_direct, _, _ = fe_newton_solve(
+        U_direct, xi_direct = fe_newton_solve(
             fe_problem,
             params_by_block_from_models(fe_problem),
             U_prev=state.U_at(1),
@@ -235,7 +235,7 @@ class TestDriveXiRestartConsistency(unittest.TestCase):
             slope=1.5e-3,
         )
         t_schedule = [0.0, 1.0, 2.0]
-        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
+        state = fe_quasistatic_drive(fe_problem, t_schedule)
 
         # Sanity: at least one IP plastic (alpha > 0) at step 2.
         # SmallElasticPlastic FULL_3D xi = [vec_cauchy(6), alpha(1)],
@@ -247,7 +247,7 @@ class TestDriveXiRestartConsistency(unittest.TestCase):
         )
 
         # Restart from recorded xi_1; verify identical xi_2.
-        _, xi_direct, _, _ = fe_newton_solve(
+        _, xi_direct = fe_newton_solve(
             fe_problem,
             params_by_block_from_models(fe_problem),
             U_prev=state.U_at(1),
@@ -285,7 +285,7 @@ class TestDriveMixedModeFEState(unittest.TestCase):
             slope=5e-4,
         )
         t_schedule = [0.0, 0.5, 1.0]
-        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
+        state = fe_quasistatic_drive(fe_problem, t_schedule)
 
         self.assertEqual(len(state.U_history), 3)
         self.assertEqual(len(state.xi_history_by_block["left"]), 3)
@@ -302,41 +302,36 @@ class TestDriveMixedModeFEState(unittest.TestCase):
             )
 
 
-class TestSolverLog(unittest.TestCase):
-    """``fe_quasistatic_drive`` returns a per-step solver log and
-    forwards solver-tuning kwargs to ``fe_newton_solve``."""
+class TestSolverKwargsForwarded(unittest.TestCase):
+    """``fe_quasistatic_drive`` forwards solver-tuning kwargs into
+    ``fe_newton_solve``."""
 
-    def _build_elastic_problem(self) -> FEProblem:
+    def test_max_iters_zero_returns_initial_iterate(self) -> None:
         mesh = StructuredHexMesh(
             lengths=(1.0, 1.0, 1.0), divisions=(1, 1, 1),
         )
         models_by_block: dict[str, Model] = {"all": _make_elastic_model()}
-        return _build_uniaxial_fe_problem(
+        fe_problem = _build_uniaxial_fe_problem(
             mesh,
             models_by_block,
             {"all": GlobalResidualMode.CLOSED_FORM},
             slope=5e-4,
         )
-
-    def test_solver_log_shape_matches_t_schedule(self) -> None:
-        fe_problem = self._build_elastic_problem()
-        t_schedule = [0.0, 0.5, 1.0]
-        _, solver_log = fe_quasistatic_drive(fe_problem, t_schedule)
-        self.assertEqual(len(solver_log), 2)
-        for entry in solver_log:
-            self.assertEqual(set(entry.keys()), {"iters", "final_residual"})
-            self.assertLess(entry["final_residual"], 1e-8)
-
-    def test_solver_kwargs_forwarded_max_iters(self) -> None:
-        fe_problem = self._build_elastic_problem()
         t_schedule = [0.0, 1.0]
-        _, solver_log = fe_quasistatic_drive(
+        state = fe_quasistatic_drive(
             fe_problem, t_schedule, max_iters=0,
         )
-        # ``max_iters=0`` zeros the iteration count → ``U_star`` stays
-        # at the prescribed-loaded init and the final residual sits
-        # at its initial (un-converged) magnitude.
-        self.assertGreater(solver_log[0]["final_residual"], 1e-3)
+        # With max_iters=0 the Newton loop never executes; U_star
+        # equals the initial iterate: U_prev (= state.U_at(0)) with
+        # prescribed values overlaid at boundary dofs.
+        expected = np.asarray(state.U_at(0)).copy()
+        presc_idx = fe_problem.dof_map.prescribed_indices
+        expected[presc_idx] = np.asarray(
+            fe_problem.dof_map.evaluate_prescribed_values(1.0),
+        )
+        np.testing.assert_array_almost_equal(
+            np.asarray(state.U_at(1)), expected,
+        )
 
 
 if __name__ == "__main__":

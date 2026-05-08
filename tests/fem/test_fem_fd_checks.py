@@ -354,7 +354,7 @@ class TestClosedFormSingleStep(unittest.TestCase):
         def _J(params: dict[str, Any]) -> jax.Array:
             U_prev = jnp.zeros(n_dofs)
             xi_prev = _initial_xi_by_block(fe_problem)
-            U_star, _, _, _ = fe_newton_solve(
+            U_star, _ = fe_newton_solve(
                 fe_problem, {"all": params},
                 U_prev=U_prev, t=t, xi_prev_by_block=xi_prev,
                 max_iters=20, abs_tol=1e-12, rel_tol=1e-12,
@@ -411,7 +411,7 @@ class TestClosedFormMultiStep(unittest.TestCase):
             U_init = jnp.zeros(n_dofs)
             xi_init = _initial_xi_by_block(fe_problem)
             t_schedule_jax = jnp.asarray([0.0, *ts], dtype=jnp.float64)
-            U_steps, _, _, _ = fe_quasistatic_drive_traced(
+            U_steps, _ = fe_quasistatic_drive_traced(
                 fe_problem, {"all": params},
                 U_init, xi_init, t_schedule_jax,
                 max_iters=20, abs_tol=1e-12, rel_tol=1e-12,
@@ -471,7 +471,7 @@ class TestCoupledSingleStep(unittest.TestCase):
         def _J(params: dict[str, Any]) -> jax.Array:
             U_prev = jnp.zeros(n_dofs)
             xi_prev = _initial_xi_by_block(fe_problem)
-            U_star, _, _, _ = fe_newton_solve(
+            U_star, _ = fe_newton_solve(
                 fe_problem, {"all": params},
                 U_prev=U_prev, t=t, xi_prev_by_block=xi_prev,
                 max_iters=30, abs_tol=1e-10, rel_tol=1e-10,
@@ -532,7 +532,7 @@ class TestCoupledMultiStepSimple(unittest.TestCase):
             U_init = jnp.zeros(n_dofs)
             xi_init = _initial_xi_by_block(fe_problem)
             t_schedule_jax = jnp.asarray([0.0, *ts], dtype=jnp.float64)
-            U_steps, _, _, _ = fe_quasistatic_drive_traced(
+            U_steps, _ = fe_quasistatic_drive_traced(
                 fe_problem, {"all": params},
                 U_init, xi_init, t_schedule_jax,
                 max_iters=30, abs_tol=1e-10, rel_tol=1e-10,
@@ -594,7 +594,7 @@ class TestCoupledMultiStepAllPaths(unittest.TestCase):
             U_init = jnp.zeros(n_dofs)
             xi_init_dict = _initial_xi_by_block(fe_problem)
             t_schedule_jax = jnp.asarray([0.0, *ts], dtype=jnp.float64)
-            U_steps, xi_steps, _, _ = fe_quasistatic_drive_traced(
+            U_steps, xi_steps = fe_quasistatic_drive_traced(
                 fe_problem, {"all": params},
                 U_init, xi_init_dict, t_schedule_jax,
                 max_iters=30, abs_tol=1e-10, rel_tol=1e-10,

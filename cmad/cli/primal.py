@@ -74,7 +74,7 @@ def _run_primal_mp(deck_path: Path) -> int:
 def _run_primal_fe(deck_path: Path) -> int:
     bundle = build_fe_problem_from_deck(deck_path, "primal")
     gr_section = bundle.resolved["residuals"]["global residual"]
-    fe_state, solver_log = fe_quasistatic_drive(
+    fe_state = fe_quasistatic_drive(
         bundle.fe_problem,
         bundle.t_schedule.tolist(),
         max_iters=int(gr_section["nonlinear max iters"]),
@@ -91,7 +91,6 @@ def _run_primal_fe(deck_path: Path) -> int:
         out_dir, prefix, bundle.fe_problem, fe_state,
         bundle.resolved["output"],
     )
-    write_solver_log(out_dir, prefix, solver_log)
     write_resolved_deck(out_dir, prefix, bundle.resolved)
     return 0
 

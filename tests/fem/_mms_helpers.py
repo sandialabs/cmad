@@ -58,7 +58,7 @@ def build_mms_callables(
         mu: float,
 ) -> tuple[
     Callable[
-        [NDArray[np.floating] | JaxArray, float],
+        [NDArray[np.floating] | JaxArray, float | JaxArray],
         NDArray[np.floating] | JaxArray,
     ],
     Callable[[NDArray[np.floating]], NDArray[np.floating]],
@@ -99,7 +99,8 @@ def build_mms_callables(
     grad_u_callable = lambdify(coord_args, grad_u_sym, modules="numpy")
 
     def body_force_fn(
-            coords: NDArray[np.floating] | JaxArray, _t: float,
+            coords: NDArray[np.floating] | JaxArray,
+            _t: float | JaxArray,
     ) -> NDArray[np.floating] | JaxArray:
         args = tuple(coords[i] for i in range(n))
         return jnp.asarray(b_callable(*args)).reshape(-1)
@@ -194,20 +195,17 @@ def solve_and_measure(
             [NDArray[np.floating]], NDArray[np.floating],
         ],
         t: float = 1.0,
-) -> tuple[float, float, int]:
+) -> tuple[float, float]:
     """Solve ``fe_problem`` at time ``t`` and measure errors.
 
     Builds a single-step :class:`FEState` seeded with ``U=0``, runs
-    :func:`fe_newton_solve` once, and returns ``(L2, H1, n_iters)``.
-    Callers that want to bound the iteration count (e.g. closed-form
-    linear MMS expecting one Newton step) add their own assertion on
-    the returned ``n_iters``.
+    :func:`fe_newton_solve` once, and returns ``(L2, H1)``.
     """
     state = FEState.from_problem(fe_problem)
     params_by_block = params_by_block_from_models(fe_problem)
-    U_solved, _, n_iters, _ = fe_newton_solve(
+    U_solved, _ = fe_newton_solve(
         fe_problem, params_by_block,
         U_prev=state.U_at(0), t=t,
     )
     L2, H1 = l2_h1_errors(fe_problem, U_solved, u_exact, grad_u_exact)
-    return L2, H1, n_iters
+    return L2, H1

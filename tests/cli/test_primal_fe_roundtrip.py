@@ -150,7 +150,7 @@ class TestPrimalFeClosedFormRoundTrip(unittest.TestCase):
 
             out_dir = tmp / "out"
             self.assertTrue((out_dir / "primal.exo").exists())
-            self.assertTrue((out_dir / "solver.json").exists())
+            self.assertFalse((out_dir / "solver.json").exists())
             self.assertTrue((out_dir / "deck.resolved.yaml").exists())
 
             results = read_results(
@@ -218,7 +218,7 @@ class TestPrimalFeCoupledRoundTrip(unittest.TestCase):
 
             out_dir = tmp / "out"
             self.assertTrue((out_dir / "primal.exo").exists())
-            self.assertTrue((out_dir / "solver.json").exists())
+            self.assertFalse((out_dir / "solver.json").exists())
             self.assertTrue((out_dir / "deck.resolved.yaml").exists())
 
             results = read_results(
