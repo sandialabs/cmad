@@ -4,7 +4,7 @@ import scipy.sparse
 import scipy.sparse.linalg
 from numpy.typing import NDArray
 
-from cmad.fem.assembly import assemble_global
+from cmad.fem.assembly import assemble_global, params_by_block_from_models
 from cmad.fem.fe_problem import FEProblem
 
 
@@ -149,10 +149,11 @@ def fe_newton_solve(
         fe_problem.dof_map.num_prescribed_dofs, dtype=np.float64,
     )
     xi_solved_by_block: dict[str, NDArray[np.floating]] = {}
+    params_by_block = params_by_block_from_models(fe_problem)
 
     for it in range(max_iters):
         K_bcoo, R_jax, xi_solved_jax = assemble_global(
-            fe_problem, U, U_prev, t,
+            fe_problem, params_by_block, U, U_prev, t,
             xi_prev_by_block=xi_prev_by_block,
         )
         K_indices = np.asarray(K_bcoo.indices)

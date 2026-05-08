@@ -19,7 +19,11 @@ import numpy as np
 from jax.tree_util import tree_map
 from numpy.typing import NDArray
 
-from cmad.fem.assembly import assemble_element_block, assemble_global
+from cmad.fem.assembly import (
+    assemble_element_block,
+    assemble_global,
+    params_by_block_from_models,
+)
 from cmad.fem.bcs import DirichletBC
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.fe_problem import FEProblem, build_fe_problem
@@ -121,8 +125,9 @@ class TestAssembleElementBlockCoupledShape(unittest.TestCase):
         # 8 IPs from the default degree-2 hex Gauss-Legendre rule.
         xi_prev = np.zeros((1, 8, 6), dtype=np.float64)
 
+        params_by_block = params_by_block_from_models(fe_problem)
         R_block, rows, cols, vals, xi_solved = assemble_element_block(
-            fe_problem, "all", U, U, t=0.0,
+            fe_problem, params_by_block, "all", U, U, t=0.0,
             xi_prev_per_block=xi_prev,
         )
         assert xi_solved is not None
@@ -142,8 +147,9 @@ class TestAssembleElementBlockCoupledShape(unittest.TestCase):
         n_dofs = fe_problem.dof_map.num_total_dofs
         U = np.zeros(n_dofs, dtype=np.float64)
 
+        params_by_block = params_by_block_from_models(fe_problem)
         _, _, _, _, xi_solved = assemble_element_block(
-            fe_problem, "all", U, U, t=0.0,
+            fe_problem, params_by_block, "all", U, U, t=0.0,
         )
         self.assertIsNone(xi_solved)
 
@@ -172,15 +178,17 @@ class TestAssembleGlobalCoupledClosedFormEquivalence(unittest.TestCase):
         rng = np.random.default_rng(seed=42)
         U = 1e-3 * rng.standard_normal(n_dofs)
 
+        params_closed = params_by_block_from_models(fe_closed)
+        params_coupled = params_by_block_from_models(fe_coupled)
         K_closed, R_closed, xi_closed = assemble_global(
-            fe_closed, U, U, t=0.0,
+            fe_closed, params_closed, U, U, t=0.0,
         )
         n_elems = mesh.connectivity.shape[0]
         xi_prev_by_block: dict[str, NDArray[np.floating]] = {
             "all": np.zeros((n_elems, 8, 6)),
         }
         K_coupled, R_coupled, xi_coupled = assemble_global(
-            fe_coupled, U, U, t=0.0,
+            fe_coupled, params_coupled, U, U, t=0.0,
             xi_prev_by_block=xi_prev_by_block,
         )
 
@@ -221,8 +229,9 @@ class TestAssembleGlobalCoupledMixedMode(unittest.TestCase):
             "right": np.zeros((1, 8, 6)),
         }
 
+        params_by_block = params_by_block_from_models(fe_problem)
         _, _, xi_solved = assemble_global(
-            fe_problem, U, U, t=0.0,
+            fe_problem, params_by_block, U, U, t=0.0,
             xi_prev_by_block=xi_prev_by_block,
         )
         self.assertEqual(set(xi_solved.keys()), {"right"})
@@ -244,8 +253,9 @@ class TestAssembleGlobalCoupledMissingXiPrev(unittest.TestCase):
         )
         n_dofs = fe_problem.dof_map.num_total_dofs
         U = np.zeros(n_dofs, dtype=np.float64)
+        params_by_block = params_by_block_from_models(fe_problem)
         with self.assertRaises(ValueError) as ctx:
-            assemble_global(fe_problem, U, U, t=0.0)
+            assemble_global(fe_problem, params_by_block, U, U, t=0.0)
         self.assertIn("'all'", str(ctx.exception))
 
     def test_empty_dict_when_coupled(self) -> None:
@@ -257,9 +267,10 @@ class TestAssembleGlobalCoupledMissingXiPrev(unittest.TestCase):
         )
         n_dofs = fe_problem.dof_map.num_total_dofs
         U = np.zeros(n_dofs, dtype=np.float64)
+        params_by_block = params_by_block_from_models(fe_problem)
         with self.assertRaises(ValueError):
             assemble_global(
-                fe_problem, U, U, t=0.0,
+                fe_problem, params_by_block, U, U, t=0.0,
                 xi_prev_by_block={},
             )
 
@@ -277,9 +288,10 @@ class TestAssembleGlobalCoupledMissingXiPrev(unittest.TestCase):
         )
         n_dofs = fe_problem.dof_map.num_total_dofs
         U = np.zeros(n_dofs, dtype=np.float64)
+        params_by_block = params_by_block_from_models(fe_problem)
         with self.assertRaises(ValueError) as ctx:
             assemble_global(
-                fe_problem, U, U, t=0.0,
+                fe_problem, params_by_block, U, U, t=0.0,
                 xi_prev_by_block={},
             )
         self.assertIn("'right'", str(ctx.exception))

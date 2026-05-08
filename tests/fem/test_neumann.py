@@ -14,7 +14,7 @@ import unittest
 import numpy as np
 from jax.tree_util import tree_map
 
-from cmad.fem.assembly import assemble_global
+from cmad.fem.assembly import assemble_global, params_by_block_from_models
 from cmad.fem.bcs import NeumannBC
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.element_family import ElementFamily
@@ -356,7 +356,10 @@ class TestNeumannBCThreading(unittest.TestCase):
         fe_problem = _build_unit_hex_fe_problem(neumann_bcs=(bc,))
         n_dofs = fe_problem.dof_map.num_total_dofs
         U_zero = np.zeros(n_dofs, dtype=np.float64)
-        _, R, _ = assemble_global(fe_problem, U_zero, U_zero, t=0.0)
+        params_by_block = params_by_block_from_models(fe_problem)
+        _, R, _ = assemble_global(
+            fe_problem, params_by_block, U_zero, U_zero, t=0.0,
+        )
         local_zmax = np.array([4, 5, 6, 7])
         global_zmax = fe_problem.mesh.connectivity[0, local_zmax]
         for g in global_zmax:

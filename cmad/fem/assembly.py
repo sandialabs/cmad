@@ -27,6 +27,24 @@ from cmad.typing import (
 )
 
 
+def params_by_block_from_models(
+        fe_problem: FEProblem,
+) -> dict[str, Params]:
+    """Source per-block params from each block's stored model.
+
+    Imperative call sites (driver, MMS helpers, regression tests) build
+    ``params_by_block`` from the model objects via this helper. AD
+    callers construct ``params_by_block`` directly from the tracer
+    input — see :class:`cmad.objectives.mp_jvp_objective.MPJVPObjective`
+    for the reshape-from-flat pattern that produces a tracer-leaved
+    PyTree to thread through the assembly call chain.
+    """
+    return {
+        block_name: model.parameters.values
+        for block_name, model in fe_problem.models_by_block.items()
+    }
+
+
 def iso_jac_at_ip(
         grad_N_ref: JaxArray, X_elem: JaxArray,
 ) -> tuple[JaxArray, JaxArray, JaxArray]:
@@ -376,6 +394,7 @@ def per_element_R_and_K_coupled(
 
 def assemble_element_block(
         fe_problem: FEProblem,
+        params_by_block: dict[str, Params],
         block_name: str,
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
@@ -428,8 +447,7 @@ def assemble_element_block(
         U_prev_global, dof_map, connectivity_block,
     )
 
-    model = fe_problem.models_by_block[block_name]
-    params = model.parameters.values
+    params = params_by_block[block_name]
     evaluators = fe_problem.evaluators_by_block[block_name]
     mode = fe_problem.modes_by_block[block_name]
     block_shapes = fe_problem.block_shapes
@@ -525,6 +543,7 @@ def assemble_element_block(
 
 def assemble_global(
         fe_problem: FEProblem,
+        params_by_block: dict[str, Params],
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
         t: float,
@@ -587,7 +606,7 @@ def assemble_global(
 
     for block_name in fe_problem.evaluators_by_block:
         R_block, rows, cols, vals, xi_solved = assemble_element_block(
-            fe_problem, block_name,
+            fe_problem, params_by_block, block_name,
             U_global, U_prev_global, t,
             xi_prev_per_block=xi_prev.get(block_name),
         )
