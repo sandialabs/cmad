@@ -1,11 +1,15 @@
-"""Unit tests for ``FEDisplacementL2``.
+"""Tests for ``FEDisplacementL2``.
 
-Exercises the closure on hand-constructed ``U`` vectors — not FE
-solutions — to verify the closure's volume integration of
-:math:`|u|^2` matches the analytical answer to floating-point
-tolerance. The closure does not depend on equilibrium; the QoI's
-integrand is purely a function of the basis-coefficient values, so
-prescribed test fields are sufficient.
+Two layers:
+
+- Closure-only unit tests on hand-constructed ``U`` vectors — not
+  FE solutions — verify the closure's volume integration of
+  :math:`|u|^2` matches the analytical answer to floating-point
+  tolerance.
+- An end-to-end integration test drives a uniaxial-stretch FE
+  problem with the QoI and checks the driver-accumulated ``J``
+  matches a manual closure iteration over the resulting FEState
+  trajectory.
 """
 import unittest
 
@@ -15,6 +19,7 @@ from jax.tree_util import tree_map
 
 from cmad.fem.assembly import params_by_block_from_models
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
+from cmad.fem.driver import fe_quasistatic_drive
 from cmad.fem.fe_problem import FEProblem, build_fe_problem
 from cmad.fem.finite_element import Q1_HEX
 from cmad.fem.mesh import StructuredHexMesh
@@ -25,6 +30,7 @@ from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
 from cmad.parameters.parameters import Parameters
 from cmad.qois.fe_displacement_l2 import FEDisplacementL2
+from tests.fem.test_fe_quasistatic_drive import _build_uniaxial_fe_problem
 
 
 def _elastic_parameters(
@@ -136,6 +142,58 @@ class TestClosureAnalytical(unittest.TestCase):
             jnp.asarray(1.0), jnp.asarray(0.0),
         ))
         self.assertAlmostEqual(J_dt_full, 2.0 * J_dt_half, places=12)
+
+
+class TestQoIThroughDriver(unittest.TestCase):
+    """End-to-end: drive a uniaxial-stretch problem with the QoI and
+    verify the driver-accumulated J matches a manual closure
+    iteration over the resulting FEState trajectory."""
+
+    def _build_uniaxial_problem(self) -> FEProblem:
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
+        return _build_uniaxial_fe_problem(
+            mesh,
+            {"all": Elastic(
+                _elastic_parameters(), def_type=DefType.FULL_3D,
+            )},
+            {"all": GlobalResidualMode.CLOSED_FORM},
+            slope=5e-4,
+        )
+
+    def test_driver_J_matches_manual_closure_iteration(self) -> None:
+        fe_problem = self._build_uniaxial_problem()
+        t_schedule = [0.0, 0.4, 1.0]
+        qoi = FEDisplacementL2(fe_problem, t_schedule)
+
+        state, J_driver = fe_quasistatic_drive(
+            fe_problem, t_schedule, qoi=qoi,
+        )
+
+        params_by_block = params_by_block_from_models(fe_problem)
+        closure = qoi.step_contribution(params_by_block)
+        J_manual = 0.0
+        for n in range(1, len(state.t_history)):
+            U = jnp.asarray(state.U_at(n))
+            U_prev = jnp.asarray(state.U_at(n - 1))
+            xi = {
+                b: jnp.asarray(state.xi_at(n, b))
+                for b in fe_problem.models_by_block
+            }
+            xi_prev = {
+                b: jnp.asarray(state.xi_at(n - 1, b))
+                for b in fe_problem.models_by_block
+            }
+            t = jnp.asarray(state.t_history[n])
+            t_prev = jnp.asarray(state.t_history[n - 1])
+            J_manual += float(closure(U, U_prev, xi, xi_prev, t, t_prev))
+
+        self.assertAlmostEqual(float(J_driver), J_manual, places=10)
+        self.assertGreater(float(J_driver), 0.0)
+
+    def test_driver_returns_zero_J_when_no_qoi(self) -> None:
+        fe_problem = self._build_uniaxial_problem()
+        _, J = fe_quasistatic_drive(fe_problem, [0.0, 1.0])
+        self.assertEqual(float(J), 0.0)
 
 
 if __name__ == "__main__":

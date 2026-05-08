@@ -86,6 +86,13 @@ def build_mp_problem(
     qoi: QoI | None = None
     if subcommand != "primal":
         qoi_cls = resolve_qoi(resolved["qoi"]["name"])
+        if qoi_cls.problem_type != "material_point":
+            raise ValueError(
+                f"qoi.name '{resolved['qoi']['name']}' is registered "
+                f"for problem_type='{qoi_cls.problem_type}', but the "
+                f"deck has problem.type='material_point'"
+            )
+        assert issubclass(qoi_cls, QoI)
         data, weight = load_qoi_data(resolved["qoi"], deck_path.parent)
         qoi = qoi_cls.from_deck(resolved["qoi"], model, data, weight)
 

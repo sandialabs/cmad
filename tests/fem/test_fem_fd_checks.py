@@ -28,7 +28,7 @@ Pieces under test — no test-only fixtures of the forward solve:
 - Strong-DBC enforcement: ``cmad.fem.sparse_solve._embedded_bc_enforce``
   (asymmetric: prescribed rows zeroed, identity 1.0 on the
   prescribed diagonal).
-- Multi-step time loop: ``cmad.fem.driver.fe_quasistatic_drive_traced``,
+- Multi-step time loop: ``cmad.fem.driver.fe_quasistatic_trajectory``,
   ``lax.scan`` over the time schedule with carry
   ``(U_prev, xi_prev_by_block)``.
 
@@ -50,7 +50,7 @@ from jax.tree_util import tree_map
 
 from cmad.fem.bcs import DirichletBC
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
-from cmad.fem.driver import fe_quasistatic_drive_traced
+from cmad.fem.driver import fe_quasistatic_trajectory
 from cmad.fem.fe_problem import build_fe_problem
 from cmad.fem.finite_element import Q1_HEX
 from cmad.fem.mesh import StructuredHexMesh
@@ -385,7 +385,7 @@ class TestClosedFormSingleStep(unittest.TestCase):
 class TestClosedFormMultiStep(unittest.TestCase):
     """``jax.grad`` and ``jax.hessian`` of a sum-over-steps QoI
     through a 3-step CLOSED_FORM Elastic forward solve via
-    ``fe_quasistatic_drive_traced`` match central-difference.
+    ``fe_quasistatic_trajectory`` match central-difference.
     Validates that vjp through the ``lax.scan`` time loop composes
     with the outer FE Newton's ``@custom_jvp`` rule at each step.
     """
@@ -411,7 +411,7 @@ class TestClosedFormMultiStep(unittest.TestCase):
             U_init = jnp.zeros(n_dofs)
             xi_init = _initial_xi_by_block(fe_problem)
             t_schedule_jax = jnp.asarray([0.0, *ts], dtype=jnp.float64)
-            U_steps, _ = fe_quasistatic_drive_traced(
+            U_steps, _, _ = fe_quasistatic_trajectory(
                 fe_problem, {"all": params},
                 U_init, xi_init, t_schedule_jax,
                 max_iters=20, abs_tol=1e-12, rel_tol=1e-12,
@@ -502,7 +502,7 @@ class TestCoupledSingleStep(unittest.TestCase):
 class TestCoupledMultiStepSimple(unittest.TestCase):
     """``jax.grad`` and ``jax.hessian`` of a sum-over-steps QoI
     (depends only on each step's U) through a multi-step COUPLED
-    forward solve via ``fe_quasistatic_drive_traced`` match
+    forward solve via ``fe_quasistatic_trajectory`` match
     central-difference. Step times span elastic and plastic
     regimes, exercising the cross-step xi-history adjoint chain
     (``xi_{n-1}`` cotangents flowing backward through the
@@ -532,7 +532,7 @@ class TestCoupledMultiStepSimple(unittest.TestCase):
             U_init = jnp.zeros(n_dofs)
             xi_init = _initial_xi_by_block(fe_problem)
             t_schedule_jax = jnp.asarray([0.0, *ts], dtype=jnp.float64)
-            U_steps, _ = fe_quasistatic_drive_traced(
+            U_steps, _, _ = fe_quasistatic_trajectory(
                 fe_problem, {"all": params},
                 U_init, xi_init, t_schedule_jax,
                 max_iters=30, abs_tol=1e-10, rel_tol=1e-10,
@@ -563,7 +563,7 @@ class TestCoupledMultiStepSimple(unittest.TestCase):
 class TestCoupledMultiStepAllPaths(unittest.TestCase):
     """``jax.grad`` and ``jax.hessian`` of an all-five-inputs QoI
     through a multi-step COUPLED forward solve via
-    ``fe_quasistatic_drive_traced`` match central-difference.
+    ``fe_quasistatic_trajectory`` match central-difference.
     The QoI couples to ``U_n``, ``U_{n-1}``, ``xi_n``, ``xi_{n-1}``,
     and ``p`` directly, so every cotangent path contributes
     non-trivially. If the simpler tests pass and this fails, the
@@ -594,7 +594,7 @@ class TestCoupledMultiStepAllPaths(unittest.TestCase):
             U_init = jnp.zeros(n_dofs)
             xi_init_dict = _initial_xi_by_block(fe_problem)
             t_schedule_jax = jnp.asarray([0.0, *ts], dtype=jnp.float64)
-            U_steps, xi_steps = fe_quasistatic_drive_traced(
+            U_steps, xi_steps, _ = fe_quasistatic_trajectory(
                 fe_problem, {"all": params},
                 U_init, xi_init_dict, t_schedule_jax,
                 max_iters=30, abs_tol=1e-10, rel_tol=1e-10,

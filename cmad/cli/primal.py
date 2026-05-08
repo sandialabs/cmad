@@ -74,7 +74,7 @@ def _run_primal_mp(deck_path: Path) -> int:
 def _run_primal_fe(deck_path: Path) -> int:
     bundle = build_fe_problem_from_deck(deck_path, "primal")
     gr_section = bundle.resolved["residuals"]["global residual"]
-    fe_state = fe_quasistatic_drive(
+    fe_state, _ = fe_quasistatic_drive(
         bundle.fe_problem,
         bundle.t_schedule.tolist(),
         max_iters=int(gr_section["nonlinear max iters"]),

@@ -154,7 +154,7 @@ class TestDriveSingleStepClosedForm(unittest.TestCase):
         )
         t_schedule = [0.0, 1.0]
 
-        state = fe_quasistatic_drive(fe_problem, t_schedule)
+        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
 
         n_dofs = fe_problem.dof_map.num_total_dofs
         U_prev_zeros = np.zeros(n_dofs, dtype=np.float64)
@@ -189,7 +189,7 @@ class TestDriveMultiStepCoupledElastic(unittest.TestCase):
         )
         t_schedule = [0.0, 0.5, 1.0]
 
-        state = fe_quasistatic_drive(fe_problem, t_schedule)
+        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
 
         self.assertEqual(len(state.U_history), 3)
         self.assertEqual(len(state.xi_history_by_block["all"]), 3)
@@ -235,7 +235,7 @@ class TestDriveXiRestartConsistency(unittest.TestCase):
             slope=1.5e-3,
         )
         t_schedule = [0.0, 1.0, 2.0]
-        state = fe_quasistatic_drive(fe_problem, t_schedule)
+        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
 
         # Sanity: at least one IP plastic (alpha > 0) at step 2.
         # SmallElasticPlastic FULL_3D xi = [vec_cauchy(6), alpha(1)],
@@ -285,7 +285,7 @@ class TestDriveMixedModeFEState(unittest.TestCase):
             slope=5e-4,
         )
         t_schedule = [0.0, 0.5, 1.0]
-        state = fe_quasistatic_drive(fe_problem, t_schedule)
+        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
 
         self.assertEqual(len(state.U_history), 3)
         self.assertEqual(len(state.xi_history_by_block["left"]), 3)
@@ -318,7 +318,7 @@ class TestSolverKwargsForwarded(unittest.TestCase):
             slope=5e-4,
         )
         t_schedule = [0.0, 1.0]
-        state = fe_quasistatic_drive(
+        state, _ = fe_quasistatic_drive(
             fe_problem, t_schedule, max_iters=0,
         )
         # With max_iters=0 the Newton loop never executes; U_star
