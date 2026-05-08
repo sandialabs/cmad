@@ -332,9 +332,13 @@ def _fe_newton_solve_ad_jvp(
     )
 
     primals_out = (U_star, xi_solved, n_iters, R_norm)
+    # n_iters is a non-differentiable integer output; JAX requires its
+    # tangent to use the float0 sentinel dtype rather than the primal's
+    # int dtype. (Without this, the custom_jvp rule errors with
+    # "primal int64[] with tangent int64[], expecting tangent float0[]".)
     tangents_out = (
         U_star_dot, xi_solved_dot,
-        jnp.zeros_like(jnp.asarray(n_iters)),
+        jnp.zeros((), dtype=jax.dtypes.float0),
         jnp.zeros_like(R_norm),
     )
     return primals_out, tangents_out

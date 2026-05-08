@@ -2,7 +2,7 @@
 
 Two layers:
 
-- :func:`_fe_quasistatic_drive_traced` runs :func:`jax.lax.scan` over
+- :func:`fe_quasistatic_drive_traced` runs :func:`jax.lax.scan` over
   the time schedule with all-JAX carry / output. Each scan step calls
   :func:`cmad.fem.nonlinear_solver.fe_newton_solve` (which is itself
   JAX-traceable end to end). The traced inner is the AD entry point
@@ -11,7 +11,7 @@ Two layers:
 
 - :func:`fe_quasistatic_drive` is the imperative wrapper used by
   :command:`cmad primal` and tests: builds an :class:`FEState`,
-  drives :func:`_fe_quasistatic_drive_traced`, materializes the
+  drives :func:`fe_quasistatic_drive_traced`, materializes the
   stacked outputs back into FEState's mutable per-step lists, and
   builds the imperative ``solver_log``.
 """
@@ -29,7 +29,7 @@ from cmad.fem.nonlinear_solver import fe_newton_solve
 from cmad.typing import JaxArray, Params
 
 
-def _fe_quasistatic_drive_traced(
+def fe_quasistatic_drive_traced(
         fe_problem: FEProblem,
         params_by_block: Mapping[str, Params],
         U_init: JaxArray,
@@ -99,7 +99,7 @@ def fe_quasistatic_drive(
     initial-only schedule is :meth:`FEState.from_problem` and doesn't
     need the driver). The driver seeds an :class:`FEState` at
     ``t_schedule[0]`` (zeros U or the user-supplied ``U_init``), then
-    delegates the time loop to :func:`_fe_quasistatic_drive_traced`
+    delegates the time loop to :func:`fe_quasistatic_drive_traced`
     (a single :func:`jax.lax.scan` over the schedule). The scan's
     stacked outputs are materialized back into FEState's per-step
     lists via :meth:`FEState.append`, mirroring the imperative
@@ -121,7 +121,7 @@ def fe_quasistatic_drive(
     ``len(t_schedule)``.
 
     ``solver_kwargs`` are forwarded to :func:`fe_newton_solve`
-    through :func:`_fe_quasistatic_drive_traced` (accepts
+    through :func:`fe_quasistatic_drive_traced` (accepts
     ``max_iters``, ``abs_tol``, ``rel_tol``); the orchestrator
     threads deck-supplied global-Newton settings through this slot.
 
@@ -154,7 +154,7 @@ def fe_quasistatic_drive(
     t_schedule_jax = jnp.asarray(t_schedule, dtype=jnp.float64)
 
     U_steps, xi_steps_by_block, iters_steps, R_norm_steps = (
-        _fe_quasistatic_drive_traced(
+        fe_quasistatic_drive_traced(
             fe_problem,
             params_by_block,
             U_init_jax,

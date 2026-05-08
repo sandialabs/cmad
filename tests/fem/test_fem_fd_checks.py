@@ -1,28 +1,36 @@
-"""FD-vs-AD checks for ``jax.grad`` and ``jax.hessian`` on a JAX-traced FE
-forward solve.
+"""FD-vs-AD checks for ``jax.grad`` and ``jax.hessian`` over the
+sparse FE forward solve.
 
-Five test classes (CLOSED_FORM single/multi step + COUPLED single/multi
-step simple/all-paths), each with a ``test_grad_matches_fd`` and a
-``test_hessian_matches_fd``. Each test compares AD against a directional-
-difference FD across a logspace ``hs`` range, asserting the FD-error
-log10 drop exceeds a threshold (clean V-shaped FD convergence). Mirrors
-the MP-side ``tests/objectives/test_J2_fd_checks.py`` pattern.
+Five test classes (CLOSED_FORM single/multi-step + COUPLED single/
+multi-step simple/all-paths), each with a ``test_grad_matches_fd``
+and a ``test_hessian_matches_fd``. Each test compares AD against a
+directional-difference FD across a logspace ``hs`` range, asserting
+the FD-error log10 drop exceeds a threshold (clean V-shaped FD
+convergence). Mirrors the MP-side ``tests/objectives/test_J2_fd_checks.py``
+pattern.
 
-Pieces under test:
+Pieces under test — no test-only fixtures of the forward solve:
 
 - Per-element kernels: ``per_element_R_and_K`` /
-  ``per_element_R_and_K_coupled`` from ``cmad.fem.assembly`` (already
-  pure-JAX, per-IP/per-element AD-tested in
-  ``tests/fem/test_per_element_coupled``).
+  ``per_element_R_and_K_coupled`` from ``cmad.fem.assembly``.
 - Per-IP local Newton (COUPLED): ``make_newton_solve`` wired via
   ``GR.for_model(model, COUPLED)``; ``@custom_jvp`` IFT rule.
-- Strong DBC enforcement: row/col zero + scaled-identity on the
-  diagonal + ``R[prescribed] = 0``, expressed in JAX (mirrors
-  ``cmad.fem.nonlinear_solver.apply_strong_dirichlet`` step-for-step).
-- Outer Newton: ``lax.custom_root`` -- opaque-to-AD imperative forward
-  via ``lax.while_loop``; ``tangent_solve`` provides IFT-correct
-  gradients via dense ``jnp.linalg.solve`` on the converged enforced
-  Jacobian.
+- Global assembly: ``cmad.fem.assembly.assemble_global``
+  (BCOO + scipy.coo bridge → sparse CSR).
+- Sparse linear solve: ``cmad.fem.sparse_solve.spsolve_jax`` via
+  ``lax.custom_linear_solve`` over a ``pure_callback`` to scipy
+  ``spsolve``; the ``K``-side cotangent flows via
+  ``custom_linear_solve``'s VJP rule.
+- Outer FE Newton: ``cmad.fem.nonlinear_solver.fe_newton_solve``
+  with its ``@custom_jvp`` rule (IFT linear sensitivity equation
+  with ``∂r/∂p · p_dot`` from ``jax.jvp(r, p, p_dot)`` at fixed
+  ``U_star``, solved through ``spsolve_jax``).
+- Strong-DBC enforcement: ``cmad.fem.sparse_solve._embedded_bc_enforce``
+  (asymmetric: prescribed rows zeroed, identity 1.0 on the
+  prescribed diagonal).
+- Multi-step time loop: ``cmad.fem.driver.fe_quasistatic_drive_traced``,
+  ``lax.scan`` over the time schedule with carry
+  ``(U_prev, xi_prev_by_block)``.
 
 The tests are arranged as boundary-isolation diagnostics: each adds
 one new AD boundary on top of the previous, so a failure localizes
@@ -37,20 +45,16 @@ from typing import Any, cast
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax import lax, vmap
+from jax.flatten_util import ravel_pytree
 from jax.tree_util import tree_map
 
-from cmad.fem.assembly import (
-    _element_eq_indices,
-    _gather_element_U,
-    per_element_R_and_K,
-    per_element_R_and_K_coupled,
-)
 from cmad.fem.bcs import DirichletBC
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
+from cmad.fem.driver import fe_quasistatic_drive_traced
 from cmad.fem.fe_problem import build_fe_problem
 from cmad.fem.finite_element import Q1_HEX
 from cmad.fem.mesh import StructuredHexMesh
+from cmad.fem.nonlinear_solver import fe_newton_solve
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
 from cmad.models.deformation_types import DefType
@@ -119,348 +123,14 @@ def _build_fe_problem_2x2x2(model, mode: GlobalResidualMode, slope: float):
     )
 
 
-# ============================================================
-# JAX-traced global assembly + strong-DBC enforcement
-# ============================================================
-
-def _assemble_R_K_closed_jax(fe_problem, params, U, U_prev, t):
-    """Dense JAX assembly of ``R`` and ``K`` for CLOSED_FORM blocks.
-
-    Vmaps ``per_element_R_and_K`` per element, then scatters into
-    dense ``(n_dofs,)`` R and ``(n_dofs, n_dofs)`` K via
-    ``jnp.zeros(...).at[idx].add(...)`` (no scipy.sparse, no
-    ``np.add.at``). Body forces from ``forcing_fns_by_block_idx``
-    accumulate inside the per-element kernel.
-    """
-    dof_map = fe_problem.dof_map
-    mesh = fe_problem.mesh
-    block_shapes = fe_problem.block_shapes
-    n_dofs = dof_map.num_total_dofs
-
-    R_global = jnp.zeros(n_dofs)
-    K_global = jnp.zeros((n_dofs, n_dofs))
-    forcing_fns = fe_problem.forcing_fns_by_block_idx or {}
-
-    for block_name in fe_problem.evaluators_by_block:
-        elem_indices = mesh.element_blocks[block_name]
-        connectivity_block = mesh.connectivity[elem_indices]
-        U_elem = _gather_element_U(U, dof_map, connectivity_block)
-        U_prev_elem = _gather_element_U(U_prev, dof_map, connectivity_block)
-        evaluators = fe_problem.evaluators_by_block[block_name]
-        geom_cache = fe_problem.geometry_cache[block_name]
-
-        R_per_elem, K_per_elem = vmap(
-            lambda U_e, Up_e, geom: per_element_R_and_K(
-                U_e, Up_e, params, geom, geom_cache.shared,
-                evaluators["R_and_dR_dU"],
-                forcing_fns, block_shapes, t,
-            ),
-            in_axes=(0, 0, 0),
-        )(U_elem, U_prev_elem, geom_cache.per_elem)
-
-        eq_indices = jnp.asarray(_element_eq_indices(
-            connectivity_block, dof_map, field_idx=0,
-        ))
-        n_elems, n_dofs_elem = eq_indices.shape
-
-        # R: list[Array(n_elems, num_basis_fns, num_eqs)]; single block.
-        R_flat = R_per_elem[0].reshape(n_elems, n_dofs_elem)
-        R_global = R_global.at[eq_indices.ravel()].add(R_flat.ravel())
-
-        # K: list[list[Array(n_elems, nb, neq, nb, neq)]]; single block.
-        K_flat = K_per_elem[0][0].reshape(n_elems, n_dofs_elem, n_dofs_elem)
-        rows_2d = jnp.broadcast_to(
-            eq_indices[:, :, None],
-            (n_elems, n_dofs_elem, n_dofs_elem),
-        ).ravel()
-        cols_2d = jnp.broadcast_to(
-            eq_indices[:, None, :],
-            (n_elems, n_dofs_elem, n_dofs_elem),
-        ).ravel()
-        K_global = K_global.at[rows_2d, cols_2d].add(K_flat.ravel())
-
-    return R_global, K_global
-
-
-def _free_diag_scale(K, prescribed_indices):
-    """``mean(|diag(K)|[free])`` -- the spectrum-balancing scale.
-
-    Used as the prescribed-row weight in two places that must agree:
-    ``_apply_strong_dirichlet_jax`` (forward-solve enforcement) and
-    the embedded-BC residual in ``_solve_step_closed.f`` (AD-visible).
-    Computing both from the same ``K(U)`` keeps them numerically
-    identical.
-    """
-    n = K.shape[0]
-    p_mask = jnp.zeros(n, dtype=bool).at[prescribed_indices].set(True)
-    free_mask = (~p_mask).astype(K.dtype)
-    return (jnp.sum(jnp.abs(jnp.diag(K)) * free_mask)
-            / jnp.sum(free_mask))
-
-
-def _apply_strong_dirichlet_jax(K, R, prescribed_indices, scale):
-    """JAX mirror of ``cmad.fem.nonlinear_solver.apply_strong_dirichlet``.
-
-    Zeros prescribed rows + columns of ``K``, sets the prescribed
-    diagonal entries to ``scale``, and zeros ``R[prescribed]``
-    (homogeneous DBC residual since ``U`` is pre-loaded with BC values).
-    """
-    n = R.shape[0]
-    p_mask = jnp.zeros(n, dtype=bool).at[prescribed_indices].set(True)
-    K_enf = jnp.where(p_mask[:, None] | p_mask[None, :], 0.0, K)
-    K_enf = K_enf.at[prescribed_indices, prescribed_indices].set(scale)
-    R_enf = R.at[prescribed_indices].set(0.0)
-    return K_enf, R_enf
-
-
-# ============================================================
-# JAX-traced single-step CLOSED_FORM forward solve
-# ============================================================
-
-def _solve_step_closed(fe_problem, params, U_prev, t):
-    """One quasi-static step in CLOSED_FORM mode.
-
-    Outer Newton via ``lax.custom_root``: forward pass is opaque to AD
-    (imperative ``lax.while_loop`` over Newton iterations);
-    ``tangent_solve`` provides IFT-correct gradients via dense
-    ``jnp.linalg.solve`` on the converged enforced Jacobian.
-
-    Differs from ``cmad.fem.nonlinear_solver.fe_newton_solve`` only in
-    backend choice: dense JAX K assembly (vs scipy.sparse COO),
-    ``jnp.linalg.solve`` (vs ``scipy.sparse.linalg.spsolve``), and
-    ``lax.while_loop`` (vs Python ``for`` loop). Per-IP / per-element
-    physics + strong-DBC enforcement is identical.
-    """
-    dof_map = fe_problem.dof_map
-    n_dofs = dof_map.num_total_dofs
-    prescribed_indices = jnp.asarray(dof_map.prescribed_indices)
-    prescribed_vals = jnp.asarray(
-        dof_map.evaluate_prescribed_values(t=float(t)),
-    )
-
-    max_iters = 20
-    abs_tol = 1e-12
-    rel_tol = 1e-12
-
-    def f(U):
-        """Embedded-BC residual.
-
-        ``f[free] = R[free]``, ``f[prescribed] =
-        scale * (U[prescribed] - prescribed_vals)``. The scale factor
-        ``mean(|diag(K)|[free])`` matches
-        ``cmad.fem.nonlinear_solver.apply_strong_dirichlet`` and keeps
-        the prescribed block of ``df/dU`` non-singular (without it,
-        ``df/dU`` has zero rows at prescribed dofs -> singular -> IFT
-        yields NaN).
-        """
-        R, K = _assemble_R_K_closed_jax(
-            fe_problem, params, U, U_prev, t,
-        )
-        scale = _free_diag_scale(K, prescribed_indices)
-        return R.at[prescribed_indices].set(
-            scale * (U[prescribed_indices] - prescribed_vals)
-        )
-
-    def solve(_f, U_init):
-        def cond(state):
-            i, _, R_norm, R_norm_0 = state
-            return jnp.logical_and(
-                i < max_iters,
-                jnp.logical_and(
-                    R_norm >= abs_tol,
-                    R_norm >= rel_tol * R_norm_0,
-                ),
-            )
-
-        def body(state):
-            i, U, _, R_norm_0 = state
-            R, K = _assemble_R_K_closed_jax(
-                fe_problem, params, U, U_prev, t,
-            )
-            scale = _free_diag_scale(K, prescribed_indices)
-            K_enf, R_enf = _apply_strong_dirichlet_jax(
-                K, R, prescribed_indices, scale,
-            )
-            dU = jnp.linalg.solve(K_enf, -R_enf)
-            U_new = U + dU
-            return i + 1, U_new, jnp.linalg.norm(_f(U_new)), R_norm_0
-
-        R0_norm = jnp.maximum(jnp.linalg.norm(_f(U_init)), 1.0)
-        _, U_star, _, _ = lax.while_loop(
-            cond, body, (0, U_init, R0_norm, R0_norm),
-        )
-        return U_star
-
-    def tangent_solve(g, y):
-        """Solve ``(df/dU)(U_star) @ x = y`` via dense ``jnp.linalg.solve``."""
-        K_lin = jax.jacfwd(g)(jnp.zeros_like(y))
-        return jnp.linalg.solve(K_lin, y)
-
-    U_init = jnp.zeros(n_dofs).at[prescribed_indices].set(prescribed_vals)
-    return lax.custom_root(f, U_init, solve, tangent_solve)
-
-
-# ============================================================
-# JAX-traced global assembly + single-step solve, COUPLED
-# ============================================================
-
-def _assemble_R_K_coupled_jax(
-        fe_problem, params, U, U_prev, xi_prev_by_block, t,
-):
-    """Dense JAX assembly of ``R``, ``K``, and converged xi for COUPLED
-    blocks.
-
-    Vmaps ``per_element_R_and_K_coupled`` per element (which runs the
-    per-IP local Newton via the ``R_and_dR_dU_and_xi`` evaluator from
-    ``GR.for_model(model, COUPLED)``; ``make_newton_solve``'s
-    ``@custom_jvp`` rule supplies the IFT-correct local tangent),
-    then scatters into dense ``(n_dofs,)`` R and ``(n_dofs, n_dofs)``
-    K. Also returns the converged xi per block, shape
-    ``(n_elems_block, n_ips, total_xi_dofs)``.
-    """
-    dof_map = fe_problem.dof_map
-    mesh = fe_problem.mesh
-    block_shapes = fe_problem.block_shapes
-    n_dofs = dof_map.num_total_dofs
-
-    R_global = jnp.zeros(n_dofs)
-    K_global = jnp.zeros((n_dofs, n_dofs))
-    xi_solved_by_block: dict[str, jax.Array] = {}
-    forcing_fns = fe_problem.forcing_fns_by_block_idx or {}
-
-    for block_name in fe_problem.evaluators_by_block:
-        elem_indices = mesh.element_blocks[block_name]
-        connectivity_block = mesh.connectivity[elem_indices]
-        U_elem = _gather_element_U(U, dof_map, connectivity_block)
-        U_prev_elem = _gather_element_U(U_prev, dof_map, connectivity_block)
-        evaluators = fe_problem.evaluators_by_block[block_name]
-        geom_cache = fe_problem.geometry_cache[block_name]
-        unravel_xi = fe_problem.unravel_xi_by_block[block_name]
-        xi_prev_block = xi_prev_by_block[block_name]
-
-        R_per_elem, K_per_elem, xi_per_elem = vmap(
-            lambda U_e, Up_e, geom, xi_prev: per_element_R_and_K_coupled(
-                U_e, Up_e, params, xi_prev,
-                geom, geom_cache.shared,
-                evaluators["R_and_dR_dU_and_xi"],
-                unravel_xi,
-                forcing_fns, block_shapes, t,
-            ),
-            in_axes=(0, 0, 0, 0),
-        )(U_elem, U_prev_elem, geom_cache.per_elem, xi_prev_block)
-
-        xi_solved_by_block[block_name] = xi_per_elem
-
-        eq_indices = jnp.asarray(_element_eq_indices(
-            connectivity_block, dof_map, field_idx=0,
-        ))
-        n_elems, n_dofs_elem = eq_indices.shape
-
-        R_flat = R_per_elem[0].reshape(n_elems, n_dofs_elem)
-        R_global = R_global.at[eq_indices.ravel()].add(R_flat.ravel())
-
-        K_flat = K_per_elem[0][0].reshape(n_elems, n_dofs_elem, n_dofs_elem)
-        rows_2d = jnp.broadcast_to(
-            eq_indices[:, :, None],
-            (n_elems, n_dofs_elem, n_dofs_elem),
-        ).ravel()
-        cols_2d = jnp.broadcast_to(
-            eq_indices[:, None, :],
-            (n_elems, n_dofs_elem, n_dofs_elem),
-        ).ravel()
-        K_global = K_global.at[rows_2d, cols_2d].add(K_flat.ravel())
-
-    return R_global, K_global, xi_solved_by_block
-
-
-def _solve_step_coupled(
-        fe_problem, params, U_prev, xi_prev_by_block, t,
-):
-    """One quasi-static step in COUPLED mode.
-
-    Same outer-Newton + ``lax.custom_root`` shape as
-    ``_solve_step_closed``; the f closure here calls
-    ``_assemble_R_K_coupled_jax``, which fires the inner per-IP
-    local Newton (its ``@custom_jvp`` IFT rule contributes to the
-    outer ``df/dU`` automatically under JAX tracing). Returns
-    ``(U_star, xi_solved_by_block)`` — xi is re-extracted at
-    ``U_star`` for path-continuity into the next step.
-    """
-    dof_map = fe_problem.dof_map
-    n_dofs = dof_map.num_total_dofs
-    prescribed_indices = jnp.asarray(dof_map.prescribed_indices)
-    prescribed_vals = jnp.asarray(
-        dof_map.evaluate_prescribed_values(t=float(t)),
-    )
-
-    max_iters = 30
-    abs_tol = 1e-10
-    rel_tol = 1e-10
-
-    def f(U):
-        # Prescribed-row scale is forward-solve conditioning only --
-        # AD-irrelevant at convergence (the prescribed block of
-        # ``df/dU`` is decoupled and prescribed values don't depend on
-        # parameters, so ``dU*/dp`` is scale-independent). Hardcoding
-        # ``s=1`` here keeps K out of f's output, so the COUPLED
-        # kernel's internal ``dR_dU = jacfwd(coupled_r_total)`` branch
-        # has zero cotangent and JAX skips its transpose synthesis.
-        R, _, _ = _assemble_R_K_coupled_jax(
-            fe_problem, params, U, U_prev, xi_prev_by_block, t,
-        )
-        return R.at[prescribed_indices].set(
-            U[prescribed_indices] - prescribed_vals
-        )
-
-    def solve(_f, U_init):
-        def cond(state):
-            i, _, R_norm, R_norm_0 = state
-            return jnp.logical_and(
-                i < max_iters,
-                jnp.logical_and(
-                    R_norm >= abs_tol,
-                    R_norm >= rel_tol * R_norm_0,
-                ),
-            )
-
-        def body(state):
-            i, U, _, R_norm_0 = state
-            R, K, _ = _assemble_R_K_coupled_jax(
-                fe_problem, params, U, U_prev, xi_prev_by_block, t,
-            )
-            scale = _free_diag_scale(K, prescribed_indices)
-            K_enf, R_enf = _apply_strong_dirichlet_jax(
-                K, R, prescribed_indices, scale,
-            )
-            dU = jnp.linalg.solve(K_enf, -R_enf)
-            U_new = U + dU
-            return i + 1, U_new, jnp.linalg.norm(_f(U_new)), R_norm_0
-
-        R0_norm = jnp.maximum(jnp.linalg.norm(_f(U_init)), 1.0)
-        _, U_star, _, _ = lax.while_loop(
-            cond, body, (0, U_init, R0_norm, R0_norm),
-        )
-        return U_star
-
-    def tangent_solve(g, y):
-        K_lin = jax.jacfwd(g)(jnp.zeros_like(y))
-        return jnp.linalg.solve(K_lin, y)
-
-    U_init = jnp.zeros(n_dofs).at[prescribed_indices].set(prescribed_vals)
-    U_star = lax.custom_root(f, U_init, solve, tangent_solve)
-
-    _, _, xi_solved = _assemble_R_K_coupled_jax(
-        fe_problem, params, U_star, U_prev, xi_prev_by_block, t,
-    )
-    return U_star, xi_solved
-
-
 def _initial_xi_by_block(fe_problem) -> dict[str, jax.Array]:
     """Per-block xi at step 0: flatten ``model._init_xi`` and tile
     across ``(n_elems_block, n_ips, total_xi_dofs)`` — same pattern
     as ``FEState.from_problem``, expressed in JAX so it can flow
-    into traced calls."""
-    from jax.flatten_util import ravel_pytree
+    into traced calls. CLOSED_FORM blocks get an empty trailing
+    dim (``ravel_pytree`` of an empty xi is a 0-length array),
+    which the FE-Newton driver handles uniformly with COUPLED
+    blocks."""
     xi_by_block: dict[str, jax.Array] = {}
     for block, model in fe_problem.models_by_block.items():
         elem_indices = fe_problem.mesh.element_blocks[block]
@@ -472,156 +142,6 @@ def _initial_xi_by_block(fe_problem) -> dict[str, jax.Array]:
         init_xi_flat, _ = ravel_pytree(model._init_xi)
         xi_by_block[block] = jnp.tile(init_xi_flat, (n_elems, n_ips, 1))
     return xi_by_block
-
-
-def _solve_history_coupled(fe_problem, params, ts):
-    """Quasi-static time loop, COUPLED.
-
-    Threads ``(U_prev, xi_prev_by_block)`` forward through
-    ``len(ts)`` calls to ``_solve_step_coupled``. Returns parallel
-    lists of solved displacements and converged xi-by-block (one
-    entry per step).
-    """
-    n_dofs = fe_problem.dof_map.num_total_dofs
-    U_history: list[jax.Array] = []
-    xi_history: list[dict[str, jax.Array]] = []
-    U_prev = jnp.zeros(n_dofs)
-    xi_prev = _initial_xi_by_block(fe_problem)
-    for t in ts:
-        U_n, xi_n = _solve_step_coupled(
-            fe_problem, params, U_prev, xi_prev, float(t),
-        )
-        U_history.append(U_n)
-        xi_history.append(xi_n)
-        U_prev = U_n
-        xi_prev = xi_n
-    return U_history, xi_history
-
-
-def _solve_history_closed(fe_problem, params, ts):
-    """Quasi-static time loop, CLOSED_FORM.
-
-    Threads ``U_prev`` forward through ``len(ts)`` calls to
-    ``_solve_step_closed``. Python ``for`` loop unrolls under JAX
-    tracing — each step's ``lax.custom_root`` AD rule fires
-    independently, and reverse-mode composes them by walking the
-    history backward through standard JAX VJP rules.
-
-    Returns a list of ``len(ts)`` solved displacement vectors.
-    """
-    n_dofs = fe_problem.dof_map.num_total_dofs
-    U_history: list[jax.Array] = []
-    U_prev = jnp.zeros(n_dofs)
-    for t in ts:
-        U_n = _solve_step_closed(fe_problem, params, U_prev, float(t))
-        U_history.append(U_n)
-        U_prev = U_n
-    return U_history
-
-
-# ============================================================
-# CLOSED_FORM single step
-# ============================================================
-
-class TestClosedFormSingleStep(unittest.TestCase):
-    """``jax.grad`` and ``jax.hessian`` of a scalar QoI through a
-    single-step CLOSED_FORM Elastic forward solve match central-
-    difference. Validates the outer ``lax.custom_root`` AD rule alone
-    -- no inner ``custom_jvp`` invoked, no time history.
-    """
-
-    J: Callable[[PyTreeDict], jax.Array]
-    grad_J: Callable[[PyTreeDict], PyTreeDict]
-    hess_J: Callable[[PyTreeDict], PyTreeDict]
-    params_at: PyTreeDict
-    paths: tuple[tuple[str, ...], ...]
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        slope = 5e-4
-        t = 1.0
-        # Build problem once with concrete (irrelevant for AD) params;
-        # parameter dependence flows through the explicit ``params``
-        # arg into ``_solve_step_closed``.
-        fe_problem = _build_fe_problem_2x2x2(
-            _make_elastic_model(),
-            GlobalResidualMode.CLOSED_FORM,
-            slope,
-        )
-        n_dofs = fe_problem.dof_map.num_total_dofs
-
-        def _J(params: dict[str, Any]) -> jax.Array:
-            U_prev = jnp.zeros(n_dofs)
-            U_star = _solve_step_closed(fe_problem, params, U_prev, t)
-            return jnp.sum(U_star ** 2)
-
-        cls.J = staticmethod(jax.jit(_J))
-        cls.grad_J = staticmethod(jax.jit(jax.grad(_J)))
-        cls.hess_J = staticmethod(jax.jit(jax.hessian(_J)))
-        cls.params_at = {"elastic": {"kappa": 100.0, "mu": 50.0}}
-        cls.paths = (("elastic", "kappa"), ("elastic", "mu"))
-
-    def test_grad_matches_fd(self) -> None:
-        _compare_ad_vs_fd(
-            self, self.J, self.grad_J, self.params_at, self.paths,
-        )
-
-    def test_hessian_matches_fd(self) -> None:
-        _compare_hessian_ad_vs_fd(
-            self, self.J, self.hess_J, self.params_at, self.paths,
-        )
-
-
-# ============================================================
-# CLOSED_FORM multi-step
-# ============================================================
-
-class TestClosedFormMultiStep(unittest.TestCase):
-    """``jax.grad`` and ``jax.hessian`` of a sum-over-steps QoI
-    through a 3-step CLOSED_FORM Elastic forward solve match
-    central-difference. Validates that vjp through the time loop
-    composes with the outer ``lax.custom_root`` AD rule at each step.
-    """
-
-    J: Callable[[PyTreeDict], jax.Array]
-    grad_J: Callable[[PyTreeDict], PyTreeDict]
-    hess_J: Callable[[PyTreeDict], PyTreeDict]
-    params_at: PyTreeDict
-    paths: tuple[tuple[str, ...], ...]
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        slope = 5e-4
-        ts = (0.5, 1.0, 1.5)
-        fe_problem = _build_fe_problem_2x2x2(
-            _make_elastic_model(),
-            GlobalResidualMode.CLOSED_FORM,
-            slope,
-        )
-
-        def _J(params: dict[str, Any]) -> jax.Array:
-            U_history = _solve_history_closed(fe_problem, params, ts)
-            return sum((jnp.sum(U_n ** 2) for U_n in U_history),
-                       start=jnp.array(0.0))
-
-        cls.J = staticmethod(jax.jit(_J))
-        cls.grad_J = staticmethod(jax.jit(jax.grad(_J)))
-        cls.hess_J = staticmethod(jax.jit(jax.hessian(_J)))
-        cls.params_at = {"elastic": {"kappa": 100.0, "mu": 50.0}}
-        cls.paths = (("elastic", "kappa"), ("elastic", "mu"))
-
-    def test_grad_matches_fd(self) -> None:
-        _compare_ad_vs_fd(
-            self, self.J, self.grad_J, self.params_at, self.paths,
-        )
-
-    def test_hessian_matches_fd(self) -> None:
-        # Trim the small-h tail where FD signal drops below the
-        # Newton-convergence floor and reads as a constant plateau.
-        _compare_hessian_ad_vs_fd(
-            self, self.J, self.hess_J, self.params_at, self.paths,
-            hs=np.logspace(0, -7, 15),
-        )
 
 
 # ============================================================
@@ -799,14 +319,137 @@ def _compare_hessian_ad_vs_fd(test_case, J_fn, hess_fn, params_at,
 
 
 # ============================================================
+# CLOSED_FORM single step
+# ============================================================
+
+class TestClosedFormSingleStep(unittest.TestCase):
+    """``jax.grad`` and ``jax.hessian`` of a scalar QoI through a
+    single-step CLOSED_FORM Elastic forward solve via
+    ``fe_newton_solve`` match central-difference. Validates the
+    outer FE Newton's ``@custom_jvp`` rule + sparse linear-solve
+    VJP at one time step. No inner local Newton invoked
+    (CLOSED_FORM); no time-history adjoint (single step).
+    """
+
+    J: Callable[[PyTreeDict], jax.Array]
+    grad_J: Callable[[PyTreeDict], PyTreeDict]
+    hess_J: Callable[[PyTreeDict], PyTreeDict]
+    params_at: PyTreeDict
+    paths: tuple[tuple[str, ...], ...]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        slope = 5e-4
+        t = 1.0
+        # Build problem once with concrete (irrelevant for AD) params;
+        # parameter dependence flows through the explicit ``params``
+        # arg into ``fe_newton_solve``.
+        fe_problem = _build_fe_problem_2x2x2(
+            _make_elastic_model(),
+            GlobalResidualMode.CLOSED_FORM,
+            slope,
+        )
+        n_dofs = fe_problem.dof_map.num_total_dofs
+
+        def _J(params: dict[str, Any]) -> jax.Array:
+            U_prev = jnp.zeros(n_dofs)
+            xi_prev = _initial_xi_by_block(fe_problem)
+            U_star, _, _, _ = fe_newton_solve(
+                fe_problem, {"all": params},
+                U_prev=U_prev, t=t, xi_prev_by_block=xi_prev,
+                max_iters=20, abs_tol=1e-12, rel_tol=1e-12,
+            )
+            return jnp.sum(U_star ** 2)
+
+        cls.J = staticmethod(jax.jit(_J))
+        cls.grad_J = staticmethod(jax.jit(jax.grad(_J)))
+        cls.hess_J = staticmethod(jax.jit(jax.hessian(_J)))
+        cls.params_at = {"elastic": {"kappa": 100.0, "mu": 50.0}}
+        cls.paths = (("elastic", "kappa"), ("elastic", "mu"))
+
+    def test_grad_matches_fd(self) -> None:
+        _compare_ad_vs_fd(
+            self, self.J, self.grad_J, self.params_at, self.paths,
+        )
+
+    def test_hessian_matches_fd(self) -> None:
+        _compare_hessian_ad_vs_fd(
+            self, self.J, self.hess_J, self.params_at, self.paths,
+        )
+
+
+# ============================================================
+# CLOSED_FORM multi-step
+# ============================================================
+
+class TestClosedFormMultiStep(unittest.TestCase):
+    """``jax.grad`` and ``jax.hessian`` of a sum-over-steps QoI
+    through a 3-step CLOSED_FORM Elastic forward solve via
+    ``fe_quasistatic_drive_traced`` match central-difference.
+    Validates that vjp through the ``lax.scan`` time loop composes
+    with the outer FE Newton's ``@custom_jvp`` rule at each step.
+    """
+
+    J: Callable[[PyTreeDict], jax.Array]
+    grad_J: Callable[[PyTreeDict], PyTreeDict]
+    hess_J: Callable[[PyTreeDict], PyTreeDict]
+    params_at: PyTreeDict
+    paths: tuple[tuple[str, ...], ...]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        slope = 5e-4
+        ts = (0.5, 1.0, 1.5)
+        fe_problem = _build_fe_problem_2x2x2(
+            _make_elastic_model(),
+            GlobalResidualMode.CLOSED_FORM,
+            slope,
+        )
+        n_dofs = fe_problem.dof_map.num_total_dofs
+
+        def _J(params: dict[str, Any]) -> jax.Array:
+            U_init = jnp.zeros(n_dofs)
+            xi_init = _initial_xi_by_block(fe_problem)
+            t_schedule_jax = jnp.asarray([0.0, *ts], dtype=jnp.float64)
+            U_steps, _, _, _ = fe_quasistatic_drive_traced(
+                fe_problem, {"all": params},
+                U_init, xi_init, t_schedule_jax,
+                max_iters=20, abs_tol=1e-12, rel_tol=1e-12,
+            )
+            # U_steps has shape (N, n_dofs); summing over both axes
+            # gives the same scalar as the per-step-sum-then-sum form.
+            return jnp.sum(U_steps ** 2)
+
+        cls.J = staticmethod(jax.jit(_J))
+        cls.grad_J = staticmethod(jax.jit(jax.grad(_J)))
+        cls.hess_J = staticmethod(jax.jit(jax.hessian(_J)))
+        cls.params_at = {"elastic": {"kappa": 100.0, "mu": 50.0}}
+        cls.paths = (("elastic", "kappa"), ("elastic", "mu"))
+
+    def test_grad_matches_fd(self) -> None:
+        _compare_ad_vs_fd(
+            self, self.J, self.grad_J, self.params_at, self.paths,
+        )
+
+    def test_hessian_matches_fd(self) -> None:
+        # Trim the small-h tail where FD signal drops below the
+        # Newton-convergence floor and reads as a constant plateau.
+        _compare_hessian_ad_vs_fd(
+            self, self.J, self.hess_J, self.params_at, self.paths,
+            hs=np.logspace(0, -7, 15),
+        )
+
+
+# ============================================================
 # COUPLED single step
 # ============================================================
 
 class TestCoupledSingleStep(unittest.TestCase):
     """``jax.grad`` and ``jax.hessian`` of a scalar QoI through a
-    single-step COUPLED SmallElasticPlastic forward solve match
-    central-difference. Validates that the outer ``lax.custom_root``
-    AD rule composes with the inner per-IP ``@custom_jvp``.
+    single-step COUPLED SmallElasticPlastic forward solve via
+    ``fe_newton_solve`` match central-difference. Validates that
+    the outer FE Newton's ``@custom_jvp`` rule composes with the
+    inner per-IP local Newton's ``@custom_jvp``.
     """
 
     J: Callable[[PyTreeDict], jax.Array]
@@ -823,13 +466,15 @@ class TestCoupledSingleStep(unittest.TestCase):
             model, GlobalResidualMode.COUPLED, slope,
         )
         cls.params_at = model.parameters.values
+        n_dofs = fe_problem.dof_map.num_total_dofs
 
         def _J(params: dict[str, Any]) -> jax.Array:
-            n_dofs = fe_problem.dof_map.num_total_dofs
             U_prev = jnp.zeros(n_dofs)
             xi_prev = _initial_xi_by_block(fe_problem)
-            U_star, _ = _solve_step_coupled(
-                fe_problem, params, U_prev, xi_prev, t,
+            U_star, _, _, _ = fe_newton_solve(
+                fe_problem, {"all": params},
+                U_prev=U_prev, t=t, xi_prev_by_block=xi_prev,
+                max_iters=30, abs_tol=1e-10, rel_tol=1e-10,
             )
             return jnp.sum(U_star ** 2)
 
@@ -857,10 +502,12 @@ class TestCoupledSingleStep(unittest.TestCase):
 class TestCoupledMultiStepSimple(unittest.TestCase):
     """``jax.grad`` and ``jax.hessian`` of a sum-over-steps QoI
     (depends only on each step's U) through a multi-step COUPLED
-    forward solve match central-difference. Step times span
-    elastic and plastic regimes, exercising the cross-step
-    xi-history adjoint chain (``xi_{n-1}`` cotangents flowing
-    backward across the inner custom_jvp boundary).
+    forward solve via ``fe_quasistatic_drive_traced`` match
+    central-difference. Step times span elastic and plastic
+    regimes, exercising the cross-step xi-history adjoint chain
+    (``xi_{n-1}`` cotangents flowing backward through the
+    ``lax.scan`` carry across the inner-Newton ``@custom_jvp``
+    boundary).
     """
 
     J: Callable[[PyTreeDict], jax.Array]
@@ -879,13 +526,18 @@ class TestCoupledMultiStepSimple(unittest.TestCase):
             model, GlobalResidualMode.COUPLED, slope,
         )
         cls.params_at = model.parameters.values
+        n_dofs = fe_problem.dof_map.num_total_dofs
 
         def _J(params: dict[str, Any]) -> jax.Array:
-            U_history, _ = _solve_history_coupled(
-                fe_problem, params, ts,
+            U_init = jnp.zeros(n_dofs)
+            xi_init = _initial_xi_by_block(fe_problem)
+            t_schedule_jax = jnp.asarray([0.0, *ts], dtype=jnp.float64)
+            U_steps, _, _, _ = fe_quasistatic_drive_traced(
+                fe_problem, {"all": params},
+                U_init, xi_init, t_schedule_jax,
+                max_iters=30, abs_tol=1e-10, rel_tol=1e-10,
             )
-            return sum((jnp.sum(U_n ** 2) for U_n in U_history),
-                       start=jnp.array(0.0))
+            return jnp.sum(U_steps ** 2)
 
         cls.J = staticmethod(jax.jit(_J))
         cls.grad_J = staticmethod(jax.jit(jax.grad(_J)))
@@ -910,12 +562,13 @@ class TestCoupledMultiStepSimple(unittest.TestCase):
 
 class TestCoupledMultiStepAllPaths(unittest.TestCase):
     """``jax.grad`` and ``jax.hessian`` of an all-five-inputs QoI
-    through a multi-step COUPLED forward solve match central-
-    difference. The QoI couples to ``U_n``, ``U_{n-1}``, ``xi_n``,
-    ``xi_{n-1}``, and ``p`` directly, so every cotangent path
-    contributes non-trivially. If the simpler tests pass and this
-    fails, the boundaries individually work but the cross-path
-    summation is wrong.
+    through a multi-step COUPLED forward solve via
+    ``fe_quasistatic_drive_traced`` match central-difference.
+    The QoI couples to ``U_n``, ``U_{n-1}``, ``xi_n``, ``xi_{n-1}``,
+    and ``p`` directly, so every cotangent path contributes
+    non-trivially. If the simpler tests pass and this fails, the
+    boundaries individually work but the cross-path summation is
+    wrong.
     """
 
     J: Callable[[PyTreeDict], jax.Array]
@@ -933,26 +586,37 @@ class TestCoupledMultiStepAllPaths(unittest.TestCase):
             model, GlobalResidualMode.COUPLED, slope,
         )
         cls.params_at = model.parameters.values
+        n_dofs = fe_problem.dof_map.num_total_dofs
 
         c_U, c_Up, c_xi, c_xp, c_p = 1.0, 0.7, 0.3, 0.5, 1e-4
 
         def _J(params: dict[str, Any]) -> jax.Array:
-            n_dofs = fe_problem.dof_map.num_total_dofs
-            U_history, xi_history = _solve_history_coupled(
-                fe_problem, params, ts,
+            U_init = jnp.zeros(n_dofs)
+            xi_init_dict = _initial_xi_by_block(fe_problem)
+            t_schedule_jax = jnp.asarray([0.0, *ts], dtype=jnp.float64)
+            U_steps, xi_steps, _, _ = fe_quasistatic_drive_traced(
+                fe_problem, {"all": params},
+                U_init, xi_init_dict, t_schedule_jax,
+                max_iters=30, abs_tol=1e-10, rel_tol=1e-10,
             )
-            U_prev_seq = [jnp.zeros(n_dofs), *U_history[:-1]]
-            xi_prev_seq = [_initial_xi_by_block(fe_problem),
-                           *xi_history[:-1]]
+            # U_prev_seq shape (N, n_dofs): prepend U_init,
+            # drop final step. Same shift, applied per block, for xi.
+            U_prev_seq = jnp.concatenate(
+                [U_init[None, :], U_steps[:-1]], axis=0,
+            )
+            xi_prev_seq = {
+                block: jnp.concatenate(
+                    [xi_init_dict[block][None], xi_steps[block][:-1]],
+                    axis=0,
+                )
+                for block in xi_steps
+            }
             total = jnp.array(0.0)
-            for U_n, U_p, xi_n, xi_p in zip(
-                    U_history, U_prev_seq,
-                    xi_history, xi_prev_seq, strict=True):
-                total = total + c_U * jnp.sum(U_n ** 2)
-                total = total + c_Up * jnp.sum(U_p ** 2)
-                for block in xi_n:
-                    total = total + c_xi * jnp.sum(xi_n[block] ** 2)
-                    total = total + c_xp * jnp.sum(xi_p[block] ** 2)
+            total = total + c_U * jnp.sum(U_steps ** 2)
+            total = total + c_Up * jnp.sum(U_prev_seq ** 2)
+            for block in xi_steps:
+                total = total + c_xi * jnp.sum(xi_steps[block] ** 2)
+                total = total + c_xp * jnp.sum(xi_prev_seq[block] ** 2)
             # Direct-through-parameters term — exercises the path
             # that bypasses both implicit solves.
             total = total + c_p * (params["elastic"]["E"] ** 2
