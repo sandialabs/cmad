@@ -1,8 +1,9 @@
-"""``cmad objective/gradient/hessian/calibrate`` reject FE decks early.
+"""``cmad calibrate`` rejects FE decks early.
 
-Each of the four subcommands raises ``NotImplementedError`` when
-``problem.type`` is ``fe``. Tests check the exception type and that
-the message names the subcommand and contains the ``'fe'`` literal.
+The remaining FE-unsupported subcommand raises
+``NotImplementedError``. The test checks the exception type and
+that the message names the subcommand and contains the ``'fe'``
+literal.
 """
 import tempfile
 import unittest
@@ -26,9 +27,6 @@ class TestFeDispatchStubs(unittest.TestCase):
             self.assertIn(f"cmad {subcommand}", msg)
             self.assertIn("'fe'", msg)
             self.assertIn("not yet supported", msg)
-
-    def test_hessian_rejects_fe(self) -> None:
-        self._check("hessian")
 
     def test_calibrate_rejects_fe(self) -> None:
         self._check("calibrate")
