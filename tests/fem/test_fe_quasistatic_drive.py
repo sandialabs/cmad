@@ -25,6 +25,7 @@ import numpy as np
 from jax.tree_util import tree_map
 from numpy.typing import NDArray
 
+from cmad.fem.assembly import params_by_block_from_models
 from cmad.fem.bcs import DirichletBC
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.driver import fe_quasistatic_drive
@@ -156,7 +157,8 @@ class TestDriveSingleStepClosedForm(unittest.TestCase):
         n_dofs = fe_problem.dof_map.num_total_dofs
         U_prev_zeros = np.zeros(n_dofs, dtype=np.float64)
         U_direct, _, _, _ = fe_newton_solve(
-            fe_problem, U_prev=U_prev_zeros, t=1.0,
+            fe_problem, params_by_block_from_models(fe_problem),
+            U_prev=U_prev_zeros, t=1.0,
         )
         self.assertEqual(len(state.U_history), 2)
         np.testing.assert_allclose(
@@ -193,6 +195,7 @@ class TestDriveMultiStepCoupledElastic(unittest.TestCase):
 
         U_direct, xi_direct, _, _ = fe_newton_solve(
             fe_problem,
+            params_by_block_from_models(fe_problem),
             U_prev=state.U_at(1),
             t=1.0,
             xi_prev_by_block={"all": state.xi_at(1, "all")},
@@ -244,6 +247,7 @@ class TestDriveXiRestartConsistency(unittest.TestCase):
         # Restart from recorded xi_1; verify identical xi_2.
         _, xi_direct, _, _ = fe_newton_solve(
             fe_problem,
+            params_by_block_from_models(fe_problem),
             U_prev=state.U_at(1),
             t=2.0,
             xi_prev_by_block={"all": state.xi_at(1, "all")},
@@ -319,15 +323,18 @@ class TestSolverLog(unittest.TestCase):
         self.assertEqual(len(solver_log), 2)
         for entry in solver_log:
             self.assertEqual(set(entry.keys()), {"iters", "final_residual"})
-            self.assertGreaterEqual(entry["iters"], 1)
-            self.assertGreaterEqual(entry["final_residual"], 0.0)
+            self.assertLess(entry["final_residual"], 1e-8)
 
     def test_solver_kwargs_forwarded_max_iters(self) -> None:
         fe_problem = self._build_elastic_problem()
         t_schedule = [0.0, 1.0]
-        with self.assertRaises(RuntimeError) as ctx:
-            fe_quasistatic_drive(fe_problem, t_schedule, max_iters=1)
-        self.assertIn("did not converge in 1 iters", str(ctx.exception))
+        _, solver_log = fe_quasistatic_drive(
+            fe_problem, t_schedule, max_iters=0,
+        )
+        # ``max_iters=0`` zeros the iteration count → ``U_star`` stays
+        # at the prescribed-loaded init and the final residual sits
+        # at its initial (un-converged) magnitude.
+        self.assertGreater(solver_log[0]["final_residual"], 1e-3)
 
 
 if __name__ == "__main__":

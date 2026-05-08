@@ -1,5 +1,5 @@
 """FEProblem + FEState dataclasses for the FE forward problem."""
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -268,8 +268,8 @@ class FEState:
 
     def append(
             self,
-            U_new: NDArray[np.floating],
-            xi_by_block: dict[str, NDArray[np.floating]],
+            U_new: NDArray[np.floating] | JaxArray,
+            xi_by_block: Mapping[str, NDArray[np.floating] | JaxArray],
             t_new: float,
     ) -> None:
         """Append one converged step's ``(U, xi_by_block, t)`` tuple."""

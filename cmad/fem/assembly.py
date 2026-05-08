@@ -1,5 +1,5 @@
 """Element + global FE assembly machinery."""
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import jax.numpy as jnp
 import numpy as np
@@ -29,7 +29,7 @@ from cmad.typing import (
 
 def params_by_block_from_models(
         fe_problem: FEProblem,
-) -> dict[str, Params]:
+) -> Mapping[str, Params]:
     """Source per-block params from each block's stored model.
 
     Imperative call sites (driver, MMS helpers, regression tests) build
@@ -394,7 +394,7 @@ def per_element_R_and_K_coupled(
 
 def assemble_element_block(
         fe_problem: FEProblem,
-        params_by_block: dict[str, Params],
+        params_by_block: Mapping[str, Params],
         block_name: str,
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
@@ -457,7 +457,7 @@ def assemble_element_block(
 
     geom_cache = fe_problem.geometry_cache[block_name]
 
-    xi_solved_per_block: NDArray[np.floating] | None
+    xi_solved_per_block: JaxArray | None
     if mode == GlobalResidualMode.COUPLED:
         if xi_prev_per_block is None:
             raise ValueError(
@@ -543,11 +543,11 @@ def assemble_element_block(
 
 def assemble_global(
         fe_problem: FEProblem,
-        params_by_block: dict[str, Params],
+        params_by_block: Mapping[str, Params],
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
         t: float,
-        xi_prev_by_block: dict[str, NDArray[np.floating] | JaxArray]
+        xi_prev_by_block: Mapping[str, NDArray[np.floating] | JaxArray]
         | None = None,
 ) -> tuple[BCOO, JaxArray, dict[str, JaxArray]]:
     """Walk all element blocks and emit the global ``(K, R, xi_solved)``.

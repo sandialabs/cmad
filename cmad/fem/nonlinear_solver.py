@@ -1,11 +1,15 @@
 """Global Newton driver and BC-enforcement helpers for the FE forward problem."""
+from collections.abc import Mapping
+
+import jax.numpy as jnp
 import numpy as np
 import scipy.sparse
-import scipy.sparse.linalg
+from jax import jacfwd, lax
 from numpy.typing import NDArray
 
-from cmad.fem.assembly import assemble_global, params_by_block_from_models
+from cmad.fem.assembly import assemble_global
 from cmad.fem.fe_problem import FEProblem
+from cmad.typing import JaxArray, Params
 
 
 def apply_strong_dirichlet(
@@ -82,110 +86,155 @@ def apply_strong_dirichlet(
 
 def fe_newton_solve(
         fe_problem: FEProblem,
-        U_prev: NDArray[np.floating],
+        params_by_block: Mapping[str, Params],
+        U_prev: NDArray[np.floating] | JaxArray,
         t: float = 0.0,
-        xi_prev_by_block: dict[str, NDArray[np.floating]] | None = None,
+        xi_prev_by_block: Mapping[str, NDArray[np.floating] | JaxArray]
+        | None = None,
         max_iters: int = 20,
         abs_tol: float = 1e-10,
         rel_tol: float = 1e-10,
-) -> tuple[
-    NDArray[np.floating],
-    dict[str, NDArray[np.floating]],
-    int,
-    float,
-]:
+) -> tuple[JaxArray, dict[str, JaxArray], int, JaxArray]:
     """Quasi-static global Newton driver for the FE forward problem.
 
     Nonlinear convention: ``K = dR/dU`` is the tangent stiffness and
-    ``R(U) = R_int(U) - F_ext`` is the residual (body force folded into
-    ``R`` by the assembly — no separate ``F`` vector). Each Newton step
-    solves ``K · dU = -R``.
+    ``R(U) = R_int(U) - F_ext`` is the residual (body force folded
+    into ``R`` by the assembly — no separate ``F`` vector). Each
+    Newton step solves ``K · dU = -R``.
 
-    Each iteration assembles the global ``(K, R, xi_solved_by_block)``
-    via :func:`assemble_global`, applies Dirichlet boundary conditions
-    by strong enforcement, and solves the sparse system
-    ``K_csr @ dU = -R_enforced`` via direct factorization
-    (``scipy.sparse.linalg.spsolve``). Returns
-    ``(U_solved, xi_solved_by_block, n_iters, final_R_norm)``.
+    Wraps the Newton iteration in :func:`jax.lax.custom_root` so the
+    solve is JAX-traceable end to end. Three pieces close over
+    ``fe_problem`` / ``params_by_block`` / ``U_prev`` / ``t`` /
+    ``xi_prev_by_block``:
 
-    The Newton's initial iterate is ``U_prev`` with prescribed-dof
-    entries overwritten by ``DofMap.evaluate_prescribed_values(t)``,
-    giving a quasi-static warm start: interior values from the
-    previous step, boundary values at the current step's BC targets.
-    ``U[prescribed]`` stays at the BC target across iterations
-    because strong enforcement zeros the corresponding rows of
-    ``dU`` (``dbc_residual = 0`` since
-    ``U[prescribed] - bc_target = 0`` after pre-loading), so the
-    same driver handles both homogeneous and non-homogeneous
-    Dirichlet.
+    - ``residual(U)``: the embedded-BC residual that's zero at the
+      converged iterate. ``residual[free] = R(U)[free]``;
+      ``residual[prescribed] = U[prescribed] - prescribed_vals(t)``
+      (scale=1 hardcoded — the prescribed block of
+      ``dresidual/dU`` is decoupled and the prescribed targets are
+      parameter-independent at fixed ``t``, so ``dU*/dp`` at
+      prescribed dofs is scale-invariant; hardcoding 1 keeps ``K``
+      out of ``residual``'s data path).
+    - ``solve``: imperative ``lax.while_loop`` over Newton
+      iterations. Body assembles ``(R, K)``, applies strong DBC
+      inline (zero prescribed rows + cols, scaled identity on the
+      prescribed diagonal, zero ``R_enf[prescribed]``), and solves
+      ``K_enf @ dU = -R_enf`` via dense ``jnp.linalg.solve``. The
+      prescribed-diagonal scale is ``mean(|diag(K)|[free])`` so
+      enforcement entries match the magnitude of the unprescribed
+      diagonal — same shape as :func:`apply_strong_dirichlet` (the
+      scipy-numpy helper used by any imperative call site).
+    - ``tangent_solve``: dense
+      ``jacfwd(lin_residual)(zeros) → jnp.linalg.solve`` for the
+      IFT inversion that ``lax.custom_root`` invokes for both
+      forward-mode and reverse-mode AD.
+
+    Initial iterate ``U_prev`` with prescribed dofs overwritten by
+    ``DofMap.evaluate_prescribed_values(t)`` — quasi-static warm
+    start: interior values from the previous step, boundary values
+    at the current step's BC targets. Same driver handles
+    homogeneous and non-homogeneous Dirichlet.
+
+    ``params_by_block`` is required and threads explicitly through
+    the assembly call chain — pass tracer-leaved per-block params
+    for AD callers, or build via
+    :func:`cmad.fem.assembly.params_by_block_from_models` for
+    imperative callers.
 
     ``xi_prev_by_block`` is the previous time-step's converged xi
     keyed by COUPLED block; required when the FE problem has any
-    COUPLED block, ignored otherwise. ``xi_prev`` stays fixed across
-    global Newton iterations (it's an input to the time step, not a
-    function of the current ``U`` iterate); the per-IP local Newton
-    inside the COUPLED kernel re-solves for ``xi(U_iter, xi_prev)``
-    every iteration. The returned ``xi_solved_by_block`` is the
-    converged-iteration value — the time step's xi output, fed into
-    the next step's ``xi_prev_by_block``. Empty dict for
-    CLOSED_FORM-only problems. A missing COUPLED-block entry surfaces
-    as a ``ValueError`` from
+    COUPLED block, ignored otherwise. ``xi_prev`` stays fixed
+    across global Newton iterations; the per-IP local Newton inside
+    the COUPLED kernel re-solves for ``xi(U_iter, xi_prev)`` every
+    iteration. Returned ``xi_solved_by_block`` is the converged
+    value, re-extracted by one ``assemble_global`` call at
+    ``U_star`` after the root solve. Empty dict for CLOSED_FORM-
+    only problems. A missing COUPLED-block entry surfaces as a
+    ``ValueError`` from
     :func:`cmad.fem.assembly.assemble_element_block` on the first
-    iteration.
+    body iteration.
 
-    For linear-elastic + closed-form Cauchy the residual is linear in
-    U and Newton converges in one iteration; the loop is structured to
-    accept multi-iteration convergence for nonlinear materials. The
-    caller appends ``(U_solved, xi_by_block, t)`` into the
-    :class:`FEState` history; this driver is stateless.
+    Returns ``(U_solved, xi_solved_by_block, n_iters, R_norm)``.
+    Outputs are JAX arrays. ``n_iters`` is ``-1`` (the
+    ``lax.custom_root`` ``solve`` callable's loop counter doesn't
+    escape its boundary); concrete callers that previously logged
+    iteration counts should fall back to ``R_norm`` for
+    convergence reporting.
     """
-    U = U_prev.astype(np.float64).copy()
-    prescribed_values = fe_problem.dof_map.evaluate_prescribed_values(t)
-    U[fe_problem.dof_map.prescribed_indices] = prescribed_values
-
-    R_norm_0: float = 1.0
-    R_norm: float = 0.0
-    dbc_residual = np.zeros(
-        fe_problem.dof_map.num_prescribed_dofs, dtype=np.float64,
+    dof_map = fe_problem.dof_map
+    prescribed_indices = jnp.asarray(dof_map.prescribed_indices)
+    prescribed_vals = jnp.asarray(
+        dof_map.evaluate_prescribed_values(t),
     )
-    xi_solved_by_block: dict[str, NDArray[np.floating]] = {}
-    params_by_block = params_by_block_from_models(fe_problem)
 
-    for it in range(max_iters):
-        K_bcoo, R_jax, xi_solved_jax = assemble_global(
-            fe_problem, params_by_block, U, U_prev, t,
-            xi_prev_by_block=xi_prev_by_block,
-        )
-        K_indices = np.asarray(K_bcoo.indices)
-        K_coo = scipy.sparse.coo_matrix(
-            (np.asarray(K_bcoo.data),
-             (K_indices[:, 0], K_indices[:, 1])),
-            shape=K_bcoo.shape,
-        )
-        R = np.asarray(R_jax)
-        xi_solved_by_block = {
-            k: np.asarray(v) for k, v in xi_solved_jax.items()
-        }
-
-        K_csr, R_enforced, _ = apply_strong_dirichlet(
-            K_coo, R,
-            fe_problem.dof_map.prescribed_indices,
-            dbc_residual,
-        )
-
-        R_norm = float(np.linalg.norm(R_enforced))
-        if it == 0:
-            R_norm_0 = R_norm if R_norm > 0.0 else 1.0
-
-        if R_norm < abs_tol or R_norm / R_norm_0 < rel_tol:
-            return U, xi_solved_by_block, it, R_norm
-
-        dU = np.asarray(
-            scipy.sparse.linalg.spsolve(K_csr.tocsc(), -R_enforced),
-        )
-        U = U + dU
-
-    raise RuntimeError(
-        f"fe_newton_solve did not converge in {max_iters} iters; "
-        f"final R_norm = {R_norm}"
+    U_prev_jax = jnp.asarray(U_prev, dtype=jnp.float64)
+    xi_prev_jax = (
+        {k: jnp.asarray(v) for k, v in xi_prev_by_block.items()}
+        if xi_prev_by_block is not None else None
     )
+
+    def residual(U):
+        _, R, _ = assemble_global(
+            fe_problem, params_by_block, U, U_prev_jax, t,
+            xi_prev_by_block=xi_prev_jax,
+        )
+        return R.at[prescribed_indices].set(
+            U[prescribed_indices] - prescribed_vals,
+        )
+
+    def solve(residual_fn, U_init):
+        def cond(state):
+            i, _, R_norm, R_norm_0 = state
+            return (i < max_iters) & (R_norm >= abs_tol) & (
+                R_norm >= rel_tol * R_norm_0
+            )
+
+        def body(state):
+            i, U, _, R_norm_0 = state
+            K_bcoo, R, _ = assemble_global(
+                fe_problem, params_by_block, U, U_prev_jax, t,
+                xi_prev_by_block=xi_prev_jax,
+            )
+            K = K_bcoo.todense()
+
+            n = K.shape[0]
+            p_mask = jnp.zeros(n, bool).at[prescribed_indices].set(True)
+            free_mask = (~p_mask).astype(K.dtype)
+            scale = (jnp.sum(jnp.abs(jnp.diag(K)) * free_mask)
+                     / jnp.sum(free_mask))
+            K_enf = jnp.where(
+                p_mask[:, None] | p_mask[None, :], 0.0, K,
+            )
+            K_enf = K_enf.at[
+                prescribed_indices, prescribed_indices,
+            ].set(scale)
+            R_enf = R.at[prescribed_indices].set(0.0)
+
+            dU = jnp.linalg.solve(K_enf, -R_enf)
+            U_new = U + dU
+            return (
+                i + 1, U_new,
+                jnp.linalg.norm(residual_fn(U_new)), R_norm_0,
+            )
+
+        R0 = jnp.maximum(jnp.linalg.norm(residual_fn(U_init)), 1.0)
+        _, U_star, _, _ = lax.while_loop(
+            cond, body, (0, U_init, R0, R0),
+        )
+        return U_star
+
+    def tangent_solve(lin_residual, y):
+        K_lin = jacfwd(lin_residual)(jnp.zeros_like(y))
+        return jnp.linalg.solve(K_lin, y)
+
+    U_init = U_prev_jax.at[prescribed_indices].set(prescribed_vals)
+    U_star = lax.custom_root(residual, U_init, solve, tangent_solve)
+
+    _, R_final, xi_solved_by_block = assemble_global(
+        fe_problem, params_by_block, U_star, U_prev_jax, t,
+        xi_prev_by_block=xi_prev_jax,
+    )
+    R_norm_final = jnp.linalg.norm(
+        R_final.at[prescribed_indices].set(0.0),
+    )
+    return U_star, xi_solved_by_block, -1, R_norm_final

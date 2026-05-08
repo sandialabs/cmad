@@ -30,6 +30,7 @@ from jax.tree_util import tree_map
 from numpy.typing import NDArray
 from sympy import Matrix, eye, lambdify
 
+from cmad.fem.assembly import params_by_block_from_models
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem, FEState
 from cmad.fem.interpolants import hex_linear, tet_linear
@@ -116,7 +117,7 @@ def build_mms_callables(
 
 def l2_h1_errors(
         fe_problem: FEProblem,
-        U_solved: NDArray[np.floating],
+        U_solved: NDArray[np.floating] | JaxArray,
         u_exact: Callable[[NDArray[np.floating]], NDArray[np.floating]],
         grad_u_exact: Callable[
             [NDArray[np.floating]], NDArray[np.floating],
@@ -203,8 +204,10 @@ def solve_and_measure(
     the returned ``n_iters``.
     """
     state = FEState.from_problem(fe_problem)
+    params_by_block = params_by_block_from_models(fe_problem)
     U_solved, _, n_iters, _ = fe_newton_solve(
-        fe_problem, U_prev=state.U_at(0), t=t,
+        fe_problem, params_by_block,
+        U_prev=state.U_at(0), t=t,
     )
     L2, H1 = l2_h1_errors(fe_problem, U_solved, u_exact, grad_u_exact)
     return L2, H1, n_iters

@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from cmad.fem.assembly import params_by_block_from_models
 from cmad.fem.fe_problem import FEProblem, FEState
 from cmad.fem.nonlinear_solver import fe_newton_solve
 from cmad.global_residuals.modes import GlobalResidualMode
@@ -64,6 +65,7 @@ def fe_quasistatic_drive(
         b for b, m in fe_problem.modes_by_block.items()
         if m == GlobalResidualMode.COUPLED
     ]
+    params_by_block = params_by_block_from_models(fe_problem)
 
     solver_log: list[dict[str, Any]] = []
 
@@ -75,6 +77,7 @@ def fe_quasistatic_drive(
         }
         U_solved, xi_solved_by_block, iters, final_R_norm = fe_newton_solve(
             fe_problem,
+            params_by_block,
             U_prev=U_prev,
             t=t,
             xi_prev_by_block=xi_prev_by_block,
@@ -90,7 +93,7 @@ def fe_quasistatic_drive(
         }
         state.append(U_solved, xi_by_block, t_new=t)
         solver_log.append(
-            {"iters": iters, "final_residual": final_R_norm},
+            {"iters": int(iters), "final_residual": float(final_R_norm)},
         )
 
     return state, solver_log
