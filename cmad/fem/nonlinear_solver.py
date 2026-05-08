@@ -151,10 +151,20 @@ def fe_newton_solve(
     xi_solved_by_block: dict[str, NDArray[np.floating]] = {}
 
     for it in range(max_iters):
-        K_coo, R, xi_solved_by_block = assemble_global(
+        K_bcoo, R_jax, xi_solved_jax = assemble_global(
             fe_problem, U, U_prev, t,
             xi_prev_by_block=xi_prev_by_block,
         )
+        K_indices = np.asarray(K_bcoo.indices)
+        K_coo = scipy.sparse.coo_matrix(
+            (np.asarray(K_bcoo.data),
+             (K_indices[:, 0], K_indices[:, 1])),
+            shape=K_bcoo.shape,
+        )
+        R = np.asarray(R_jax)
+        xi_solved_by_block = {
+            k: np.asarray(v) for k, v in xi_solved_jax.items()
+        }
 
         K_csr, R_enforced, _ = apply_strong_dirichlet(
             K_coo, R,

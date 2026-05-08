@@ -155,21 +155,19 @@ class TestAssemblyMultiBlock(unittest.TestCase):
         self.n_dofs_p = 4
 
     def test_R_block_scatter_lands_in_correct_field_eqs(self) -> None:
-        n_dofs = self.fe_problem.dof_map.num_total_dofs
-        R = np.zeros(n_dofs, dtype=np.float64)
-        assemble_element_block(
-            R, self.fe_problem, "all", self.U, self.U_prev, t=0.0,
+        R_block, _, _, _, _ = assemble_element_block(
+            self.fe_problem, "all", self.U, self.U_prev, t=0.0,
         )
+        R = np.asarray(R_block)
         self.assertEqual(R.shape, (self.n_dofs_u + self.n_dofs_p,))
         np.testing.assert_allclose(R[:self.n_dofs_u], _R_U_PER_IP)
         np.testing.assert_allclose(R[self.n_dofs_u:], _R_P_PER_IP)
 
     def test_K_scatter_populates_all_four_block_pairs(self) -> None:
-        n_dofs = self.fe_problem.dof_map.num_total_dofs
-        R = np.zeros(n_dofs, dtype=np.float64)
-        rows, cols, vals, _ = assemble_element_block(
-            R, self.fe_problem, "all", self.U, self.U_prev, t=0.0,
+        _, rows, cols, vals_jax, _ = assemble_element_block(
+            self.fe_problem, "all", self.U, self.U_prev, t=0.0,
         )
+        vals = np.asarray(vals_jax)
         u_rows = rows < self.n_dofs_u
         u_cols = cols < self.n_dofs_u
         p_rows = ~u_rows
@@ -192,10 +190,8 @@ class TestAssemblyMultiBlock(unittest.TestCase):
 
     def test_K_off_diagonal_uses_correct_row_col_eq_ranges(self) -> None:
         """up entries: u-eq rows, p-eq cols. pu entries: p-eq rows, u-eq cols."""
-        n_dofs = self.fe_problem.dof_map.num_total_dofs
-        R = np.zeros(n_dofs, dtype=np.float64)
-        rows, cols, _, _ = assemble_element_block(
-            R, self.fe_problem, "all", self.U, self.U_prev, t=0.0,
+        _, rows, cols, _, _ = assemble_element_block(
+            self.fe_problem, "all", self.U, self.U_prev, t=0.0,
         )
         u_rows = rows < self.n_dofs_u
         u_cols = cols < self.n_dofs_u

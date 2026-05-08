@@ -121,13 +121,13 @@ class TestAssembleElementBlockCoupledShape(unittest.TestCase):
         # 8 IPs from the default degree-2 hex Gauss-Legendre rule.
         xi_prev = np.zeros((1, 8, 6), dtype=np.float64)
 
-        R_global = np.zeros(n_dofs, dtype=np.float64)
-        rows, cols, vals, xi_solved = assemble_element_block(
-            R_global, fe_problem, "all", U, U, t=0.0,
+        R_block, rows, cols, vals, xi_solved = assemble_element_block(
+            fe_problem, "all", U, U, t=0.0,
             xi_prev_per_block=xi_prev,
         )
         assert xi_solved is not None
         self.assertEqual(xi_solved.shape, (1, 8, 6))
+        self.assertEqual(R_block.shape, (n_dofs,))
         self.assertEqual(rows.ndim, 1)
         self.assertEqual(cols.ndim, 1)
         self.assertEqual(vals.ndim, 1)
@@ -141,10 +141,9 @@ class TestAssembleElementBlockCoupledShape(unittest.TestCase):
         )
         n_dofs = fe_problem.dof_map.num_total_dofs
         U = np.zeros(n_dofs, dtype=np.float64)
-        R_global = np.zeros(n_dofs, dtype=np.float64)
 
-        _, _, _, xi_solved = assemble_element_block(
-            R_global, fe_problem, "all", U, U, t=0.0,
+        _, _, _, _, xi_solved = assemble_element_block(
+            fe_problem, "all", U, U, t=0.0,
         )
         self.assertIsNone(xi_solved)
 
@@ -185,9 +184,13 @@ class TestAssembleGlobalCoupledClosedFormEquivalence(unittest.TestCase):
             xi_prev_by_block=xi_prev_by_block,
         )
 
-        np.testing.assert_allclose(R_closed, R_coupled, atol=1e-10)
         np.testing.assert_allclose(
-            K_closed.toarray(), K_coupled.toarray(), atol=1e-10,
+            np.asarray(R_closed), np.asarray(R_coupled), atol=1e-10,
+        )
+        np.testing.assert_allclose(
+            np.asarray(K_closed.todense()),
+            np.asarray(K_coupled.todense()),
+            atol=1e-10,
         )
         self.assertEqual(xi_closed, {})
         self.assertEqual(set(xi_coupled.keys()), {"all"})

@@ -261,25 +261,27 @@ def per_side_neumann_R(
 
 
 def assemble_side_neumann(
-        R_global: NDArray[np.floating],
         mesh: Mesh,
         dof_map: GlobalDofMap,
         resolved_neumann_bcs: Sequence[ResolvedNeumannBC],
         side_quadrature: dict[ElementFamily, QuadratureRule],
         t: float,
-) -> None:
-    """Scatter Neumann surface contributions into ``R_global`` in place.
+) -> JaxArray:
+    """Build the Neumann surface contribution to the global residual.
 
     Iterates each resolved NBC and its ``(family, local_side_id)``
     groups, vmaps :func:`per_side_neumann_R` over the group's
-    element ids, and scatters per-element side residuals into
-    ``R_global`` via the field's eq formula
+    element ids, and scatters per-element side residuals into a
+    flat JAX vector of length ``dof_map.num_total_dofs`` via the
+    field's eq formula
     ``eq = block_offset + basis_fn * num_components + component``.
-    K gets no contribution. ``R_global`` is mutated in place via
-    ``np.add.at``; no-op when ``resolved_neumann_bcs`` is empty.
+    K gets no contribution. Returns a zero vector when
+    ``resolved_neumann_bcs`` is empty.
     """
+    n_dofs = dof_map.num_total_dofs
+    R_neumann = jnp.zeros(n_dofs)
     if not resolved_neumann_bcs:
-        return
+        return R_neumann
     if mesh.geometric_finite_element is None:
         raise ValueError(
             "Mesh.geometric_finite_element is required for "
@@ -349,9 +351,10 @@ def assemble_side_neumann(
             )
             eq_flat = eq_3d.reshape(n_elems, -1)
 
-            R_arr = np.asarray(R_per_elem)
-            R_flat = R_arr.reshape(n_elems, -1)
-            np.add.at(R_global, eq_flat.ravel(), R_flat.ravel())
+            R_flat = R_per_elem.reshape(n_elems, -1)
+            R_neumann = R_neumann.at[eq_flat.ravel()].add(R_flat.ravel())
+
+    return R_neumann
 
 
 def _values_fn_for(

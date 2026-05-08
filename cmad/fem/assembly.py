@@ -3,8 +3,8 @@ from collections.abc import Callable, Sequence
 
 import jax.numpy as jnp
 import numpy as np
-import scipy.sparse
 from jax import vmap
+from jax.experimental.sparse import BCOO
 from jax.flatten_util import ravel_pytree
 from numpy.typing import NDArray
 
@@ -375,31 +375,35 @@ def per_element_R_and_K_coupled(
 
 
 def assemble_element_block(
-        R_global: NDArray[np.floating],
         fe_problem: FEProblem,
         block_name: str,
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
         t: float,
-        xi_prev_per_block: NDArray[np.floating] | None = None,
+        xi_prev_per_block: NDArray[np.floating] | JaxArray | None = None,
 ) -> tuple[
+    JaxArray,
     NDArray[np.intp],
     NDArray[np.intp],
-    NDArray[np.floating],
-    NDArray[np.floating] | None,
+    JaxArray,
+    JaxArray | None,
 ]:
-    """Assemble one element block's COO triplets and scatter R in place.
+    """Assemble one element block's R contribution + COO triplets.
 
     Dispatches on ``fe_problem.modes_by_block[block_name]``. The
     CLOSED_FORM branch vmaps :func:`per_element_R_and_K`; the COUPLED
     branch vmaps :func:`per_element_R_and_K_coupled` and threads
     ``xi_prev_per_block`` (shape ``(n_elems_block, n_ips,
     total_xi_dofs)``) through the per-IP local Newton, returning the
-    converged xi at the same shape. Both branches scatter the per-
-    element residuals into ``R_global`` in place via ``np.add.at``
-    and emit the block's ``(rows, cols, vals)`` COO stream. The
-    fourth return slot is ``xi_solved_per_block`` — the converged
-    xi array for COUPLED, ``None`` for CLOSED_FORM.
+    converged xi at the same shape.
+
+    Returns ``(R_block, rows, cols, vals, xi_solved_per_block)``.
+    ``R_block`` is a flat JAX vector of length ``dof_map.num_total_dofs``
+    holding this block's contribution to the global residual (zero
+    outside the block's eq indices). ``(rows, cols)`` are static
+    numpy index arrays; ``vals`` is the JAX-traced COO values stream.
+    ``xi_solved_per_block`` is the converged xi for COUPLED, ``None``
+    for CLOSED_FORM.
 
     ``xi_prev_per_block`` is required when the block is COUPLED and
     must match the cached layout
@@ -444,7 +448,7 @@ def assemble_element_block(
             )
         unravel_xi = fe_problem.unravel_xi_by_block[block_name]
         xi_prev_jax = jnp.asarray(xi_prev_per_block)
-        R_per_elem_blocks, K_per_elem_blocks, xi_solved_per_elem = vmap(
+        R_per_elem_blocks, K_per_elem_blocks, xi_solved_per_block = vmap(
             lambda U, Up, geom, xi_prev: per_element_R_and_K_coupled(
                 U, Up, params, xi_prev,
                 geom, geom_cache.shared,
@@ -457,7 +461,6 @@ def assemble_element_block(
             U_elem_block, U_prev_elem_block,
             geom_cache.per_elem, xi_prev_jax,
         )
-        xi_solved_per_block = np.asarray(xi_solved_per_elem)
     else:
         R_per_elem_blocks, K_per_elem_blocks = vmap(
             lambda U, Up, geom: per_element_R_and_K(
@@ -479,24 +482,26 @@ def assemble_element_block(
     ]
 
     n_elems = connectivity_block.shape[0]
+    n_dofs = dof_map.num_total_dofs
 
+    R_block = jnp.zeros(n_dofs)
     for r in range(num_blocks):
-        R_arr = np.asarray(R_per_elem_blocks[r])
-        R_flat = R_arr.reshape(n_elems, -1)
+        R_flat = R_per_elem_blocks[r].reshape(n_elems, -1)
         eq_r = eq_indices_per_block[r]
-        np.add.at(R_global, eq_r.ravel(), R_flat.ravel())
+        R_block = R_block.at[eq_r.ravel()].add(R_flat.ravel())
 
     rows_all: list[NDArray[np.intp]] = []
     cols_all: list[NDArray[np.intp]] = []
-    vals_all: list[NDArray[np.floating]] = []
+    vals_all: list[JaxArray] = []
     for r in range(num_blocks):
         eq_r = eq_indices_per_block[r]
         n_dofs_r = eq_r.shape[1]
         for s in range(num_blocks):
             eq_s = eq_indices_per_block[s]
             n_dofs_s = eq_s.shape[1]
-            K_arr = np.asarray(K_per_elem_blocks[r][s])
-            K_flat = K_arr.reshape(n_elems, n_dofs_r, n_dofs_s)
+            K_flat = K_per_elem_blocks[r][s].reshape(
+                n_elems, n_dofs_r, n_dofs_s,
+            )
             rows = np.broadcast_to(
                 eq_r[:, :, None],
                 (n_elems, n_dofs_r, n_dofs_s),
@@ -510,9 +515,10 @@ def assemble_element_block(
             vals_all.append(K_flat.ravel())
 
     return (
+        R_block,
         np.concatenate(rows_all),
         np.concatenate(cols_all),
-        np.concatenate(vals_all),
+        jnp.concatenate(vals_all),
         xi_solved_per_block,
     )
 
@@ -522,17 +528,16 @@ def assemble_global(
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
         t: float,
-        xi_prev_by_block: dict[str, NDArray[np.floating]] | None = None,
-) -> tuple[
-    scipy.sparse.coo_matrix,
-    NDArray[np.floating],
-    dict[str, NDArray[np.floating]],
-]:
-    """Walk all element blocks and emit the global ``(K_coo, R, xi_solved)``.
+        xi_prev_by_block: dict[str, NDArray[np.floating] | JaxArray]
+        | None = None,
+) -> tuple[BCOO, JaxArray, dict[str, JaxArray]]:
+    """Walk all element blocks and emit the global ``(K, R, xi_solved)``.
 
-    ``K_coo`` is the global tangent ``dR/dU`` as a
-    ``scipy.sparse.coo_matrix`` of shape ``(n_dofs, n_dofs)``; ``R``
-    is the flat residual vector of length ``n_dofs``, dtype float64.
+    ``K`` is the global tangent ``dR/dU`` as a
+    :class:`jax.experimental.sparse.BCOO` of shape
+    ``(n_dofs, n_dofs)``; duplicate ``(row, col)`` entries from
+    shared-DOF assembly are kept and sum implicitly on ``K @ v``.
+    ``R`` is the flat JAX residual vector of length ``n_dofs``.
     ``xi_solved_by_block`` is the per-block converged-xi dict — keys
     are exactly the set of blocks whose mode is COUPLED, each entry
     shaped ``(n_elems_block, n_ips, total_xi_dofs)``. CLOSED_FORM-
@@ -560,41 +565,40 @@ def assemble_global(
     with a clear message; shape mismatches surface as JAX vmap
     leading-axis errors when the kernel runs.
 
-    Implementation note: each block's per-element residual scatters
-    into ``R_global`` in place via :func:`assemble_element_block`,
-    which also returns the block's
-    ``(rows, cols, vals, xi_solved_per_block)``. The COO streams
-    concatenate across blocks and build the COO matrix once at the
-    bottom (duplicate ``(row, col)`` entries accumulate naturally
-    on ``.tocsr()``). Non-None ``xi_solved_per_block`` returns
-    populate the ``xi_solved_by_block`` dict. Surface fluxes
-    likewise scatter into ``R_global`` in place via
-    :func:`cmad.fem.neumann.assemble_side_neumann` after the volume
-    walk.
+    Implementation note: each block's per-element residual is
+    accumulated into a flat JAX vector via
+    :func:`assemble_element_block`, which also returns the block's
+    ``(rows, cols, vals, xi_solved_per_block)``. Per-block residual
+    contributions sum into ``R``; static numpy ``(rows, cols)``
+    concatenate across blocks; per-block JAX ``vals`` concatenate
+    into the BCOO data buffer. Non-None ``xi_solved_per_block``
+    returns populate the ``xi_solved_by_block`` dict. Surface fluxes
+    add into ``R`` via :func:`cmad.fem.neumann.assemble_side_neumann`
+    after the volume walk.
     """
     xi_prev = xi_prev_by_block or {}
 
     n_dofs = fe_problem.dof_map.num_total_dofs
     rows_all: list[NDArray[np.intp]] = []
     cols_all: list[NDArray[np.intp]] = []
-    vals_all: list[NDArray[np.floating]] = []
-    R_global = np.zeros(n_dofs, dtype=np.float64)
-    xi_solved_by_block: dict[str, NDArray[np.floating]] = {}
+    vals_all: list[JaxArray] = []
+    R_global = jnp.zeros(n_dofs)
+    xi_solved_by_block: dict[str, JaxArray] = {}
 
     for block_name in fe_problem.evaluators_by_block:
-        rows, cols, vals, xi_solved = assemble_element_block(
-            R_global, fe_problem, block_name,
+        R_block, rows, cols, vals, xi_solved = assemble_element_block(
+            fe_problem, block_name,
             U_global, U_prev_global, t,
             xi_prev_per_block=xi_prev.get(block_name),
         )
+        R_global = R_global + R_block
         rows_all.append(rows)
         cols_all.append(cols)
         vals_all.append(vals)
         if xi_solved is not None:
             xi_solved_by_block[block_name] = xi_solved
 
-    assemble_side_neumann(
-        R_global,
+    R_global = R_global + assemble_side_neumann(
         fe_problem.mesh,
         fe_problem.dof_map,
         fe_problem.resolved_neumann_bcs,
@@ -602,9 +606,12 @@ def assemble_global(
         t,
     )
 
-    K_coo = scipy.sparse.coo_matrix(
-        (np.concatenate(vals_all),
-         (np.concatenate(rows_all), np.concatenate(cols_all))),
+    rows_concat = np.concatenate(rows_all)
+    cols_concat = np.concatenate(cols_all)
+    K = BCOO(
+        (jnp.concatenate(vals_all),
+         jnp.stack([jnp.asarray(rows_concat),
+                    jnp.asarray(cols_concat)], axis=-1)),
         shape=(n_dofs, n_dofs),
     )
-    return K_coo, R_global, xi_solved_by_block
+    return K, R_global, xi_solved_by_block

@@ -190,10 +190,8 @@ class TestAssembleSideNeumann(unittest.TestCase):
     def test_empty_nbc_short_circuits(self):
         mesh, dm = _build_hex_mesh_and_dofmap()
         n_dofs = dm.num_total_dofs
-        R = np.arange(n_dofs, dtype=np.float64)
-        R_orig = R.copy()
-        assemble_side_neumann(R, mesh, dm, [], _SIDE_QUAD, 0.0)
-        np.testing.assert_array_equal(R, R_orig)
+        R = assemble_side_neumann(mesh, dm, [], _SIDE_QUAD, 0.0)
+        np.testing.assert_array_equal(R, np.zeros(n_dofs))
 
     def test_uniform_traction_zmax_unit_hex(self):
         # +z face of the unit cube has area 1; for uniform traction
@@ -208,9 +206,8 @@ class TestAssembleSideNeumann(unittest.TestCase):
             values=[0.0, 0.0, p],
         )
         resolved = resolve_neumann_bcs(mesh, dm, [bc])
+        R = assemble_side_neumann(mesh, dm, resolved, _SIDE_QUAD, 0.0)
         n_dofs = dm.num_total_dofs
-        R = np.zeros(n_dofs, dtype=np.float64)
-        assemble_side_neumann(R, mesh, dm, resolved, _SIDE_QUAD, 0.0)
         local_zmax = np.array([4, 5, 6, 7])
         global_zmax = mesh.connectivity[0, local_zmax]
         nonzero_eqs = set()
@@ -242,9 +239,7 @@ class TestAssembleSideNeumann(unittest.TestCase):
             values=[1.0, 0.0, 0.0],
         )
         resolved = resolve_neumann_bcs(mesh, dm, [bc])
-        n_dofs = dm.num_total_dofs
-        R = np.zeros(n_dofs, dtype=np.float64)
-        assemble_side_neumann(R, mesh, dm, resolved, _SIDE_QUAD, 0.0)
+        R = assemble_side_neumann(mesh, dm, resolved, _SIDE_QUAD, 0.0)
         expected = -np.sqrt(3.0) / 6.0
         for node in (1, 2, 3):
             np.testing.assert_allclose(
@@ -276,9 +271,7 @@ class TestAssembleSideNeumann(unittest.TestCase):
             values=[0.0, 0.0, p],
         )
         resolved = resolve_neumann_bcs(mesh, dm, [bc])
-        n_dofs = dm.num_total_dofs
-        R = np.zeros(n_dofs, dtype=np.float64)
-        assemble_side_neumann(R, mesh, dm, resolved, _SIDE_QUAD, 0.0)
+        R = assemble_side_neumann(mesh, dm, resolved, _SIDE_QUAD, 0.0)
         local_zmax = np.array([4, 5, 6, 7])
         e0 = mesh.connectivity[0, local_zmax]
         e1 = mesh.connectivity[1, local_zmax]
