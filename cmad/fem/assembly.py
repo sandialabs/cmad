@@ -259,7 +259,9 @@ def per_element_R_and_K(
         }
         return R_ip, dR_dU_ip, body_force_ip_per_block
 
-    R_per_ip, dR_dU_per_ip, body_force_per_ip = vmap(per_ip)(
+    R_per_ip, dR_dU_per_ip, body_force_per_ip = vmap(
+        per_ip, axis_name="ip",
+    )(
         geom_shared.quad_w,
         geom_per_elem.iso_jac_det,
         geom_per_elem.coords_ip,
@@ -368,7 +370,7 @@ def per_element_R_and_K_coupled(
         return R_ip, dR_dU_ip, xi_flat, body_force_ip_per_block
 
     R_per_ip, dR_dU_per_ip, xi_solved_per_ip, body_force_per_ip = (
-        vmap(per_ip)(
+        vmap(per_ip, axis_name="ip")(
             geom_shared.quad_w,
             geom_per_elem.iso_jac_det,
             geom_per_elem.coords_ip,
@@ -475,6 +477,7 @@ def assemble_element_block(
                 forcing_fns_by_block_idx, block_shapes, t,
             ),
             in_axes=(0, 0, 0, 0),
+            axis_name="elem",
         )(
             U_elem_block, U_prev_elem_block,
             geom_cache.per_elem, xi_prev_jax,
@@ -488,6 +491,7 @@ def assemble_element_block(
                 forcing_fns_by_block_idx, block_shapes, t,
             ),
             in_axes=(0, 0, 0),
+            axis_name="elem",
         )(U_elem_block, U_prev_elem_block, geom_cache.per_elem)
         xi_solved_per_block = None
 

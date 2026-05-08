@@ -2,9 +2,9 @@ from collections.abc import Callable
 
 import jax.numpy as jnp
 import numpy as np
-from jax import custom_jvp, jacfwd, jvp
+from jax import custom_jvp, debug, jacfwd, jvp
 from jax.flatten_util import ravel_pytree
-from jax.lax import cond, while_loop
+from jax.lax import axis_index, cond, while_loop
 
 from cmad.typing import JaxArray, PyTree, SupportsNewton
 
@@ -88,6 +88,7 @@ def make_newton_solve(
         max_iters: int = 10,
         abs_tol: float = 1e-14,
         rel_tol: float = 1e-14,
+        print_local_convergence: bool = False,
 ) -> Callable[..., PyTree]:
 
     @custom_jvp
@@ -127,8 +128,17 @@ def make_newton_solve(
 
 
         def body_fun(carry):
-            _ii, _converged, _x, _C, C_norm = carry
+            ii, _converged, _x, _C, C_norm = carry
             C_norm_rel = C_norm / C_norm_0
+            if print_local_convergence:
+                elem_idx = axis_index("elem")
+                ip_idx = axis_index("ip")
+                debug.print(
+                    "[LOCAL elem={e} ip={i}] ({k}) "
+                    "abs ||C|| = {a:.6e} rel ||C|| = {r:.6e}",
+                    e=elem_idx, i=ip_idx, k=ii + 1,
+                    a=C_norm, r=C_norm_rel,
+                )
             pred = jnp.logical_or(C_norm_rel < rel_tol, C_norm < abs_tol)
             return cond(pred, true_fun, false_fun, carry)
 

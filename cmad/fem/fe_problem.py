@@ -303,6 +303,7 @@ def build_fe_problem(
         assembly_quadrature: dict[ElementFamily, QuadratureRule] | None = None,
         neumann_bcs: Sequence[NeumannBC] = (),
         side_quadrature: dict[ElementFamily, QuadratureRule] | None = None,
+        print_local_convergence: bool = False,
 ) -> FEProblem:
     """Validate FE inputs and build an immutable :class:`FEProblem`.
 
@@ -378,7 +379,11 @@ def build_fe_problem(
                 )
 
     evaluators_by_block: dict[str, GREvaluators] = {
-        b: gr.for_model(models_by_block[b], mode=modes_by_block[b])
+        b: gr.for_model(
+            models_by_block[b],
+            mode=modes_by_block[b],
+            print_local_convergence=print_local_convergence,
+        )
         for b in models_by_block
     }
 

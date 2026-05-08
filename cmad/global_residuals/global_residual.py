@@ -224,6 +224,7 @@ class GlobalResidual(ABC):
             model: Model,
             mode: GlobalResidualMode = GlobalResidualMode.COUPLED,
             coupled_newton_kwargs: dict[str, Any] | None = None,
+            print_local_convergence: bool = False,
     ) -> GREvaluators:
         """Bind this GR to a concrete Model in a specific operational
         mode. ``mode`` is captured lexically in the closures this
@@ -311,7 +312,9 @@ class GlobalResidual(ABC):
                     "rel_tol": 1e-12,
                     "max_iters": 20,
                 }
-            return self._for_model_coupled(model, coupled_newton_kwargs)
+            return self._for_model_coupled(
+                model, coupled_newton_kwargs, print_local_convergence,
+            )
 
         raise ValueError(f"Unknown GlobalResidualMode: {mode}")
 
@@ -361,6 +364,7 @@ class GlobalResidual(ABC):
             self,
             model: Model,
             coupled_newton_kwargs: dict[str, Any],
+            print_local_convergence: bool,
     ) -> GREvaluators:
         residual_fn = self._residual_fn
 
@@ -386,7 +390,9 @@ class GlobalResidual(ABC):
         # residual x_prev (uses xi_prev as both); this matches
         # xi_init = xi_prev path continuity for plasticity.
         local_newton = make_newton_solve(
-            model._residual, **coupled_newton_kwargs,
+            model._residual,
+            **coupled_newton_kwargs,
+            print_local_convergence=print_local_convergence,
         )
 
         # Public-closure argnums:
