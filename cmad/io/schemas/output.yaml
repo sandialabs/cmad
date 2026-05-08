@@ -17,6 +17,7 @@ properties:
   format:
     enum: [npy, text, exodus]
     default: npy
+  exodus filename: {type: string}
   nodal fields:
     type: array
     items:
@@ -27,3 +28,10 @@ properties:
       type: array
       items:
         $ref: '#/$defs/field_spec'
+allOf:
+  - if:
+      properties:
+        format: {const: exodus}
+      required: [format]
+    then:
+      required: [exodus filename]

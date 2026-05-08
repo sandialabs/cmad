@@ -6,8 +6,8 @@ from typing import Any
 
 from cmad.io.deck import (
     apply_deck_defaults,
-    unwrap_top_level,
     strip_calibr8_only,
+    unwrap_top_level,
 )
 from cmad.io.schema import validate_deck
 
@@ -33,7 +33,7 @@ def _minimal_fe_deck() -> dict[str, Any]:
                 },
             },
         },
-        "output": {"path": "out/"},
+        "output": {"path": "out/", "exodus filename": "primal.exo"},
     }
 
 
@@ -77,10 +77,10 @@ class TestFEDeckSchema(unittest.TestCase):
     def test_unknown_problem_subcommand_pair_raises(self) -> None:
         deck = _minimal_fe_deck()
         with self.assertRaises(ValueError) as ctx:
-            validate_deck(apply_deck_defaults(deck), "objective")
+            validate_deck(apply_deck_defaults(deck), "calibrate")
         msg = str(ctx.exception)
         self.assertIn("fe", msg)
-        self.assertIn("objective", msg)
+        self.assertIn("calibrate", msg)
 
     def test_optional_sections_are_optional(self) -> None:
         deck = _minimal_fe_deck()

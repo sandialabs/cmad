@@ -27,9 +27,6 @@ class TestFeDispatchStubs(unittest.TestCase):
             self.assertIn("'fe'", msg)
             self.assertIn("not yet supported", msg)
 
-    def test_objective_rejects_fe(self) -> None:
-        self._check("objective")
-
     def test_gradient_rejects_fe(self) -> None:
         self._check("gradient")
 

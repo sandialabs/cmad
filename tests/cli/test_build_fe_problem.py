@@ -47,7 +47,7 @@ def _minimal_fe_deck(mesh_filename: str = "cube.exo") -> dict[str, Any]:
                 },
             },
         },
-        "output": {"path": "out/"},
+        "output": {"path": "out/", "exodus filename": "primal.exo"},
     }
 
 

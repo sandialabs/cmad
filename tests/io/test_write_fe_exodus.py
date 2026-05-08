@@ -176,7 +176,8 @@ class TestWriteFeExodusRoundTrip(unittest.TestCase):
             out_dir = Path(tmp)
             write_fe_exodus(
                 out_dir=out_dir, prefix="", fe_problem=fe_problem,
-                fe_state=fe_state, output_section={},
+                fe_state=fe_state,
+                output_section={"exodus filename": "primal.exo"},
             )
             exo_path = out_dir / "primal.exo"
             self.assertTrue(exo_path.exists())

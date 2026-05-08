@@ -99,7 +99,11 @@ def _make_mms_deck(
                 "mms_body_force": ["displacement", *body_force_strs],
             },
         },
-        "output": {"path": "out", "format": "exodus"},
+        "output": {
+            "path": "out",
+            "format": "exodus",
+            "exodus filename": "primal.exo",
+        },
     }
 
 

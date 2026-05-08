@@ -1,21 +1,32 @@
 """Implementation of the ``cmad objective`` subcommand.
 
-Builds the same problem as ``cmad primal`` plus the registered
-QoI, runs a single forward pass through :func:`cmad.cli.primal.run_primal_pass`
-with the QoI supplied so J is accumulated alongside cauchy, xi, and
-solver log in one loop. Writes the primal output set plus ``J.json``.
-No sensitivities are computed.
+Dispatches on ``problem.type``. The MP branch builds the MP problem
+plus the registered QoI, runs a single forward pass through
+:func:`cmad.cli.primal.run_primal_pass` with the QoI supplied so J
+is accumulated alongside cauchy, xi, and solver log in one loop;
+writes the primal output set plus ``J.json``. The FE branch builds
+the FE problem with the QoI attached, drives the forward solve via
+:func:`cmad.fem.driver.fe_quasistatic_drive` with the QoI threaded
+through, and writes ``J.json`` + ``deck.resolved.yaml`` (and an
+Exodus trajectory when ``output.format == "exodus"``). No
+sensitivities are computed in either branch.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from cmad.cli.common import build_mp_problem, resolve_output
+from cmad.cli.common import (
+    build_fe_problem_from_deck,
+    build_mp_problem,
+    resolve_output,
+)
 from cmad.cli.primal import run_primal_pass
+from cmad.fem.driver import fe_quasistatic_drive
 from cmad.io.deck import load_deck, unwrap_top_level
 from cmad.io.writers import (
     write_cauchy,
+    write_fe_exodus,
     write_J,
     write_resolved_deck,
     write_solver_log,
@@ -27,16 +38,17 @@ def run_objective(deck_path: Path) -> int:
     """Execute the objective subcommand on ``deck_path``. Returns an exit code."""
     deck = unwrap_top_level(load_deck(deck_path))
     problem_type = deck["problem"]["type"]
+    if problem_type == "material_point":
+        return _run_objective_mp(deck_path)
     if problem_type == "fe":
-        raise NotImplementedError(
-            "cmad objective with problem.type='fe' is not yet supported"
-        )
-    if problem_type != "material_point":
-        raise ValueError(
-            f"unsupported problem.type {problem_type!r}; expected "
-            f"'material_point' or 'fe'"
-        )
+        return _run_objective_fe(deck_path)
+    raise ValueError(
+        f"unsupported problem.type {problem_type!r}; expected "
+        f"'material_point' or 'fe'"
+    )
 
+
+def _run_objective_mp(deck_path: Path) -> int:
     graph = build_mp_problem(deck_path, "objective")
     qoi = graph.qoi
     assert qoi is not None
@@ -53,4 +65,32 @@ def run_objective(deck_path: Path) -> int:
     write_solver_log(out_dir, prefix, solver_log)
     write_resolved_deck(out_dir, prefix, graph.resolved)
     write_J(out_dir, prefix, J)
+    return 0
+
+
+def _run_objective_fe(deck_path: Path) -> int:
+    bundle = build_fe_problem_from_deck(deck_path, "objective")
+    qoi = bundle.qoi
+    assert qoi is not None
+    gr_section = bundle.resolved["residuals"]["global residual"]
+    fe_state, J = fe_quasistatic_drive(
+        bundle.fe_problem,
+        bundle.t_schedule.tolist(),
+        qoi=qoi,
+        max_iters=int(gr_section["nonlinear max iters"]),
+        abs_tol=float(gr_section["nonlinear absolute tol"]),
+        rel_tol=float(gr_section["nonlinear relative tol"]),
+        print_global_convergence=bool(
+            gr_section.get("print convergence", False),
+        ),
+    )
+
+    out_dir, prefix, fmt = resolve_output(bundle.resolved, deck_path)
+    if fmt == "exodus":
+        write_fe_exodus(
+            out_dir, prefix, bundle.fe_problem, fe_state,
+            bundle.resolved["output"],
+        )
+    write_resolved_deck(out_dir, prefix, bundle.resolved)
+    write_J(out_dir, prefix, float(J))
     return 0

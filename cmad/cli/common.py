@@ -47,6 +47,7 @@ from cmad.io.registry import (
 from cmad.io.schema import validate_deck
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
+from cmad.qois.fe_qoi import FEQoI
 from cmad.qois.qoi import QoI
 from cmad.typing import JaxArray
 
@@ -138,6 +139,7 @@ class FEProblemBundle:
     resolved: dict[str, Any]
     fe_problem: FEProblem
     t_schedule: NDArray[np.float64]
+    qoi: FEQoI | None = None
 
 
 def build_fe_problem_from_deck(
@@ -223,8 +225,23 @@ def build_fe_problem_from_deck(
         resolved["discretization"], deck_path.parent,
     )
 
+    qoi: FEQoI | None = None
+    if subcommand in {"objective", "gradient", "hessian"}:
+        qoi_cls = resolve_qoi(resolved["qoi"]["name"])
+        if qoi_cls.problem_type != "fe":
+            raise ValueError(
+                f"qoi.name '{resolved['qoi']['name']}' is registered "
+                f"for problem_type='{qoi_cls.problem_type}', but the "
+                f"deck has problem.type='fe'"
+            )
+        assert issubclass(qoi_cls, FEQoI)
+        qoi = qoi_cls.from_deck(
+            resolved["qoi"], fe_problem, t_schedule.tolist(),
+        )
+
     return FEProblemBundle(
         resolved=resolved, fe_problem=fe_problem, t_schedule=t_schedule,
+        qoi=qoi,
     )
 
 

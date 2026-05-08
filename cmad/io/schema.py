@@ -33,7 +33,7 @@ import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from cmad.io.deck import unwrap_top_level, strip_calibr8_only
+from cmad.io.deck import strip_calibr8_only, unwrap_top_level
 from cmad.io.registry import (
     registered_global_residuals,
     registered_models,
@@ -74,6 +74,10 @@ _SECTIONS: dict[tuple[str, str], tuple[list[str], list[str]]] = {
     ),
     ("fe", "primal"): (
         ["problem", "discretization", "residuals", "output"],
+        ["dirichlet bcs", "surface flux bcs", "body forces"],
+    ),
+    ("fe", "objective"): (
+        ["problem", "discretization", "residuals", "qoi", "output"],
         ["dirichlet bcs", "surface flux bcs", "body forces"],
     ),
 }

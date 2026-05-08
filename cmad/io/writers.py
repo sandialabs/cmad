@@ -235,21 +235,26 @@ def write_fe_exodus(
         fe_state: FEState,
         output_section: dict[str, Any],
 ) -> None:
-    """Write FE primal results to an Exodus II file.
+    """Write FE results to an Exodus II file.
 
     Resolves nodal + per-block element :class:`FieldSpec` lists from
     the deck's ``output`` section; when either bucket is omitted,
     falls back to ``fe_problem.gr.default_output_fields()`` (element
     defaults replicated across every mesh element block). Opens an
-    :class:`ExodusWriter` at ``out_dir / f"{prefix}primal.exo"`` and
+    :class:`ExodusWriter` at
+    ``out_dir / f"{prefix}{output_section['exodus filename']}"`` and
     iterates over ``fe_state.t_history`` calling
     ``gr.evaluate_nodal_field`` and ``gr.evaluate_element_field`` per
-    declared spec at each step.
+    declared spec at each step. The deck-driven filename lets each
+    subcommand-driven solve write to a distinct file when desired
+    (e.g. ``primal.exo`` for ``cmad primal``,  ``objective.exo`` for
+    ``cmad objective``); the schema requires ``exodus filename``
+    whenever ``format == exodus``.
     """
     nodal_specs, element_specs_by_block = _resolve_fe_field_specs(
         output_section, fe_problem,
     )
-    out_path = out_dir / f"{prefix}primal.exo"
+    out_path = out_dir / f"{prefix}{output_section['exodus filename']}"
     gr = fe_problem.gr
     with ExodusWriter(
             out_path,
