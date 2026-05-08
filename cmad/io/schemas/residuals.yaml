@@ -55,6 +55,7 @@ properties:
       nonlinear max iters: {type: integer, minimum: 1}
       nonlinear absolute tol: {type: number, exclusiveMinimum: 0}
       nonlinear relative tol: {type: number, exclusiveMinimum: 0}
+      print convergence: {type: boolean, default: false}
       materials:
         type: object
         additionalProperties:

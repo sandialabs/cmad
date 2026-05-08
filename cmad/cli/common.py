@@ -207,6 +207,9 @@ def build_fe_problem_from_deck(
         assembly_quadrature=assembly_quadrature,
         neumann_bcs=neumann_bcs,
         side_quadrature=side_quadrature,
+        print_local_convergence=bool(
+            local_section.get("print convergence", False),
+        ),
     )
 
     t_schedule = _load_t_schedule(

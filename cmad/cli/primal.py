@@ -80,6 +80,9 @@ def _run_primal_fe(deck_path: Path) -> int:
         max_iters=int(gr_section["nonlinear max iters"]),
         abs_tol=float(gr_section["nonlinear absolute tol"]),
         rel_tol=float(gr_section["nonlinear relative tol"]),
+        print_global_convergence=bool(
+            gr_section.get("print convergence", False),
+        ),
     )
 
     out_dir, prefix, fmt = resolve_output(bundle.resolved, deck_path)
