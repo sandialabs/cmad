@@ -21,6 +21,7 @@ in y / z under the imposed stretch (uniaxial-stress conditions).
 import unittest
 from typing import cast
 
+import jax.numpy as jnp
 import numpy as np
 from jax.tree_util import tree_map
 from numpy.typing import NDArray
@@ -40,7 +41,7 @@ from cmad.models.elastic import Elastic
 from cmad.models.model import Model
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.parameters.parameters import Parameters
-from cmad.typing import PyTreeDict
+from cmad.typing import JaxArray, PyTreeDict
 from tests.support.test_problems import J2AnalyticalProblem
 
 _KAPPA = 100.0
@@ -72,9 +73,10 @@ def _uniaxial_dbcs(slope: float) -> list[DirichletBC]:
     constant value across the face.
     """
     def u_x_at_t(
-            coords: NDArray[np.floating], t: float,
-    ) -> NDArray[np.floating]:
-        return np.full((coords.shape[0], 1), slope * t)
+            coords: NDArray[np.floating] | JaxArray,
+            t: float | JaxArray,
+    ) -> JaxArray:
+        return jnp.full((coords.shape[0], 1), slope * t)
 
     return [
         DirichletBC(

@@ -1,14 +1,89 @@
-"""Quasi-static time-loop driver populating an :class:`FEState`."""
-from collections.abc import Sequence
+"""Quasi-static time-loop driver populating an :class:`FEState`.
+
+Two layers:
+
+- :func:`_fe_quasistatic_drive_traced` runs :func:`jax.lax.scan` over
+  the time schedule with all-JAX carry / output. Each scan step calls
+  :func:`cmad.fem.nonlinear_solver.fe_newton_solve` (which is itself
+  JAX-traceable end to end). The traced inner is the AD entry point
+  for callers that want :func:`jax.grad` over a quantity-of-interest
+  defined on the trajectory.
+
+- :func:`fe_quasistatic_drive` is the imperative wrapper used by
+  :command:`cmad primal` and tests: builds an :class:`FEState`,
+  drives :func:`_fe_quasistatic_drive_traced`, materializes the
+  stacked outputs back into FEState's mutable per-step lists, and
+  builds the imperative ``solver_log``.
+"""
+from collections.abc import Mapping, Sequence
 from typing import Any
 
+import jax.numpy as jnp
 import numpy as np
+from jax import lax
 from numpy.typing import NDArray
 
 from cmad.fem.assembly import params_by_block_from_models
 from cmad.fem.fe_problem import FEProblem, FEState
 from cmad.fem.nonlinear_solver import fe_newton_solve
-from cmad.global_residuals.modes import GlobalResidualMode
+from cmad.typing import JaxArray, Params
+
+
+def _fe_quasistatic_drive_traced(
+        fe_problem: FEProblem,
+        params_by_block: Mapping[str, Params],
+        U_init: JaxArray,
+        xi_init_by_block: dict[str, JaxArray],
+        t_schedule_jax: JaxArray,
+        max_iters: int = 20,
+        abs_tol: float = 1e-10,
+        rel_tol: float = 1e-10,
+) -> tuple[JaxArray, dict[str, JaxArray], JaxArray, JaxArray]:
+    """Run :func:`jax.lax.scan` over ``t_schedule_jax[1:]``.
+
+    Carry: ``(U_prev, xi_prev_by_block)`` — ``xi_prev_by_block`` is
+    the all-blocks dict (COUPLED + CLOSED_FORM). The CLOSED_FORM
+    entries don't change per step, but keeping them in the carry
+    stabilizes the pytree shape across iterations and avoids a
+    per-iteration filter / merge in the step body.
+
+    Per-step output: ``(U_solved, xi_solved_full, iters, R_norm)``.
+    ``xi_solved_full`` is the merge ``{**xi_prev, **xi_solved_coupled}``
+    so COUPLED keys carry the converged xi from
+    :func:`fe_newton_solve` and CLOSED_FORM keys echo the initial
+    tile across every step (matching the imperative wrapper's
+    appended xi-history).
+
+    ``iters`` is cast to a 0-dim JAX int via :func:`jax.numpy.asarray`
+    so :func:`scan`'s output stack works (the underlying ``-1``
+    placeholder from :func:`fe_newton_solve` is a Python int).
+
+    Returns stacked ``(N, …)`` outputs where
+    ``N = t_schedule_jax.shape[0] - 1``.
+    """
+
+    def step_fn(carry, t):
+        U_prev, xi_prev = carry
+        U_solved, xi_solved_coupled, iters, R_norm = fe_newton_solve(
+            fe_problem,
+            params_by_block,
+            U_prev=U_prev,
+            t=t,
+            xi_prev_by_block=xi_prev,
+            max_iters=max_iters,
+            abs_tol=abs_tol,
+            rel_tol=rel_tol,
+        )
+        xi_solved_full = {**xi_prev, **xi_solved_coupled}
+        iters_jax = jnp.asarray(iters, dtype=jnp.int32)
+        new_carry = (U_solved, xi_solved_full)
+        per_step = (U_solved, xi_solved_full, iters_jax, R_norm)
+        return new_carry, per_step
+
+    initial_carry = (U_init, xi_init_by_block)
+    _, history = lax.scan(step_fn, initial_carry, t_schedule_jax[1:])
+    U_steps, xi_steps_by_block, iters_steps, R_norm_steps = history
+    return U_steps, xi_steps_by_block, iters_steps, R_norm_steps
 
 
 def fe_quasistatic_drive(
@@ -23,27 +98,32 @@ def fe_quasistatic_drive(
     the step times; the schedule must have at least two entries (an
     initial-only schedule is :meth:`FEState.from_problem` and doesn't
     need the driver). The driver seeds an :class:`FEState` at
-    ``t_schedule[0]`` (zeros U or the user-supplied ``U_init``), and
-    for each subsequent ``t`` solves one global Newton step via
-    :func:`cmad.fem.nonlinear_solver.fe_newton_solve`. The previous
-    step's converged ``U`` flows into ``U_prev`` (which is also the
-    Newton's starting iterate after the new step's prescribed BC
-    values are overlaid); the previous step's converged ``xi`` flows
-    into ``xi_prev_by_block`` for COUPLED blocks (the per-IP local
-    Newton consumes ``xi_prev`` as both initial guess and the
-    previous-step state input for plasticity path continuity).
+    ``t_schedule[0]`` (zeros U or the user-supplied ``U_init``), then
+    delegates the time loop to :func:`_fe_quasistatic_drive_traced`
+    (a single :func:`jax.lax.scan` over the schedule). The scan's
+    stacked outputs are materialized back into FEState's per-step
+    lists via :meth:`FEState.append`, mirroring the imperative
+    contract callers expect.
+
+    Within each step, the previous step's converged ``U`` flows into
+    ``U_prev`` (Newton's starting iterate after the new step's
+    prescribed BC values are overlaid); the previous step's
+    converged ``xi`` flows into ``xi_prev_by_block`` for COUPLED
+    blocks (the per-IP local Newton consumes ``xi_prev`` as both
+    initial guess and the previous-step state input for plasticity
+    path continuity).
 
     The appended-per-step ``xi_by_block`` payload is the union of
     COUPLED and CLOSED_FORM entries: COUPLED keys come from the
     Newton's returned ``xi_solved_by_block``; CLOSED_FORM keys echo
-    the previous step's xi (no local Newton runs, so the entry is
-    the init-tile from :meth:`FEState.from_problem`). This keeps
-    every block's xi-history list aligned at length
+    the initial-tile xi from :meth:`FEState.from_problem`. This
+    keeps every block's xi-history list aligned at length
     ``len(t_schedule)``.
 
-    ``solver_kwargs`` are forwarded to ``fe_newton_solve`` (accepts
-    ``max_iters``, ``abs_tol``, ``rel_tol``); the orchestrator threads
-    deck-supplied global-Newton settings through this slot.
+    ``solver_kwargs`` are forwarded to :func:`fe_newton_solve`
+    through :func:`_fe_quasistatic_drive_traced` (accepts
+    ``max_iters``, ``abs_tol``, ``rel_tol``); the orchestrator
+    threads deck-supplied global-Newton settings through this slot.
 
     Returns ``(state, solver_log)``. ``solver_log`` holds one entry
     per non-initial step keyed ``{"iters": int, "final_residual":
@@ -61,39 +141,46 @@ def fe_quasistatic_drive(
         fe_problem, t_init=t_schedule[0], U_init=U_init,
     )
 
-    coupled_blocks = [
-        b for b, m in fe_problem.modes_by_block.items()
-        if m == GlobalResidualMode.COUPLED
-    ]
+    for t in t_schedule[1:]:
+        fe_problem.dof_map.evaluate_prescribed_values(t)
+
     params_by_block = params_by_block_from_models(fe_problem)
 
-    solver_log: list[dict[str, Any]] = []
+    U_init_jax = jnp.asarray(state.U_at(0), dtype=jnp.float64)
+    xi_init_by_block: dict[str, JaxArray] = {
+        b: jnp.asarray(state.xi_at(0, b))
+        for b in fe_problem.models_by_block
+    }
+    t_schedule_jax = jnp.asarray(t_schedule, dtype=jnp.float64)
 
-    for t in t_schedule[1:]:
-        prev_idx = state.step_idx
-        U_prev = state.U_at(prev_idx)
-        xi_prev_by_block = {
-            b: state.xi_at(prev_idx, b) for b in coupled_blocks
-        }
-        U_solved, xi_solved_by_block, iters, final_R_norm = fe_newton_solve(
+    U_steps, xi_steps_by_block, iters_steps, R_norm_steps = (
+        _fe_quasistatic_drive_traced(
             fe_problem,
             params_by_block,
-            U_prev=U_prev,
-            t=t,
-            xi_prev_by_block=xi_prev_by_block,
+            U_init_jax,
+            xi_init_by_block,
+            t_schedule_jax,
             **solver_kwargs,
         )
-        xi_by_block = {
-            b: (
-                xi_solved_by_block[b]
-                if m == GlobalResidualMode.COUPLED
-                else state.xi_at(prev_idx, b)
-            )
-            for b, m in fe_problem.modes_by_block.items()
+    )
+
+    n_steps = len(t_schedule) - 1
+    solver_log: list[dict[str, Any]] = []
+    for i in range(n_steps):
+        xi_by_block_i = {
+            b: np.asarray(xi_steps_by_block[b][i])
+            for b in xi_steps_by_block
         }
-        state.append(U_solved, xi_by_block, t_new=t)
+        state.append(
+            np.asarray(U_steps[i]),
+            xi_by_block_i,
+            t_new=t_schedule[i + 1],
+        )
         solver_log.append(
-            {"iters": int(iters), "final_residual": float(final_R_norm)},
+            {
+                "iters": int(iters_steps[i]),
+                "final_residual": float(R_norm_steps[i]),
+            },
         )
 
     return state, solver_log

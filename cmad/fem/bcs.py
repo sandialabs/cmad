@@ -105,7 +105,10 @@ class DirichletBC:
     dofs: Sequence[int]
     values: (
         Sequence[float]
-        | Callable[[NDArray[np.floating], float], NDArray[np.floating]]
+        | Callable[
+            [NDArray[np.floating] | JaxArray, float | JaxArray],
+            NDArray[np.floating] | JaxArray,
+        ]
         | None
     ) = None
 
@@ -164,7 +167,7 @@ class NeumannBC:
     values: (
         Sequence[float]
         | Callable[
-            [NDArray[np.floating] | JaxArray, float],
+            [NDArray[np.floating] | JaxArray, float | JaxArray],
             NDArray[np.floating] | JaxArray,
         ]
     )

@@ -64,7 +64,7 @@ def _uniaxial_dbcs(slope: float) -> list[DirichletBC]:
     Cribbed from ``tests/fem/test_fe_quasistatic_drive.py:_uniaxial_dbcs``.
     """
     def u_x_at_t(coords, t):
-        return np.full((coords.shape[0], 1), slope * t)
+        return jnp.full((coords.shape[0], 1), slope * t)
     return [
         DirichletBC(sideset_names=["xmin_sides"], field_name="u",
                     dofs=(0,), values=None),
