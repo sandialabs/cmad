@@ -19,7 +19,7 @@ from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
-from jax import lax
+from jax import debug, lax
 from numpy.typing import NDArray
 
 from cmad.fem.assembly import params_by_block_from_models
@@ -37,6 +37,7 @@ def fe_quasistatic_drive_traced(
         max_iters: int = 20,
         abs_tol: float = 1e-10,
         rel_tol: float = 1e-10,
+        print_global_convergence: bool = False,
 ) -> tuple[JaxArray, dict[str, JaxArray]]:
     """Run :func:`jax.lax.scan` over ``t_schedule_jax[1:]``.
 
@@ -53,12 +54,24 @@ def fe_quasistatic_drive_traced(
     tile across every step (matching the imperative wrapper's
     appended xi-history).
 
+    When ``print_global_convergence`` is True, the scan body emits an
+    ``ON PRIMAL STEP (n) at t=...`` header before each
+    :func:`fe_newton_solve` call and forwards the flag so the inner
+    Newton driver prints per-iter convergence lines.
+
     Returns stacked ``(N, …)`` outputs where
     ``N = t_schedule_jax.shape[0] - 1``.
     """
 
-    def step_fn(carry, t):
+    def step_fn(carry, x):
+        step_idx, t = x
         U_prev, xi_prev = carry
+        if print_global_convergence:
+            debug.print(
+                "ON PRIMAL STEP ({step}) at t={t:.6e}",
+                step=step_idx + 1,
+                t=t,
+            )
         U_solved, xi_solved_coupled = fe_newton_solve(
             fe_problem,
             params_by_block,
@@ -68,6 +81,7 @@ def fe_quasistatic_drive_traced(
             max_iters=max_iters,
             abs_tol=abs_tol,
             rel_tol=rel_tol,
+            print_global_convergence=print_global_convergence,
         )
         xi_solved_full = {**xi_prev, **xi_solved_coupled}
         new_carry = (U_solved, xi_solved_full)
@@ -75,7 +89,10 @@ def fe_quasistatic_drive_traced(
         return new_carry, per_step
 
     initial_carry = (U_init, xi_init_by_block)
-    _, history = lax.scan(step_fn, initial_carry, t_schedule_jax[1:])
+    n_steps = t_schedule_jax.shape[0] - 1
+    step_indices = jnp.arange(n_steps)
+    xs = (step_indices, t_schedule_jax[1:])
+    _, history = lax.scan(step_fn, initial_carry, xs)
     U_steps, xi_steps_by_block = history
     return U_steps, xi_steps_by_block
 
@@ -84,6 +101,7 @@ def fe_quasistatic_drive(
         fe_problem: FEProblem,
         t_schedule: Sequence[float],
         U_init: NDArray[np.floating] | None = None,
+        print_global_convergence: bool = False,
         **solver_kwargs: Any,
 ) -> FEState:
     """Run a quasi-static time loop and return populated state.
@@ -148,6 +166,7 @@ def fe_quasistatic_drive(
         U_init_jax,
         xi_init_by_block,
         t_schedule_jax,
+        print_global_convergence=print_global_convergence,
         **solver_kwargs,
     )
 

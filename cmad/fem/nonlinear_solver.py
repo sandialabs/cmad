@@ -104,6 +104,7 @@ def _fe_newton_primal(
         max_iters: int,
         abs_tol: float,
         rel_tol: float,
+        print_global_convergence: bool,
 ) -> JaxArray:
     """Forward Newton iteration: ``lax.while_loop`` + ``spsolve_jax``.
 
@@ -124,7 +125,7 @@ def _fe_newton_primal(
         xi_prev_by_block=xi_prev_by_block,
     )
     r_init = R_init.at[presc_idx].set(U_init[presc_idx] - presc_vals)
-    R0 = jnp.maximum(jnp.linalg.norm(r_init), 1.0)
+    R0 = jnp.maximum(jnp.linalg.norm(r_init), abs_tol)
 
     def cond(state):
         i, _, R_norm, R_norm_0 = state
@@ -139,11 +140,21 @@ def _fe_newton_primal(
             xi_prev_by_block=xi_prev_by_block,
         )
         r = R_assembled.at[presc_idx].set(U[presc_idx] - presc_vals)
+        R_norm = jnp.linalg.norm(r)
+        if print_global_convergence:
+            jax.debug.print(" > ({k}) Newton iteration", k=i + 1)
+            jax.debug.print(
+                " > absolute ||R|| = {abs_r:.6e}", abs_r=R_norm,
+            )
+            jax.debug.print(
+                " > relative ||R|| = {rel_r:.6e}",
+                rel_r=R_norm / R_norm_0,
+            )
         K_data, K_rows, K_cols = _embedded_bc_enforce(K_bcoo, presc_idx)
         n = K_bcoo.shape[0]
         dU = spsolve_jax(K_data, K_rows, K_cols, n, -r)
         U_new = U + dU
-        return (i + 1, U_new, jnp.linalg.norm(r), R_norm_0)
+        return (i + 1, U_new, R_norm, R_norm_0)
 
     _, U_star, _, _ = lax.while_loop(
         cond, body, (0, U_init, R0, R0),
@@ -161,6 +172,7 @@ def fe_newton_solve(
         max_iters: int = 20,
         abs_tol: float = 1e-10,
         rel_tol: float = 1e-10,
+        print_global_convergence: bool = False,
 ) -> tuple[JaxArray, dict[str, JaxArray]]:
     """Quasi-static global Newton driver for the FE forward problem.
 
@@ -228,11 +240,11 @@ def fe_newton_solve(
     )
     return _fe_newton_solve_ad(
         fe_problem, params_by_block, U_prev_jax, t, xi_prev_jax,
-        max_iters, abs_tol, rel_tol,
+        max_iters, abs_tol, rel_tol, print_global_convergence,
     )
 
 
-@partial(jax.custom_jvp, nondiff_argnums=(0, 5, 6, 7))
+@partial(jax.custom_jvp, nondiff_argnums=(0, 5, 6, 7, 8))
 def _fe_newton_solve_ad(
         fe_problem: FEProblem,
         params_by_block: Mapping[str, Params],
@@ -242,6 +254,7 @@ def _fe_newton_solve_ad(
         max_iters: int,
         abs_tol: float,
         rel_tol: float,
+        print_global_convergence: bool,
 ) -> tuple[JaxArray, dict[str, JaxArray]]:
     """AD-decorated inner driver. JaxArray inputs only.
 
@@ -252,7 +265,7 @@ def _fe_newton_solve_ad(
     """
     U_star = _fe_newton_primal(
         fe_problem, params_by_block, U_prev, t, xi_prev_by_block,
-        max_iters, abs_tol, rel_tol,
+        max_iters, abs_tol, rel_tol, print_global_convergence,
     )
     _, _, xi_solved = assemble_global(
         fe_problem, params_by_block, U_star, U_prev, t,
@@ -265,6 +278,7 @@ def _fe_newton_solve_ad(
 def _fe_newton_solve_ad_jvp(
         fe_problem: FEProblem,
         max_iters: int, abs_tol: float, rel_tol: float,
+        print_global_convergence: bool,
         primals, tangents,
 ):
     """IFT linear-sensitivity JVP for :func:`_fe_newton_solve_ad`.
@@ -285,7 +299,7 @@ def _fe_newton_solve_ad_jvp(
 
     U_star, xi_solved = _fe_newton_solve_ad(
         fe_problem, params_by_block, U_prev, t, xi_prev_by_block,
-        max_iters, abs_tol, rel_tol,
+        max_iters, abs_tol, rel_tol, print_global_convergence,
     )
 
     presc_idx = jnp.asarray(fe_problem.dof_map.prescribed_indices)
