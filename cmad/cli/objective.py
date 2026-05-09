@@ -8,8 +8,8 @@ writes the primal output set plus ``J.json``. The FE branch builds
 the FE problem with the QoI attached, drives the forward solve via
 :func:`cmad.fem.driver.fe_quasistatic_drive` with the QoI threaded
 through, and writes ``J.json`` + ``deck.resolved.yaml`` (and an
-Exodus trajectory when ``output.format == "exodus"``). No
-sensitivities are computed in either branch.
+Exodus trajectory when ``output.exodus filename`` is set in the
+deck). No sensitivities are computed in either branch.
 """
 
 from __future__ import annotations
@@ -85,8 +85,8 @@ def _run_objective_fe(deck_path: Path) -> int:
         ),
     )
 
-    out_dir, prefix, fmt = resolve_output(bundle.resolved, deck_path)
-    if fmt == "exodus":
+    out_dir, prefix, _fmt = resolve_output(bundle.resolved, deck_path)
+    if "exodus filename" in bundle.resolved["output"]:
         write_fe_exodus(
             out_dir, prefix, bundle.fe_problem, fe_state,
             bundle.resolved["output"],

@@ -60,11 +60,19 @@ class TestFEDeckSchema(unittest.TestCase):
         deck = _minimal_fe_deck()
         resolved = apply_deck_defaults(deck)
         validate_deck(resolved, "primal")
-        self.assertEqual(resolved["output"]["format"], "exodus")
+        self.assertEqual(resolved["output"]["format"], "npy")
         self.assertIn(
             "nonlinear max iters",
             resolved["residuals"]["global residual"],
         )
+
+    def test_fe_primal_requires_exodus_filename(self) -> None:
+        deck = _minimal_fe_deck()
+        del deck["output"]["exodus filename"]
+        resolved = apply_deck_defaults(deck)
+        with self.assertRaises(ValueError) as ctx:
+            validate_deck(resolved, "primal")
+        self.assertIn("exodus filename", str(ctx.exception))
 
     def test_missing_required_section_errors(self) -> None:
         deck = _minimal_fe_deck()

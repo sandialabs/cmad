@@ -85,11 +85,7 @@ def _run_primal_fe(deck_path: Path) -> int:
         ),
     )
 
-    out_dir, prefix, fmt = resolve_output(bundle.resolved, deck_path)
-    if fmt != "exodus":
-        raise ValueError(
-            f"output.format must be 'exodus' for FE primal; got {fmt!r}"
-        )
+    out_dir, prefix, _fmt = resolve_output(bundle.resolved, deck_path)
     write_fe_exodus(
         out_dir, prefix, bundle.fe_problem, fe_state,
         bundle.resolved["output"],

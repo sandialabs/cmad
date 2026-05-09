@@ -20,8 +20,8 @@ The three passes are:
    with a one-line ``UserWarning``.
 3. **Default-filling** dispatched on ``problem.type`` (MP fills
    ``solver.newton``; FE fills ``residuals.{global, local}
-   residual.nonlinear*`` and ``output.format: exodus``). The optimizer
-   defaults are problem-type-agnostic.
+   residual.nonlinear*``). ``output.format`` defaults to ``"npy"``
+   for both arms; the optimizer defaults are problem-type-agnostic.
 
 Both normalization helpers are also re-imported by ``cmad/io/schema.py``
 so that ``validate_deck`` can be called defensively on a not-yet-
@@ -158,11 +158,8 @@ def apply_deck_defaults(deck: dict[str, Any]) -> dict[str, Any]:
             for k, v in defaults.items():
                 slot_dict.setdefault(k, v)
 
-    output_defaults = dict(_OUTPUT_DEFAULTS)
-    if problem_type == "fe":
-        output_defaults["format"] = "exodus"
     output_in = resolved.setdefault("output", {})
-    for k, v in output_defaults.items():
+    for k, v in _OUTPUT_DEFAULTS.items():
         output_in.setdefault(k, v)
 
     if "optimizer" in resolved:
