@@ -2,14 +2,13 @@
 
 Builds a small uniaxial-stretch FE deck with the
 ``fe_displacement_l2`` QoI and elastic kappa / mu marked active,
-runs ``cmad gradient``, and verifies the wiring: ``J.json``
-contains a finite positive scalar, ``grad.npy`` is a length-2
-finite array (one component per active param), and
-``deck.resolved.yaml`` is written. AD-vs-FD numerical correctness
-is covered by ``tests/fem/test_fem_fd_checks.py``; this is a
-CLI-wiring check.
+runs ``cmad gradient``, and verifies the wiring: ``grad.npy`` is a
+length-2 finite array (one component per active param) and
+``deck.resolved.yaml`` is written. ``J.json`` is not produced by
+``cmad gradient`` — run ``cmad objective`` separately on the same
+deck for J. AD-vs-FD numerical correctness is covered by
+``tests/fem/test_fem_fd_checks.py``; this is a CLI-wiring check.
 """
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -69,7 +68,7 @@ def _make_fe_gradient_deck(mesh_filename: str) -> dict[str, Any]:
 
 
 class TestGradientFeRoundTrip(unittest.TestCase):
-    def test_writes_J_grad_and_resolved_deck(self) -> None:
+    def test_writes_grad_and_resolved_deck(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             _write_hex_cube_mesh(tmp / "mesh.exo")
@@ -82,11 +81,6 @@ class TestGradientFeRoundTrip(unittest.TestCase):
             )
 
             out_dir = tmp / "out"
-            with (out_dir / "J.json").open("r") as f:
-                J = json.load(f)["J"]
-            self.assertTrue(np.isfinite(J))
-            self.assertGreater(J, 0.0)
-
             grad = np.load(out_dir / "grad.npy")
             self.assertEqual(grad.shape, (2,))
             self.assertTrue(np.all(np.isfinite(grad)))
@@ -95,7 +89,8 @@ class TestGradientFeRoundTrip(unittest.TestCase):
             self.assertTrue(np.any(grad != 0.0))
 
             self.assertTrue((out_dir / "deck.resolved.yaml").exists())
-            self.assertFalse((out_dir / "primal.exo").exists())
+            self.assertFalse((out_dir / "J.json").exists())
+            self.assertFalse(any(out_dir.glob("*.exo")))
 
 
 if __name__ == "__main__":

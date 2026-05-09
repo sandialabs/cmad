@@ -2,14 +2,13 @@
 
 Builds a small uniaxial-stretch FE deck with the
 ``fe_displacement_l2`` QoI and elastic kappa / mu marked active,
-runs ``cmad hessian``, and verifies the wiring: ``J.json``
-contains a finite positive scalar; ``hess.npy`` is a 2x2 finite
-symmetric array; ``deck.resolved.yaml`` is written; ``grad.npy``
-is NOT written (run ``cmad gradient`` separately for grad output).
+runs ``cmad hessian``, and verifies the wiring: ``hess.npy`` is a
+2x2 finite symmetric array and ``deck.resolved.yaml`` is written.
+``J.json`` and ``grad.npy`` are not produced by ``cmad hessian``;
+run ``cmad objective`` / ``cmad gradient`` separately for those.
 AD-vs-FD numerical correctness is covered by
 ``tests/fem/test_fem_fd_checks.py``; this is a CLI-wiring check.
 """
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -69,7 +68,7 @@ def _make_fe_hessian_deck(mesh_filename: str) -> dict[str, Any]:
 
 
 class TestHessianFeRoundTrip(unittest.TestCase):
-    def test_writes_J_hess_and_resolved_deck(self) -> None:
+    def test_writes_hess_and_resolved_deck(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             _write_hex_cube_mesh(tmp / "mesh.exo")
@@ -82,19 +81,15 @@ class TestHessianFeRoundTrip(unittest.TestCase):
             )
 
             out_dir = tmp / "out"
-            with (out_dir / "J.json").open("r") as f:
-                J = json.load(f)["J"]
-            self.assertTrue(np.isfinite(J))
-            self.assertGreater(J, 0.0)
-
             hess = np.load(out_dir / "hess.npy")
             self.assertEqual(hess.shape, (2, 2))
             self.assertTrue(np.all(np.isfinite(hess)))
             np.testing.assert_allclose(hess, hess.T, rtol=0, atol=1e-12)
 
             self.assertTrue((out_dir / "deck.resolved.yaml").exists())
-            self.assertFalse((out_dir / "primal.exo").exists())
+            self.assertFalse((out_dir / "J.json").exists())
             self.assertFalse((out_dir / "grad.npy").exists())
+            self.assertFalse(any(out_dir.glob("*.exo")))
 
 
 if __name__ == "__main__":
