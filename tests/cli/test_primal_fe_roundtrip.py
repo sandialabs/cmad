@@ -130,7 +130,6 @@ class TestPrimalFeClosedFormRoundTrip(unittest.TestCase):
                 mesh_filename="mesh.exo",
                 output_section={
                     "path": "out",
-                    "format": "exodus",
                     "exodus filename": "primal.exo",
                     "nodal fields": [
                         {"name": "displacement", "var_type": "vector"},
@@ -198,7 +197,6 @@ class TestPrimalFeCoupledRoundTrip(unittest.TestCase):
                 mesh_filename="mesh.exo",
                 output_section={
                     "path": "out",
-                    "format": "exodus",
                     "exodus filename": "primal.exo",
                     "nodal fields": [
                         {"name": "displacement", "var_type": "vector"},

@@ -59,7 +59,6 @@ def _make_fe_primal_deck_no_output_specs(
         },
         "output": {
             "path": "out",
-            "format": "exodus",
             "exodus filename": "primal.exo",
         },
     }

@@ -101,7 +101,6 @@ def _make_mms_deck(
         },
         "output": {
             "path": "out",
-            "format": "exodus",
             "exodus filename": "primal.exo",
         },
     }

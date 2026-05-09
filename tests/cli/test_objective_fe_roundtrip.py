@@ -74,7 +74,6 @@ class TestObjectiveFeRoundTrip(unittest.TestCase):
                 mesh_filename="mesh.exo",
                 output_section={
                     "path": "out",
-                    "format": "exodus",
                     "exodus filename": "objective.exo",
                     "nodal fields": [
                         {"name": "displacement", "var_type": "vector"},
