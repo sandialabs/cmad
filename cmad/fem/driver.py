@@ -213,7 +213,24 @@ def fe_quasistatic_drive(
         **solver_kwargs,
     )
 
-    n_steps = len(t_schedule) - 1
+    materialize_fe_state(state, U_steps, xi_steps_by_block, t_schedule)
+
+    return state, J
+
+
+def materialize_fe_state(
+        state: FEState,
+        U_steps: JaxArray,
+        xi_steps_by_block: Mapping[str, JaxArray],
+        t_schedule: Sequence[float],
+) -> FEState:
+    """Append per-step trajectory entries (U, xi, t) to ``state``.
+
+    ``t_schedule`` is the full schedule (length ``n_steps + 1``);
+    step ``i`` in ``U_steps`` / ``xi_steps_by_block`` is appended at
+    time ``t_schedule[i + 1]``.
+    """
+    n_steps = U_steps.shape[0]
     for i in range(n_steps):
         xi_by_block_i = {
             b: np.asarray(xi_steps_by_block[b][i])
@@ -222,7 +239,6 @@ def fe_quasistatic_drive(
         state.append(
             np.asarray(U_steps[i]),
             xi_by_block_i,
-            t_new=t_schedule[i + 1],
+            t_new=float(t_schedule[i + 1]),
         )
-
-    return state, J
+    return state
