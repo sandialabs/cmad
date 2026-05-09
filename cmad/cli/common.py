@@ -122,12 +122,13 @@ def resolve_output(
 
 def build_fe_J_of_params_flat(
         bundle: FEProblemBundle,
+        print_global_convergence: bool = False,
 ) -> tuple[
-    NDArray[np.float64],
+    JaxArray,
     Callable[[JaxArray], JaxArray],
 ]:
     """Build the ``(params_flat_init, J_of_params_flat)`` pair for
-    ``cmad gradient`` / ``cmad hessian`` on FE problems.
+    ``cmad objective`` / ``gradient`` / ``hessian`` on FE problems.
 
     ``params_flat`` is the concatenation of each mesh element block's
     flat-active canonical parameter vector
@@ -145,11 +146,11 @@ def build_fe_J_of_params_flat(
     against those reconstructed params, and runs the FE forward solve
     via :func:`cmad.fem.driver.fe_quasistatic_trajectory`. The returned
     scalar ``J`` is the QoI accumulated across the time loop, suitable
-    for ``jax.grad`` / ``jax.hessian``.
+    for direct evaluation, ``jax.grad``, or ``jax.hessian``.
 
     ``bundle.qoi`` must be non-None; the FE-side
-    ``build_fe_problem_from_deck`` populates it for ``"gradient"`` and
-    ``"hessian"`` subcommands.
+    ``build_fe_problem_from_deck`` populates it for ``"objective"``,
+    ``"gradient"``, and ``"hessian"`` subcommands.
     """
     fe_problem = bundle.fe_problem
     qoi = bundle.qoi
@@ -174,16 +175,16 @@ def build_fe_J_of_params_flat(
         fe_problem.dof_map.evaluate_prescribed_values(float(t))
 
     block_names = list(fe_problem.models_by_block.keys())
-    per_block_init: list[NDArray[np.float64]] = []
+    per_block_init: list[JaxArray] = []
     per_block_lengths: list[int] = []
     for b in block_names:
         params_obj = fe_problem.models_by_block[b].parameters
         flat_active = params_obj.flat_active_values(return_canonical=True)
-        per_block_init.append(np.asarray(flat_active, dtype=np.float64))
+        per_block_init.append(jnp.asarray(flat_active, dtype=jnp.float64))
         per_block_lengths.append(int(flat_active.shape[0]))
     params_flat_init = (
-        np.concatenate(per_block_init).astype(np.float64)
-        if per_block_init else np.zeros((0,), dtype=np.float64)
+        jnp.concatenate(per_block_init).astype(jnp.float64)
+        if per_block_init else jnp.zeros((0,), dtype=jnp.float64)
     )
     boundaries = np.cumsum([0, *per_block_lengths])
 
@@ -212,6 +213,7 @@ def build_fe_J_of_params_flat(
             max_iters=max_iters,
             abs_tol=abs_tol,
             rel_tol=rel_tol,
+            print_global_convergence=print_global_convergence,
         )
         return J
 

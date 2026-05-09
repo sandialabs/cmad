@@ -2,10 +2,11 @@
 
 Builds a small uniaxial-stretch FE deck with the
 ``fe_displacement_l2`` QoI, runs ``cmad objective``, and verifies
-the wiring: ``J.json`` contains a finite positive scalar,
-``deck.resolved.yaml`` is written, and the deck-named Exodus file
-exists. Numerical correctness of the QoI value is validated
-directly against the closure in
+the wiring: ``J.json`` contains a finite positive scalar and
+``deck.resolved.yaml`` is written. FE state-trajectory output is
+not produced by ``cmad objective``; only ``cmad primal`` writes
+Exodus II files. Numerical correctness of the QoI value is
+validated directly against the closure in
 ``tests/qois/test_fe_displacement_l2.py``; this is a CLI-wiring
 check.
 """
@@ -66,24 +67,13 @@ def _make_fe_objective_deck(
 
 
 class TestObjectiveFeRoundTrip(unittest.TestCase):
-    def test_writes_J_resolved_deck_and_exodus(self) -> None:
+    def test_writes_J_and_resolved_deck(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             _write_hex_cube_mesh(tmp / "mesh.exo")
             deck = _make_fe_objective_deck(
                 mesh_filename="mesh.exo",
-                output_section={
-                    "path": "out",
-                    "exodus filename": "objective.exo",
-                    "nodal fields": [
-                        {"name": "displacement", "var_type": "vector"},
-                    ],
-                    "element fields by block": {
-                        "all": [
-                            {"name": "cauchy", "var_type": "sym_tensor"},
-                        ],
-                    },
-                },
+                output_section={"path": "out"},
             )
             deck_path = tmp / "deck.yaml"
             deck_path.write_text(yaml.safe_dump(deck, sort_keys=False))
@@ -97,34 +87,10 @@ class TestObjectiveFeRoundTrip(unittest.TestCase):
                 J = json.load(f)["J"]
             self.assertTrue(np.isfinite(J))
             self.assertGreater(J, 0.0)
-
             self.assertTrue((out_dir / "deck.resolved.yaml").exists())
-            self.assertTrue((out_dir / "objective.exo").exists())
-
-    def test_skips_exodus_for_non_exodus_format(self) -> None:
-        # When format != exodus, J.json + resolved deck still written;
-        # FE Exodus output is skipped. exodus filename schema field
-        # is only required when format == exodus.
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            _write_hex_cube_mesh(tmp / "mesh.exo")
-            deck = _make_fe_objective_deck(
-                mesh_filename="mesh.exo",
-                output_section={"path": "out", "format": "npy"},
-            )
-            deck_path = tmp / "deck.yaml"
-            deck_path.write_text(yaml.safe_dump(deck, sort_keys=False))
-
-            self.assertEqual(
-                cmad_main(["objective", str(deck_path)]), 0,
-            )
-
-            out_dir = tmp / "out"
-            with (out_dir / "J.json").open("r") as f:
-                J = json.load(f)["J"]
-            self.assertGreater(J, 0.0)
-            self.assertTrue((out_dir / "deck.resolved.yaml").exists())
-            self.assertFalse((out_dir / "objective.exo").exists())
+            # No Exodus II output from cmad objective; the writer is
+            # only called by cmad primal.
+            self.assertFalse(any(out_dir.glob("*.exo")))
 
 
 if __name__ == "__main__":

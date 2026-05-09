@@ -5,11 +5,12 @@ plus the registered QoI, runs a single forward pass through
 :func:`cmad.cli.primal.run_primal_pass` with the QoI supplied so J
 is accumulated alongside cauchy, xi, and solver log in one loop;
 writes the primal output set plus ``J.json``. The FE branch builds
-the FE problem with the QoI attached, drives the forward solve via
-:func:`cmad.fem.driver.fe_quasistatic_drive` with the QoI threaded
-through, and writes ``J.json`` + ``deck.resolved.yaml`` (and an
-Exodus trajectory when ``output.exodus filename`` is set in the
-deck). No sensitivities are computed in either branch.
+the FE problem with the QoI attached, evaluates the
+``J(params_flat)`` closure from
+:func:`cmad.cli.common.build_fe_J_of_params_flat` at the deck's
+parameter point, and writes ``J.json`` + ``deck.resolved.yaml``.
+No sensitivities are computed in either branch; FE state-trajectory
+output is reserved to ``cmad primal``.
 """
 
 from __future__ import annotations
@@ -17,16 +18,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from cmad.cli.common import (
+    build_fe_J_of_params_flat,
     build_fe_problem_from_deck,
     build_mp_problem,
     resolve_output,
 )
 from cmad.cli.primal import run_primal_pass
-from cmad.fem.driver import fe_quasistatic_drive
 from cmad.io.deck import load_deck, unwrap_top_level
 from cmad.io.writers import (
     write_cauchy,
-    write_fe_exodus,
     write_J,
     write_resolved_deck,
     write_solver_log,
@@ -70,27 +70,17 @@ def _run_objective_mp(deck_path: Path) -> int:
 
 def _run_objective_fe(deck_path: Path) -> int:
     bundle = build_fe_problem_from_deck(deck_path, "objective")
-    qoi = bundle.qoi
-    assert qoi is not None
     gr_section = bundle.resolved["residuals"]["global residual"]
-    fe_state, J = fe_quasistatic_drive(
-        bundle.fe_problem,
-        bundle.t_schedule.tolist(),
-        qoi=qoi,
-        max_iters=int(gr_section["nonlinear max iters"]),
-        abs_tol=float(gr_section["nonlinear absolute tol"]),
-        rel_tol=float(gr_section["nonlinear relative tol"]),
+    params_flat, J_of_params_flat = build_fe_J_of_params_flat(
+        bundle,
         print_global_convergence=bool(
             gr_section.get("print convergence", False),
         ),
     )
 
+    J = float(J_of_params_flat(params_flat))
+
     out_dir, prefix, _fmt = resolve_output(bundle.resolved, deck_path)
-    if "exodus filename" in bundle.resolved["output"]:
-        write_fe_exodus(
-            out_dir, prefix, bundle.fe_problem, fe_state,
-            bundle.resolved["output"],
-        )
     write_resolved_deck(out_dir, prefix, bundle.resolved)
-    write_J(out_dir, prefix, float(J))
+    write_J(out_dir, prefix, J)
     return 0
