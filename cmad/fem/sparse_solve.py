@@ -17,6 +17,9 @@ Two helpers:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -26,6 +29,9 @@ from jax import lax
 from jax.experimental.sparse import BCOO
 
 from cmad.typing import JaxArray
+
+if TYPE_CHECKING:
+    from cmad.fem.fe_problem import FEProblem
 
 
 def _spsolve_callback(
@@ -235,3 +241,148 @@ def _embedded_bc_enforce(
     K_rows = jnp.concatenate([rows, presc_idx])
     K_cols = jnp.concatenate([cols, presc_idx])
     return K_data, K_rows, K_cols
+
+
+@dataclass(frozen=True)
+class EmbeddedSparsity:
+    """CSR cache for the embedded-BC global tangent.
+
+    Mesh + DOF map + Dirichlet BC indices determine the structural
+    nonzero pattern of the BC-enforced K entirely; only data values
+    vary across Newton iters. ``EmbeddedSparsity`` pre-computes the
+    sort permutation, dedup segment ids, and CSR
+    ``(indptr, col_indices)`` arrays so consumers can build a
+    JAX-native BCSR or scipy CSR per iter without re-running the
+    sort + dedup + indptr-build.
+
+    Structural zeros are filtered out at construction. Under
+    symmetric BC enforcement the ``(free, presc)`` and
+    ``(presc, free)`` blocks of K are zero, so assembled COO entries
+    at those positions contribute nothing to matvec or solve;
+    they're omitted from the cached pattern. What remains is the
+    assembled ``(free, free)`` block plus the appended ``alpha``
+    entries at the prescribed diagonal that
+    :func:`_embedded_bc_enforce` adds at runtime.
+
+    Operator shape stays ``n x n`` (no DOF elimination); consumers
+    keep the uniform embedded-form API produced by
+    :func:`_embedded_bc_enforce`.
+
+    Field semantics:
+
+    - ``perm``: ``(nnz_kept,)`` permutation into the BC-enforced
+      ``K_data`` (length ``nnz_assembled + n_presc``) that selects
+      the kept positions in lex-sorted ``(row, col)`` order;
+      ``K_data[perm]`` yields the relevant values.
+    - ``segment_ids``: ``(nnz_kept,)`` maps each permuted entry to
+      its unique ``(row, col)`` group;
+      ``unique_data = segment_sum(K_data[perm], segment_ids,
+      num_segments=num_unique)``.
+    - ``num_unique``: number of unique ``(row, col)`` entries —
+      length of the materialized CSR data buffer.
+    - ``indptr``: ``(n+1,)`` CSR row pointers over unique entries.
+    - ``col_indices``: ``(num_unique,)`` sorted column indices, one
+      per unique entry.
+    - ``diag_idx``: ``(n,)`` index into ``unique_data`` of each
+      row's diagonal entry; lets diagonal-needing consumers (Jacobi
+      preconditioner, residual checks) read the diagonal via
+      ``unique_data[diag_idx]`` rather than a per-call scatter-add.
+    - ``n``: matrix size (``dof_map.num_total_dofs``).
+    """
+    perm: JaxArray
+    segment_ids: JaxArray
+    num_unique: int
+    indptr: JaxArray
+    col_indices: JaxArray
+    diag_idx: JaxArray
+    n: int
+
+
+def build_embedded_sparsity(
+        fe_problem: FEProblem,
+) -> EmbeddedSparsity:
+    """Pre-compute the :class:`EmbeddedSparsity` for ``fe_problem``.
+
+    Walks the assembled COO from
+    :func:`cmad.fem.assembly.assembled_coo_indices`, filters
+    structural zeros (entries whose row or column is prescribed),
+    and appends ``(presc_idx, presc_idx)`` positions for the
+    ``alpha`` diagonal block that :func:`_embedded_bc_enforce`
+    adds at runtime. The lex-sort permutation, dedup segment ids,
+    and CSR row pointers are derived from the kept set.
+
+    When an assembled ``(presc, presc)`` entry coincides with an
+    appended ``alpha`` position, the dedup folds the two into one
+    unique entry with value ``alpha`` (zero from the runtime mask
+    plus appended ``alpha``) — handled by the segment_sum without
+    special-casing.
+    """
+    from cmad.fem.assembly import assembled_coo_indices
+
+    rows_asm, cols_asm = assembled_coo_indices(fe_problem)
+    presc_idx = np.asarray(
+        fe_problem.dof_map.prescribed_indices, dtype=np.intp,
+    )
+    n = int(fe_problem.dof_map.num_total_dofs)
+    nnz_asm = rows_asm.shape[0]
+    n_presc = presc_idx.shape[0]
+
+    is_presc = np.zeros(n, dtype=bool)
+    is_presc[presc_idx] = True
+
+    free_free_mask = ~is_presc[rows_asm] & ~is_presc[cols_asm]
+    ff_positions = np.where(free_free_mask)[0].astype(np.intp)
+
+    appended_positions = np.arange(
+        nnz_asm, nnz_asm + n_presc, dtype=np.intp,
+    )
+    kept_positions = np.concatenate([ff_positions, appended_positions])
+
+    full_rows = np.concatenate([rows_asm, presc_idx])
+    full_cols = np.concatenate([cols_asm, presc_idx])
+    kept_rows = full_rows[kept_positions]
+    kept_cols = full_cols[kept_positions]
+
+    sort_perm = np.lexsort((kept_cols, kept_rows))
+    perm = kept_positions[sort_perm]
+    sorted_rows = kept_rows[sort_perm]
+    sorted_cols = kept_cols[sort_perm]
+
+    nnz_kept = sorted_rows.shape[0]
+    is_new_group = np.empty(nnz_kept, dtype=bool)
+    is_new_group[0] = True
+    is_new_group[1:] = (sorted_rows[1:] != sorted_rows[:-1]) | (
+        sorted_cols[1:] != sorted_cols[:-1]
+    )
+    segment_ids = (np.cumsum(is_new_group) - 1).astype(np.intp)
+    num_unique = int(segment_ids[-1]) + 1
+
+    unique_rows = sorted_rows[is_new_group]
+    col_indices = sorted_cols[is_new_group].astype(np.intp)
+
+    indptr = np.searchsorted(
+        unique_rows, np.arange(n + 1), side="left",
+    ).astype(np.intp)
+
+    is_diag = unique_rows == col_indices
+    diag_positions = np.where(is_diag)[0].astype(np.intp)
+    diag_rows = unique_rows[diag_positions]
+    diag_idx = np.full(n, -1, dtype=np.intp)
+    diag_idx[diag_rows] = diag_positions
+    if (diag_idx < 0).any():
+        missing = int(np.where(diag_idx < 0)[0][0])
+        raise ValueError(
+            f"row {missing} has no diagonal entry in the BC-enforced "
+            f"K sparsity pattern; FE assembly is expected to emit a "
+            f"(row, row) entry for every dof"
+        )
+
+    return EmbeddedSparsity(
+        perm=jnp.asarray(perm),
+        segment_ids=jnp.asarray(segment_ids),
+        num_unique=num_unique,
+        indptr=jnp.asarray(indptr),
+        col_indices=jnp.asarray(col_indices),
+        diag_idx=jnp.asarray(diag_idx),
+        n=n,
+    )

@@ -1,6 +1,7 @@
 """FEProblem + FEState dataclasses for the FE forward problem."""
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 from jax.flatten_util import ravel_pytree
@@ -26,6 +27,9 @@ from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.model import Model
 from cmad.typing import GREvaluators, JaxArray, StateList
+
+if TYPE_CHECKING:
+    from cmad.fem.sparse_solve import EmbeddedSparsity
 
 _DEFAULT_ASSEMBLY_QUADRATURE: dict[ElementFamily, QuadratureRule] = {
     ElementFamily.HEX_LINEAR: hex_quadrature(degree=2),
@@ -127,6 +131,9 @@ class FEProblem:
         init=False, default_factory=dict,
     )
     bc_diag_scale: float = field(init=False, default=1.0)
+    embedded_sparsity: "EmbeddedSparsity | None" = field(
+        init=False, default=None,
+    )
 
     def __post_init__(self) -> None:
         name_to_idx = {
@@ -197,6 +204,16 @@ class FEProblem:
             for block in self.models_by_block
         )
         object.__setattr__(self, "bc_diag_scale", bc_diag_scale)
+
+        # Lazy import to break the
+        # fe_problem -> sparse_solve -> assembly -> fe_problem
+        # cycle; assembly imports FEProblem at module scope, so
+        # fe_problem can only reference sparse_solve from inside
+        # a function body.
+        from cmad.fem.sparse_solve import build_embedded_sparsity
+        object.__setattr__(
+            self, "embedded_sparsity", build_embedded_sparsity(self),
+        )
 
     @property
     def ndims(self) -> int:
