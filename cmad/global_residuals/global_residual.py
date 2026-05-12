@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 import numpy as np
-from jax import jacfwd, jacrev, jit
+from jax import jacfwd, jit
 from numpy.typing import NDArray
 
 from cmad.fem.shapes import ShapeFunctionsAtIP
@@ -58,10 +58,11 @@ class GlobalResidual(ABC):
     XLA CSE between R and its tangent — the Newton-step call). The
     CLOSED_FORM public closures are U-only — xi/xi_prev are bound to
     zeros internally because ``model.cauchy_closed_form`` is consulted
-    instead. COUPLED mode exposes a different 7-key dict mixing raw
-    partials at supplied ξ (9-arg sig including xi) with Newton-
-    running totals (8-arg sig; xi internally solved from
-    ``xi_prev``); see :meth:`for_model` for the full contract.
+    instead. COUPLED mode exposes 2 keys, both 8-arg Newton-running
+    (xi internally solved from ``xi_prev``): ``"R"`` (R-only, for
+    global-FE linesearch trial points) and ``"R_and_dR_dU_and_xi"``
+    (fused R + IFT-corrected tangent + converged xi for the FE-
+    Newton hot path); see :meth:`for_model` for the full contract.
     Multiple ``for_model`` calls on the same GR instance produce
     independent closures — each captures its own ``mode`` value, so
     a mixed-mode FE problem that binds the same GR per block
@@ -268,23 +269,20 @@ class GlobalResidual(ABC):
           ``(num_basis_fns_r, num_eqs_r, num_basis_fns_s,
           num_eqs_s)``.
 
-        - COUPLED (7 keys, mixed sigs). Raw partials at supplied ξ
-          (9-arg sig
-          ``(params, U, U_prev, xi, xi_prev, shapes_ip, w, dv,
-          ip_set)``): ``"R"``, ``"dR_dU_prev"``, ``"dR_dp"``,
-          ``"dR_dxi"``, ``"dR_dxi_prev"``. No local Newton, no IFT
-          correction — the consumer supplies xi at the public
-          boundary. Newton-running totals (8-arg sig
+        - COUPLED (2 keys, both 8-arg sig
           ``(params, U, U_prev, xi_prev, shapes_ip, w, dv,
           ip_set)``; xi internally solved from ``xi_prev`` via
           ``make_newton_solve`` wrapping ``model._residual``):
-          ``"dR_dU"`` (IFT-corrected total via ``custom_jvp`` —
-          the global tangent K, transpose K^T for the adjoint) and
-          the bundled ``"R_and_dR_dU_and_xi"`` returning
-          ``(R_blocks, dR_dU_blocks, xi_converged)`` for the FE-
-          Newton hot path (state-history storage at FE-Newton
-          convergence is the bundled call's third element — no
-          extra solve).
+          ``"R"`` returning ``R_blocks`` (R-only — the per-IP
+          Newton runs and the converged xi is discarded; intended
+          for global-FE linesearch trial points and other R-norm
+          probes), and ``"R_and_dR_dU_and_xi"`` returning
+          ``(R_blocks, dR_dU_blocks, xi_converged)`` for the
+          FE-Newton hot path. ``dR_dU_blocks`` is the IFT-
+          corrected total via the ``custom_vjp`` rule on the
+          per-IP Newton (the global tangent K, transpose K^T for
+          the adjoint); state-history storage at FE-Newton
+          convergence is the third return — no extra solve.
 
         ``coupled_newton_kwargs`` (COUPLED only) is forwarded to
         ``make_newton_solve`` as ``**kwargs``. Defaults
@@ -375,24 +373,6 @@ class GlobalResidual(ABC):
     ) -> GREvaluators:
         residual_fn = self._residual_fn
 
-        # ─── Raw closures (9-arg sig: xi as input) ────────────────
-        # Public-closure argnums:
-        #   params=0, U=1, U_prev=2, xi=3, xi_prev=4,
-        #   shapes_ip=5, w=6, dv=7, ip_set=8.
-        def r_at_supplied_xi(params, U, U_prev, xi, xi_prev,
-                             shapes_ip, w, dv, ip_set):
-            return residual_fn(
-                xi, xi_prev, params, U, U_prev,
-                model, GlobalResidualMode.COUPLED,
-                shapes_ip, w, dv, ip_set,
-            )
-
-        dR_dU_prev_raw = jacfwd(r_at_supplied_xi, argnums=2)
-        dR_dp_raw = jacrev(r_at_supplied_xi, argnums=0)
-        dR_dxi_raw = jacfwd(r_at_supplied_xi, argnums=3)
-        dR_dxi_prev_raw = jacfwd(r_at_supplied_xi, argnums=4)
-
-        # ─── Newton-running closures (8-arg sig: no xi) ──────────
         # `make_newton_solve` conflates init guess and held-in-
         # residual x_prev (uses xi_prev as both); this matches
         # xi_init = xi_prev path continuity for plasticity.
@@ -437,13 +417,6 @@ class GlobalResidual(ABC):
             return R, dR_dU, xi
 
         return {
-            # Raw partials at supplied ξ (9-arg sig)
-            "R": jit(r_at_supplied_xi),
-            "dR_dU_prev": jit(dR_dU_prev_raw),
-            "dR_dp": jit(dR_dp_raw),
-            "dR_dxi": jit(dR_dxi_raw),
-            "dR_dxi_prev": jit(dR_dxi_prev_raw),
-            # Newton-running totals (8-arg sig)
-            "dR_dU": jit(dR_dU_total),
+            "R": jit(coupled_r_total),
             "R_and_dR_dU_and_xi": jit(r_and_dR_dU_and_xi_at_ip),
         }

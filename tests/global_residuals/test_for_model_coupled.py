@@ -1,16 +1,14 @@
-"""Shape contract + Elastic equivalence + J2 raw-partial tests for
-GlobalResidual.for_model COUPLED mode.
+"""Shape contract + Elastic equivalence + J2 IFT-correction tests
+for GlobalResidual.for_model COUPLED mode.
 
 Bundles a small toy 3D u-only quasi-static equilibrium GR (mirror
 of test_abc_contract.py's _ToyEquilibrium, mode-aware via the
 ``mode`` arg threaded through residual_fn) and exercises the
-COUPLED branch's 7-key dict shape,
-mixed argument signatures (9-arg raw vs 8-arg Newton-running),
+COUPLED branch's 2-key dict shape (both 8-arg Newton-running),
 the R + dR/dU equivalence between CLOSED_FORM and COUPLED bindings
-on a closed-form-capable Elastic model, and J2 raw-partial
-contracts plus JVP-vs-FD on dR/dU at a plastic-loading point
-(validates the IFT correction in make_newton_solve's custom_jvp
-rule).
+on a closed-form-capable Elastic model, and a JVP-vs-FD check on
+dR/dU at a J2 plastic-loading point (validates the IFT correction
+in make_newton_solve's custom_vjp rule).
 """
 import unittest
 from typing import cast
@@ -130,40 +128,17 @@ def _test_inputs(model: Elastic):
 
 
 class TestForModelCoupledShape(unittest.TestCase):
-    def test_coupled_returns_seven_keys(self):
+    def test_coupled_returns_two_keys(self):
         gr = _ToyEquilibrium()
         model = _make_linear_elastic_model()
         evaluators = gr.for_model(
             model, mode=GlobalResidualMode.COUPLED)
         self.assertEqual(
             set(evaluators.keys()),
-            {
-                "R", "dR_dU_prev", "dR_dp",
-                "dR_dxi", "dR_dxi_prev",
-                "dR_dU", "R_and_dR_dU_and_xi",
-            },
+            {"R", "R_and_dR_dU_and_xi"},
         )
 
-    def test_raw_evaluators_callable_with_9arg_sig(self):
-        gr = _ToyEquilibrium()
-        model = _make_linear_elastic_model()
-        evaluators = gr.for_model(
-            model, mode=GlobalResidualMode.COUPLED)
-        params, U, U_prev, shapes_ip, w, dv, ip_set = (
-            _test_inputs(model))
-        xi = [jnp.zeros_like(b) for b in model._init_xi]
-        xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
-
-        # All 5 raw evaluators take 9 args:
-        # (params, U, U_prev, xi, xi_prev, shapes_ip, w, dv, ip_set).
-        for key in ("R", "dR_dU_prev", "dR_dp",
-                    "dR_dxi", "dR_dxi_prev"):
-            evaluators[key](
-                params, U, U_prev, xi, xi_prev,
-                shapes_ip, w, dv, ip_set,
-            )
-
-    def test_total_evaluators_callable_with_8arg_sig(self):
+    def test_evaluators_callable_with_8arg_sig(self):
         gr = _ToyEquilibrium()
         model = _make_linear_elastic_model()
         evaluators = gr.for_model(
@@ -172,9 +147,9 @@ class TestForModelCoupledShape(unittest.TestCase):
             _test_inputs(model))
         xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
 
-        # dR_dU and R_and_dR_dU_and_xi take 8 args:
+        # Both COUPLED evaluators take 8 args:
         # (params, U, U_prev, xi_prev, shapes_ip, w, dv, ip_set).
-        for key in ("dR_dU", "R_and_dR_dU_and_xi"):
+        for key in ("R", "R_and_dR_dU_and_xi"):
             evaluators[key](
                 params, U, U_prev, xi_prev,
                 shapes_ip, w, dv, ip_set,
@@ -243,14 +218,13 @@ class TestForModelCoupledClosedFormEquivalence(unittest.TestCase):
             rtol=0., atol=1e-12))
 
 
-class TestForModelCoupledJ2RawEvaluators(unittest.TestCase):
-    """COUPLED raw evaluators on a J2 plastic-loading point.
+class TestForModelCoupledJ2LocalNewton(unittest.TestCase):
+    """COUPLED ``R_and_dR_dU_and_xi`` on a J2 plastic-loading point.
 
-    The internal local Newton inside ``R_and_dR_dU_and_xi`` solves
+    The per-IP local Newton inside the evaluator solves
     ``model._residual(xi, xi_prev, params, U_ip, U_ip_prev) = 0``
     in the plastic branch; the converged xi is returned as the third
-    element. We then exercise the raw 9-arg evaluators at that
-    converged xi and check structural invariants.
+    element of the 3-tuple.
     """
     def test_local_newton_converges_to_equilibrium(self):
         gr = _ToyEquilibrium()
@@ -276,79 +250,15 @@ class TestForModelCoupledJ2RawEvaluators(unittest.TestCase):
         # solve (took at least one plastic step).
         self.assertGreater(float(xi_solved[1][0]), 0.0)
 
-    def test_R_raw_at_supplied_xi_matches_total(self):
-        """Raw 9-arg ``R`` at ``xi=xi_solved`` matches R from the
-        Newton-running 8-arg ``R_and_dR_dU_and_xi``."""
-        gr_raw = _ToyEquilibrium()
-        gr_total = _ToyEquilibrium()
-        model = _make_J2_model()
-        ev_raw = gr_raw.for_model(
-            model, mode=GlobalResidualMode.COUPLED)
-        ev_total = gr_total.for_model(
-            model, mode=GlobalResidualMode.COUPLED)
-        params, U, U_prev, shapes_ip, w, dv, ip_set = (
-            _j2_plastic_inputs(model))
-        xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
-
-        R_total, _, xi_solved = ev_total["R_and_dR_dU_and_xi"](
-            params, U, U_prev, xi_prev, shapes_ip, w, dv, ip_set)
-        R_raw = ev_raw["R"](
-            params, U, U_prev, xi_solved, xi_prev,
-            shapes_ip, w, dv, ip_set)
-
-        self.assertTrue(jnp.allclose(
-            R_raw[0], R_total[0], rtol=0., atol=1e-12))
-
-    def test_dR_dxi_and_dR_dxi_prev_shapes(self):
-        gr = _ToyEquilibrium()
-        model = _make_J2_model()
-        evaluators = gr.for_model(
-            model, mode=GlobalResidualMode.COUPLED)
-        params, U, U_prev, shapes_ip, w, dv, ip_set = (
-            _j2_plastic_inputs(model))
-        xi = [jnp.zeros_like(b) for b in model._init_xi]
-        xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
-
-        # SmallElasticPlastic FULL_3D: xi blocks are pstrain (6,)
-        # and alpha (1,). One R block of shape (4, 3).
-        for key in ("dR_dxi", "dR_dxi_prev"):
-            result = evaluators[key](
-                params, U, U_prev, xi, xi_prev,
-                shapes_ip, w, dv, ip_set)
-            self.assertEqual(len(result), 1)
-            self.assertEqual(len(result[0]), 2)
-            self.assertEqual(result[0][0].shape, (4, 3, 6))
-            self.assertEqual(result[0][1].shape, (4, 3, 1))
-
-    def test_dR_dxi_alpha_block_is_zero(self):
-        """``model.cauchy`` for SmallElasticPlastic depends on plastic
-        strain (xi[0]) but not on the hardening variable alpha
-        (xi[1]), so dR/dxi[1] is identically zero — a structural
-        invariant of the model that the wiring should preserve."""
-        gr = _ToyEquilibrium()
-        model = _make_J2_model()
-        evaluators = gr.for_model(
-            model, mode=GlobalResidualMode.COUPLED)
-        params, U, U_prev, shapes_ip, w, dv, ip_set = (
-            _j2_plastic_inputs(model))
-        # Non-trivial xi so the zero result isn't an artifact of
-        # zero state.
-        xi = [jnp.array([0.001, 0.0005, 0.0, 0.0, 0.0, 0.0]),
-              jnp.array([0.001])]
-        xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
-
-        dR_dxi = evaluators["dR_dxi"](
-            params, U, U_prev, xi, xi_prev,
-            shapes_ip, w, dv, ip_set)
-        self.assertTrue(jnp.allclose(dR_dxi[0][1], 0., atol=0.))
-
 
 class TestForModelCoupledJVPvsFD(unittest.TestCase):
     """Forward-mode JVP correctness on ``dR/dU`` total at a J2
     plastic-loading point. Validates the IFT correction in
-    ``make_newton_solve``'s ``custom_jvp`` rule against central FD
-    on R from ``R_and_dR_dU_and_xi`` (which re-runs the local Newton
-    each call, so the FD probe inherits the IFT structure)."""
+    ``make_newton_solve``'s ``custom_vjp`` rule by comparing the
+    second return of ``R_and_dR_dU_and_xi`` (AD tangent) against
+    central FD on the Newton-running ``R`` evaluator (each call
+    re-runs the per-IP Newton, so the FD probe inherits the IFT
+    structure)."""
 
     def test_dR_dU_total_matches_central_fd(self):
         gr = _ToyEquilibrium()
@@ -359,10 +269,10 @@ class TestForModelCoupledJVPvsFD(unittest.TestCase):
             _j2_plastic_inputs(model))
         xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
 
-        dR_dU = evaluators["dR_dU"](
+        _, dR_dU_blocks, _ = evaluators["R_and_dR_dU_and_xi"](
             params, U, U_prev, xi_prev,
             shapes_ip, w, dv, ip_set)
-        ad_arr = np.asarray(dR_dU[0][0])  # (4, 3, 4, 3)
+        ad_arr = np.asarray(dR_dU_blocks[0][0])  # (4, 3, 4, 3)
 
         eps = 1e-6
         fd_arr = np.zeros_like(ad_arr)
@@ -370,10 +280,10 @@ class TestForModelCoupledJVPvsFD(unittest.TestCase):
             for k in range(3):
                 U_plus = [U[0].at[b, k].add(eps)]
                 U_minus = [U[0].at[b, k].add(-eps)]
-                R_plus, _, _ = evaluators["R_and_dR_dU_and_xi"](
+                R_plus = evaluators["R"](
                     params, U_plus, U_prev, xi_prev,
                     shapes_ip, w, dv, ip_set)
-                R_minus, _, _ = evaluators["R_and_dR_dU_and_xi"](
+                R_minus = evaluators["R"](
                     params, U_minus, U_prev, xi_prev,
                     shapes_ip, w, dv, ip_set)
                 fd_arr[:, :, b, k] = (
@@ -391,13 +301,15 @@ class TestForModelMixedModeBindings(unittest.TestCase):
     read the second binding's mode at call time, taking the wrong
     branch.
 
-    Distinguisher with Elastic: CLOSED_FORM's ``R`` evaluator calls
-    ``cauchy_closed_form`` and produces nonzero stress at nonzero U;
-    COUPLED's raw ``R`` evaluator at xi=zeros calls ``cauchy(xi=0,
-    ...)`` which returns the held xi (= zero), giving zero stress.
-    The two evaluators must therefore produce *different* R values
-    at the same (U, U_prev) — and each must match a single-binding
-    fresh-GR reference.
+    Distinguisher: the dict keys differ by mode
+    (``{"R", "R_and_dR_dU"}`` for CLOSED_FORM vs
+    ``{"R", "R_and_dR_dU_and_xi"}`` for COUPLED), proving each
+    closure captured its own mode lexically at ``for_model`` time
+    rather than reading a mutable instance attribute. On Elastic the
+    R values from the two modes agree to roundoff (per
+    ``TestForModelCoupledClosedFormEquivalence``), so the value
+    check uses same-mode fresh-GR references to catch any
+    cross-contamination of captured params / state.
     """
 
     def test_two_bindings_same_GR_dont_share_state(self):
@@ -409,17 +321,25 @@ class TestForModelMixedModeBindings(unittest.TestCase):
         ev_coupled = gr.for_model(
             model, mode=GlobalResidualMode.COUPLED)
 
+        # Key-set distinguisher: each closure carries its captured
+        # mode's evaluators, not the other's.
+        self.assertEqual(
+            set(ev_closed.keys()), {"R", "R_and_dR_dU"})
+        self.assertEqual(
+            set(ev_coupled.keys()), {"R", "R_and_dR_dU_and_xi"})
+
         params, U, U_prev, shapes_ip, w, dv, ip_set = (
             _test_inputs(model))
+        xi_zeros = [jnp.zeros_like(b) for b in model._init_xi]
 
         R_closed = ev_closed["R"](
             params, U, U_prev, shapes_ip, w, dv, ip_set)
-        xi_zeros = [jnp.zeros_like(b) for b in model._init_xi]
-        R_coupled_raw_at_zero_xi = ev_coupled["R"](
-            params, U, U_prev, xi_zeros, xi_zeros,
+        R_coupled, _, _ = ev_coupled["R_and_dR_dU_and_xi"](
+            params, U, U_prev, xi_zeros,
             shapes_ip, w, dv, ip_set)
 
-        # Reference: fresh single-binding GRs.
+        # Same-mode fresh-GR references: catches cross-
+        # contamination of captured params / state across bindings.
         gr_closed_ref = _ToyEquilibrium()
         gr_coupled_ref = _ToyEquilibrium()
         ev_closed_ref = gr_closed_ref.for_model(
@@ -429,27 +349,17 @@ class TestForModelMixedModeBindings(unittest.TestCase):
 
         R_closed_ref = ev_closed_ref["R"](
             params, U, U_prev, shapes_ip, w, dv, ip_set)
-        R_coupled_ref = ev_coupled_ref["R"](
-            params, U, U_prev, xi_zeros, xi_zeros,
+        R_coupled_ref, _, _ = ev_coupled_ref[
+            "R_and_dR_dU_and_xi"](
+            params, U, U_prev, xi_zeros,
             shapes_ip, w, dv, ip_set)
 
-        # Each binding's R matches its single-binding fresh-GR
-        # reference — proves the second for_model call did not
-        # corrupt the first closure.
         self.assertTrue(np.allclose(
-            np.asarray(R_closed[0]), np.asarray(R_closed_ref[0]),
-            atol=1e-12))
-        self.assertTrue(np.allclose(
-            np.asarray(R_coupled_raw_at_zero_xi[0]),
-            np.asarray(R_coupled_ref[0]), atol=1e-12))
-
-        # Sanity: the two bindings produce *different* R values
-        # (otherwise the test would pass trivially with both
-        # closures running CLOSED_FORM or both running COUPLED).
-        self.assertFalse(np.allclose(
             np.asarray(R_closed[0]),
-            np.asarray(R_coupled_raw_at_zero_xi[0]),
-            atol=1e-6))
+            np.asarray(R_closed_ref[0]), atol=1e-12))
+        self.assertTrue(np.allclose(
+            np.asarray(R_coupled[0]),
+            np.asarray(R_coupled_ref[0]), atol=1e-12))
 
 
 if __name__ == "__main__":
