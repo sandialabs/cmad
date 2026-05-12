@@ -638,3 +638,55 @@ def assemble_global(
         shape=(n_dofs, n_dofs),
     )
     return K, R_global, xi_solved_by_block
+
+
+def assembled_coo_indices(
+        fe_problem: FEProblem,
+) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
+    """Static ``(rows, cols)`` of the assembled BCOO's COO triplets.
+
+    The ``(rows, cols)`` of the BCOO returned by
+    :func:`assemble_global` are mesh-derived constants — every Newton
+    iter shares the same sparsity pattern, only ``vals`` varies. This
+    helper rebuilds them without running an assembly, matching the
+    ``(block, r, s)`` emit order of :func:`assemble_element_block`.
+
+    Keep the ``(block, r, s)`` walk in sync with
+    :func:`assemble_element_block`'s COO emit: changing the iteration
+    order there requires the same change here, or any permutation
+    pre-computed against this output silently breaks at the next
+    Newton iter.
+    """
+    mesh = fe_problem.mesh
+    dof_map = fe_problem.dof_map
+    num_blocks = fe_problem.gr.num_residuals
+    field_idx_per_block = fe_problem.field_idx_per_block
+
+    rows_all: list[NDArray[np.intp]] = []
+    cols_all: list[NDArray[np.intp]] = []
+    for block_name in fe_problem.evaluators_by_block:
+        elem_indices = mesh.element_blocks[block_name]
+        connectivity_block = mesh.connectivity[elem_indices]
+        n_elems = connectivity_block.shape[0]
+        eq_indices_per_block = [
+            _element_eq_indices(
+                connectivity_block, dof_map,
+                field_idx=field_idx_per_block[r],
+            )
+            for r in range(num_blocks)
+        ]
+        for r in range(num_blocks):
+            eq_r = eq_indices_per_block[r]
+            n_dofs_r = eq_r.shape[1]
+            for s in range(num_blocks):
+                eq_s = eq_indices_per_block[s]
+                n_dofs_s = eq_s.shape[1]
+                rows_all.append(np.broadcast_to(
+                    eq_r[:, :, None],
+                    (n_elems, n_dofs_r, n_dofs_s),
+                ).ravel())
+                cols_all.append(np.broadcast_to(
+                    eq_s[:, None, :],
+                    (n_elems, n_dofs_r, n_dofs_s),
+                ).ravel())
+    return np.concatenate(rows_all), np.concatenate(cols_all)
