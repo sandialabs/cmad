@@ -204,19 +204,19 @@ def _pcg_loop(
     return x_final, i_final
 
 
-def _cg_jax_operator(
+def _bcsr_jacobi_operator(
         K_data: JaxArray, sparsity: EmbeddedSparsity,
 ) -> tuple[
     Callable[[JaxArray], JaxArray],
     Callable[[JaxArray], JaxArray],
 ]:
-    """Build the BCSR matvec + Jacobi preconditioner for ``cg_jax``.
+    """Build the BCSR matvec + Jacobi preconditioner.
 
-    Shared setup between :func:`cg_jax` and
-    :func:`cg_jax_with_iters`; centralizing the dedup + BCSR
-    construction + diagonal extraction keeps both callers' matvec
+    Shared setup between :func:`cg_jax`, :func:`cg_jax_with_iters`,
+    and :func:`gmres_jax`; centralizing the dedup + BCSR
+    construction + diagonal extraction keeps all callers' matvec
     and preconditioner definitions in lockstep even though their
-    inner CG implementations differ.
+    inner iterative solver implementations differ.
     """
     unique_data = jnp.zeros(
         sparsity.num_unique, dtype=K_data.dtype,
@@ -284,7 +284,7 @@ def cg_jax(
     When the iteration count is needed (without AD), call
     :func:`cg_jax_with_iters` instead.
     """
-    matvec, precon = _cg_jax_operator(K_data, sparsity)
+    matvec, precon = _bcsr_jacobi_operator(K_data, sparsity)
 
     def solve(_unused_matvec, rhs: JaxArray) -> JaxArray:
         x, _info = jax.scipy.sparse.linalg.cg(
@@ -304,7 +304,7 @@ def cg_jax_with_iters(
     """CG returning ``(x, iter_count)``.
 
     Same matvec + Jacobi preconditioner as :func:`cg_jax` via
-    :func:`_cg_jax_operator`. Inner iteration is :func:`_pcg_loop`
+    :func:`_bcsr_jacobi_operator`. Inner iteration is :func:`_pcg_loop`
     rather than :func:`jax.scipy.sparse.linalg.cg` so the loop
     counter is surfaced through the return tuple;
     :func:`jax.lax.custom_linear_solve`'s ``solve`` callback can
@@ -320,8 +320,69 @@ def cg_jax_with_iters(
     by ±1 on convergence-test rounding; acceptable for diagnostic
     purposes.
     """
-    matvec, precon = _cg_jax_operator(K_data, sparsity)
+    matvec, precon = _bcsr_jacobi_operator(K_data, sparsity)
     return _pcg_loop(matvec, b, precon, rtol, max_iters)
+
+
+def gmres_jax(
+        K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
+        rtol: float = 1e-10, max_iters: int | None = None,
+        restart: int = 20,
+) -> JaxArray:
+    """Solve ``K x = b`` for general (possibly non-symmetric) K via GMRES.
+
+    Built on :func:`jax.scipy.sparse.linalg.gmres` running restarted
+    GMRES(``restart``), no scipy callback (fully jit-traceable). The
+    matvec is :class:`jax.experimental.sparse.BCSR` matrix-vector
+    multiplication against the pre-built sparsity cache; the cache's
+    ``perm`` + ``segment_ids`` gather + dedup ``K_data`` into the
+    unique CSR data buffer once per call (same operator construction
+    as :func:`cg_jax`).
+
+    AD via :func:`jax.lax.custom_linear_solve` with ``symmetric=False``:
+    the forward solve goes through ``solve``; the adjoint / transpose
+    solve goes through ``transpose_solve``, which runs GMRES against
+    the auto-transposed ``vecmat`` JAX supplies (the linear matvec is
+    JVP-transposable; no precomputed K^T cache is required). The
+    Jacobi (diagonal) preconditioner is symmetric, so the same
+    ``precon`` is reused on the transpose path — appropriate for any
+    diagonal preconditioner, the only kind currently available from
+    the cache.
+
+    Trade-off vs :func:`cg_jax` on SPD K: CG converges in ``O(√κ)``
+    iters with bounded memory, while restarted GMRES needs ``O(κ)``
+    matvecs and stores the Krylov basis up to ``restart``. Use
+    :func:`cg_jax` when SPD is known (small-strain elasticity with
+    self-adjoint kernels); use :func:`gmres_jax` for general K
+    (follower loads, non-associative plasticity) and as a comparison
+    point for non-symmetric workloads.
+
+    Like :func:`cg_jax`, this path is fully JAX-native and composes
+    with :func:`jax.vmap` as a single batched ``while_loop``; the
+    slowest column dictates the iteration count for the batch.
+    """
+    matvec, precon = _bcsr_jacobi_operator(K_data, sparsity)
+
+    def solve(matvec_: Callable[[JaxArray], JaxArray],
+              rhs: JaxArray) -> JaxArray:
+        x, _info = jax.scipy.sparse.linalg.gmres(
+            matvec_, rhs, M=precon, tol=rtol, maxiter=max_iters,
+            restart=restart,
+        )
+        return x
+
+    def transpose_solve(vecmat: Callable[[JaxArray], JaxArray],
+                        rhs: JaxArray) -> JaxArray:
+        x, _info = jax.scipy.sparse.linalg.gmres(
+            vecmat, rhs, M=precon, tol=rtol, maxiter=max_iters,
+            restart=restart,
+        )
+        return x
+
+    return lax.custom_linear_solve(
+        matvec, b, solve, transpose_solve=transpose_solve,
+        symmetric=False,
+    )
 
 
 def _embedded_bc_enforce(

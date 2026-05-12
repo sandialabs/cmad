@@ -10,7 +10,12 @@ from numpy.typing import NDArray
 
 from cmad.fem.assembly import assemble_global
 from cmad.fem.fe_problem import FEProblem
-from cmad.fem.sparse_solve import _embedded_bc_enforce, cg_jax, spsolve_jax
+from cmad.fem.sparse_solve import (
+    _embedded_bc_enforce,
+    cg_jax,
+    gmres_jax,
+    spsolve_jax,
+)
 from cmad.typing import JaxArray, Params
 
 
@@ -80,12 +85,14 @@ def _fe_newton_primal(
         )
         if linear_solver == "cg":
             dU = cg_jax(K_data, fe_problem.embedded_sparsity, -r)
+        elif linear_solver == "gmres":
+            dU = gmres_jax(K_data, fe_problem.embedded_sparsity, -r)
         elif linear_solver == "direct":
             dU = spsolve_jax(K_data, fe_problem.embedded_sparsity, -r)
         else:
             raise ValueError(
                 f"unknown linear_solver {linear_solver!r}; "
-                f"expected 'direct' or 'cg'"
+                f"expected 'direct', 'cg', or 'gmres'"
             )
         U_new = U + dU
         return (i + 1, U_new, R_norm, R_norm_0)
@@ -274,12 +281,16 @@ def _fe_newton_solve_ad_jvp(
 
     if linear_solver == "cg":
         U_star_dot = cg_jax(K_data, fe_problem.embedded_sparsity, -Rp_dot)
+    elif linear_solver == "gmres":
+        U_star_dot = gmres_jax(
+            K_data, fe_problem.embedded_sparsity, -Rp_dot,
+        )
     elif linear_solver == "direct":
         U_star_dot = spsolve_jax(K_data, fe_problem.embedded_sparsity, -Rp_dot)
     else:
         raise ValueError(
             f"unknown linear_solver {linear_solver!r}; "
-            f"expected 'direct' or 'cg'"
+            f"expected 'direct', 'cg', or 'gmres'"
         )
 
     def xi_of_U_p(U_, params_, Up_, t_, xp_):

@@ -17,6 +17,7 @@ from cmad.fem.sparse_solve import (
     EmbeddedSparsity,
     _embedded_bc_enforce,
     cg_jax,
+    gmres_jax,
     spsolve_jax,
 )
 from cmad.typing import JaxArray
@@ -243,6 +244,27 @@ class TestCGJaxForward(unittest.TestCase):
         b = jnp.asarray(np.random.default_rng(51).standard_normal(n))
 
         x = cg_jax(K_data, sparsity, b, rtol=1e-12)
+        x_ref = jnp.linalg.solve(jnp.asarray(K), b)
+        np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
+                                   rtol=1e-8, atol=1e-9)
+
+
+class TestGMRESJaxForward(unittest.TestCase):
+    """Forward-solve correctness for ``gmres_jax`` on non-symmetric K.
+
+    Exercises GMRES on its native turf: a non-symmetric K where
+    :func:`cg_jax` would fail. Builds K via :func:`_random_nonsymm`
+    (upper-triangular + diagonally dominant), wires it through the
+    same ``_dense_to_cache`` helper, and compares to a dense solve.
+    """
+
+    def test_nonsymm_matches_dense(self) -> None:
+        n = 10
+        K = _random_nonsymm(n, seed=60)
+        K_data, sparsity = _dense_to_cache(K)
+        b = jnp.asarray(np.random.default_rng(61).standard_normal(n))
+
+        x = gmres_jax(K_data, sparsity, b, rtol=1e-12)
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
         np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
                                    rtol=1e-8, atol=1e-9)
