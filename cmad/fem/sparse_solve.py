@@ -17,6 +17,7 @@ Two helpers:
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -125,6 +126,97 @@ def spsolve_jax(
     )
 
 
+def _pcg_loop(
+        matvec: Callable[[JaxArray], JaxArray],
+        b: JaxArray,
+        precon: Callable[[JaxArray], JaxArray],
+        rtol: float,
+        max_iters: int | None,
+) -> tuple[JaxArray, JaxArray]:
+    """Preconditioned CG via manual ``lax.while_loop`` with iter count.
+
+    Same Hestenes-Stiefel algorithm as
+    :func:`jax.scipy.sparse.linalg.cg`, restructured to expose the
+    iteration counter through the loop carry. Convergence test on
+    the unpreconditioned residual:
+    ``|r|^2 <= rtol^2 * |b|^2``.
+
+    Used by :func:`cg_jax_with_iters` to expose the counter
+    through its return tuple. :func:`cg_jax` defers to
+    :func:`jax.scipy.sparse.linalg.cg` so CMAD inherits whatever
+    upstream JAX does. Iter count from this loop may differ from
+    the JAX-native CG by ±1 on convergence-test rounding;
+    acceptable for diagnostic purposes.
+
+    ``max_iters=None`` selects the
+    :func:`jax.scipy.sparse.linalg.cg` default of
+    ``10 * b.shape[0]``.
+    """
+    if max_iters is None:
+        max_iters = 10 * b.shape[0]
+
+    x0 = jnp.zeros_like(b)
+    r0 = b - matvec(x0)
+    z0 = precon(r0)
+    p0 = z0
+    rz0 = jnp.dot(r0, z0)
+    tol_sq = (rtol ** 2) * jnp.dot(b, b)
+
+    def cond(state: tuple) -> JaxArray:
+        i, _x, r, _z, _p, _rz = state
+        return (i < max_iters) & (jnp.dot(r, r) > tol_sq)
+
+    def body(state: tuple) -> tuple:
+        i, x, r, _z, p, rz = state
+        Ap = matvec(p)
+        alpha = rz / jnp.dot(p, Ap)
+        x_new = x + alpha * p
+        r_new = r - alpha * Ap
+        z_new = precon(r_new)
+        rz_new = jnp.dot(r_new, z_new)
+        beta = rz_new / rz
+        p_new = z_new + beta * p
+        return (i + 1, x_new, r_new, z_new, p_new, rz_new)
+
+    initial = (jnp.int32(0), x0, r0, z0, p0, rz0)
+    final = lax.while_loop(cond, body, initial)
+    i_final, x_final = final[0], final[1]
+    return x_final, i_final
+
+
+def _cg_jax_operator(
+        K_data: JaxArray, sparsity: EmbeddedSparsity,
+) -> tuple[
+    Callable[[JaxArray], JaxArray],
+    Callable[[JaxArray], JaxArray],
+]:
+    """Build the BCSR matvec + Jacobi preconditioner for ``cg_jax``.
+
+    Shared setup between :func:`cg_jax` and
+    :func:`cg_jax_with_iters`; centralizing the dedup + BCSR
+    construction + diagonal extraction keeps both callers' matvec
+    and preconditioner definitions in lockstep even though their
+    inner CG implementations differ.
+    """
+    unique_data = jnp.zeros(
+        sparsity.num_unique, dtype=K_data.dtype,
+    ).at[sparsity.segment_ids].add(K_data[sparsity.perm])
+
+    K_bcsr = BCSR(
+        (unique_data, sparsity.col_indices, sparsity.indptr),
+        shape=(sparsity.n, sparsity.n),
+    )
+    diag = unique_data[sparsity.diag_idx]
+
+    def matvec(x: JaxArray) -> JaxArray:
+        return K_bcsr @ x
+
+    def precon(x: JaxArray) -> JaxArray:
+        return x / diag
+
+    return matvec, precon
+
+
 def cg_jax(
         K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
         rtol: float = 1e-10, max_iters: int | None = None,
@@ -168,22 +260,11 @@ def cg_jax(
     vmap-over-RHS pattern. The batched while_loop iterates until
     all batch elements converge (OR-reduced cond), so the slowest
     column dictates the iteration count for the batch.
+
+    When the iteration count is needed (without AD), call
+    :func:`cg_jax_with_iters` instead.
     """
-    unique_data = jnp.zeros(
-        sparsity.num_unique, dtype=K_data.dtype,
-    ).at[sparsity.segment_ids].add(K_data[sparsity.perm])
-
-    K_bcsr = BCSR(
-        (unique_data, sparsity.col_indices, sparsity.indptr),
-        shape=(sparsity.n, sparsity.n),
-    )
-    diag = unique_data[sparsity.diag_idx]
-
-    def matvec(x: JaxArray) -> JaxArray:
-        return K_bcsr @ x
-
-    def precon(x: JaxArray) -> JaxArray:
-        return x / diag
+    matvec, precon = _cg_jax_operator(K_data, sparsity)
 
     def solve(_unused_matvec, rhs: JaxArray) -> JaxArray:
         x, _info = jax.scipy.sparse.linalg.cg(
@@ -194,6 +275,33 @@ def cg_jax(
     return lax.custom_linear_solve(
         matvec, b, solve, symmetric=True,
     )
+
+
+def cg_jax_with_iters(
+        K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
+        rtol: float = 1e-10, max_iters: int | None = None,
+) -> tuple[JaxArray, JaxArray]:
+    """CG returning ``(x, iter_count)``.
+
+    Same matvec + Jacobi preconditioner as :func:`cg_jax` via
+    :func:`_cg_jax_operator`. Inner iteration is :func:`_pcg_loop`
+    rather than :func:`jax.scipy.sparse.linalg.cg` so the loop
+    counter is surfaced through the return tuple;
+    :func:`jax.lax.custom_linear_solve`'s ``solve`` callback can
+    return only a single output, so :func:`cg_jax` drops the
+    count.
+
+    Doesn't participate in JAX AD (no
+    :func:`jax.lax.custom_linear_solve` wrapper). Call sites that
+    need to differentiate through the linear solve must use
+    :func:`cg_jax`.
+
+    Iter count may differ from :func:`jax.scipy.sparse.linalg.cg`
+    by ±1 on convergence-test rounding; acceptable for diagnostic
+    purposes.
+    """
+    matvec, precon = _cg_jax_operator(K_data, sparsity)
+    return _pcg_loop(matvec, b, precon, rtol, max_iters)
 
 
 def _embedded_bc_enforce(
