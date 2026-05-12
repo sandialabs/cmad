@@ -42,6 +42,7 @@ def fe_quasistatic_trajectory(
         abs_tol: float = 1e-10,
         rel_tol: float = 1e-10,
         print_global_convergence: bool = False,
+        linear_solver: str = "direct",
 ) -> tuple[JaxArray, dict[str, JaxArray], JaxArray]:
     """Compute the FE trajectory via :func:`jax.lax.scan`.
 
@@ -106,6 +107,7 @@ def fe_quasistatic_trajectory(
             abs_tol=abs_tol,
             rel_tol=rel_tol,
             print_global_convergence=print_global_convergence,
+            linear_solver=linear_solver,
         )
         # xi_solved only carries keys for element blocks whose model
         # has time-evolving state; the rest echo forward from xi_prev.
@@ -171,8 +173,9 @@ def fe_quasistatic_drive(
 
     ``solver_kwargs`` are forwarded to :func:`fe_newton_solve`
     through :func:`fe_quasistatic_trajectory` (accepts
-    ``max_iters``, ``abs_tol``, ``rel_tol``); the orchestrator
-    threads deck-supplied global-Newton settings through this slot.
+    ``max_iters``, ``abs_tol``, ``rel_tol``, ``linear_solver``);
+    the orchestrator threads deck-supplied global-Newton settings
+    through this slot.
     """
     if len(t_schedule) < 2:
         raise ValueError(

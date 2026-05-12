@@ -119,6 +119,61 @@ def spsolve_jax(
     )
 
 
+def cg_jax(
+        K_data: JaxArray, K_rows: JaxArray, K_cols: JaxArray,
+        n: int, b: JaxArray,
+        rtol: float = 1e-10, max_iters: int | None = None,
+) -> JaxArray:
+    """Solve ``K x = b`` for symmetric positive-definite K via CG,
+    JAX-native and matrix-free.
+
+    Built on :func:`jax.scipy.sparse.linalg.cg` (no scipy callback,
+    fully jit-traceable). Jacobi preconditioner is constructed from
+    the COO diagonal in JAX. AD via :func:`jax.lax.custom_linear_solve`
+    with ``symmetric=True``: ``K^T = K`` means the cotangent path
+    re-uses ``solve`` (no separate ``transpose_solve``).
+
+    K is given as COO triplets matching the embedded-BC symmetric
+    form (rows + columns zeroed at prescribed dofs, scaled-identity
+    on the prescribed diagonal). The diagonal scatter-add summation
+    handles the duplicate-entry-at-(presc, presc) case (zeroed
+    original + appended ``α``) correctly.
+
+    For non-SPD K this will silently produce wrong results; the
+    caller must ensure K is SPD. The embedded-BC symmetric form
+    plus a self-adjoint underlying physics (e.g. small-strain
+    elasticity) gives this.
+
+    Unlike :func:`spsolve_jax` (which routes through scipy via
+    :func:`jax.pure_callback` with ``vmap_method="sequential"``),
+    this CG path is fully JAX-native and composes with
+    :func:`jax.vmap` as a single batched :func:`jax.lax.while_loop`
+    — a real advantage for Hessian-column batches and any other
+    vmap-over-RHS pattern. The batched while_loop iterates until
+    all batch elements converge (OR-reduced cond), so the slowest
+    column dictates the iteration count for the batch.
+    """
+    diag = jnp.zeros(n, dtype=K_data.dtype).at[K_rows].add(
+        jnp.where(K_rows == K_cols, K_data, 0.0)
+    )
+
+    def matvec(x: JaxArray) -> JaxArray:
+        return jnp.zeros_like(x).at[K_rows].add(K_data * x[K_cols])
+
+    def precon(x: JaxArray) -> JaxArray:
+        return x / diag
+
+    def solve(_unused_matvec, rhs: JaxArray) -> JaxArray:
+        x, _info = jax.scipy.sparse.linalg.cg(
+            matvec, rhs, M=precon, tol=rtol, maxiter=max_iters,
+        )
+        return x
+
+    return lax.custom_linear_solve(
+        matvec, b, solve, symmetric=True,
+    )
+
+
 def _embedded_bc_enforce(
         K_bcoo: BCOO, presc_idx: JaxArray,
         presc_diag_scale: float = 1.0,

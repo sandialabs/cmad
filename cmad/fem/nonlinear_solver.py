@@ -11,7 +11,7 @@ from numpy.typing import NDArray
 
 from cmad.fem.assembly import assemble_global
 from cmad.fem.fe_problem import FEProblem
-from cmad.fem.sparse_solve import _embedded_bc_enforce, spsolve_jax
+from cmad.fem.sparse_solve import _embedded_bc_enforce, cg_jax, spsolve_jax
 from cmad.typing import JaxArray, Params
 
 
@@ -105,6 +105,7 @@ def _fe_newton_primal(
         abs_tol: float,
         rel_tol: float,
         print_global_convergence: bool,
+        linear_solver: str,
 ) -> JaxArray:
     """Forward Newton iteration: ``lax.while_loop`` + ``spsolve_jax``.
 
@@ -159,7 +160,15 @@ def _fe_newton_primal(
             K_bcoo, presc_idx, presc_diag_scale=alpha,
         )
         n = K_bcoo.shape[0]
-        dU = spsolve_jax(K_data, K_rows, K_cols, n, -r)
+        if linear_solver == "cg":
+            dU = cg_jax(K_data, K_rows, K_cols, n, -r)
+        elif linear_solver == "direct":
+            dU = spsolve_jax(K_data, K_rows, K_cols, n, -r)
+        else:
+            raise ValueError(
+                f"unknown linear_solver {linear_solver!r}; "
+                f"expected 'direct' or 'cg'"
+            )
         U_new = U + dU
         return (i + 1, U_new, R_norm, R_norm_0)
 
@@ -180,6 +189,7 @@ def fe_newton_solve(
         abs_tol: float = 1e-10,
         rel_tol: float = 1e-10,
         print_global_convergence: bool = False,
+        linear_solver: str = "direct",
 ) -> tuple[JaxArray, dict[str, JaxArray]]:
     """Quasi-static global Newton driver for the FE forward problem.
 
@@ -250,10 +260,11 @@ def fe_newton_solve(
     return _fe_newton_solve_ad(
         fe_problem, params_by_block, U_prev_jax, t, xi_prev_jax,
         max_iters, abs_tol, rel_tol, print_global_convergence,
+        linear_solver,
     )
 
 
-@partial(jax.custom_jvp, nondiff_argnums=(0, 5, 6, 7, 8))
+@partial(jax.custom_jvp, nondiff_argnums=(0, 5, 6, 7, 8, 9))
 def _fe_newton_solve_ad(
         fe_problem: FEProblem,
         params_by_block: Mapping[str, Params],
@@ -264,6 +275,7 @@ def _fe_newton_solve_ad(
         abs_tol: float,
         rel_tol: float,
         print_global_convergence: bool,
+        linear_solver: str,
 ) -> tuple[JaxArray, dict[str, JaxArray]]:
     """AD-decorated inner driver. JaxArray inputs only.
 
@@ -275,6 +287,7 @@ def _fe_newton_solve_ad(
     U_star = _fe_newton_primal(
         fe_problem, params_by_block, U_prev, t, xi_prev_by_block,
         max_iters, abs_tol, rel_tol, print_global_convergence,
+        linear_solver,
     )
     _, _, xi_solved = assemble_global(
         fe_problem, params_by_block, U_star, U_prev, t,
@@ -288,6 +301,7 @@ def _fe_newton_solve_ad_jvp(
         fe_problem: FEProblem,
         max_iters: int, abs_tol: float, rel_tol: float,
         print_global_convergence: bool,
+        linear_solver: str,
         primals, tangents,
 ):
     """IFT linear-sensitivity JVP for :func:`_fe_newton_solve_ad`.
@@ -309,6 +323,7 @@ def _fe_newton_solve_ad_jvp(
     U_star, xi_solved = _fe_newton_solve_ad(
         fe_problem, params_by_block, U_prev, t, xi_prev_by_block,
         max_iters, abs_tol, rel_tol, print_global_convergence,
+        linear_solver,
     )
 
     presc_idx = jnp.asarray(fe_problem.dof_map.prescribed_indices)
@@ -340,7 +355,15 @@ def _fe_newton_solve_ad_jvp(
     )
     n = K_bcoo.shape[0]
 
-    U_star_dot = spsolve_jax(K_data, K_rows, K_cols, n, -Rp_dot)
+    if linear_solver == "cg":
+        U_star_dot = cg_jax(K_data, K_rows, K_cols, n, -Rp_dot)
+    elif linear_solver == "direct":
+        U_star_dot = spsolve_jax(K_data, K_rows, K_cols, n, -Rp_dot)
+    else:
+        raise ValueError(
+            f"unknown linear_solver {linear_solver!r}; "
+            f"expected 'direct' or 'cg'"
+        )
 
     def xi_of_U_p(U_, params_, Up_, t_, xp_):
         _, _, xi_local = assemble_global(
