@@ -1,8 +1,8 @@
 """Unit tests for :mod:`cmad.fem.sparse_solve`.
 
 Exercises :func:`spsolve_jax` (forward, JVP, VJP, HVP, jit, matvec /
-solve consistency) and :func:`_embedded_bc_enforce` (asymmetric
-prescribed-row + identity-diagonal structure).
+solve consistency) and :func:`_embedded_bc_enforce` (symmetric
+prescribed-row/column + scaled-diagonal structure).
 
 Free of FE machinery — small dense-cast matrices generated inline.
 """
@@ -213,15 +213,16 @@ class TestSpsolveJaxJit(unittest.TestCase):
 
 
 class TestEmbeddedBCEnforce(unittest.TestCase):
-    """Structure of the embedded-BC asymmetric form.
+    """Structure of the embedded-BC symmetric form.
 
-    Builds a 4x4 K_bcoo with non-zero off-diagonal entries in a row
-    that's then marked prescribed; verifies the output is
-    ``(0, …, 0, 1, 0, …, 0)`` on that row (identity-only-on-diagonal),
-    with non-prescribed rows unchanged.
+    Builds a 4x4 K_bcoo with non-zero off-diagonal entries in rows
+    and columns that are then marked prescribed; verifies the output
+    zeroes both prescribed rows and prescribed columns and sets
+    ``presc_diag_scale`` (default ``1.0``) on the prescribed
+    diagonal, leaving the free-free block unchanged.
     """
 
-    def test_zeroes_off_diagonal_in_prescribed_row(self) -> None:
+    def test_zeroes_prescribed_rows_and_cols(self) -> None:
         n = 4
         K_dense = np.array([
             [10.0, 1.0, 2.0, 3.0],
@@ -250,6 +251,8 @@ class TestEmbeddedBCEnforce(unittest.TestCase):
         expected = K_dense.copy()
         expected[1, :] = 0.0
         expected[2, :] = 0.0
+        expected[:, 1] = 0.0
+        expected[:, 2] = 0.0
         expected[1, 1] = 1.0
         expected[2, 2] = 1.0
         np.testing.assert_allclose(K_csr_like, expected,

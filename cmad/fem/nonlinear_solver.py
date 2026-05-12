@@ -49,13 +49,13 @@ def apply_strong_dirichlet(
     pass a per-prescribed-dof ``(P,)`` array (e.g. with per-block
     means) for finer scaling.
 
-    Symmetric (rows-and-columns) form, kept for imperative scipy
-    call sites and for the future iterative-solver path. The traced
-    Newton driver in :func:`fe_newton_solve` instead uses
-    :func:`cmad.fem.sparse_solve._embedded_bc_enforce`'s asymmetric
-    (rows-only, identity 1.0) form, which suffices for sparse direct
-    and matches ``∂r/∂U`` exactly for the embedded-BC residual the
-    JVP rule needs.
+    Symmetric (rows-and-columns) form, the imperative-scipy peer of
+    :func:`cmad.fem.sparse_solve._embedded_bc_enforce` (which works
+    on a JAX :class:`BCOO` tangent and is consumed by
+    :func:`fe_newton_solve`'s traced Newton body). Both produce the
+    same block-diagonal ``[K_ff | 0; 0 | α · I_P]`` structure;
+    ``apply_strong_dirichlet`` operates on a scipy :class:`coo_matrix`
+    and an explicit ``R`` vector for callers outside the traced path.
     """
     n = R.shape[0]
     rows, cols, vals = K_coo.row, K_coo.col, K_coo.data
@@ -188,14 +188,16 @@ def fe_newton_solve(
     into ``R`` by the assembly — no separate ``F`` vector). Each
     Newton step solves ``K · dU = -r`` for the embedded-BC residual
     ``r`` defined as ``r[free] = R(U)[free]`` and
-    ``r[prescribed] = U[prescribed] - prescribed_vals(t)``.
+    ``r[prescribed] = α · (U[prescribed] - prescribed_vals(t))``
+    with ``α = fe_problem.bc_diag_scale``.
 
     Forward iteration is :func:`jax.lax.while_loop` over Newton
     steps. Each body call assembles ``(K_bcoo, R)`` once, builds the
     embedded-BC tangent via
-    :func:`cmad.fem.sparse_solve._embedded_bc_enforce` (asymmetric
-    form: prescribed rows zeroed, identity 1.0 on the prescribed
-    diagonal), and solves ``K · dU = -r`` via
+    :func:`cmad.fem.sparse_solve._embedded_bc_enforce` (symmetric
+    form: prescribed rows AND columns zeroed, ``α`` on the
+    prescribed diagonal — block-diagonal ``K_ff | α · I_P``), and
+    solves ``K · dU = -r`` via
     :func:`cmad.fem.sparse_solve.spsolve_jax` (sparse direct via
     :func:`scipy.sparse.linalg.spsolve` through
     :func:`jax.pure_callback`).
@@ -313,12 +315,13 @@ def _fe_newton_solve_ad_jvp(
     alpha = fe_problem.bc_diag_scale
 
     def r_of_p(params_, Up_, t_, xp_):
-        _, R_local, _ = assemble_global(
-            fe_problem, params_, U_star, Up_, t_,
-            xi_prev_by_block=xp_,
-        )
         pv = jnp.asarray(
             fe_problem.dof_map.evaluate_prescribed_values(t_),
+        )
+        U_star_clamped = U_star.at[presc_idx].set(pv)
+        _, R_local, _ = assemble_global(
+            fe_problem, params_, U_star_clamped, Up_, t_,
+            xi_prev_by_block=xp_,
         )
         return R_local.at[presc_idx].set(
             alpha * (U_star[presc_idx] - pv)

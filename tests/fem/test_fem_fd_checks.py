@@ -26,8 +26,8 @@ Pieces under test — no test-only fixtures of the forward solve:
   with ``∂r/∂p · p_dot`` from ``jax.jvp(r, p, p_dot)`` at fixed
   ``U_star``, solved through ``spsolve_jax``).
 - Strong-DBC enforcement: ``cmad.fem.sparse_solve._embedded_bc_enforce``
-  (asymmetric: prescribed rows zeroed, identity 1.0 on the
-  prescribed diagonal).
+  (symmetric: prescribed rows AND columns zeroed, scaled-identity
+  ``α`` on the prescribed diagonal — block-diagonal ``K_ff | α · I_P``).
 - Multi-step time loop: ``cmad.fem.driver.fe_quasistatic_trajectory``,
   ``lax.scan`` over the time schedule with carry
   ``(U_prev, xi_prev_by_block)``.

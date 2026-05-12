@@ -123,14 +123,21 @@ def _embedded_bc_enforce(
         K_bcoo: BCOO, presc_idx: JaxArray,
         presc_diag_scale: float = 1.0,
 ) -> tuple[JaxArray, JaxArray, JaxArray]:
-    """Embedded-BC asymmetric form on a :class:`BCOO` tangent.
+    """Embedded-BC symmetric form on a :class:`BCOO` tangent.
 
     Returns COO triplets ``(K_data, K_rows, K_cols)`` for ``K`` with:
 
-    - prescribed rows zeroed (off-diagonal entries included), via a
-      mask multiplication on ``K_bcoo.data``;
+    - prescribed rows AND prescribed columns zeroed (every entry
+      with either index in ``presc_idx``), via a mask multiplication
+      on ``K_bcoo.data``;
     - scaled-identity entries with value ``presc_diag_scale``
-      appended on the prescribed diagonal.
+      appended at ``(presc_idx, presc_idx)``.
+
+    Net structure is block-diagonal:
+    ``[K_ff (assembled) | 0; 0 | α · I_P]`` where ``K_ff`` is the
+    free-free block of the assembled tangent and ``α · I_P`` is the
+    prescribed self-block; the appended α keeps the prescribed
+    block invertible after row+column zeroing.
 
     ``presc_diag_scale`` keeps the prescribed-row pivot on the same
     order of magnitude as the assembled diagonal so that Jacobi /
@@ -141,20 +148,20 @@ def _embedded_bc_enforce(
     ``dU[presc] = presc_vals - U[presc]`` regardless of α. Callers
     pass ``fe_problem.bc_diag_scale``.
 
-    Asymmetric (rows-only) rather than symmetric (rows-and-columns):
-    the symmetric form helps conditioning under iterative solvers
-    but is unnecessary for sparse direct, and the asymmetric form
-    has the property ``∂r/∂U`` (with ``r`` the embedded-BC residual)
-    matches this output exactly — the consistency the IFT-based JVP
-    rule needs.
+    The symmetric form preserves the IFT-based JVP rule's
+    ``K = ∂r/∂U_star`` invariant only when the residual function
+    also zeros its dependence on ``U[presc]`` — see the matching
+    clamp in :func:`cmad.fem.nonlinear_solver._fe_newton_solve_ad_jvp`'s
+    ``r_of_p`` closure. With that pair in place, ``∂r/∂U_star``
+    matches this output's row-and-column-zeroed structure exactly.
 
     When ``K_bcoo`` already has an entry at a prescribed ``(i, i)``,
     the output contains two COO entries at that position: the
-    original (zeroed by the row-mask) and the appended scaled-
-    identity. Both consumer paths handle the duplicate correctly:
-    :class:`scipy.sparse.coo_matrix` sums duplicates during
-    ``.tocsr()`` conversion inside :func:`_spsolve_callback`, and
-    JAX's scatter-add ``matvec`` accumulates them. The effective
+    original (zeroed by the row/column mask) and the appended
+    scaled-identity. Both consumer paths handle the duplicate
+    correctly: :class:`scipy.sparse.coo_matrix` sums duplicates
+    during ``.tocsr()`` conversion inside :func:`_spsolve_callback`,
+    and JAX's scatter-add ``matvec`` accumulates them. The effective
     prescribed diagonal is therefore ``presc_diag_scale``.
     """
     rows = K_bcoo.indices[:, 0]
@@ -162,7 +169,7 @@ def _embedded_bc_enforce(
     n = K_bcoo.shape[0]
     p_mask = jnp.zeros(n, dtype=bool).at[presc_idx].set(True)
 
-    keep = ~p_mask[rows]
+    keep = ~(p_mask[rows] | p_mask[cols])
     data_zeroed = K_bcoo.data * keep
 
     add_data = jnp.full(
