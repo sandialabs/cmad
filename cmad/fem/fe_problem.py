@@ -131,9 +131,7 @@ class FEProblem:
         init=False, default_factory=dict,
     )
     bc_diag_scale: float = field(init=False, default=1.0)
-    embedded_sparsity: "EmbeddedSparsity | None" = field(
-        init=False, default=None,
-    )
+    embedded_sparsity: "EmbeddedSparsity" = field(init=False)
 
     def __post_init__(self) -> None:
         name_to_idx = {

@@ -26,7 +26,7 @@ import numpy as np
 import scipy.sparse
 import scipy.sparse.linalg
 from jax import lax
-from jax.experimental.sparse import BCOO
+from jax.experimental.sparse import BCOO, BCSR
 
 from cmad.typing import JaxArray
 
@@ -126,24 +126,34 @@ def spsolve_jax(
 
 
 def cg_jax(
-        K_data: JaxArray, K_rows: JaxArray, K_cols: JaxArray,
-        n: int, b: JaxArray,
+        K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
         rtol: float = 1e-10, max_iters: int | None = None,
 ) -> JaxArray:
-    """Solve ``K x = b`` for symmetric positive-definite K via CG,
-    JAX-native and matrix-free.
+    """Solve ``K x = b`` for symmetric positive-definite K via CG.
 
     Built on :func:`jax.scipy.sparse.linalg.cg` (no scipy callback,
-    fully jit-traceable). Jacobi preconditioner is constructed from
-    the COO diagonal in JAX. AD via :func:`jax.lax.custom_linear_solve`
-    with ``symmetric=True``: ``K^T = K`` means the cotangent path
-    re-uses ``solve`` (no separate ``transpose_solve``).
+    fully jit-traceable). The matvec is
+    :class:`jax.experimental.sparse.BCSR` matrix-vector
+    multiplication against the pre-built sparsity cache; the
+    cache's ``perm`` + ``segment_ids`` gather + dedup ``K_data``
+    (the embedded-BC COO data) into the unique CSR data buffer
+    once per CG call. AD via
+    :func:`jax.lax.custom_linear_solve` with ``symmetric=True``:
+    ``K^T = K`` means the cotangent path re-uses ``solve`` (no
+    separate ``transpose_solve``).
 
-    K is given as COO triplets matching the embedded-BC symmetric
-    form (rows + columns zeroed at prescribed dofs, scaled-identity
-    on the prescribed diagonal). The diagonal scatter-add summation
-    handles the duplicate-entry-at-(presc, presc) case (zeroed
-    original + appended ``α``) correctly.
+    ``K_data`` is the embedded-BC COO data buffer produced by
+    :func:`_embedded_bc_enforce` — length
+    ``nnz_assembled + n_presc``, with rows/cols touching
+    prescribed dofs zeroed by the mask and ``alpha`` appended at
+    ``(presc, presc)``. The cache references only the kept
+    positions (free-free assembled entries + appended alpha
+    entries), so structural zeros never participate in the
+    matvec.
+
+    The Jacobi preconditioner reads the unique-data diagonal via
+    ``sparsity.diag_idx``. Each row has exactly one diagonal entry
+    in the cache (validated at construction).
 
     For non-SPD K this will silently produce wrong results; the
     caller must ensure K is SPD. The embedded-BC symmetric form
@@ -159,12 +169,18 @@ def cg_jax(
     all batch elements converge (OR-reduced cond), so the slowest
     column dictates the iteration count for the batch.
     """
-    diag = jnp.zeros(n, dtype=K_data.dtype).at[K_rows].add(
-        jnp.where(K_rows == K_cols, K_data, 0.0)
+    unique_data = jnp.zeros(
+        sparsity.num_unique, dtype=K_data.dtype,
+    ).at[sparsity.segment_ids].add(K_data[sparsity.perm])
+
+    K_bcsr = BCSR(
+        (unique_data, sparsity.col_indices, sparsity.indptr),
+        shape=(sparsity.n, sparsity.n),
     )
+    diag = unique_data[sparsity.diag_idx]
 
     def matvec(x: JaxArray) -> JaxArray:
-        return jnp.zeros_like(x).at[K_rows].add(K_data * x[K_cols])
+        return K_bcsr @ x
 
     def precon(x: JaxArray) -> JaxArray:
         return x / diag

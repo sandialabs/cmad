@@ -161,7 +161,7 @@ def _fe_newton_primal(
         )
         n = K_bcoo.shape[0]
         if linear_solver == "cg":
-            dU = cg_jax(K_data, K_rows, K_cols, n, -r)
+            dU = cg_jax(K_data, fe_problem.embedded_sparsity, -r)
         elif linear_solver == "direct":
             dU = spsolve_jax(K_data, K_rows, K_cols, n, -r)
         else:
@@ -356,7 +356,7 @@ def _fe_newton_solve_ad_jvp(
     n = K_bcoo.shape[0]
 
     if linear_solver == "cg":
-        U_star_dot = cg_jax(K_data, K_rows, K_cols, n, -Rp_dot)
+        U_star_dot = cg_jax(K_data, fe_problem.embedded_sparsity, -Rp_dot)
     elif linear_solver == "direct":
         U_star_dot = spsolve_jax(K_data, K_rows, K_cols, n, -Rp_dot)
     else:
