@@ -11,6 +11,7 @@ Two classes covering the dispatch arms reachable from
   plumbing check (yielded + uniaxial-stress); pointwise return-map
   correctness is covered at the driver/model layer.
 """
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -235,6 +236,70 @@ class TestPrimalFeCoupledRoundTrip(unittest.TestCase):
             np.testing.assert_allclose(
                 cauchy_terminal[:, 1:], 0.0, atol=1.0,
             )
+
+
+class TestPrimalFeWithQoi(unittest.TestCase):
+    """FE primal optionally writes ``J.json`` when the deck supplies
+    a ``qoi`` section. Verifies the value matches what
+    ``cmad objective`` writes on the same deck — both pipelines run
+    the same FEQoI through the same time loop."""
+
+    def test_J_matches_cmad_objective_on_same_deck(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            _write_hex_cube_mesh(tmp / "mesh.exo")
+            deck = _make_fe_primal_deck_elastic(
+                mesh_filename="mesh.exo",
+                output_section={
+                    "path": "primal_out",
+                    "exodus filename": "primal.exo",
+                    "nodal fields": [
+                        {"name": "displacement", "var_type": "vector"},
+                    ],
+                    "element fields by block": {
+                        "all": [
+                            {"name": "cauchy", "var_type": "sym_tensor"},
+                        ],
+                    },
+                },
+            )
+            deck["qoi"] = {"name": "fe_displacement_l2"}
+
+            primal_deck_path = tmp / "primal.yaml"
+            primal_deck_path.write_text(
+                yaml.safe_dump(deck, sort_keys=False),
+            )
+            self.assertEqual(
+                cmad_main(["primal", str(primal_deck_path)]), 0,
+            )
+            primal_out = tmp / "primal_out"
+            self.assertTrue((primal_out / "primal.exo").exists())
+            self.assertTrue((primal_out / "J.json").exists())
+            self.assertTrue((primal_out / "deck.resolved.yaml").exists())
+
+            J_primal = json.loads(
+                (primal_out / "J.json").read_text(),
+            )["J"]
+            self.assertGreater(J_primal, 0.0)
+
+            # Run cmad objective on the same deck (modulo output-dir
+            # rename to avoid file collisions).
+            deck["output"]["path"] = "objective_out"
+            objective_deck_path = tmp / "objective.yaml"
+            objective_deck_path.write_text(
+                yaml.safe_dump(deck, sort_keys=False),
+            )
+            self.assertEqual(
+                cmad_main(["objective", str(objective_deck_path)]), 0,
+            )
+            objective_out = tmp / "objective_out"
+            self.assertTrue((objective_out / "J.json").exists())
+
+            J_objective = json.loads(
+                (objective_out / "J.json").read_text(),
+            )["J"]
+
+            self.assertAlmostEqual(J_primal, J_objective, places=10)
 
 
 if __name__ == "__main__":

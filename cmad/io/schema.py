@@ -74,7 +74,7 @@ _SECTIONS: dict[tuple[str, str], tuple[list[str], list[str]]] = {
     ),
     ("fe", "primal"): (
         ["problem", "discretization", "residuals", "output"],
-        ["dirichlet bcs", "surface flux bcs", "body forces"],
+        ["dirichlet bcs", "surface flux bcs", "body forces", "qoi"],
     ),
     ("fe", "objective"): (
         ["problem", "discretization", "residuals", "qoi", "output"],
@@ -117,7 +117,7 @@ def validate_deck(deck: dict[str, Any], subcommand: str) -> None:
     if (problem_type, subcommand) == ("fe", "primal"):
         _check_fe_primal_exodus_filename(deck)
     qoi_name: str | None = None
-    if "qoi" in all_sections:
+    if "qoi" in all_sections and "qoi" in deck:
         _check_qoi_registered(deck)
         qoi_name = deck["qoi"]["name"]
 
@@ -229,7 +229,8 @@ def _compose_schema(
             assert model_name is not None  # guaranteed by validate_deck
             fragment = _load_fragment(f"models/{model_name}.yaml")
         elif section == "qoi":
-            assert qoi_name is not None  # guaranteed by validate_deck
+            if qoi_name is None:
+                continue
             fragment = _load_fragment(f"qois/{qoi_name}.yaml")
         else:
             filename = section.replace(" ", "_") + ".yaml"

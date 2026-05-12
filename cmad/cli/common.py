@@ -327,7 +327,7 @@ def build_fe_problem_from_deck(
     )
 
     qoi: FEQoI | None = None
-    if subcommand in {"objective", "gradient", "hessian"}:
+    if "qoi" in resolved:
         qoi_cls = resolve_qoi(resolved["qoi"]["name"])
         if qoi_cls.problem_type != "fe":
             raise ValueError(

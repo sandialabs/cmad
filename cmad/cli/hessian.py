@@ -4,17 +4,18 @@ Dispatches on ``problem.type``. The MP branch evaluates
 ``(J, grad, hess)`` via the sensitivity driver
 (``sensitivity.type`` must be ``direct_adjoint`` or ``jvp`` — the
 two strategies that actually produce a Hessian; the factory in
-:mod:`cmad.cli.sensitivity` enforces this) and writes
-``J.json``, ``grad.{npy,csv}``, and ``hess.{npy,csv}``. The FE
-branch builds the FE problem with the QoI attached, constructs
-the ``J(params_flat)`` cost-function closure via
+:mod:`cmad.cli.sensitivity` enforces this) and writes ``J.json``,
+``grad.{npy,csv}``, ``hess.{npy,csv}``, and ``deck.resolved.yaml``.
+The FE branch builds the FE problem with the QoI attached,
+constructs the ``J(params_flat)`` cost-function closure via
 :func:`cmad.cli.common.build_fe_J_of_params_flat`, evaluates
-``J`` and ``jax.hessian(J)(params_flat)`` directly — no separate
-adjoint driver — and writes ``J.json`` and ``hess.{npy,csv}``.
-Both branches write ``deck.resolved.yaml``; neither writes
-primal trajectories (run ``cmad primal`` separately on the same
-deck for those). Run ``cmad gradient`` separately for grad
-output.
+``jax.hessian(J)(params_flat)`` directly — no separate adjoint
+driver — and writes ``hess.{npy,csv}`` and ``deck.resolved.yaml``
+only (``jax.hessian`` doesn't surface ``J`` or the gradient as a
+side effect; run ``cmad objective`` and ``cmad gradient``
+separately on the same deck for ``J`` and grad output). Neither
+branch writes primal trajectories — run ``cmad primal``
+separately on the same deck for those.
 """
 
 from __future__ import annotations

@@ -25,11 +25,12 @@ structured outputs ignore it.
   canonical optimum ``x`` is deliberately omitted — raw final values
   live in ``opt_params.yaml``.
 
-**F1+ extension point.** When ``GlobalResidual`` lands, it will have its
-own block structure (displacement, pressure, possibly more). A sibling
-``write_global_fields`` (or similarly named) should mirror :func:`write_xi`'s
-per-block file convention so FE-side trajectories follow the same naming
-pattern and read-back idiom.
+FE-side trajectories are written via :func:`write_fe_exodus` to a single
+Exodus II file (``output.exodus filename``); the file's nodal and
+element fields are configured via ``output.nodal fields`` and
+``output.element fields by block`` (with per-GR defaults). FE primal
+additionally writes ``J.json`` when the deck supplies a ``qoi``
+section.
 """
 
 from __future__ import annotations
@@ -245,11 +246,9 @@ def write_fe_exodus(
     ``out_dir / f"{prefix}{output_section['exodus filename']}"`` and
     iterates over ``fe_state.t_history`` calling
     ``gr.evaluate_nodal_field`` and ``gr.evaluate_element_field`` per
-    declared spec at each step. The deck-driven filename lets each
-    subcommand-driven solve write to a distinct file when desired
-    (e.g. ``primal.exo`` for ``cmad primal``,  ``objective.exo`` for
-    ``cmad objective``); the schema requires ``exodus filename``
-    whenever ``format == exodus``.
+    declared spec at each step. The schema requires ``exodus filename``
+    for ``cmad primal`` (the only subcommand that writes the
+    trajectory).
     """
     nodal_specs, element_specs_by_block = _resolve_fe_field_specs(
         output_section, fe_problem,

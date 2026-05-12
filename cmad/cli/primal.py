@@ -24,6 +24,7 @@ from cmad.io.deck import load_deck, unwrap_top_level
 from cmad.io.writers import (
     write_cauchy,
     write_fe_exodus,
+    write_J,
     write_resolved_deck,
     write_solver_log,
     write_xi,
@@ -38,9 +39,12 @@ def run_primal(deck_path: Path) -> int:
     """Execute the primal subcommand on ``deck_path``. Returns an exit code.
 
     Dispatches on ``problem.type``: ``material_point`` runs the MP
-    forward solve and writes ``cauchy`` / ``xi`` arrays; ``fe`` runs
-    the FE forward solve and writes Exodus II results. Both branches
-    share the ``solver.json`` and ``deck.resolved.yaml`` writers.
+    forward solve and writes ``cauchy`` / ``xi`` arrays plus
+    ``solver.json``; ``fe`` runs the FE forward solve and writes the
+    Exodus II trajectory. Both branches write ``deck.resolved.yaml``.
+    The FE branch additionally writes ``J.json`` when the deck supplies
+    an optional ``qoi`` section, threaded through
+    :func:`cmad.fem.driver.fe_quasistatic_drive`.
     """
     deck = unwrap_top_level(load_deck(deck_path))
     problem_type = deck["problem"]["type"]
@@ -74,7 +78,7 @@ def _run_primal_mp(deck_path: Path) -> int:
 def _run_primal_fe(deck_path: Path) -> int:
     bundle = build_fe_problem_from_deck(deck_path, "primal")
     gr_section = bundle.resolved["residuals"]["global residual"]
-    fe_state, _ = fe_quasistatic_drive(
+    fe_state, J = fe_quasistatic_drive(
         bundle.fe_problem,
         bundle.t_schedule.tolist(),
         max_iters=int(gr_section["nonlinear max iters"]),
@@ -83,6 +87,7 @@ def _run_primal_fe(deck_path: Path) -> int:
         print_global_convergence=bool(
             gr_section.get("print convergence", False),
         ),
+        qoi=bundle.qoi,
     )
 
     out_dir, prefix, _fmt = resolve_output(bundle.resolved, deck_path)
@@ -91,6 +96,8 @@ def _run_primal_fe(deck_path: Path) -> int:
         bundle.resolved["output"],
     )
     write_resolved_deck(out_dir, prefix, bundle.resolved)
+    if bundle.qoi is not None:
+        write_J(out_dir, prefix, float(J))
     return 0
 
 

@@ -2,19 +2,21 @@
 
 Dispatches on ``problem.type``. The MP branch builds the problem
 (model / parameters / QoI), constructs the sensitivity driver
-dictated by ``sensitivity.type``, and evaluates ``(J, grad)`` at
-the deck's parameter point (canonical coordinates). The FE branch
-builds the FE problem with the QoI attached, constructs the
+dictated by ``sensitivity.type``, evaluates ``(J, grad)`` at the
+deck's parameter point (canonical coordinates), and writes
+``J.json``, ``grad.{npy,csv}``, and ``deck.resolved.yaml``. The FE
+branch builds the FE problem with the QoI attached, constructs the
 ``J(params_flat)`` cost-function closure via
-:func:`cmad.cli.common.build_fe_J_of_params_flat`, and evaluates
-``J`` and ``jax.grad(J)(params_flat)`` directly — no separate
-adjoint driver, since the FE Newton solve's ``custom_jvp`` plumbing
-already handles the implicit-step gradient. Both branches write
-``J.json``, ``grad.{npy,csv}``, and ``deck.resolved.yaml``; neither
-writes primal trajectories (the sensitivity evaluator's internal
+:func:`cmad.cli.common.build_fe_J_of_params_flat`, evaluates
+``jax.grad(J)(params_flat)`` directly — no separate adjoint driver,
+since the FE Newton solve's ``custom_jvp`` plumbing already handles
+the implicit-step gradient — and writes ``grad.{npy,csv}`` and
+``deck.resolved.yaml`` only (``jax.grad`` doesn't surface ``J`` as
+a side effect; run ``cmad objective`` separately on the same deck
+for ``J``). Neither branch writes primal trajectories: the internal
 forward pass is one Newton solve per step, so recording
-cauchy / xi / solver_log would require a second pass — run
-``cmad primal`` separately on the same deck for those outputs).
+cauchy / xi / solver_log on the side would require a second pass —
+run ``cmad primal`` separately on the same deck for those outputs.
 """
 
 from __future__ import annotations
