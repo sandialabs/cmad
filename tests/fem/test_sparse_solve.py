@@ -13,25 +13,39 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental.sparse import BCOO
 
-from cmad.fem.sparse_solve import _embedded_bc_enforce, spsolve_jax
+from cmad.fem.sparse_solve import (
+    EmbeddedSparsity,
+    _embedded_bc_enforce,
+    spsolve_jax,
+)
 from cmad.typing import JaxArray
 
 
-def _dense_to_coo(K_dense: np.ndarray) -> tuple[JaxArray, JaxArray, JaxArray]:
-    """Flatten a dense matrix into JAX COO triplets.
+def _dense_to_cache(K_dense: np.ndarray) -> tuple[JaxArray, EmbeddedSparsity]:
+    """Flatten a dense matrix into ``(K_data, EmbeddedSparsity)``.
 
-    Includes structural zeros — the tests don't require a true sparse
-    pattern, just the COO triplet form spsolve_jax expects.
+    ``K_data`` is the row-major flattened K (length ``n²``);
+    :class:`EmbeddedSparsity` treats every entry as a distinct unique
+    CSR entry (no duplicates filtered). Suitable for testing the AD
+    rules and matvec / solve consistency without standing up a real
+    FE mesh.
     """
     n = K_dense.shape[0]
-    rows, cols = np.meshgrid(
-        np.arange(n), np.arange(n), indexing="ij",
+    nnz = n * n
+    col_indices = np.tile(np.arange(n), n).astype(np.intp)
+    indptr = np.arange(0, nnz + 1, n).astype(np.intp)
+    diag_idx = (np.arange(n) * (n + 1)).astype(np.intp)
+    sparsity = EmbeddedSparsity(
+        perm=jnp.asarray(np.arange(nnz, dtype=np.intp)),
+        segment_ids=jnp.asarray(np.arange(nnz, dtype=np.intp)),
+        num_unique=nnz,
+        indptr=jnp.asarray(indptr),
+        col_indices=jnp.asarray(col_indices),
+        diag_idx=jnp.asarray(diag_idx),
+        n=n,
     )
-    return (
-        jnp.asarray(K_dense.reshape(-1)),
-        jnp.asarray(rows.reshape(-1)),
-        jnp.asarray(cols.reshape(-1)),
-    )
+    K_data = jnp.asarray(K_dense.reshape(-1))
+    return K_data, sparsity
 
 
 def _random_spd(n: int, seed: int = 0) -> np.ndarray:
@@ -54,10 +68,10 @@ class TestSpsolveJaxForward(unittest.TestCase):
     def test_spd_matches_dense(self) -> None:
         n = 6
         K = _random_spd(n, seed=0)
-        K_data, K_rows, K_cols = _dense_to_coo(K)
+        K_data, sparsity = _dense_to_cache(K)
         b = jnp.asarray(np.random.default_rng(2).standard_normal(n))
 
-        x = spsolve_jax(K_data, K_rows, K_cols, n, b)
+        x = spsolve_jax(K_data, sparsity, b)
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
         np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
                                    rtol=1e-10, atol=1e-12)
@@ -65,10 +79,10 @@ class TestSpsolveJaxForward(unittest.TestCase):
     def test_nonsymm_matches_dense(self) -> None:
         n = 5
         K = _random_nonsymm(n, seed=1)
-        K_data, K_rows, K_cols = _dense_to_coo(K)
+        K_data, sparsity = _dense_to_cache(K)
         b = jnp.asarray(np.random.default_rng(3).standard_normal(n))
 
-        x = spsolve_jax(K_data, K_rows, K_cols, n, b)
+        x = spsolve_jax(K_data, sparsity, b)
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
         np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
                                    rtol=1e-10, atol=1e-12)
@@ -80,18 +94,18 @@ class TestSpsolveJaxConsistency(unittest.TestCase):
     Guards against a class of wrong-gradient bugs: if the matvec
     closure and the spsolve closure disagree about the operator,
     ``lax.custom_linear_solve``'s JVP / VJP rules silently produce
-    incorrect tangents. This test makes the inconsistency observable
-    at the operator level — ``matvec(spsolve_jax(K, b)) ≈ b``.
+    incorrect tangents. ``K @ spsolve_jax(K, b) ≈ b`` makes the
+    inconsistency observable at the operator level.
     """
 
     def test_matvec_inverse_of_solve(self) -> None:
         n = 6
         K = _random_spd(n, seed=4)
-        K_data, K_rows, K_cols = _dense_to_coo(K)
+        K_data, sparsity = _dense_to_cache(K)
         b = jnp.asarray(np.random.default_rng(5).standard_normal(n))
 
-        x = spsolve_jax(K_data, K_rows, K_cols, n, b)
-        b_recovered = jnp.zeros_like(x).at[K_rows].add(K_data * x[K_cols])
+        x = spsolve_jax(K_data, sparsity, b)
+        b_recovered = jnp.asarray(K) @ x
         np.testing.assert_allclose(np.asarray(b_recovered), np.asarray(b),
                                    rtol=1e-10, atol=1e-12)
 
@@ -109,7 +123,7 @@ class TestSpsolveJaxJVP(unittest.TestCase):
     def test_jvp_K_and_b(self) -> None:
         n = 5
         K = _random_spd(n, seed=10)
-        K_data, K_rows, K_cols = _dense_to_coo(K)
+        K_data, sparsity = _dense_to_cache(K)
         b = jnp.asarray(np.random.default_rng(11).standard_normal(n))
 
         rng = np.random.default_rng(12)
@@ -117,7 +131,7 @@ class TestSpsolveJaxJVP(unittest.TestCase):
         b_dot = jnp.asarray(rng.standard_normal(n))
 
         def f(K_data_, b_):
-            return spsolve_jax(K_data_, K_rows, K_cols, n, b_)
+            return spsolve_jax(K_data_, sparsity, b_)
 
         _, jvp_out = jax.jvp(f, (K_data, b), (K_data_dot, b_dot))
         jvp_fd = _fd_jvp(f, (K_data, b), (K_data_dot, b_dot), eps=1e-6)
@@ -132,13 +146,13 @@ class TestSpsolveJaxVJP(unittest.TestCase):
     def test_vjp_K_and_b(self) -> None:
         n = 4
         K = _random_spd(n, seed=20)
-        K_data, K_rows, K_cols = _dense_to_coo(K)
+        K_data, sparsity = _dense_to_cache(K)
         b = jnp.asarray(np.random.default_rng(21).standard_normal(n))
 
         x_bar = jnp.asarray(np.random.default_rng(22).standard_normal(n))
 
         def f(K_data_, b_):
-            return spsolve_jax(K_data_, K_rows, K_cols, n, b_)
+            return spsolve_jax(K_data_, sparsity, b_)
 
         _, vjp_fn = jax.vjp(f, K_data, b)
         gK, gb = vjp_fn(x_bar)
@@ -174,13 +188,13 @@ class TestSpsolveJaxHVP(unittest.TestCase):
     def test_hvp_K(self) -> None:
         n = 4
         K = _random_spd(n, seed=30)
-        K_data, K_rows, K_cols = _dense_to_coo(K)
+        K_data, sparsity = _dense_to_cache(K)
         b = jnp.asarray(np.random.default_rng(31).standard_normal(n))
 
         v = jnp.asarray(np.random.default_rng(32).standard_normal(K_data.shape[0]))
 
         def J(K_data_):
-            x = spsolve_jax(K_data_, K_rows, K_cols, n, b)
+            x = spsolve_jax(K_data_, sparsity, b)
             return 0.5 * jnp.sum(x ** 2)
 
         gradJ = jax.grad(J)
@@ -199,12 +213,12 @@ class TestSpsolveJaxJit(unittest.TestCase):
     def test_jit_round_trip(self) -> None:
         n = 5
         K = _random_spd(n, seed=40)
-        K_data, K_rows, K_cols = _dense_to_coo(K)
+        K_data, sparsity = _dense_to_cache(K)
         b = jnp.asarray(np.random.default_rng(41).standard_normal(n))
 
         @jax.jit
         def solve_jit(K_data_, b_):
-            return spsolve_jax(K_data_, K_rows, K_cols, n, b_)
+            return spsolve_jax(K_data_, sparsity, b_)
 
         x = solve_jit(K_data, b)
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
@@ -213,16 +227,17 @@ class TestSpsolveJaxJit(unittest.TestCase):
 
 
 class TestEmbeddedBCEnforce(unittest.TestCase):
-    """Structure of the embedded-BC symmetric form.
+    """Data-buffer layout of the embedded-BC symmetric form.
 
-    Builds a 4x4 K_bcoo with non-zero off-diagonal entries in rows
-    and columns that are then marked prescribed; verifies the output
-    zeroes both prescribed rows and prescribed columns and sets
-    ``presc_diag_scale`` (default ``1.0``) on the prescribed
-    diagonal, leaving the free-free block unchanged.
+    Builds a 4×4 K_bcoo whose data is the row-major flattened dense
+    matrix and marks rows/cols 1, 2 as prescribed; asserts the
+    returned ``K_data`` matches the hand-written expected layout:
+    the assembled segment with prescribed rows AND columns zeroed,
+    followed by the appended scaled-identity entries at the
+    prescribed diagonal.
     """
 
-    def test_zeroes_prescribed_rows_and_cols(self) -> None:
+    def test_data_buffer_layout(self) -> None:
         n = 4
         K_dense = np.array([
             [10.0, 1.0, 2.0, 3.0],
@@ -239,23 +254,19 @@ class TestEmbeddedBCEnforce(unittest.TestCase):
         )
 
         presc_idx = jnp.asarray([1, 2])
-        K_data, K_rows, K_cols = _embedded_bc_enforce(K_bcoo, presc_idx)
+        K_data = _embedded_bc_enforce(K_bcoo, presc_idx)
 
-        K_csr_like = np.zeros((n, n))
-        np.add.at(
-            K_csr_like,
-            (np.asarray(K_rows), np.asarray(K_cols)),
-            np.asarray(K_data),
-        )
-
-        expected = K_dense.copy()
-        expected[1, :] = 0.0
-        expected[2, :] = 0.0
-        expected[:, 1] = 0.0
-        expected[:, 2] = 0.0
-        expected[1, 1] = 1.0
-        expected[2, 2] = 1.0
-        np.testing.assert_allclose(K_csr_like, expected,
+        # Expected layout: assembled segment (row-major n² entries)
+        # with rows 1, 2 and cols 1, 2 zeroed, followed by 2 appended
+        # entries with value 1.0 at the (1, 1) and (2, 2) positions.
+        expected = jnp.asarray([
+            10.0, 0.0, 0.0, 3.0,    # row 0: cols 1, 2 zeroed
+            0.0, 0.0, 0.0, 0.0,     # row 1 fully zeroed (prescribed)
+            0.0, 0.0, 0.0, 0.0,     # row 2 fully zeroed (prescribed)
+            11.0, 0.0, 0.0, 40.0,   # row 3: cols 1, 2 zeroed
+            1.0, 1.0,               # appended scaled-identity α=1.0
+        ])
+        np.testing.assert_allclose(np.asarray(K_data), np.asarray(expected),
                                    rtol=1e-12, atol=1e-14)
 
 

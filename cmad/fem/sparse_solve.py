@@ -5,8 +5,9 @@ Two helpers:
 - :func:`spsolve_jax` solves ``K x = b`` via
   :func:`scipy.sparse.linalg.spsolve` through :func:`jax.pure_callback`,
   with full forward-mode JVP and reverse-mode VJP supplied by
-  :func:`jax.lax.custom_linear_solve`. ``K`` is given as COO triplets
-  ``(K_data, K_rows, K_cols)`` of shape ``(n, n)``.
+  :func:`jax.lax.custom_linear_solve`. ``K`` is given by its data
+  buffer + a pre-built :class:`EmbeddedSparsity` describing its
+  static CSR structure.
 
 - :func:`_embedded_bc_enforce` rewrites a global :class:`BCOO`
   tangent ``K`` for the embedded-BC formulation: prescribed rows
@@ -35,90 +36,109 @@ if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem
 
 
-def _spsolve_callback(
-        K_data: JaxArray, K_rows: JaxArray, K_cols: JaxArray,
-        n: int, b: JaxArray,
-) -> JaxArray:
-    """Forward-only :func:`jax.pure_callback` into scipy.
-
-    ``n`` must be a Python int (matrix size, statically known —
-    captured into the callback closure). The callback has no AD
-    rules; AD on :func:`spsolve_jax` is the responsibility of
-    :func:`jax.lax.custom_linear_solve`.
-
-    ``vmap_method="sequential"`` makes the vmap behavior explicit:
-    a sparse direct solve has no batched form, so a vmap over RHSs
-    (e.g. column-by-column Hessian build) loops sequentially —
-    correct and visible at the call site.
-    """
-    def _scipy_spsolve(
-            K_data_np: np.ndarray, K_rows_np: np.ndarray,
-            K_cols_np: np.ndarray, b_np: np.ndarray,
-    ) -> np.ndarray:
-        K_csr = scipy.sparse.coo_matrix(
-            (K_data_np, (K_rows_np, K_cols_np)), shape=(n, n),
-        ).tocsr()
-        return np.asarray(scipy.sparse.linalg.spsolve(K_csr, b_np))
-
-    return jax.pure_callback(
-        _scipy_spsolve,
-        jax.ShapeDtypeStruct(b.shape, b.dtype),
-        K_data, K_rows, K_cols, b,
-        vmap_method="sequential",
-    )
-
-
 def spsolve_jax(
-        K_data: JaxArray, K_rows: JaxArray, K_cols: JaxArray,
-        n: int, b: JaxArray,
+        K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
 ) -> JaxArray:
-    """Solve ``K x = b`` for sparse COO ``K`` with full JAX AD support.
+    """Solve ``K x = b`` for sparse ``K`` with full JAX AD support.
 
-    Forward solve goes through :func:`scipy.sparse.linalg.spsolve` via
-    :func:`jax.pure_callback`. AD rules are supplied by
-    :func:`jax.lax.custom_linear_solve` from the ``(matvec, solve,
-    transpose_solve)`` triple:
+    ``K`` is described by ``(K_data, sparsity)``: the embedded-BC COO
+    data buffer + the pre-built :class:`EmbeddedSparsity` cache that
+    encodes the static CSR structure (sort permutation, dedup
+    segment ids, ``indptr`` + ``col_indices``). Mirrors
+    :func:`cg_jax`'s signature so the two solver entry points are
+    interchangeable at FE-Newton call sites.
 
+    Forward solve goes through :func:`scipy.sparse.linalg.spsolve`
+    via :func:`jax.pure_callback`: the cache + ``K_data`` are
+    deduped into ``unique_data`` on the JAX side, and the callback
+    builds a :class:`scipy.sparse.csr_matrix` directly from
+    ``(unique_data, sparsity.col_indices, sparsity.indptr)``.
+    ``transpose_solve`` reuses the same CSR and passes its ``.T``
+    (a zero-copy :class:`scipy.sparse.csc_matrix` view of ``K^T``)
+    to ``spsolve``.
+
+    AD rules are supplied by :func:`jax.lax.custom_linear_solve`
+    from the ``(matvec, solve, transpose_solve)`` triple:
+
+    - **Matvec** is :class:`jax.experimental.sparse.BCSR` matmul
+      against the deduped data buffer (same pattern as
+      :func:`cg_jax`'s matvec; the cache references only the kept
+      structural entries).
     - **Forward-mode JVP.** ``x_dot = solve(b_dot - matvec_dot(x))``
-      where ``matvec_dot(x)`` is JAX's JVP of ``matvec`` at ``x``
-      along ``K_data_dot`` — exactly the textbook ``K_dot · x``
-      sensitivity term, computed by JAX through plain forward-mode
-      AD on the COO scatter-add.
+      where ``matvec_dot(x)`` is JAX's JVP of the BCSR matvec at
+      ``x`` along ``K_data_dot`` — exactly the textbook
+      ``K_dot · x`` sensitivity term, computed by JAX through plain
+      forward-mode AD on the dedup + BCSR matmul.
     - **Reverse-mode VJP.** ``λ = transpose_solve(x_bar)``;
       ``b_bar = λ``; the ``K_data`` cotangent comes from
-      ``jax.vjp(matvec, x)(-λ)`` which evaluates to
-      ``-λ[K_rows] · x[K_cols]`` on ``K_data`` — the canonical
-      sparse VJP formula.
+      ``jax.vjp(matvec, x)(-λ)``.
 
-    Composes for HVPs via forward-over-reverse: the outer JVP through
-    :func:`jax.grad` re-enters this primitive's JVP rule with a non-
-    zero ``K_data_dot`` (because ``K_data`` carries tangents from
-    the upstream params), and JAX's auto-transposition handles the
-    rest.
+    Composes for HVPs via forward-over-reverse: the outer JVP
+    through :func:`jax.grad` re-enters this primitive's JVP rule
+    with a non-zero ``K_data_dot`` (because ``K_data`` carries
+    tangents from the upstream params), and JAX's auto-transposition
+    handles the rest.
 
-    ``K^T`` in COO is ``K_rows ↔ K_cols`` swapped; passed to scipy
-    as a fresh COO and converted to CSR via ``.tocsr()`` (which sums
-    duplicate ``(row, col)`` entries during conversion if the
-    embedded-BC zeroing leaves any in place).
+    ``vmap_method="sequential"`` on the callbacks: under
+    :func:`jax.vmap` the callback is dispatched once per batch
+    element on the host.
 
     A direct ``@custom_jvp`` over the ``pure_callback`` would not
     auto-transpose: ``pure_callback`` has no transpose rule, and
     JAX's auto-transposition tracks operation linearity rather than
-    argument semantics — it can't infer that swapping ``K_rows`` and
-    ``K_cols`` realizes ``K^T``. ``lax.custom_linear_solve`` factors
-    that cleanly: ``matvec`` declares the operator, ``transpose_solve``
-    declares the adjoint, and JAX's built-in JVP / VJP rules cover
-    any ``(matvec, solve, transpose_solve)`` triple.
+    argument semantics. :func:`jax.lax.custom_linear_solve` factors
+    that cleanly: ``matvec`` declares the operator,
+    ``transpose_solve`` declares the adjoint, and JAX's built-in
+    JVP / VJP rules cover any ``(matvec, solve, transpose_solve)``
+    triple.
     """
+    unique_data = jnp.zeros(
+        sparsity.num_unique, dtype=K_data.dtype,
+    ).at[sparsity.segment_ids].add(K_data[sparsity.perm])
+
+    K_bcsr = BCSR(
+        (unique_data, sparsity.col_indices, sparsity.indptr),
+        shape=(sparsity.n, sparsity.n),
+    )
+
+    col_np = np.asarray(sparsity.col_indices)
+    indptr_np = np.asarray(sparsity.indptr)
+    n = sparsity.n
 
     def matvec(x: JaxArray) -> JaxArray:
-        return jnp.zeros_like(x).at[K_rows].add(K_data * x[K_cols])
+        return K_bcsr @ x
+
+    def _scipy_solve(
+            unique_data_np: np.ndarray, b_np: np.ndarray,
+    ) -> np.ndarray:
+        K_csr = scipy.sparse.csr_matrix(
+            (unique_data_np, col_np, indptr_np), shape=(n, n),
+        )
+        return np.asarray(scipy.sparse.linalg.spsolve(K_csr, b_np))
+
+    def _scipy_transpose_solve(
+            unique_data_np: np.ndarray, b_np: np.ndarray,
+    ) -> np.ndarray:
+        K_csr = scipy.sparse.csr_matrix(
+            (unique_data_np, col_np, indptr_np), shape=(n, n),
+        )
+        return np.asarray(scipy.sparse.linalg.spsolve(K_csr.T, b_np))
 
     def solve(_unused_matvec, rhs: JaxArray) -> JaxArray:
-        return _spsolve_callback(K_data, K_rows, K_cols, n, rhs)
+        return jax.pure_callback(
+            _scipy_solve,
+            jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
+            unique_data, rhs,
+            vmap_method="sequential",
+        )
 
     def transpose_solve(_unused_vecmat, rhs: JaxArray) -> JaxArray:
-        return _spsolve_callback(K_data, K_cols, K_rows, n, rhs)
+        return jax.pure_callback(
+            _scipy_transpose_solve,
+            jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
+            unique_data, rhs,
+            vmap_method="sequential",
+        )
 
     return lax.custom_linear_solve(
         matvec, b, solve, transpose_solve=transpose_solve,
@@ -307,16 +327,23 @@ def cg_jax_with_iters(
 def _embedded_bc_enforce(
         K_bcoo: BCOO, presc_idx: JaxArray,
         presc_diag_scale: float = 1.0,
-) -> tuple[JaxArray, JaxArray, JaxArray]:
+) -> JaxArray:
     """Embedded-BC symmetric form on a :class:`BCOO` tangent.
 
-    Returns COO triplets ``(K_data, K_rows, K_cols)`` for ``K`` with:
+    Returns the data buffer ``K_data`` for the embedded-BC ``K``,
+    layout-compatible with the :class:`EmbeddedSparsity` cache:
 
-    - prescribed rows AND prescribed columns zeroed (every entry
+    - ``K_data[:nnz_assembled]`` are the assembled COO values with
+      prescribed rows AND prescribed columns zeroed (every entry
       with either index in ``presc_idx``), via a mask multiplication
       on ``K_bcoo.data``;
-    - scaled-identity entries with value ``presc_diag_scale``
+    - ``K_data[nnz_assembled:]`` are ``presc_diag_scale`` values
       appended at ``(presc_idx, presc_idx)``.
+
+    The implicit ``(rows, cols)`` are
+    ``concatenate([K_bcoo.indices[:, 0], presc_idx])`` and
+    ``concatenate([K_bcoo.indices[:, 1], presc_idx])``; the cache
+    references them statically via ``perm``.
 
     Net structure is block-diagonal:
     ``[K_ff (assembled) | 0; 0 | α · I_P]`` where ``K_ff`` is the
@@ -341,13 +368,11 @@ def _embedded_bc_enforce(
     matches this output's row-and-column-zeroed structure exactly.
 
     When ``K_bcoo`` already has an entry at a prescribed ``(i, i)``,
-    the output contains two COO entries at that position: the
-    original (zeroed by the row/column mask) and the appended
-    scaled-identity. Both consumer paths handle the duplicate
-    correctly: :class:`scipy.sparse.coo_matrix` sums duplicates
-    during ``.tocsr()`` conversion inside :func:`_spsolve_callback`,
-    and JAX's scatter-add ``matvec`` accumulates them. The effective
-    prescribed diagonal is therefore ``presc_diag_scale``.
+    the output contains two values at that position: the original
+    (zeroed by the row/column mask) and the appended scaled-identity.
+    :class:`EmbeddedSparsity`'s segment-sum dedup at the cache
+    boundary folds them into one unique entry with value
+    ``presc_diag_scale``.
     """
     rows = K_bcoo.indices[:, 0]
     cols = K_bcoo.indices[:, 1]
@@ -361,10 +386,7 @@ def _embedded_bc_enforce(
         presc_idx.shape[0], presc_diag_scale, dtype=K_bcoo.data.dtype,
     )
 
-    K_data = jnp.concatenate([data_zeroed, add_data])
-    K_rows = jnp.concatenate([rows, presc_idx])
-    K_cols = jnp.concatenate([cols, presc_idx])
-    return K_data, K_rows, K_cols
+    return jnp.concatenate([data_zeroed, add_data])
 
 
 @dataclass(frozen=True)

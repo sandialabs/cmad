@@ -75,14 +75,13 @@ def _fe_newton_primal(
                 " > relative ||R|| = {rel_r:.6e}",
                 rel_r=R_norm / R_norm_0,
             )
-        K_data, K_rows, K_cols = _embedded_bc_enforce(
+        K_data = _embedded_bc_enforce(
             K_bcoo, presc_idx, presc_diag_scale=alpha,
         )
-        n = K_bcoo.shape[0]
         if linear_solver == "cg":
             dU = cg_jax(K_data, fe_problem.embedded_sparsity, -r)
         elif linear_solver == "direct":
-            dU = spsolve_jax(K_data, K_rows, K_cols, n, -r)
+            dU = spsolve_jax(K_data, fe_problem.embedded_sparsity, -r)
         else:
             raise ValueError(
                 f"unknown linear_solver {linear_solver!r}; "
@@ -269,15 +268,14 @@ def _fe_newton_solve_ad_jvp(
         fe_problem, params_by_block, U_star, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
-    K_data, K_rows, K_cols = _embedded_bc_enforce(
+    K_data = _embedded_bc_enforce(
         K_bcoo, presc_idx, presc_diag_scale=alpha,
     )
-    n = K_bcoo.shape[0]
 
     if linear_solver == "cg":
         U_star_dot = cg_jax(K_data, fe_problem.embedded_sparsity, -Rp_dot)
     elif linear_solver == "direct":
-        U_star_dot = spsolve_jax(K_data, K_rows, K_cols, n, -Rp_dot)
+        U_star_dot = spsolve_jax(K_data, fe_problem.embedded_sparsity, -Rp_dot)
     else:
         raise ValueError(
             f"unknown linear_solver {linear_solver!r}; "
