@@ -102,7 +102,7 @@ class TestGlobalResidualABC(unittest.TestCase):
             model, mode=GlobalResidualMode.CLOSED_FORM)
         self.assertEqual(
             set(evaluators.keys()),
-            {"R", "R_and_dR_dU", "dR_dU", "dR_dU_prev", "dR_dp"},
+            {"R", "R_and_dR_dU"},
         )
 
     def test_for_model_closed_form_rejects_incapable_model(self):
@@ -170,41 +170,6 @@ class TestGlobalResidualABC(unittest.TestCase):
         R1_blocks = evaluators["R"](
             params, U_new, U_prev, shapes_ip, w, dv, ip_set)
         self.assertLess(float(jnp.linalg.norm(R1_blocks[0][3, :])), 1e-10)
-
-    def test_dR_dU_standalone_returns_block_pair_structure(self):
-        gr = _ToyEquilibrium()
-        model = _make_linear_elastic_model()
-        evaluators = gr.for_model(
-            model, mode=GlobalResidualMode.CLOSED_FORM)
-        args = _test_inputs(model)
-        result = evaluators["dR_dU"](*args)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(len(result[0]), 1)
-        self.assertEqual(result[0][0].shape, (4, 3, 4, 3))
-
-    def test_dR_dU_prev_standalone_returns_block_pair_structure(self):
-        gr = _ToyEquilibrium()
-        model = _make_linear_elastic_model()
-        evaluators = gr.for_model(
-            model, mode=GlobalResidualMode.CLOSED_FORM)
-        args = _test_inputs(model)
-        result = evaluators["dR_dU_prev"](*args)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(len(result[0]), 1)
-        self.assertEqual(result[0][0].shape, (4, 3, 4, 3))
-
-    def test_dR_dp_returns_residual_block_pytree_parallel_to_params(self):
-        gr = _ToyEquilibrium()
-        model = _make_linear_elastic_model()
-        evaluators = gr.for_model(
-            model, mode=GlobalResidualMode.CLOSED_FORM)
-        args = _test_inputs(model)
-        result = evaluators["dR_dp"](*args)
-        self.assertEqual(len(result), 1)
-        self.assertIn("elastic", result[0])
-        self.assertIn("kappa", result[0]["elastic"])
-        self.assertIn("mu", result[0]["elastic"])
-
 
 if __name__ == "__main__":
     unittest.main()

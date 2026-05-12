@@ -52,28 +52,24 @@ class GlobalResidual(ABC):
     :meth:`for_model(model, mode)`, which captures ``mode`` lexically
     in the closures it builds and returns a mode-specific ``dict[str,
     Callable]`` of jit'd public evaluators closed over
-    ``model._residual``. CLOSED_FORM mode exposes 5 keys: ``"R"``
+    ``model._residual``. CLOSED_FORM mode exposes 2 keys: ``"R"``
     (residual-only, for linesearch trial points and other cheap
-    residual probes), ``"R_and_dR_dU"`` (fused R + tangent for the
-    Newton step), and standalone first-derivative evaluators
-    ``"dR_dU"`` / ``"dR_dU_prev"`` / ``"dR_dp"`` (one per
-    differentiable input of the U-only closure, for adjoint and
-    gradient-assembly consumers that want a named derivative
-    without R recomputation). The CLOSED_FORM public closures are
-    U-only — xi/xi_prev are bound to zeros internally because
-    ``model.cauchy_closed_form`` is consulted instead. COUPLED
-    mode exposes a different 7-key dict mixing raw partials at
-    supplied ξ (9-arg sig including xi) with Newton-running totals
-    (8-arg sig; xi internally solved from ``xi_prev``); see
-    :meth:`for_model` for the full contract. Multiple ``for_model``
-    calls on the same GR instance produce independent closures —
-    each captures its own ``mode`` value, so a mixed-mode FE problem
-    that binds the same GR per block (CLOSED_FORM on one, COUPLED
-    on another) works without instance-state contamination. The
-    string-key dict replaces Model's mutable ``_deriv_mode`` state
-    machine: FE assembly vmaps closures over element batches, which
-    works on pure functions but not on methods that mutate instance
-    state.
+    residual probes) and ``"R_and_dR_dU"`` (fused R + tangent with
+    XLA CSE between R and its tangent — the Newton-step call). The
+    CLOSED_FORM public closures are U-only — xi/xi_prev are bound to
+    zeros internally because ``model.cauchy_closed_form`` is consulted
+    instead. COUPLED mode exposes a different 7-key dict mixing raw
+    partials at supplied ξ (9-arg sig including xi) with Newton-
+    running totals (8-arg sig; xi internally solved from
+    ``xi_prev``); see :meth:`for_model` for the full contract.
+    Multiple ``for_model`` calls on the same GR instance produce
+    independent closures — each captures its own ``mode`` value, so
+    a mixed-mode FE problem that binds the same GR per block
+    (CLOSED_FORM on one, COUPLED on another) works without
+    instance-state contamination. The string-key dict replaces
+    Model's mutable ``_deriv_mode`` state machine: FE assembly
+    vmaps closures over element batches, which works on pure
+    functions but not on methods that mutate instance state.
     """
 
     # ---- attributes the subclass must set before super().__init__() ----
@@ -257,25 +253,20 @@ class GlobalResidual(ABC):
         U_ip_prev)`` for COUPLED). Returns a mode-specific dict of
         jit'd public evaluators keyed by string names:
 
-        - CLOSED_FORM (5 keys, all 7-arg sig
+        - CLOSED_FORM (2 keys, both 7-arg sig
           ``(params, U, U_prev, shapes_ip, w, dv, ip_set)`` —
           U-only because ``cauchy_closed_form`` never consults xi):
           ``"R"`` (residual only, for linesearch trial points and
-          other cheap residual probes), ``"R_and_dR_dU"`` (fused
+          other cheap residual probes) and ``"R_and_dR_dU"`` (fused
           ``(R_blocks, dR_dU_blocks)`` with XLA CSE between R and
-          its tangent), and standalone first-derivative evaluators
-          ``"dR_dU"`` / ``"dR_dU_prev"`` / ``"dR_dp"`` (each is
-          ``jacfwd`` / ``jacrev`` over the U-only closure wrt one
-          differentiable input — for adjoint and gradient-assembly
-          consumers that don't need R recomputed). The closure
-          binds xi/xi_prev to zero pytrees so the underlying
-          ``residual_fn`` contract is preserved unchanged.
-          ``R_blocks`` is a list with entry ``r`` shaped
-          ``(num_basis_fns_r, num_eqs_r)``; ``dR_dU_blocks`` is a
-          list-of-lists with ``dR_dU_blocks[r][s]`` shaped
+          its tangent — the Newton-step call). The closure binds
+          xi/xi_prev to zero pytrees so the underlying ``residual_fn``
+          contract is preserved unchanged. ``R_blocks`` is a list
+          with entry ``r`` shaped ``(num_basis_fns_r, num_eqs_r)``;
+          ``dR_dU_blocks`` is a list-of-lists with
+          ``dR_dU_blocks[r][s]`` shaped
           ``(num_basis_fns_r, num_eqs_r, num_basis_fns_s,
-          num_eqs_s)``; ``"dR_dp"`` returns a per-residual-block
-          pytree parallel to ``params``.
+          num_eqs_s)``.
 
         - COUPLED (7 keys, mixed sigs). Raw partials at supplied ξ
           (9-arg sig
@@ -359,8 +350,6 @@ class GlobalResidual(ABC):
             )
 
         dR_dU_at_ip = jacfwd(r_at_ip, argnums=1)
-        dR_dU_prev_at_ip = jacfwd(r_at_ip, argnums=2)
-        dR_dp_at_ip = jacrev(r_at_ip, argnums=0)
 
         def r_and_dR_dU_at_ip(
                 params, U, U_prev, shapes_ip, w, dv, ip_set,
@@ -376,9 +365,6 @@ class GlobalResidual(ABC):
         return {
             "R": jit(r_at_ip),
             "R_and_dR_dU": jit(r_and_dR_dU_at_ip),
-            "dR_dU": jit(dR_dU_at_ip),
-            "dR_dU_prev": jit(dR_dU_prev_at_ip),
-            "dR_dp": jit(dR_dp_at_ip),
         }
 
     def _for_model_coupled(
