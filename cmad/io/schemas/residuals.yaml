@@ -45,8 +45,20 @@ properties:
   global residual:
     type: object
     required: [type]
+    additionalProperties: false
     properties:
       type: {type: string}
+      nonlinear max iters:
+        type: integer
+        minimum: 1
+      nonlinear absolute tol:
+        type: number
+        exclusiveMinimum: 0
+      nonlinear relative tol:
+        type: number
+        exclusiveMinimum: 0
+      print convergence:
+        type: boolean
   local residual:
     type: object
     required: [type, materials]

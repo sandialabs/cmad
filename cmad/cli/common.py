@@ -188,9 +188,13 @@ def build_fe_J_of_params_flat(
     )
     boundaries = np.cumsum([0, *per_block_lengths])
 
-    max_iters = int(gr_section["nonlinear max iters"])
-    abs_tol = float(gr_section["nonlinear absolute tol"])
-    rel_tol = float(gr_section["nonlinear relative tol"])
+    nonlinear_solver_settings = {
+        "max iters": int(gr_section["nonlinear max iters"]),
+        "abs tol": float(gr_section["nonlinear absolute tol"]),
+        "rel tol": float(gr_section["nonlinear relative tol"]),
+        "print convergence": print_global_convergence,
+    }
+    linear_solver_settings = bundle.resolved["linear solver"]
 
     def J_of_params_flat(params_flat: JaxArray) -> JaxArray:
         params_by_block: dict[str, Any] = {}
@@ -210,10 +214,8 @@ def build_fe_J_of_params_flat(
             xi_init,
             t_schedule_jax,
             qoi_step_contribution=qoi_step_contribution,
-            max_iters=max_iters,
-            abs_tol=abs_tol,
-            rel_tol=rel_tol,
-            print_global_convergence=print_global_convergence,
+            nonlinear_solver_settings=nonlinear_solver_settings,
+            linear_solver_settings=linear_solver_settings,
         )
         return J
 

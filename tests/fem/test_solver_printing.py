@@ -1,4 +1,4 @@
-"""Tests for the ``print_global_convergence`` /
+"""Tests for the ``print convergence`` /
 ``print_local_convergence`` toggles on the FE driver and per-IP
 local Newton.
 
@@ -50,7 +50,7 @@ def _build_problem(
 
 
 class TestPrintGlobalConvergence(unittest.TestCase):
-    """``print_global_convergence=True`` on
+    """``nonlinear_solver_settings['print convergence']=True`` on
     :func:`fe_quasistatic_drive` emits the per-step header and
     per-Newton-iter norm lines via :func:`jax.debug.print`."""
 
@@ -62,7 +62,7 @@ class TestPrintGlobalConvergence(unittest.TestCase):
         with redirect_stdout(buf):
             fe_quasistatic_drive(
                 fe_problem, [0.0, 1.0],
-                print_global_convergence=True,
+                nonlinear_solver_settings={"print convergence": True},
             )
         output = buf.getvalue()
         self.assertIn("ON PRIMAL STEP (1) at t=", output)

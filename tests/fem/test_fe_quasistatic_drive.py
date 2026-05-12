@@ -319,7 +319,8 @@ class TestSolverKwargsForwarded(unittest.TestCase):
         )
         t_schedule = [0.0, 1.0]
         state, _ = fe_quasistatic_drive(
-            fe_problem, t_schedule, max_iters=0,
+            fe_problem, t_schedule,
+            nonlinear_solver_settings={"max iters": 0},
         )
         # With max_iters=0 the Newton loop never executes; U_star
         # equals the initial iterate: U_prev (= state.U_at(0)) with

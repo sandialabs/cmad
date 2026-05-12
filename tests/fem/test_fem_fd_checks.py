@@ -356,8 +356,12 @@ class TestClosedFormSingleStep(unittest.TestCase):
             xi_prev = _initial_xi_by_block(fe_problem)
             U_star, _ = fe_newton_solve(
                 fe_problem, {"all": params},
-                U_prev=U_prev, t=t, xi_prev_by_block=xi_prev,
-                max_iters=20, abs_tol=1e-12, rel_tol=1e-12,
+                U_prev=U_prev, xi_prev_by_block=xi_prev, t=t,
+                nonlinear_solver_settings={
+                    "max iters": 20,
+                    "abs tol": 1e-12,
+                    "rel tol": 1e-12,
+                },
             )
             return jnp.sum(U_star ** 2)
 
@@ -414,7 +418,11 @@ class TestClosedFormMultiStep(unittest.TestCase):
             U_steps, _, _ = fe_quasistatic_trajectory(
                 fe_problem, {"all": params},
                 U_init, xi_init, t_schedule_jax,
-                max_iters=20, abs_tol=1e-12, rel_tol=1e-12,
+                nonlinear_solver_settings={
+                    "max iters": 20,
+                    "abs tol": 1e-12,
+                    "rel tol": 1e-12,
+                },
             )
             # U_steps has shape (N, n_dofs); summing over both axes
             # gives the same scalar as the per-step-sum-then-sum form.
@@ -473,8 +481,12 @@ class TestCoupledSingleStep(unittest.TestCase):
             xi_prev = _initial_xi_by_block(fe_problem)
             U_star, _ = fe_newton_solve(
                 fe_problem, {"all": params},
-                U_prev=U_prev, t=t, xi_prev_by_block=xi_prev,
-                max_iters=30, abs_tol=1e-10, rel_tol=1e-10,
+                U_prev=U_prev, xi_prev_by_block=xi_prev, t=t,
+                nonlinear_solver_settings={
+                    "max iters": 30,
+                    "abs tol": 1e-10,
+                    "rel tol": 1e-10,
+                },
             )
             return jnp.sum(U_star ** 2)
 
@@ -535,7 +547,11 @@ class TestCoupledMultiStepSimple(unittest.TestCase):
             U_steps, _, _ = fe_quasistatic_trajectory(
                 fe_problem, {"all": params},
                 U_init, xi_init, t_schedule_jax,
-                max_iters=30, abs_tol=1e-10, rel_tol=1e-10,
+                nonlinear_solver_settings={
+                    "max iters": 30,
+                    "abs tol": 1e-10,
+                    "rel tol": 1e-10,
+                },
             )
             return jnp.sum(U_steps ** 2)
 
@@ -597,7 +613,11 @@ class TestCoupledMultiStepAllPaths(unittest.TestCase):
             U_steps, xi_steps, _ = fe_quasistatic_trajectory(
                 fe_problem, {"all": params},
                 U_init, xi_init_dict, t_schedule_jax,
-                max_iters=30, abs_tol=1e-10, rel_tol=1e-10,
+                nonlinear_solver_settings={
+                    "max iters": 30,
+                    "abs tol": 1e-10,
+                    "rel tol": 1e-10,
+                },
             )
             # U_prev_seq shape (N, n_dofs): prepend U_init,
             # drop final step. Same shift, applied per block, for xi.

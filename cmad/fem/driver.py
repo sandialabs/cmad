@@ -26,7 +26,11 @@ from numpy.typing import NDArray
 
 from cmad.fem.assembly import params_by_block_from_models
 from cmad.fem.fe_problem import FEProblem, FEState
-from cmad.fem.nonlinear_solver import fe_newton_solve
+from cmad.fem.nonlinear_solver import (
+    _DEFAULT_LINEAR_SOLVER_SETTINGS,
+    _DEFAULT_NONLINEAR_SOLVER_SETTINGS,
+    fe_newton_solve,
+)
 from cmad.qois.fe_qoi import FEQoI, StepContribution
 from cmad.typing import JaxArray, Params
 
@@ -38,11 +42,8 @@ def fe_quasistatic_trajectory(
         xi_init_by_block: dict[str, JaxArray],
         t_schedule_jax: JaxArray,
         qoi_step_contribution: StepContribution | None = None,
-        max_iters: int = 20,
-        abs_tol: float = 1e-10,
-        rel_tol: float = 1e-10,
-        print_global_convergence: bool = False,
-        linear_solver: str = "direct",
+        nonlinear_solver_settings: dict[str, Any] | None = None,
+        linear_solver_settings: dict[str, Any] | None = None,
 ) -> tuple[JaxArray, dict[str, JaxArray], JaxArray]:
     """Compute the FE trajectory via :func:`jax.lax.scan`.
 
@@ -78,15 +79,25 @@ def fe_quasistatic_trajectory(
     the returned scalar into ``J``. When ``None``, the accumulator
     stays at zero and the returned ``J`` is ``jnp.zeros(())``.
 
-    When ``print_global_convergence`` is True, the scan body emits an
-    ``ON PRIMAL STEP (n) at t=...`` header before each
-    :func:`fe_newton_solve` call and forwards the flag so the inner
-    Newton driver prints per-iter convergence lines.
+    When ``nonlinear_solver_settings['print convergence']`` is True,
+    the scan body emits an ``ON PRIMAL STEP (n) at t=...`` header
+    before each :func:`fe_newton_solve` call and the inner Newton
+    driver picks up the same flag through its own dict to print
+    per-iter convergence lines.
 
     Returns ``(U_steps, xi_steps_by_block, J)`` where the trajectory
     arrays have leading axis ``n_steps`` and ``J`` is the scalar
     QoI accumulated across the time loop.
     """
+    nls = {
+        **_DEFAULT_NONLINEAR_SOLVER_SETTINGS,
+        **(nonlinear_solver_settings or {}),
+    }
+    lss = {
+        **_DEFAULT_LINEAR_SOLVER_SETTINGS,
+        **(linear_solver_settings or {}),
+    }
+    print_global_convergence = nls["print convergence"]
 
     def step_fn(carry, step_input):
         step_idx, t = step_input
@@ -101,13 +112,10 @@ def fe_quasistatic_trajectory(
             fe_problem,
             params_by_block,
             U_prev=U_prev,
-            t=t,
             xi_prev_by_block=xi_prev,
-            max_iters=max_iters,
-            abs_tol=abs_tol,
-            rel_tol=rel_tol,
-            print_global_convergence=print_global_convergence,
-            linear_solver=linear_solver,
+            t=t,
+            nonlinear_solver_settings=nls,
+            linear_solver_settings=lss,
         )
         # xi_solved only carries keys for element blocks whose model
         # has time-evolving state; the rest echo forward from xi_prev.
@@ -133,7 +141,6 @@ def fe_quasistatic_drive(
         fe_problem: FEProblem,
         t_schedule: Sequence[float],
         U_init: NDArray[np.floating] | None = None,
-        print_global_convergence: bool = False,
         qoi: FEQoI | None = None,
         **solver_kwargs: Any,
 ) -> tuple[FEState, JaxArray]:
@@ -171,11 +178,11 @@ def fe_quasistatic_drive(
     accumulate ``J``. The returned ``J`` is the full QoI value over
     the time loop. When ``qoi`` is ``None``, ``J = jnp.zeros(())``.
 
-    ``solver_kwargs`` are forwarded to :func:`fe_newton_solve`
-    through :func:`fe_quasistatic_trajectory` (accepts
-    ``max_iters``, ``abs_tol``, ``rel_tol``, ``linear_solver``);
-    the orchestrator threads deck-supplied global-Newton settings
-    through this slot.
+    ``solver_kwargs`` are forwarded to
+    :func:`fe_quasistatic_trajectory` and consumed by
+    :func:`fe_newton_solve` (accepts ``nonlinear_solver_settings``
+    and ``linear_solver_settings`` dicts); the orchestrator threads
+    deck-supplied settings through this slot.
     """
     if len(t_schedule) < 2:
         raise ValueError(
@@ -212,7 +219,6 @@ def fe_quasistatic_drive(
         xi_init_by_block,
         t_schedule_jax,
         qoi_step_contribution=qoi_step_contribution,
-        print_global_convergence=print_global_convergence,
         **solver_kwargs,
     )
 

@@ -78,15 +78,20 @@ def _run_primal_mp(deck_path: Path) -> int:
 def _run_primal_fe(deck_path: Path) -> int:
     bundle = build_fe_problem_from_deck(deck_path, "primal")
     gr_section = bundle.resolved["residuals"]["global residual"]
+    nonlinear_solver_settings = {
+        "max iters": int(gr_section["nonlinear max iters"]),
+        "abs tol": float(gr_section["nonlinear absolute tol"]),
+        "rel tol": float(gr_section["nonlinear relative tol"]),
+        "print convergence": bool(
+            gr_section.get("print convergence", False),
+        ),
+    }
+    linear_solver_settings = bundle.resolved["linear solver"]
     fe_state, J = fe_quasistatic_drive(
         bundle.fe_problem,
         bundle.t_schedule.tolist(),
-        max_iters=int(gr_section["nonlinear max iters"]),
-        abs_tol=float(gr_section["nonlinear absolute tol"]),
-        rel_tol=float(gr_section["nonlinear relative tol"]),
-        print_global_convergence=bool(
-            gr_section.get("print convergence", False),
-        ),
+        nonlinear_solver_settings=nonlinear_solver_settings,
+        linear_solver_settings=linear_solver_settings,
         qoi=bundle.qoi,
     )
 

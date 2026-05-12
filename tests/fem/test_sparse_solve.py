@@ -261,9 +261,9 @@ class TestCGJaxForward(unittest.TestCase):
     """Forward-solve correctness for ``cg_jax`` on SPD K.
 
     Directly tests the CG path on a hand-built ``EmbeddedSparsity``,
-    independent of the FE-Newton driver and ``linear_solver="cg"``
-    plumbing. Closes the coverage gap that FE tests default to
-    ``linear_solver="direct"``.
+    independent of the FE-Newton driver's ``{type: cg}`` dispatch.
+    Closes the coverage gap that FE tests default to ``{type:
+    direct}``.
     """
 
     def test_spd_matches_dense(self) -> None:

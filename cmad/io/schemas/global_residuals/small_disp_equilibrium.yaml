@@ -5,18 +5,3 @@ additionalProperties: false
 properties:
   type:
     const: small_disp_equilibrium
-  nonlinear max iters:
-    type: integer
-    minimum: 1
-    default: 10
-  nonlinear absolute tol:
-    type: number
-    exclusiveMinimum: 0
-    default: 1.0e-12
-  nonlinear relative tol:
-    type: number
-    exclusiveMinimum: 0
-    default: 1.0e-12
-  print convergence:
-    type: boolean
-    default: false

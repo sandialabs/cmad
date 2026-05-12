@@ -20,8 +20,9 @@ The three passes are:
    with a one-line ``UserWarning``.
 3. **Default-filling** dispatched on ``problem.type`` (MP fills
    ``solver.newton``; FE fills ``residuals.{global, local}
-   residual.nonlinear*``). ``output.format`` defaults to ``"npy"``
-   for both arms; the optimizer defaults are problem-type-agnostic.
+   residual.nonlinear*`` plus the top-level ``linear solver``
+   section). ``output.format`` defaults to ``"npy"`` for both
+   arms; the optimizer defaults are problem-type-agnostic.
 
 Both normalization helpers are also re-imported by ``cmad/io/schema.py``
 so that ``validate_deck`` can be called defensively on a not-yet-
@@ -64,6 +65,12 @@ _FE_RESIDUALS_DEFAULTS: dict[str, dict[str, Any]] = {
         "nonlinear absolute tol": 1.0e-14,
         "nonlinear relative tol": 1.0e-14,
     },
+}
+_LINEAR_SOLVER_DEFAULTS: dict[str, Any] = {
+    "type": "direct",
+    "rtol": 1.0e-10,
+    "max iters": None,
+    "restart": 20,
 }
 
 _CALIBR8_ONLY_SECTIONS: tuple[str, ...] = ("linear algebra", "regression")
@@ -157,6 +164,9 @@ def apply_deck_defaults(deck: dict[str, Any]) -> dict[str, Any]:
             slot_dict = residuals.setdefault(slot, {})
             for k, v in defaults.items():
                 slot_dict.setdefault(k, v)
+        ls_in = resolved.setdefault("linear solver", {})
+        for k, v in _LINEAR_SOLVER_DEFAULTS.items():
+            ls_in.setdefault(k, v)
 
     output_in = resolved.setdefault("output", {})
     for k, v in _OUTPUT_DEFAULTS.items():
