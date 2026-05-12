@@ -16,6 +16,7 @@ from jax.experimental.sparse import BCOO
 from cmad.fem.sparse_solve import (
     EmbeddedSparsity,
     _embedded_bc_enforce,
+    cg_jax,
     spsolve_jax,
 )
 from cmad.typing import JaxArray
@@ -224,6 +225,27 @@ class TestSpsolveJaxJit(unittest.TestCase):
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
         np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
                                    rtol=1e-10, atol=1e-12)
+
+
+class TestCGJaxForward(unittest.TestCase):
+    """Forward-solve correctness for ``cg_jax`` on SPD K.
+
+    Directly tests the CG path on a hand-built ``EmbeddedSparsity``,
+    independent of the FE-Newton driver and ``linear_solver="cg"``
+    plumbing. Closes the coverage gap that FE tests default to
+    ``linear_solver="direct"``.
+    """
+
+    def test_spd_matches_dense(self) -> None:
+        n = 10
+        K = _random_spd(n, seed=50)
+        K_data, sparsity = _dense_to_cache(K)
+        b = jnp.asarray(np.random.default_rng(51).standard_normal(n))
+
+        x = cg_jax(K_data, sparsity, b, rtol=1e-12)
+        x_ref = jnp.linalg.solve(jnp.asarray(K), b)
+        np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
+                                   rtol=1e-8, atol=1e-9)
 
 
 class TestEmbeddedBCEnforce(unittest.TestCase):
