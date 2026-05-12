@@ -209,6 +209,35 @@ class TestSpsolveJaxHVP(unittest.TestCase):
                                    rtol=1e-3, atol=1e-5)
 
 
+class TestSpsolveJaxVmapOverRhs(unittest.TestCase):
+    """Vmap over RHS routes through the 2D-RHS callback path.
+
+    Confirms vmap'd :func:`spsolve_jax` (single host callback with
+    K broadcast to a leading length-1 axis and a batched ``b``,
+    amortized LU + multi back-substitute) matches per-element
+    invocations outside vmap (multiple callbacks with 1D ``b``
+    each).
+    """
+
+    def test_vmap_matches_sequential(self) -> None:
+        n, batch = 6, 4
+        K = _random_spd(n, seed=70)
+        K_data, sparsity = _dense_to_cache(K)
+        B = jnp.asarray(
+            np.random.default_rng(71).standard_normal((batch, n)),
+        )
+
+        out_v = jax.vmap(
+            lambda b: spsolve_jax(K_data, sparsity, b),
+        )(B)
+        out_seq = jnp.stack([
+            spsolve_jax(K_data, sparsity, B[i]) for i in range(batch)
+        ])
+
+        np.testing.assert_allclose(np.asarray(out_v), np.asarray(out_seq),
+                                   rtol=1e-10, atol=1e-12)
+
+
 class TestSpsolveJaxJit(unittest.TestCase):
     """``jit(spsolve_jax)`` round-trip on a concrete small instance."""
 

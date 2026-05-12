@@ -79,9 +79,21 @@ def spsolve_jax(
     tangents from the upstream params), and JAX's auto-transposition
     handles the rest.
 
-    ``vmap_method="sequential"`` on the callbacks: under
-    :func:`jax.vmap` the callback is dispatched once per batch
-    element on the host.
+    ``vmap_method="expand_dims"`` on the callbacks: under
+    :func:`jax.vmap` with K captured from the outer scope, the
+    operator side broadcasts to a leading length-1 batch axis
+    while ``rhs`` carries the real batch — the callback receives
+    ``unique_data_np`` of shape ``(1, num_unique)`` and ``b_np``
+    of shape ``(B, n)`` in a single host call. The scipy side
+    then factors K once via :func:`scipy.sparse.linalg.splu` and
+    back-substitutes across columns, amortizing the LU over the
+    batch. Nested vmap (e.g. forward-over-reverse for Hessians)
+    stacks additional length-1 axes on ``unique_data_np`` and
+    additional batch axes on ``b_np``; the callbacks squeeze the
+    K side and flatten the b side before scipy, then restore the
+    caller's batch shape on return. Outside vmap both inputs
+    arrive 1D and the callback dispatches a single
+    :func:`scipy.sparse.linalg.spsolve` instead.
 
     A direct ``@custom_jvp`` over the ``pure_callback`` would not
     auto-transpose: ``pure_callback`` has no transpose rule, and
@@ -108,28 +120,56 @@ def spsolve_jax(
     def matvec(x: JaxArray) -> JaxArray:
         return K_bcsr @ x
 
+    def _build_csr(unique_data_np: np.ndarray) -> scipy.sparse.csr_matrix:
+        # Under ``vmap_method="expand_dims"``, stationary K under
+        # :func:`jax.vmap` gains a leading length-1 axis per vmap
+        # layer; nested AD (e.g. forward-over-reverse for Hessians)
+        # can stack several such axes. Squeeze them all off, then
+        # coerce to a plain :class:`numpy.ndarray` since
+        # :func:`scipy.sparse.csr_matrix` rejects ``jax.Array``.
+        ud = np.asarray(unique_data_np)
+        while ud.ndim > 1 and ud.shape[0] == 1:
+            ud = ud[0]
+        return scipy.sparse.csr_matrix(
+            (ud, col_np, indptr_np), shape=(n, n),
+        )
+
+    def _multi_back_sub(
+            K_csc: scipy.sparse.csc_matrix, b_np: np.ndarray,
+    ) -> np.ndarray:
+        # Solve ``K x = b`` for one factor and arbitrarily many RHS
+        # columns laid out in any number of leading batch axes.
+        # Flattens batch axes for :class:`scipy.sparse.linalg.SuperLU`
+        # (which accepts only 1D or 2D ``b``), then restores the
+        # caller's batch shape on the return.
+        b_arr = np.asarray(b_np)
+        batch_shape = b_arr.shape[:-1]
+        b_2d_T = np.ascontiguousarray(b_arr.reshape(-1, b_arr.shape[-1]).T)
+        lu = scipy.sparse.linalg.splu(K_csc)
+        return lu.solve(b_2d_T).T.reshape(*batch_shape, b_arr.shape[-1])
+
     def _scipy_solve(
             unique_data_np: np.ndarray, b_np: np.ndarray,
     ) -> np.ndarray:
-        K_csr = scipy.sparse.csr_matrix(
-            (unique_data_np, col_np, indptr_np), shape=(n, n),
-        )
-        return np.asarray(scipy.sparse.linalg.spsolve(K_csr, b_np))
+        K_csr = _build_csr(unique_data_np)
+        if b_np.ndim == 1:
+            return np.asarray(scipy.sparse.linalg.spsolve(K_csr, b_np))
+        return _multi_back_sub(K_csr.tocsc(), b_np)
 
     def _scipy_transpose_solve(
             unique_data_np: np.ndarray, b_np: np.ndarray,
     ) -> np.ndarray:
-        K_csr = scipy.sparse.csr_matrix(
-            (unique_data_np, col_np, indptr_np), shape=(n, n),
-        )
-        return np.asarray(scipy.sparse.linalg.spsolve(K_csr.T, b_np))
+        K_csr = _build_csr(unique_data_np)
+        if b_np.ndim == 1:
+            return np.asarray(scipy.sparse.linalg.spsolve(K_csr.T, b_np))
+        return _multi_back_sub(K_csr.T.tocsc(), b_np)
 
     def solve(_unused_matvec, rhs: JaxArray) -> JaxArray:
         return jax.pure_callback(
             _scipy_solve,
             jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
             unique_data, rhs,
-            vmap_method="sequential",
+            vmap_method="expand_dims",
         )
 
     def transpose_solve(_unused_vecmat, rhs: JaxArray) -> JaxArray:
@@ -137,7 +177,7 @@ def spsolve_jax(
             _scipy_transpose_solve,
             jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
             unique_data, rhs,
-            vmap_method="sequential",
+            vmap_method="expand_dims",
         )
 
     return lax.custom_linear_solve(
