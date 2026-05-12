@@ -121,6 +121,7 @@ def spsolve_jax(
 
 def _embedded_bc_enforce(
         K_bcoo: BCOO, presc_idx: JaxArray,
+        presc_diag_scale: float = 1.0,
 ) -> tuple[JaxArray, JaxArray, JaxArray]:
     """Embedded-BC asymmetric form on a :class:`BCOO` tangent.
 
@@ -128,7 +129,17 @@ def _embedded_bc_enforce(
 
     - prescribed rows zeroed (off-diagonal entries included), via a
       mask multiplication on ``K_bcoo.data``;
-    - identity entries (``1.0``) appended on the prescribed diagonal.
+    - scaled-identity entries with value ``presc_diag_scale``
+      appended on the prescribed diagonal.
+
+    ``presc_diag_scale`` keeps the prescribed-row pivot on the same
+    order of magnitude as the assembled diagonal so that Jacobi /
+    ILU preconditioners see a well-conditioned matrix. The Newton
+    solution is invariant to the choice provided the residual at
+    prescribed dofs is rescaled by the same factor, since the per-
+    row equation ``α·dU = -α·(U[presc] - presc_vals)`` produces
+    ``dU[presc] = presc_vals - U[presc]`` regardless of α. Callers
+    pass ``fe_problem.bc_diag_scale``.
 
     Asymmetric (rows-only) rather than symmetric (rows-and-columns):
     the symmetric form helps conditioning under iterative solvers
@@ -139,12 +150,12 @@ def _embedded_bc_enforce(
 
     When ``K_bcoo`` already has an entry at a prescribed ``(i, i)``,
     the output contains two COO entries at that position: the
-    original (zeroed by the row-mask) and the appended ``1.0``. Both
-    consumer paths handle the duplicate correctly:
+    original (zeroed by the row-mask) and the appended scaled-
+    identity. Both consumer paths handle the duplicate correctly:
     :class:`scipy.sparse.coo_matrix` sums duplicates during
     ``.tocsr()`` conversion inside :func:`_spsolve_callback`, and
     JAX's scatter-add ``matvec`` accumulates them. The effective
-    prescribed diagonal is therefore ``1`` either way.
+    prescribed diagonal is therefore ``presc_diag_scale``.
     """
     rows = K_bcoo.indices[:, 0]
     cols = K_bcoo.indices[:, 1]
@@ -154,7 +165,9 @@ def _embedded_bc_enforce(
     keep = ~p_mask[rows]
     data_zeroed = K_bcoo.data * keep
 
-    add_data = jnp.ones(presc_idx.shape[0], dtype=K_bcoo.data.dtype)
+    add_data = jnp.full(
+        presc_idx.shape[0], presc_diag_scale, dtype=K_bcoo.data.dtype,
+    )
 
     K_data = jnp.concatenate([data_zeroed, add_data])
     K_rows = jnp.concatenate([rows, presc_idx])

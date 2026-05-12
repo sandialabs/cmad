@@ -117,6 +117,7 @@ def _fe_newton_primal(
     dof_map = fe_problem.dof_map
     presc_idx = jnp.asarray(dof_map.prescribed_indices)
     presc_vals = jnp.asarray(dof_map.evaluate_prescribed_values(t))
+    alpha = fe_problem.bc_diag_scale
 
     U_init = U_prev.at[presc_idx].set(presc_vals)
 
@@ -124,7 +125,9 @@ def _fe_newton_primal(
         fe_problem, params_by_block, U_init, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
-    r_init = R_init.at[presc_idx].set(U_init[presc_idx] - presc_vals)
+    r_init = R_init.at[presc_idx].set(
+        alpha * (U_init[presc_idx] - presc_vals)
+    )
     R0 = jnp.maximum(jnp.linalg.norm(r_init), abs_tol)
 
     def cond(state):
@@ -139,7 +142,9 @@ def _fe_newton_primal(
             fe_problem, params_by_block, U, U_prev, t,
             xi_prev_by_block=xi_prev_by_block,
         )
-        r = R_assembled.at[presc_idx].set(U[presc_idx] - presc_vals)
+        r = R_assembled.at[presc_idx].set(
+            alpha * (U[presc_idx] - presc_vals)
+        )
         R_norm = jnp.linalg.norm(r)
         if print_global_convergence:
             jax.debug.print(" > ({k}) Newton iteration", k=i + 1)
@@ -150,7 +155,9 @@ def _fe_newton_primal(
                 " > relative ||R|| = {rel_r:.6e}",
                 rel_r=R_norm / R_norm_0,
             )
-        K_data, K_rows, K_cols = _embedded_bc_enforce(K_bcoo, presc_idx)
+        K_data, K_rows, K_cols = _embedded_bc_enforce(
+            K_bcoo, presc_idx, presc_diag_scale=alpha,
+        )
         n = K_bcoo.shape[0]
         dU = spsolve_jax(K_data, K_rows, K_cols, n, -r)
         U_new = U + dU
@@ -303,6 +310,7 @@ def _fe_newton_solve_ad_jvp(
     )
 
     presc_idx = jnp.asarray(fe_problem.dof_map.prescribed_indices)
+    alpha = fe_problem.bc_diag_scale
 
     def r_of_p(params_, Up_, t_, xp_):
         _, R_local, _ = assemble_global(
@@ -312,7 +320,9 @@ def _fe_newton_solve_ad_jvp(
         pv = jnp.asarray(
             fe_problem.dof_map.evaluate_prescribed_values(t_),
         )
-        return R_local.at[presc_idx].set(U_star[presc_idx] - pv)
+        return R_local.at[presc_idx].set(
+            alpha * (U_star[presc_idx] - pv)
+        )
 
     _, Rp_dot = jax.jvp(
         r_of_p, (params_by_block, U_prev, t, xi_prev_by_block), p_dot,
@@ -322,7 +332,9 @@ def _fe_newton_solve_ad_jvp(
         fe_problem, params_by_block, U_star, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
-    K_data, K_rows, K_cols = _embedded_bc_enforce(K_bcoo, presc_idx)
+    K_data, K_rows, K_cols = _embedded_bc_enforce(
+        K_bcoo, presc_idx, presc_diag_scale=alpha,
+    )
     n = K_bcoo.shape[0]
 
     U_star_dot = spsolve_jax(K_data, K_rows, K_cols, n, -Rp_dot)

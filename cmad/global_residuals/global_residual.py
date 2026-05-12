@@ -144,6 +144,27 @@ class GlobalResidual(ABC):
             U, shapes_ip, self.var_names,
         )
 
+    def bc_diag_scale(self, model: Model) -> float:
+        """Characteristic stiffness scale for Dirichlet BC enforcement.
+
+        :class:`cmad.fem.fe_problem.FEProblem` calls this once per
+        block at construction (the FE problem then reduces to a
+        single per-problem ``α`` via ``max`` over blocks) and uses
+        the value to scale the prescribed-row diagonal entry of the
+        embedded-BC tangent from ``1.0`` to ``α`` — keeping the
+        prescribed and free diagonals on the same order of magnitude
+        so that Jacobi / ILU preconditioners see a well-conditioned
+        matrix. The residual at prescribed dofs is rescaled by the
+        same ``α``, which preserves the converged Newton solution
+        exactly (the ``dU[prescribed]`` linear-solve row is
+        ``α·dU = -α·(...)``, so ``α`` divides out).
+
+        Default ``1.0`` preserves the historical behavior; mechanics
+        GRs override to read a stiffness scale from
+        ``model.parameters``.
+        """
+        return 1.0
+
     def default_output_fields(self) -> dict[str, list[FieldSpec]]:
         """Default Exodus-output catalog for this GR.
 
