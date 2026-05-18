@@ -28,6 +28,7 @@ import jax.numpy as jnp
 from jax.tree_util import register_pytree_node_class
 
 from cmad.fem.assembly import _element_eq_indices, assembled_coo_indices
+from cmad.fem.neumann import NeumannSideArrays, build_neumann_side_arrays
 from cmad.fem.precompute import BlockIPGeometryCache
 from cmad.fem.sparse_solve import EmbeddedSparsity
 from cmad.typing import JaxArray
@@ -44,6 +45,7 @@ _FEKernelArraysChildren = tuple[
     dict[str, BlockIPGeometryCache],
     EmbeddedSparsity,
     JaxArray,
+    NeumannSideArrays,
 ]
 
 
@@ -79,6 +81,10 @@ class FEKernelArrays:
       same object as ``fe_problem.embedded_sparsity``.
     - ``prescribed_indices``: the flat global indices of the
       Dirichlet-prescribed dofs.
+    - ``neumann_side_arrays``: the per-NBC Neumann surface-assembly
+      arrays — element node coordinates and scatter equation indices,
+      keyed per side group; see
+      :data:`cmad.fem.neumann.NeumannSideArrays`.
     """
     u_gather_eq_by_block: dict[str, tuple[JaxArray, ...]]
     r_scatter_eq_by_block: dict[str, tuple[JaxArray, ...]]
@@ -87,6 +93,7 @@ class FEKernelArrays:
     geometry_cache: dict[str, BlockIPGeometryCache]
     embedded_sparsity: EmbeddedSparsity
     prescribed_indices: JaxArray
+    neumann_side_arrays: NeumannSideArrays
 
     def tree_flatten(self) -> tuple[_FEKernelArraysChildren, None]:
         children: _FEKernelArraysChildren = (
@@ -97,6 +104,7 @@ class FEKernelArrays:
             self.geometry_cache,
             self.embedded_sparsity,
             self.prescribed_indices,
+            self.neumann_side_arrays,
         )
         return children, None
 
@@ -105,7 +113,8 @@ class FEKernelArrays:
             cls, aux_data: None, children: _FEKernelArraysChildren,
     ) -> FEKernelArrays:
         (u_gather_eq_by_block, r_scatter_eq_by_block, coo_rows, coo_cols,
-         geometry_cache, embedded_sparsity, prescribed_indices) = children
+         geometry_cache, embedded_sparsity, prescribed_indices,
+         neumann_side_arrays) = children
         return cls(
             u_gather_eq_by_block=u_gather_eq_by_block,
             r_scatter_eq_by_block=r_scatter_eq_by_block,
@@ -114,6 +123,7 @@ class FEKernelArrays:
             geometry_cache=geometry_cache,
             embedded_sparsity=embedded_sparsity,
             prescribed_indices=prescribed_indices,
+            neumann_side_arrays=neumann_side_arrays,
         )
 
 
@@ -124,7 +134,9 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
     layer's own helper (:func:`cmad.fem.assembly._element_eq_indices`)
     and the COO ``(rows, cols)`` through
     :func:`cmad.fem.assembly.assembled_coo_indices`, so the carrier's
-    arrays match the in-trace assembly path bit-for-bit. The geometry
+    arrays match the in-trace assembly path bit-for-bit; the Neumann
+    side arrays come from
+    :func:`cmad.fem.neumann.build_neumann_side_arrays`. The geometry
     cache and embedded-BC sparsity are referenced directly off
     ``fe_problem`` — the same objects, not copies.
 
@@ -169,6 +181,9 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
         )
 
     rows, cols = assembled_coo_indices(fe_problem)
+    neumann_side_arrays = build_neumann_side_arrays(
+        mesh, dof_map, fe_problem.resolved_neumann_bcs,
+    )
 
     return FEKernelArrays(
         u_gather_eq_by_block=u_gather_eq_by_block,
@@ -178,4 +193,5 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
         geometry_cache=fe_problem.geometry_cache,
         embedded_sparsity=fe_problem.embedded_sparsity,
         prescribed_indices=jnp.asarray(dof_map.prescribed_indices),
+        neumann_side_arrays=neumann_side_arrays,
     )

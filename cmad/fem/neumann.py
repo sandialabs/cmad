@@ -23,7 +23,13 @@ residual at the field's basis fns on the named sides. The pipeline:
    NBCs and ``(family, local_side_id)`` groups, vmaps
    :func:`per_side_neumann_R` over the group's element ids, and
    scatters per-element side residuals into the caller's ``R_global``
-   in place via the field's eq formula.
+   in place at precomputed equation indices.
+
+Build-time precompute. The mesh-sized per-side arrays — element node
+coordinates and scatter equation numbers — are materialized once by
+:func:`build_neumann_side_arrays`; :func:`assemble_side_neumann` takes
+the result as an argument rather than deriving it from the mesh per
+call.
 
 Sign convention. ``R -= ∫_∂Ω N · t̄ dA`` follows the existing body-
 force scatter at :func:`cmad.fem.assembly.per_element_R_and_K`,
@@ -48,6 +54,7 @@ into R. No consistency check (in contrast to DirichletBC).
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
+from typing import TypeAlias
 
 import jax.numpy as jnp
 import numpy as np
@@ -63,6 +70,22 @@ from cmad.fem.quadrature import QuadratureRule
 from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.fem.topology import ref_side_lift
 from cmad.typing import JaxArray
+
+NeumannSideArrays: TypeAlias = tuple[
+    dict[tuple[ElementFamily, int], tuple[JaxArray, JaxArray]], ...
+]
+"""Per-NBC mesh-sized side-assembly arrays, threaded as traced data.
+
+One dict per resolved Neumann BC, in :func:`resolve_neumann_bcs`
+order, keyed by ``(ElementFamily, local_side_id)`` to match
+:attr:`ResolvedNeumannBC.elem_ids_by_side`. Each value is the
+``(X_block, eq_flat)`` pair for that side group: ``X_block`` the
+``(n_side_elems, num_basis_fns, ndims)`` element node coordinates and
+``eq_flat`` the ``(n_side_elems, num_basis_fns * num_components)``
+flat global equation indices the side residual scatters into.
+:func:`build_neumann_side_arrays` builds it;
+:func:`assemble_side_neumann` consumes it.
+"""
 
 
 @dataclass(frozen=True)
@@ -200,6 +223,51 @@ def resolve_neumann_bcs(
     return resolved
 
 
+def build_neumann_side_arrays(
+        mesh: Mesh,
+        dof_map: GlobalDofMap,
+        resolved_neumann_bcs: Sequence[ResolvedNeumannBC],
+) -> NeumannSideArrays:
+    """Precompute the per-NBC mesh-sized side-assembly arrays.
+
+    For each resolved NBC and each ``(family, local_side_id)`` side
+    group, derives the element node coordinates ``X_block`` and the
+    flat global scatter equation indices ``eq_flat``
+    (``eq = block_offset + basis_fn * num_components + component``),
+    returned as a :data:`NeumannSideArrays`.
+
+    These are mesh-derived constants; materializing them here lets
+    :func:`assemble_side_neumann` take them as a traced argument
+    rather than rebuild them from ``mesh.connectivity`` /
+    ``mesh.nodes`` inside the assembly trace. Built once at
+    :class:`~cmad.fem.fe_problem.FEProblem` construction. Returns an
+    empty tuple when there are no Neumann BCs.
+    """
+    per_nbc: list[
+        dict[tuple[ElementFamily, int], tuple[JaxArray, JaxArray]]
+    ] = []
+    for nbc in resolved_neumann_bcs:
+        num_components = nbc.num_components
+        block_offset = int(dof_map.block_offsets[nbc.field_idx])
+        k_arr = np.arange(num_components)
+        group_arrays: dict[
+            tuple[ElementFamily, int], tuple[JaxArray, JaxArray]
+        ] = {}
+        for key, elem_ids in nbc.elem_ids_by_side.items():
+            connectivity_block = mesh.connectivity[elem_ids].astype(np.intp)
+            X_block = jnp.asarray(mesh.nodes[connectivity_block])
+            n_elems = connectivity_block.shape[0]
+            eq_3d = (
+                block_offset
+                + connectivity_block[:, :, None] * num_components
+                + k_arr[None, None, :]
+            )
+            eq_flat = jnp.asarray(eq_3d.reshape(n_elems, -1))
+            group_arrays[key] = (X_block, eq_flat)
+        per_nbc.append(group_arrays)
+    return tuple(per_nbc)
+
+
 def per_side_neumann_R(
         X_elem: JaxArray,
         side_xi: JaxArray,
@@ -263,6 +331,7 @@ def per_side_neumann_R(
 def assemble_side_neumann(
         mesh: Mesh,
         dof_map: GlobalDofMap,
+        neumann_side_arrays: NeumannSideArrays,
         resolved_neumann_bcs: Sequence[ResolvedNeumannBC],
         side_quadrature: dict[ElementFamily, QuadratureRule],
         t: float,
@@ -270,12 +339,13 @@ def assemble_side_neumann(
     """Build the Neumann surface contribution to the global residual.
 
     Iterates each resolved NBC and its ``(family, local_side_id)``
-    groups, vmaps :func:`per_side_neumann_R` over the group's
-    element ids, and scatters per-element side residuals into a
-    flat JAX vector of length ``dof_map.num_total_dofs`` via the
-    field's eq formula
-    ``eq = block_offset + basis_fn * num_components + component``.
-    K gets no contribution. Returns a zero vector when
+    groups, vmaps :func:`per_side_neumann_R` over the group's element
+    node coordinates, and scatters per-element side residuals into a
+    flat JAX vector of length ``dof_map.num_total_dofs``. The per-side
+    element node coordinates ``X_block`` and flat scatter equation
+    indices ``eq_flat`` are read from ``neumann_side_arrays`` (built
+    by :func:`build_neumann_side_arrays`) rather than derived from the
+    mesh in-trace. K gets no contribution. Returns a zero vector when
     ``resolved_neumann_bcs`` is empty.
     """
     n_dofs = dof_map.num_total_dofs
@@ -289,17 +359,18 @@ def assemble_side_neumann(
         )
     geom_interpolant_fn = mesh.geometric_finite_element.interpolant_fn
 
-    for nbc in resolved_neumann_bcs:
+    for nbc, nbc_arrays in zip(
+            resolved_neumann_bcs, neumann_side_arrays, strict=True,
+    ):
         fe = nbc.finite_element
         field_interpolant_fn = fe.interpolant_fn
         num_basis_fns = fe.num_dofs_per_element
         num_components = nbc.num_components
-        block_offset = int(dof_map.block_offsets[nbc.field_idx])
 
         values_fn = _values_fn_for(nbc.values)
 
-        for (family, local_side_id), elem_ids in (
-                nbc.elem_ids_by_side.items()
+        for (family, local_side_id), (X_block, eq_flat) in (
+                nbc_arrays.items()
         ):
             if family not in side_quadrature:
                 raise ValueError(
@@ -322,9 +393,6 @@ def assemble_side_neumann(
                 side_basis_fns_np, dtype=jnp.int32,
             )
 
-            connectivity_block = mesh.connectivity[elem_ids]
-            X_block = jnp.asarray(mesh.nodes[connectivity_block])
-
             side_kernel = partial(
                 per_side_neumann_R,
                 side_xi=side_xi,
@@ -341,16 +409,7 @@ def assemble_side_neumann(
             )
             R_per_elem = vmap(side_kernel)(X_block)
 
-            n_elems = elem_ids.shape[0]
-            k_arr = np.arange(num_components)
-            bf_per_elem = connectivity_block.astype(np.intp)
-            eq_3d = (
-                block_offset
-                + bf_per_elem[:, :, None] * num_components
-                + k_arr[None, None, :]
-            )
-            eq_flat = eq_3d.reshape(n_elems, -1)
-
+            n_elems = X_block.shape[0]
             R_flat = R_per_elem.reshape(n_elems, -1)
             R_neumann = R_neumann.at[eq_flat.ravel()].add(R_flat.ravel())
 

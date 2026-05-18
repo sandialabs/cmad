@@ -29,6 +29,7 @@ from cmad.fem.interpolants import hex_linear
 from cmad.fem.mesh import Mesh, StructuredHexMesh
 from cmad.fem.neumann import (
     assemble_side_neumann,
+    build_neumann_side_arrays,
     resolve_neumann_bcs,
 )
 from cmad.fem.quadrature import quad_quadrature, tri_quadrature
@@ -190,7 +191,10 @@ class TestAssembleSideNeumann(unittest.TestCase):
     def test_empty_nbc_short_circuits(self):
         mesh, dm = _build_hex_mesh_and_dofmap()
         n_dofs = dm.num_total_dofs
-        R = assemble_side_neumann(mesh, dm, [], _SIDE_QUAD, 0.0)
+        neumann_side_arrays = build_neumann_side_arrays(mesh, dm, [])
+        R = assemble_side_neumann(
+            mesh, dm, neumann_side_arrays, [], _SIDE_QUAD, 0.0,
+        )
         np.testing.assert_array_equal(R, np.zeros(n_dofs))
 
     def test_uniform_traction_zmax_unit_hex(self):
@@ -206,7 +210,10 @@ class TestAssembleSideNeumann(unittest.TestCase):
             values=[0.0, 0.0, p],
         )
         resolved = resolve_neumann_bcs(mesh, dm, [bc])
-        R = assemble_side_neumann(mesh, dm, resolved, _SIDE_QUAD, 0.0)
+        neumann_side_arrays = build_neumann_side_arrays(mesh, dm, resolved)
+        R = assemble_side_neumann(
+            mesh, dm, neumann_side_arrays, resolved, _SIDE_QUAD, 0.0,
+        )
         n_dofs = dm.num_total_dofs
         local_zmax = np.array([4, 5, 6, 7])
         global_zmax = mesh.connectivity[0, local_zmax]
@@ -239,7 +246,10 @@ class TestAssembleSideNeumann(unittest.TestCase):
             values=[1.0, 0.0, 0.0],
         )
         resolved = resolve_neumann_bcs(mesh, dm, [bc])
-        R = assemble_side_neumann(mesh, dm, resolved, _SIDE_QUAD, 0.0)
+        neumann_side_arrays = build_neumann_side_arrays(mesh, dm, resolved)
+        R = assemble_side_neumann(
+            mesh, dm, neumann_side_arrays, resolved, _SIDE_QUAD, 0.0,
+        )
         expected = -np.sqrt(3.0) / 6.0
         for node in (1, 2, 3):
             np.testing.assert_allclose(
@@ -271,7 +281,10 @@ class TestAssembleSideNeumann(unittest.TestCase):
             values=[0.0, 0.0, p],
         )
         resolved = resolve_neumann_bcs(mesh, dm, [bc])
-        R = assemble_side_neumann(mesh, dm, resolved, _SIDE_QUAD, 0.0)
+        neumann_side_arrays = build_neumann_side_arrays(mesh, dm, resolved)
+        R = assemble_side_neumann(
+            mesh, dm, neumann_side_arrays, resolved, _SIDE_QUAD, 0.0,
+        )
         local_zmax = np.array([4, 5, 6, 7])
         e0 = mesh.connectivity[0, local_zmax]
         e1 = mesh.connectivity[1, local_zmax]
