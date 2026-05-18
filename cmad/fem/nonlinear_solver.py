@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 
 from cmad.fem.assembly import assemble_global
 from cmad.fem.fe_problem import FEProblem
+from cmad.fem.kernel_arrays import FEKernelArrays
 from cmad.fem.sparse_solve import (
     _embedded_bc_enforce,
     _embedded_residual,
@@ -74,6 +75,7 @@ def _thaw(value: Any) -> Any:
 def _solve_linear(
         K_data: JaxArray,
         fe_problem: FEProblem,
+        fe_arrays: FEKernelArrays,
         rhs: JaxArray,
         linear_solver_settings: dict[str, Any],
 ) -> JaxArray:
@@ -85,7 +87,7 @@ def _solve_linear(
     ``kwargs`` as ``B`` when present and the caller hasn't already set
     it.
     """
-    sparsity = fe_problem.embedded_sparsity
+    sparsity = fe_arrays.embedded_sparsity
     kind = linear_solver_settings["type"]
     if kind == "direct":
         return spsolve_jax(K_data, sparsity, rhs)
@@ -141,6 +143,7 @@ def _solve_linear(
 
 def _fe_newton_primal(
         fe_problem: FEProblem,
+        fe_arrays: FEKernelArrays,
         params_by_block: Mapping[str, Params],
         U_prev: JaxArray,
         xi_prev_by_block: Mapping[str, JaxArray],
@@ -165,13 +168,13 @@ def _fe_newton_primal(
     print_global_convergence = nonlinear_solver_settings["print convergence"]
 
     dof_map = fe_problem.dof_map
-    presc_idx = jnp.asarray(dof_map.prescribed_indices)
+    presc_idx = fe_arrays.prescribed_indices
     presc_vals = jnp.asarray(dof_map.evaluate_prescribed_values(t))
 
     U_init = U_prev
 
     K_init, R_init, _ = assemble_global(
-        fe_problem, fe_problem.kernel_arrays, params_by_block,
+        fe_problem, fe_arrays, params_by_block,
         U_init, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
@@ -190,7 +193,7 @@ def _fe_newton_primal(
     def body(state):
         i, U, _, R_norm_0 = state
         K_bcoo, R_assembled, _ = assemble_global(
-            fe_problem, fe_problem.kernel_arrays, params_by_block,
+            fe_problem, fe_arrays, params_by_block,
             U, U_prev, t,
             xi_prev_by_block=xi_prev_by_block,
         )
@@ -209,7 +212,7 @@ def _fe_newton_primal(
                 rel_r=R_norm / R_norm_0,
             )
         dU = _solve_linear(
-            K_data, fe_problem, -r,
+            K_data, fe_problem, fe_arrays, -r,
             linear_solver_settings,
         )
         U_new = U + dU
@@ -331,14 +334,15 @@ def fe_newton_solve(
         if xi_prev_by_block is not None else {}
     )
     return _fe_newton_solve_ad(
-        fe_problem, params_by_block, U_prev_jax, xi_prev_jax, t,
-        _freeze(nls), _freeze(lss),
+        fe_problem, fe_problem.kernel_arrays, params_by_block,
+        U_prev_jax, xi_prev_jax, t, _freeze(nls), _freeze(lss),
     )
 
 
-@partial(jax.custom_jvp, nondiff_argnums=(0, 5, 6))
+@partial(jax.custom_jvp, nondiff_argnums=(0, 6, 7))
 def _fe_newton_solve_ad(
         fe_problem: FEProblem,
+        fe_arrays: FEKernelArrays,
         params_by_block: Mapping[str, Params],
         U_prev: JaxArray,
         xi_prev_by_block: dict[str, JaxArray],
@@ -363,11 +367,11 @@ def _fe_newton_solve_ad(
     nls = _thaw(nonlinear_solver_settings_frozen)
     lss = _thaw(linear_solver_settings_frozen)
     U_star = _fe_newton_primal(
-        fe_problem, params_by_block, U_prev, xi_prev_by_block, t,
-        nls, lss,
+        fe_problem, fe_arrays, params_by_block, U_prev, xi_prev_by_block,
+        t, nls, lss,
     )
     _, _, xi_solved = assemble_global(
-        fe_problem, fe_problem.kernel_arrays, params_by_block,
+        fe_problem, fe_arrays, params_by_block,
         U_star, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
@@ -398,25 +402,25 @@ def _fe_newton_solve_ad_jvp(
     primals tuple because under :func:`jax.lax.scan` it is a
     tracer and cannot ride in ``nondiff_argnums``.
     """
-    params_by_block, U_prev, xi_prev_by_block, t = primals
-    p_dot = tangents
+    fe_arrays, params_by_block, U_prev, xi_prev_by_block, t = primals
+    p_dot = tangents[1:]  # tangents[0]: fe_arrays tangent, unused
 
     lss = _thaw(linear_solver_settings_frozen)
 
     U_star, xi_solved = _fe_newton_solve_ad(
-        fe_problem, params_by_block, U_prev, xi_prev_by_block, t,
-        nonlinear_solver_settings_frozen,
+        fe_problem, fe_arrays, params_by_block, U_prev, xi_prev_by_block,
+        t, nonlinear_solver_settings_frozen,
         linear_solver_settings_frozen,
     )
 
-    presc_idx = jnp.asarray(fe_problem.dof_map.prescribed_indices)
+    presc_idx = fe_arrays.prescribed_indices
 
     def r_of_p(params_, Up_, xp_, t_):
         pv = jnp.asarray(
             fe_problem.dof_map.evaluate_prescribed_values(t_),
         )
         K_bcoo_local, R_local, _ = assemble_global(
-            fe_problem, fe_problem.kernel_arrays, params_,
+            fe_problem, fe_arrays, params_,
             U_star, Up_, t_,
             xi_prev_by_block=xp_,
         )
@@ -435,19 +439,19 @@ def _fe_newton_solve_ad_jvp(
     )
 
     K_bcoo, _, _ = assemble_global(
-        fe_problem, fe_problem.kernel_arrays, params_by_block,
+        fe_problem, fe_arrays, params_by_block,
         U_star, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
     K_data, _ = _embedded_bc_enforce(K_bcoo, presc_idx)
 
     U_star_dot = _solve_linear(
-        K_data, fe_problem, -Rp_dot, lss,
+        K_data, fe_problem, fe_arrays, -Rp_dot, lss,
     )
 
     def xi_of_U_p(U_, params_, Up_, xp_, t_):
         _, _, xi_local = assemble_global(
-            fe_problem, fe_problem.kernel_arrays, params_,
+            fe_problem, fe_arrays, params_,
             U_, Up_, t_,
             xi_prev_by_block=xp_,
         )

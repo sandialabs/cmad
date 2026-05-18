@@ -38,6 +38,53 @@ if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem
 
 
+def _bcsr_operator(
+        K_data: JaxArray, sparsity: EmbeddedSparsity,
+) -> tuple[JaxArray, Callable[[JaxArray], JaxArray]]:
+    """Dedup the COO ``K_data`` and wrap it as a BCSR matvec.
+
+    Segment-sums the with-duplicates COO data into the deduped CSR
+    data buffer (keyed by the cached ``perm`` / ``segment_ids``) and
+    wraps it on the cached ``(indptr, col_indices)`` pattern. Returns
+    ``(unique_data, matvec)``; the scipy-callback solvers need
+    ``unique_data`` to rebuild a host-side CSR, the JAX-native ones
+    use only the matvec.
+    """
+    unique_data = jnp.zeros(
+        sparsity.num_unique, dtype=K_data.dtype,
+    ).at[sparsity.segment_ids].add(K_data[sparsity.perm])
+    K_bcsr = BCSR(
+        (unique_data, sparsity.col_indices, sparsity.indptr),
+        shape=(sparsity.n, sparsity.n),
+    )
+
+    def matvec(x: JaxArray) -> JaxArray:
+        return K_bcsr @ x
+
+    return unique_data, matvec
+
+
+def _build_scipy_csr(
+        unique_data_np: np.ndarray, col_np: np.ndarray,
+        indptr_np: np.ndarray, n: int,
+) -> scipy.sparse.csr_matrix:
+    """Host-side scipy CSR from a scipy-callback solver's operands.
+
+    ``unique_data`` / ``col_indices`` / ``indptr`` arrive as
+    stationary :func:`jax.pure_callback` operands, each carrying a
+    leading length-1 axis per enclosing :func:`jax.vmap` layer
+    (``vmap_method="expand_dims"``); each is flattened back to 1D.
+    """
+    return scipy.sparse.csr_matrix(
+        (
+            np.reshape(unique_data_np, -1),
+            np.reshape(col_np, -1),
+            np.reshape(indptr_np, -1),
+        ),
+        shape=(n, n),
+    )
+
+
 def spsolve_jax(
         K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
 ) -> JaxArray:
@@ -106,35 +153,8 @@ def spsolve_jax(
     JVP / VJP rules cover any ``(matvec, solve, transpose_solve)``
     triple.
     """
-    unique_data = jnp.zeros(
-        sparsity.num_unique, dtype=K_data.dtype,
-    ).at[sparsity.segment_ids].add(K_data[sparsity.perm])
-
-    K_bcsr = BCSR(
-        (unique_data, sparsity.col_indices, sparsity.indptr),
-        shape=(sparsity.n, sparsity.n),
-    )
-
-    col_np = np.asarray(sparsity.col_indices)
-    indptr_np = np.asarray(sparsity.indptr)
+    unique_data, matvec = _bcsr_operator(K_data, sparsity)
     n = sparsity.n
-
-    def matvec(x: JaxArray) -> JaxArray:
-        return K_bcsr @ x
-
-    def _build_csr(unique_data_np: np.ndarray) -> scipy.sparse.csr_matrix:
-        # Under ``vmap_method="expand_dims"``, stationary K under
-        # :func:`jax.vmap` gains a leading length-1 axis per vmap
-        # layer; nested AD (e.g. forward-over-reverse for Hessians)
-        # can stack several such axes. Squeeze them all off, then
-        # coerce to a plain :class:`numpy.ndarray` since
-        # :func:`scipy.sparse.csr_matrix` rejects ``jax.Array``.
-        ud = np.asarray(unique_data_np)
-        while ud.ndim > 1 and ud.shape[0] == 1:
-            ud = ud[0]
-        return scipy.sparse.csr_matrix(
-            (ud, col_np, indptr_np), shape=(n, n),
-        )
 
     def _multi_back_sub(
             K_csc: scipy.sparse.csc_matrix, b_np: np.ndarray,
@@ -151,17 +171,19 @@ def spsolve_jax(
         return lu.solve(b_2d_T).T.reshape(*batch_shape, b_arr.shape[-1])
 
     def _scipy_solve(
-            unique_data_np: np.ndarray, b_np: np.ndarray,
+            unique_data_np: np.ndarray, col_np: np.ndarray,
+            indptr_np: np.ndarray, b_np: np.ndarray,
     ) -> np.ndarray:
-        K_csr = _build_csr(unique_data_np)
+        K_csr = _build_scipy_csr(unique_data_np, col_np, indptr_np, n)
         if b_np.ndim == 1:
             return np.asarray(scipy.sparse.linalg.spsolve(K_csr, b_np))
         return _multi_back_sub(K_csr.tocsc(), b_np)
 
     def _scipy_transpose_solve(
-            unique_data_np: np.ndarray, b_np: np.ndarray,
+            unique_data_np: np.ndarray, col_np: np.ndarray,
+            indptr_np: np.ndarray, b_np: np.ndarray,
     ) -> np.ndarray:
-        K_csr = _build_csr(unique_data_np)
+        K_csr = _build_scipy_csr(unique_data_np, col_np, indptr_np, n)
         if b_np.ndim == 1:
             return np.asarray(scipy.sparse.linalg.spsolve(K_csr.T, b_np))
         return _multi_back_sub(K_csr.T.tocsc(), b_np)
@@ -170,7 +192,7 @@ def spsolve_jax(
         return jax.pure_callback(
             _scipy_solve,
             jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
-            unique_data, rhs,
+            unique_data, sparsity.col_indices, sparsity.indptr, rhs,
             vmap_method="expand_dims",
         )
 
@@ -178,7 +200,7 @@ def spsolve_jax(
         return jax.pure_callback(
             _scipy_transpose_solve,
             jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
-            unique_data, rhs,
+            unique_data, sparsity.col_indices, sparsity.indptr, rhs,
             vmap_method="expand_dims",
         )
 
@@ -255,23 +277,12 @@ def _bcsr_jacobi_operator(
     """Build the BCSR matvec + Jacobi preconditioner.
 
     Shared setup between :func:`cg_jax`, :func:`cg_jax_with_iters`,
-    and :func:`gmres_jax`; centralizing the dedup + BCSR
-    construction + diagonal extraction keeps all callers' matvec
-    and preconditioner definitions in lockstep even though their
-    inner iterative solver implementations differ.
+    and :func:`gmres_jax`: the matvec from :func:`_bcsr_operator`,
+    plus the Jacobi (diagonal) preconditioner read off the deduped
+    data via ``sparsity.diag_idx``.
     """
-    unique_data = jnp.zeros(
-        sparsity.num_unique, dtype=K_data.dtype,
-    ).at[sparsity.segment_ids].add(K_data[sparsity.perm])
-
-    K_bcsr = BCSR(
-        (unique_data, sparsity.col_indices, sparsity.indptr),
-        shape=(sparsity.n, sparsity.n),
-    )
+    unique_data, matvec = _bcsr_operator(K_data, sparsity)
     diag = unique_data[sparsity.diag_idx]
-
-    def matvec(x: JaxArray) -> JaxArray:
-        return K_bcsr @ x
 
     def precon(x: JaxArray) -> JaxArray:
         return x / diag
@@ -436,8 +447,8 @@ def cg_amg_jax(
     pyamg's smoothed-aggregation algebraic multigrid.
 
     The CG iteration runs inside one :func:`jax.pure_callback`: scipy
-    builds a CSR from the :class:`EmbeddedSparsity` cache + deduped
-    ``K_data`` (same recipe as :func:`spsolve_jax`'s ``_build_csr``),
+    builds a CSR via :func:`_build_scipy_csr` from the
+    :class:`EmbeddedSparsity` cache + deduped ``K_data``,
     :func:`pyamg.smoothed_aggregation_solver` sets up the hierarchy,
     its V-cycle preconditioner is exposed via ``.aspreconditioner()``,
     and :func:`scipy.sparse.linalg.cg` runs to convergence.
@@ -462,35 +473,15 @@ def cg_amg_jax(
 
     For non-SPD K this will silently produce wrong results.
     """
-    unique_data = jnp.zeros(
-        sparsity.num_unique, dtype=K_data.dtype,
-    ).at[sparsity.segment_ids].add(K_data[sparsity.perm])
-
-    K_bcsr = BCSR(
-        (unique_data, sparsity.col_indices, sparsity.indptr),
-        shape=(sparsity.n, sparsity.n),
-    )
-
-    col_np = np.asarray(sparsity.col_indices)
-    indptr_np = np.asarray(sparsity.indptr)
+    unique_data, matvec = _bcsr_operator(K_data, sparsity)
     n = sparsity.n
     pyamg_kw = pyamg_kwargs or {}
 
-    def matvec(x: JaxArray) -> JaxArray:
-        return K_bcsr @ x
-
-    def _build_csr(unique_data_np: np.ndarray) -> scipy.sparse.csr_matrix:
-        ud = np.asarray(unique_data_np)
-        while ud.ndim > 1 and ud.shape[0] == 1:
-            ud = ud[0]
-        return scipy.sparse.csr_matrix(
-            (ud, col_np, indptr_np), shape=(n, n),
-        )
-
     def _scipy_amg_cg(
-            unique_data_np: np.ndarray, b_np: np.ndarray,
+            unique_data_np: np.ndarray, col_np: np.ndarray,
+            indptr_np: np.ndarray, b_np: np.ndarray,
     ) -> np.ndarray:
-        K_csr = _build_csr(unique_data_np)
+        K_csr = _build_scipy_csr(unique_data_np, col_np, indptr_np, n)
         ml = pyamg.smoothed_aggregation_solver(K_csr, **pyamg_kw)
         M = ml.aspreconditioner()
         b_arr = np.asarray(b_np)
@@ -514,7 +505,7 @@ def cg_amg_jax(
         return jax.pure_callback(
             _scipy_amg_cg,
             jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
-            unique_data, rhs,
+            unique_data, sparsity.col_indices, sparsity.indptr, rhs,
             vmap_method="expand_dims",
         )
 
