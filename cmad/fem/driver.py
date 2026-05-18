@@ -14,15 +14,16 @@ Two layers:
 
 - :func:`fe_quasistatic_drive` is the imperative wrapper used by
   :command:`cmad primal` and tests: builds an :class:`FEState`,
-  invokes the ``trajectory`` closure, and materializes the stacked
-  outputs back into FEState's mutable per-step lists.
+  invokes the ``trajectory`` closure through a ``jax.jit`` boundary,
+  and materializes the stacked outputs back into FEState's mutable
+  per-step lists.
 """
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, TypeAlias
 
 import jax.numpy as jnp
 import numpy as np
-from jax import debug, lax
+from jax import debug, jit, lax
 from numpy.typing import NDArray
 
 from cmad.fem.assembly import params_by_block_from_models
@@ -182,10 +183,13 @@ def fe_quasistatic_drive(
     ``len(t_schedule)``.
 
     When ``qoi`` is supplied, :meth:`FEQoI.step_contribution` is
-    called once with ``params_by_block`` and the kernel arrays to
-    build the per-step closure, which the trajectory layer invokes
-    inside the scan to accumulate ``J``. The returned ``J`` is the
-    full QoI value over the time loop. When ``qoi`` is ``None``,
+    called with ``params_by_block`` and the kernel arrays to build the
+    per-step closure, which the trajectory layer invokes inside the
+    scan to accumulate ``J``. The step-closure build and the
+    trajectory call run inside a ``jax.jit`` wrapper, so the
+    mesh-sized kernel arrays reach the compiled program as traced
+    shapes rather than baked constants. The returned ``J`` is the full
+    QoI value over the time loop; when ``qoi`` is ``None``,
     ``J = jnp.zeros(())``.
 
     ``solver_kwargs`` (``nonlinear_solver_settings`` and
@@ -211,11 +215,6 @@ def fe_quasistatic_drive(
     params_by_block = params_by_block_from_models(fe_problem)
     fe_arrays = fe_problem.kernel_arrays
 
-    qoi_step_contribution: StepContribution | None = (
-        qoi.step_contribution(params_by_block, fe_arrays)
-        if qoi is not None else None
-    )
-
     U_init_jax = jnp.asarray(state.U_at(0), dtype=jnp.float64)
     xi_init_by_block: dict[str, JaxArray] = {
         b: jnp.asarray(state.xi_at(0, b))
@@ -227,12 +226,26 @@ def fe_quasistatic_drive(
     trajectory = build_fe_quasistatic_trajectory(
         fe_problem, **solver_kwargs,
     )
-    U_steps, xi_steps_by_block, J = trajectory(
-        fe_arrays,
-        params_by_block,
-        state_init,
-        t_schedule_jax,
-        qoi_step_contribution=qoi_step_contribution,
+
+    def _run(
+            params_by_block: Mapping[str, Params],
+            state_init: StateInit,
+            fe_arrays: FEKernelArrays,
+    ) -> tuple[JaxArray, dict[str, JaxArray], JaxArray]:
+        qoi_step_contribution: StepContribution | None = (
+            qoi.step_contribution(params_by_block, fe_arrays)
+            if qoi is not None else None
+        )
+        return trajectory(
+            fe_arrays,
+            params_by_block,
+            state_init,
+            t_schedule_jax,
+            qoi_step_contribution=qoi_step_contribution,
+        )
+
+    U_steps, xi_steps_by_block, J = jit(_run)(
+        params_by_block, state_init, fe_arrays,
     )
 
     materialize_fe_state(state, U_steps, xi_steps_by_block, t_schedule)
