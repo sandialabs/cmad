@@ -564,12 +564,20 @@ def _embedded_bc_enforce(
     into a length-``n`` buffer, then indexed at ``presc_idx``. O(nnz
     + n) traceable.
 
-    The symmetric form preserves the IFT-based JVP rule's
-    ``K = ∂r/∂U_star`` invariant only when the residual function
-    also zeros its dependence on ``U[presc]`` — see the matching
-    clamp in :func:`cmad.fem.nonlinear_solver._fe_newton_solve_ad_jvp`'s
-    ``r_of_p`` closure. With that pair in place, ``∂r/∂U_star``
-    matches this output's row-and-column-zeroed structure exactly.
+    This output is the tangent ``∂r/∂U_star`` of the embedded-BC
+    residual built by :func:`_embedded_residual`, evaluated at the
+    converged ``U_star``. That residual carries the
+    ``(free, prescribed)`` coupling on its free rows as
+    ``K[free, prescribed] · (presc_vals - U[presc])``; differentiating
+    the ``-U[presc]`` factor contributes ``-K[free, prescribed]``,
+    cancelling the ``+K[free, prescribed]`` from the assembled
+    residual, so the prescribed columns of ``∂r/∂U_star`` vanish and
+    match this output's row-and-column-zeroed structure. (Terms from
+    ``K`` itself depending on ``U`` drop out: the increment
+    ``presc_vals - U[presc]`` is zero at ``U_star``.) The IFT-based
+    JVP rule in
+    :func:`cmad.fem.nonlinear_solver._fe_newton_solve_ad_jvp` relies
+    on this pairing.
 
     When ``K_bcoo`` already has an entry at a prescribed ``(i, i)``,
     the output contains two values at that position: the original
@@ -592,6 +600,45 @@ def _embedded_bc_enforce(
     K_ii_presc = K_ii_full[presc_idx]
 
     return jnp.concatenate([data_zeroed, K_ii_presc]), K_ii_presc
+
+
+def _embedded_residual(
+        R_assembled: JaxArray, K_bcoo: BCOO, U: JaxArray,
+        presc_idx: JaxArray, presc_vals: JaxArray,
+        K_ii_presc: JaxArray,
+) -> JaxArray:
+    """Embedded-BC residual paired with :func:`_embedded_bc_enforce`.
+
+    The Newton step solves ``K_emb · dU = -r``. :func:`_embedded_bc_enforce`
+    builds ``K_emb`` by zeroing the prescribed rows and columns of the
+    assembled tangent — zeroing the columns drops the
+    ``(free, prescribed)`` coupling block from the operator. This helper
+    puts that coupling back on the right-hand side, so a prescribed-dof
+    increment still reaches the free dofs through the tangent:
+
+    - free rows: ``R_assembled[free]`` plus the coupling
+      ``K[free, prescribed] · (presc_vals - U[prescribed])``;
+    - prescribed rows: ``K_ii_presc · (U[prescribed] - presc_vals)`` —
+      the per-row assembled diagonal (from :func:`_embedded_bc_enforce`)
+      times the BC mismatch, so the prescribed-row equation
+      ``K_ii · dU = -r`` yields ``dU[prescribed] = presc_vals -
+      U[prescribed]``.
+
+    The coupling is formed as ``K_bcoo @ bc_increment`` restricted to
+    the free rows, where ``bc_increment`` is the increment
+    ``presc_vals - U[prescribed]`` scattered to the prescribed positions
+    (zero elsewhere); the matvec's prescribed rows are discarded by the
+    final overwrite. The coupling vanishes once
+    ``U[prescribed] == presc_vals``, so past the first Newton step this
+    is the plain assembled residual with the prescribed rows rescaled.
+    """
+    bc_increment = jnp.zeros_like(U).at[presc_idx].set(
+        presc_vals - U[presc_idx],
+    )
+    r = R_assembled + K_bcoo @ bc_increment
+    return r.at[presc_idx].set(
+        K_ii_presc * (U[presc_idx] - presc_vals),
+    )
 
 
 @dataclass(frozen=True)

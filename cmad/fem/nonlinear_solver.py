@@ -13,6 +13,7 @@ from cmad.fem.assembly import assemble_global
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.sparse_solve import (
     _embedded_bc_enforce,
+    _embedded_residual,
     cg_amg_jax,
     cg_jax,
     gmres_jax,
@@ -150,7 +151,8 @@ def _fe_newton_primal(
     """Forward Newton iteration: ``lax.while_loop`` + linear-solver dispatch.
 
     Each body iteration assembles ``(K_bcoo, R)`` once, builds the
-    embedded-BC tangent via :func:`_embedded_bc_enforce`, and solves
+    embedded-BC tangent via :func:`_embedded_bc_enforce` and the
+    matching residual via :func:`_embedded_residual`, and solves
     ``K · dU = -r`` via the linear solver named in
     ``linear_solver_settings['type']`` (one of ``direct``, ``cg``,
     ``gmres``). The convergence check is on ``r`` at the iterate
@@ -166,18 +168,16 @@ def _fe_newton_primal(
     presc_idx = jnp.asarray(dof_map.prescribed_indices)
     presc_vals = jnp.asarray(dof_map.evaluate_prescribed_values(t))
 
-    U_init = U_prev.at[presc_idx].set(presc_vals)
+    U_init = U_prev
 
-    _, R_init, _ = assemble_global(
+    K_init, R_init, _ = assemble_global(
         fe_problem, params_by_block, U_init, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
-    # ``U_init`` was clamped to ``presc_vals`` at prescribed dofs so
-    # ``U_init[presc] - presc_vals = 0``; the K_ii-rescaling factor
-    # would multiply zero. Skip the rescale to avoid a redundant
-    # assemble-and-extract; the prescribed-row residual is zero by
-    # construction.
-    r_init = R_init.at[presc_idx].set(0.0)
+    _, K_ii_presc_init = _embedded_bc_enforce(K_init, presc_idx)
+    r_init = _embedded_residual(
+        R_init, K_init, U_init, presc_idx, presc_vals, K_ii_presc_init,
+    )
     R0 = jnp.maximum(jnp.linalg.norm(r_init), abs_tol)
 
     def cond(state):
@@ -193,8 +193,8 @@ def _fe_newton_primal(
             xi_prev_by_block=xi_prev_by_block,
         )
         K_data, K_ii_presc = _embedded_bc_enforce(K_bcoo, presc_idx)
-        r = R_assembled.at[presc_idx].set(
-            K_ii_presc * (U[presc_idx] - presc_vals)
+        r = _embedded_residual(
+            R_assembled, K_bcoo, U, presc_idx, presc_vals, K_ii_presc,
         )
         R_norm = jnp.linalg.norm(r)
         if print_global_convergence:
@@ -235,10 +235,17 @@ def fe_newton_solve(
     ``R(U) = R_int(U) - F_ext`` is the residual (body force folded
     into ``R`` by the assembly — no separate ``F`` vector). Each
     Newton step solves ``K · dU = -r`` for the embedded-BC residual
-    ``r`` defined as ``r[free] = R(U)[free]`` and
+    ``r`` (built by
+    :func:`cmad.fem.sparse_solve._embedded_residual`) defined as
+    ``r[free] = R(U)[free] + K[free, prescribed] ·
+    (prescribed_vals(t) - U[prescribed])`` and
     ``r[prescribed] = K_ii · (U[prescribed] - prescribed_vals(t))``,
     where ``K_ii`` is the assembled diagonal at the prescribed row
-    (per-row, surfaced by :func:`_embedded_bc_enforce`).
+    (per-row, surfaced by :func:`_embedded_bc_enforce`). The
+    ``K[free, prescribed]`` term carries the coupling that the
+    symmetric column-zeroing drops from ``K``, so a prescribed-dof
+    increment reaches the interior through the tangent; it vanishes
+    once ``U[prescribed] == prescribed_vals(t)``.
 
     Forward iteration is :func:`jax.lax.while_loop` over Newton
     steps. Each body call assembles ``(K_bcoo, R)`` once, builds the
@@ -246,8 +253,9 @@ def fe_newton_solve(
     :func:`cmad.fem.sparse_solve._embedded_bc_enforce` (symmetric
     form: prescribed rows AND columns zeroed, original assembled
     ``K_ii`` on the prescribed diagonal — block-diagonal
-    ``K_ff | diag(K_ii)``), and solves ``K · dU = -r`` via the
-    linear solver chosen by
+    ``K_ff | diag(K_ii)``) and the matching residual via
+    :func:`cmad.fem.sparse_solve._embedded_residual`, and solves
+    ``K · dU = -r`` via the linear solver chosen by
     ``linear_solver_settings['type']``: ``direct`` (sparse direct
     via :func:`scipy.sparse.linalg.spsolve` through
     :func:`jax.pure_callback`), ``cg`` (JAX-native CG), or ``gmres``
@@ -265,11 +273,13 @@ def fe_newton_solve(
     keeps forward-mode AD available for HVPs and
     :func:`jax.hessian`.
 
-    Initial iterate ``U_prev`` with prescribed dofs overwritten by
-    ``DofMap.evaluate_prescribed_values(t)`` — quasi-static warm
-    start: interior values from the previous step, boundary values
-    at the current step's BC targets. Same driver handles
-    homogeneous and non-homogeneous Dirichlet.
+    Initial iterate is ``U_prev`` — the previous step's converged
+    solution used directly as the quasi-static warm start, including
+    its prescribed dofs. The current targets enter through the
+    ``K[free, prescribed]`` coupling term in ``r``: the first Newton
+    step moves the boundary to ``prescribed_vals(t)`` and the
+    interior in response together. Same driver handles homogeneous
+    and non-homogeneous Dirichlet.
 
     ``params_by_block`` is required and threads explicitly through
     the assembly call chain — pass tracer-leaved per-block params
@@ -402,16 +412,16 @@ def _fe_newton_solve_ad_jvp(
         pv = jnp.asarray(
             fe_problem.dof_map.evaluate_prescribed_values(t_),
         )
-        U_star_clamped = U_star.at[presc_idx].set(pv)
         K_bcoo_local, R_local, _ = assemble_global(
-            fe_problem, params_, U_star_clamped, Up_, t_,
+            fe_problem, params_, U_star, Up_, t_,
             xi_prev_by_block=xp_,
         )
         _, K_ii_presc_local = _embedded_bc_enforce(
             K_bcoo_local, presc_idx,
         )
-        return R_local.at[presc_idx].set(
-            K_ii_presc_local * (U_star[presc_idx] - pv)
+        return _embedded_residual(
+            R_local, K_bcoo_local, U_star, presc_idx, pv,
+            K_ii_presc_local,
         )
 
     _, Rp_dot = jax.jvp(

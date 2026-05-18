@@ -323,15 +323,11 @@ class TestSolverKwargsForwarded(unittest.TestCase):
             nonlinear_solver_settings={"max iters": 0},
         )
         # With max_iters=0 the Newton loop never executes; U_star
-        # equals the initial iterate: U_prev (= state.U_at(0)) with
-        # prescribed values overlaid at boundary dofs.
-        expected = np.asarray(state.U_at(0)).copy()
-        presc_idx = fe_problem.dof_map.prescribed_indices
-        expected[presc_idx] = np.asarray(
-            fe_problem.dof_map.evaluate_prescribed_values(1.0),
-        )
+        # equals the initial iterate, which is U_prev (=
+        # state.U_at(0)) unchanged — the prescribed dofs are not
+        # overwritten with the current step's boundary values.
         np.testing.assert_array_almost_equal(
-            np.asarray(state.U_at(1)), expected,
+            np.asarray(state.U_at(1)), np.asarray(state.U_at(0)),
         )
 
 
