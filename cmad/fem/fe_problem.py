@@ -29,6 +29,7 @@ from cmad.models.model import Model
 from cmad.typing import GREvaluators, JaxArray, StateList
 
 if TYPE_CHECKING:
+    from cmad.fem.kernel_arrays import FEKernelArrays
     from cmad.fem.sparse_solve import EmbeddedSparsity
 
 _DEFAULT_ASSEMBLY_QUADRATURE: dict[ElementFamily, QuadratureRule] = {
@@ -100,6 +101,15 @@ class FEProblem:
     interpolants on every call. For total-Lagrangian formulations
     (cmad's current pipeline) this geometry is solution-independent;
     updated-Lagrangian kernels would bypass the cache.
+
+    ``kernel_arrays`` is the
+    :class:`cmad.fem.kernel_arrays.FEKernelArrays` carrier — the
+    static mesh-derived arrays the traced assembly and solve kernels
+    read (the per-block index arrays, the geometry cache, the
+    embedded-BC sparsity, the prescribed-dof indices) collected into
+    one pytree. Built once here; ``geometry_cache`` and
+    ``embedded_sparsity`` stay as direct fields for non-traced
+    consumers, and the carrier references the same objects.
     """
     mesh: Mesh
     dof_map: GlobalDofMap
@@ -131,6 +141,7 @@ class FEProblem:
         init=False, default_factory=dict,
     )
     embedded_sparsity: "EmbeddedSparsity" = field(init=False)
+    kernel_arrays: "FEKernelArrays" = field(init=False)
     near_null_space: NDArray[np.floating] | None = field(
         init=False, default=None,
     )
@@ -201,6 +212,14 @@ class FEProblem:
 
         object.__setattr__(
             self, "near_null_space", self.gr.near_null_space(self.mesh),
+        )
+
+        # Lazy import for the same cycle reason as build_embedded_sparsity
+        # above: kernel_arrays imports the assembly helpers, which import
+        # FEProblem at module scope.
+        from cmad.fem.kernel_arrays import build_fe_kernel_arrays
+        object.__setattr__(
+            self, "kernel_arrays", build_fe_kernel_arrays(self),
         )
 
     @property

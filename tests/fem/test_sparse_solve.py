@@ -41,11 +41,9 @@ def _dense_to_cache(K_dense: np.ndarray) -> tuple[JaxArray, EmbeddedSparsity]:
     sparsity = EmbeddedSparsity(
         perm=jnp.asarray(np.arange(nnz, dtype=np.intp)),
         segment_ids=jnp.asarray(np.arange(nnz, dtype=np.intp)),
-        num_unique=nnz,
         indptr=jnp.asarray(indptr),
         col_indices=jnp.asarray(col_indices),
         diag_idx=jnp.asarray(diag_idx),
-        n=n,
     )
     K_data = jnp.asarray(K_dense.reshape(-1))
     return K_data, sparsity

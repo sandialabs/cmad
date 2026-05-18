@@ -129,11 +129,31 @@ class BlockIPGeometryShared:
         )
 
 
+@register_pytree_node_class
 @dataclass(frozen=True)
 class BlockIPGeometryCache:
-    """Per-element-block container: per-element + shared geometry."""
+    """Per-element-block container: per-element + shared geometry.
+
+    Registered as a JAX pytree; the children are the already-pytree
+    :class:`BlockIPGeometryPerElem` and :class:`BlockIPGeometryShared`
+    sub-structures.
+    """
     per_elem: BlockIPGeometryPerElem
     shared: BlockIPGeometryShared
+
+    def tree_flatten(
+            self,
+    ) -> tuple[tuple[BlockIPGeometryPerElem, BlockIPGeometryShared], None]:
+        return (self.per_elem, self.shared), None
+
+    @classmethod
+    def tree_unflatten(
+            cls,
+            aux_data: None,
+            children: tuple[BlockIPGeometryPerElem, BlockIPGeometryShared],
+    ) -> "BlockIPGeometryCache":
+        per_elem, shared = children
+        return cls(per_elem=per_elem, shared=shared)
 
 
 def precompute_block_geometry(

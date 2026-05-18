@@ -30,6 +30,7 @@ import scipy.sparse
 import scipy.sparse.linalg
 from jax import lax
 from jax.experimental.sparse import BCOO, BCSR
+from jax.tree_util import register_pytree_node_class
 
 from cmad.typing import JaxArray
 
@@ -641,6 +642,7 @@ def _embedded_residual(
     )
 
 
+@register_pytree_node_class
 @dataclass(frozen=True)
 class EmbeddedSparsity:
     """CSR cache for the embedded-BC global tangent.
@@ -676,8 +678,6 @@ class EmbeddedSparsity:
       its unique ``(row, col)`` group;
       ``unique_data = segment_sum(K_data[perm], segment_ids,
       num_segments=num_unique)``.
-    - ``num_unique``: number of unique ``(row, col)`` entries —
-      length of the materialized CSR data buffer.
     - ``indptr``: ``(n+1,)`` CSR row pointers over unique entries.
     - ``col_indices``: ``(num_unique,)`` sorted column indices, one
       per unique entry.
@@ -685,15 +685,44 @@ class EmbeddedSparsity:
       row's diagonal entry; lets diagonal-needing consumers (Jacobi
       preconditioner, residual checks) read the diagonal via
       ``unique_data[diag_idx]`` rather than a per-call scatter-add.
-    - ``n``: matrix size (``dof_map.num_total_dofs``).
+
+    Registered as a JAX pytree: the five arrays are the children, and
+    ``num_unique`` (unique-entry count) / ``n`` (matrix size) are
+    properties off the array shapes (``col_indices.shape[0]`` and
+    ``indptr.shape[0] - 1``) so the registration carries no aux data.
     """
     perm: JaxArray
     segment_ids: JaxArray
-    num_unique: int
     indptr: JaxArray
     col_indices: JaxArray
     diag_idx: JaxArray
-    n: int
+
+    @property
+    def num_unique(self) -> int:
+        """Unique ``(row, col)`` entry count (``col_indices`` length)."""
+        return self.col_indices.shape[0]
+
+    @property
+    def n(self) -> int:
+        """Matrix size; ``indptr`` holds ``n + 1`` CSR row pointers."""
+        return self.indptr.shape[0] - 1
+
+    def tree_flatten(self) -> tuple[tuple[JaxArray, ...], None]:
+        children = (
+            self.perm, self.segment_ids, self.indptr,
+            self.col_indices, self.diag_idx,
+        )
+        return children, None
+
+    @classmethod
+    def tree_unflatten(
+            cls, aux_data: None, children: tuple[JaxArray, ...],
+    ) -> EmbeddedSparsity:
+        perm, segment_ids, indptr, col_indices, diag_idx = children
+        return cls(
+            perm=perm, segment_ids=segment_ids, indptr=indptr,
+            col_indices=col_indices, diag_idx=diag_idx,
+        )
 
 
 def build_embedded_sparsity(
@@ -753,7 +782,6 @@ def build_embedded_sparsity(
         sorted_cols[1:] != sorted_cols[:-1]
     )
     segment_ids = (np.cumsum(is_new_group) - 1).astype(np.intp)
-    num_unique = int(segment_ids[-1]) + 1
 
     unique_rows = sorted_rows[is_new_group]
     col_indices = sorted_cols[is_new_group].astype(np.intp)
@@ -778,9 +806,7 @@ def build_embedded_sparsity(
     return EmbeddedSparsity(
         perm=jnp.asarray(perm),
         segment_ids=jnp.asarray(segment_ids),
-        num_unique=num_unique,
         indptr=jnp.asarray(indptr),
         col_indices=jnp.asarray(col_indices),
         diag_idx=jnp.asarray(diag_idx),
-        n=n,
     )
