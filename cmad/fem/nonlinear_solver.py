@@ -15,10 +15,10 @@ from cmad.fem.kernel_arrays import FEKernelArrays
 from cmad.fem.sparse_solve import (
     _embedded_bc_enforce,
     _embedded_residual,
-    cg_amg_jax,
-    cg_jax,
-    gmres_jax,
-    spsolve_jax,
+    jax_cg,
+    jax_gmres,
+    scipy_amg_cg,
+    scipy_lu,
 )
 from cmad.typing import JaxArray, Params
 
@@ -90,7 +90,7 @@ def _solve_linear(
     sparsity = fe_arrays.embedded_sparsity
     kind = linear_solver_settings["type"]
     if kind == "direct":
-        return spsolve_jax(K_data, sparsity, rhs)
+        return scipy_lu(K_data, sparsity, rhs)
 
     precon_spec = linear_solver_settings.get(
         "preconditioner", {"type": "jacobi"},
@@ -99,7 +99,7 @@ def _solve_linear(
 
     if kind == "cg":
         if precon == "jacobi":
-            return cg_jax(
+            return jax_cg(
                 K_data, sparsity, rhs,
                 rtol=linear_solver_settings["rtol"],
                 max_iters=linear_solver_settings["max iters"],
@@ -108,7 +108,7 @@ def _solve_linear(
             kwargs = dict(precon_spec.get("kwargs") or {})
             if "B" not in kwargs and fe_problem.near_null_space is not None:
                 kwargs["B"] = fe_problem.near_null_space
-            return cg_amg_jax(
+            return scipy_amg_cg(
                 K_data, sparsity, rhs,
                 rtol=linear_solver_settings["rtol"],
                 max_iters=linear_solver_settings["max iters"],
@@ -120,7 +120,7 @@ def _solve_linear(
         )
     if kind == "gmres":
         if precon == "jacobi":
-            return gmres_jax(
+            return jax_gmres(
                 K_data, sparsity, rhs,
                 rtol=linear_solver_settings["rtol"],
                 max_iters=linear_solver_settings["max iters"],

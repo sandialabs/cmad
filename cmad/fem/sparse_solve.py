@@ -2,7 +2,7 @@
 
 Two helpers:
 
-- :func:`spsolve_jax` solves ``K x = b`` via
+- :func:`scipy_lu` solves ``K x = b`` via
   :func:`scipy.sparse.linalg.spsolve` through :func:`jax.pure_callback`,
   with full forward-mode JVP and reverse-mode VJP supplied by
   :func:`jax.lax.custom_linear_solve`. ``K`` is given by its data
@@ -85,7 +85,7 @@ def _build_scipy_csr(
     )
 
 
-def spsolve_jax(
+def scipy_lu(
         K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
 ) -> JaxArray:
     """Solve ``K x = b`` for sparse ``K`` with full JAX AD support.
@@ -94,7 +94,7 @@ def spsolve_jax(
     data buffer + the pre-built :class:`EmbeddedSparsity` cache that
     encodes the static CSR structure (sort permutation, dedup
     segment ids, ``indptr`` + ``col_indices``). Mirrors
-    :func:`cg_jax`'s signature so the two solver entry points are
+    :func:`jax_cg`'s signature so the two solver entry points are
     interchangeable at FE-Newton call sites.
 
     Forward solve goes through :func:`scipy.sparse.linalg.spsolve`
@@ -111,7 +111,7 @@ def spsolve_jax(
 
     - **Matvec** is :class:`jax.experimental.sparse.BCSR` matmul
       against the deduped data buffer (same pattern as
-      :func:`cg_jax`'s matvec; the cache references only the kept
+      :func:`jax_cg`'s matvec; the cache references only the kept
       structural entries).
     - **Forward-mode JVP.** ``x_dot = solve(b_dot - matvec_dot(x))``
       where ``matvec_dot(x)`` is JAX's JVP of the BCSR matvec at
@@ -225,8 +225,8 @@ def _pcg_loop(
     the unpreconditioned residual:
     ``|r|^2 <= rtol^2 * |b|^2``.
 
-    Used by :func:`cg_jax_with_iters` to expose the counter
-    through its return tuple. :func:`cg_jax` defers to
+    Used by :func:`jax_cg_with_iters` to expose the counter
+    through its return tuple. :func:`jax_cg` defers to
     :func:`jax.scipy.sparse.linalg.cg` so CMAD inherits whatever
     upstream JAX does. Iter count from this loop may differ from
     the JAX-native CG by ±1 on convergence-test rounding;
@@ -276,8 +276,8 @@ def _bcsr_jacobi_operator(
 ]:
     """Build the BCSR matvec + Jacobi preconditioner.
 
-    Shared setup between :func:`cg_jax`, :func:`cg_jax_with_iters`,
-    and :func:`gmres_jax`: the matvec from :func:`_bcsr_operator`,
+    Shared setup between :func:`jax_cg`, :func:`jax_cg_with_iters`,
+    and :func:`jax_gmres`: the matvec from :func:`_bcsr_operator`,
     plus the Jacobi (diagonal) preconditioner read off the deduped
     data via ``sparsity.diag_idx``.
     """
@@ -290,7 +290,7 @@ def _bcsr_jacobi_operator(
     return matvec, precon
 
 
-def cg_jax(
+def jax_cg(
         K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
         rtol: float = 1e-10, max_iters: int | None = None,
 ) -> JaxArray:
@@ -325,7 +325,7 @@ def cg_jax(
     plus a self-adjoint underlying physics (e.g. small-strain
     elasticity) gives this.
 
-    Unlike :func:`spsolve_jax` (which routes through scipy via
+    Unlike :func:`scipy_lu` (which routes through scipy via
     :func:`jax.pure_callback` with ``vmap_method="sequential"``),
     this CG path is fully JAX-native and composes with
     :func:`jax.vmap` as a single batched :func:`jax.lax.while_loop`
@@ -335,7 +335,7 @@ def cg_jax(
     column dictates the iteration count for the batch.
 
     When the iteration count is needed (without AD), call
-    :func:`cg_jax_with_iters` instead.
+    :func:`jax_cg_with_iters` instead.
     """
     matvec, precon = _bcsr_jacobi_operator(K_data, sparsity)
 
@@ -350,24 +350,24 @@ def cg_jax(
     )
 
 
-def cg_jax_with_iters(
+def jax_cg_with_iters(
         K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
         rtol: float = 1e-10, max_iters: int | None = None,
 ) -> tuple[JaxArray, JaxArray]:
     """CG returning ``(x, iter_count)``.
 
-    Same matvec + Jacobi preconditioner as :func:`cg_jax` via
+    Same matvec + Jacobi preconditioner as :func:`jax_cg` via
     :func:`_bcsr_jacobi_operator`. Inner iteration is :func:`_pcg_loop`
     rather than :func:`jax.scipy.sparse.linalg.cg` so the loop
     counter is surfaced through the return tuple;
     :func:`jax.lax.custom_linear_solve`'s ``solve`` callback can
-    return only a single output, so :func:`cg_jax` drops the
+    return only a single output, so :func:`jax_cg` drops the
     count.
 
     Doesn't participate in JAX AD (no
     :func:`jax.lax.custom_linear_solve` wrapper). Call sites that
     need to differentiate through the linear solve must use
-    :func:`cg_jax`.
+    :func:`jax_cg`.
 
     Iter count may differ from :func:`jax.scipy.sparse.linalg.cg`
     by ±1 on convergence-test rounding; acceptable for diagnostic
@@ -377,7 +377,7 @@ def cg_jax_with_iters(
     return _pcg_loop(matvec, b, precon, rtol, max_iters)
 
 
-def gmres_jax(
+def jax_gmres(
         K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
         rtol: float = 1e-10, max_iters: int | None = None,
         restart: int = 20,
@@ -390,7 +390,7 @@ def gmres_jax(
     multiplication against the pre-built sparsity cache; the cache's
     ``perm`` + ``segment_ids`` gather + dedup ``K_data`` into the
     unique CSR data buffer once per call (same operator construction
-    as :func:`cg_jax`).
+    as :func:`jax_cg`).
 
     AD via :func:`jax.lax.custom_linear_solve` with ``symmetric=False``:
     the forward solve goes through ``solve``; the adjoint / transpose
@@ -402,15 +402,15 @@ def gmres_jax(
     diagonal preconditioner, the only kind currently available from
     the cache.
 
-    Trade-off vs :func:`cg_jax` on SPD K: CG converges in ``O(√κ)``
+    Trade-off vs :func:`jax_cg` on SPD K: CG converges in ``O(√κ)``
     iters with bounded memory, while restarted GMRES needs ``O(κ)``
     matvecs and stores the Krylov basis up to ``restart``. Use
-    :func:`cg_jax` when SPD is known (small-strain elasticity with
-    self-adjoint kernels); use :func:`gmres_jax` for general K
+    :func:`jax_cg` when SPD is known (small-strain elasticity with
+    self-adjoint kernels); use :func:`jax_gmres` for general K
     (follower loads, non-associative plasticity) and as a comparison
     point for non-symmetric workloads.
 
-    Like :func:`cg_jax`, this path is fully JAX-native and composes
+    Like :func:`jax_cg`, this path is fully JAX-native and composes
     with :func:`jax.vmap` as a single batched ``while_loop``; the
     slowest column dictates the iteration count for the batch.
     """
@@ -438,7 +438,7 @@ def gmres_jax(
     )
 
 
-def cg_amg_jax(
+def scipy_amg_cg(
         K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
         rtol: float = 1e-10, max_iters: int | None = None,
         *, pyamg_kwargs: dict | None = None,
@@ -455,8 +455,8 @@ def cg_amg_jax(
 
     AD via :func:`jax.lax.custom_linear_solve` with ``symmetric=True``;
     the matvec used for the AD path is a JAX-traceable BCSR matmul
-    against the same dedup buffer (parallel to :func:`cg_jax` /
-    :func:`gmres_jax` / :func:`spsolve_jax`).
+    against the same dedup buffer (parallel to :func:`jax_cg` /
+    :func:`jax_gmres` / :func:`scipy_lu`).
 
     ``pyamg_kwargs`` are forwarded verbatim to
     :func:`pyamg.smoothed_aggregation_solver`; ``None`` selects pyamg's

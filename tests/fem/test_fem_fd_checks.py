@@ -17,14 +17,14 @@ Pieces under test — no test-only fixtures of the forward solve:
   ``GR.for_model(model, COUPLED)``; ``@custom_jvp`` IFT rule.
 - Global assembly: ``cmad.fem.assembly.assemble_global``
   (BCOO + scipy.coo bridge → sparse CSR).
-- Sparse linear solve: ``cmad.fem.sparse_solve.spsolve_jax`` via
+- Sparse linear solve: ``cmad.fem.sparse_solve.scipy_lu`` via
   ``lax.custom_linear_solve`` over a ``pure_callback`` to scipy
   ``spsolve``; the ``K``-side cotangent flows via
   ``custom_linear_solve``'s VJP rule.
 - Outer FE Newton: ``cmad.fem.nonlinear_solver.fe_newton_solve``
   with its ``@custom_jvp`` rule (IFT linear sensitivity equation
   with ``∂r/∂p · p_dot`` from ``jax.jvp(r, p, p_dot)`` at fixed
-  ``U_star``, solved through ``spsolve_jax``).
+  ``U_star``, solved through ``scipy_lu``).
 - Strong-DBC enforcement: ``cmad.fem.sparse_solve._embedded_bc_enforce``
   (symmetric: prescribed rows AND columns zeroed, scaled-identity
   ``α`` on the prescribed diagonal — block-diagonal ``K_ff | α · I_P``).

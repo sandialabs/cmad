@@ -1,6 +1,6 @@
 """Unit tests for :mod:`cmad.fem.sparse_solve`.
 
-Exercises :func:`spsolve_jax` (forward, JVP, VJP, HVP, jit, matvec /
+Exercises :func:`scipy_lu` (forward, JVP, VJP, HVP, jit, matvec /
 solve consistency) and :func:`_embedded_bc_enforce` (symmetric
 prescribed-row/column + scaled-diagonal structure).
 
@@ -16,10 +16,10 @@ from jax.experimental.sparse import BCOO
 from cmad.fem.sparse_solve import (
     EmbeddedSparsity,
     _embedded_bc_enforce,
-    cg_amg_jax,
-    cg_jax,
-    gmres_jax,
-    spsolve_jax,
+    jax_cg,
+    jax_gmres,
+    scipy_amg_cg,
+    scipy_lu,
 )
 from cmad.typing import JaxArray
 
@@ -63,7 +63,7 @@ def _random_nonsymm(n: int, seed: int = 1) -> np.ndarray:
     return A + n * np.eye(n)
 
 
-class TestSpsolveJaxForward(unittest.TestCase):
+class TestScipyLuForward(unittest.TestCase):
     """Forward-solve correctness."""
 
     def test_spd_matches_dense(self) -> None:
@@ -72,7 +72,7 @@ class TestSpsolveJaxForward(unittest.TestCase):
         K_data, sparsity = _dense_to_cache(K)
         b = jnp.asarray(np.random.default_rng(2).standard_normal(n))
 
-        x = spsolve_jax(K_data, sparsity, b)
+        x = scipy_lu(K_data, sparsity, b)
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
         np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
                                    rtol=1e-10, atol=1e-12)
@@ -83,19 +83,19 @@ class TestSpsolveJaxForward(unittest.TestCase):
         K_data, sparsity = _dense_to_cache(K)
         b = jnp.asarray(np.random.default_rng(3).standard_normal(n))
 
-        x = spsolve_jax(K_data, sparsity, b)
+        x = scipy_lu(K_data, sparsity, b)
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
         np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
                                    rtol=1e-10, atol=1e-12)
 
 
-class TestSpsolveJaxConsistency(unittest.TestCase):
+class TestScipyLuConsistency(unittest.TestCase):
     """matvec / solve consistency.
 
     Guards against a class of wrong-gradient bugs: if the matvec
     closure and the spsolve closure disagree about the operator,
     ``lax.custom_linear_solve``'s JVP / VJP rules silently produce
-    incorrect tangents. ``K @ spsolve_jax(K, b) ≈ b`` makes the
+    incorrect tangents. ``K @ scipy_lu(K, b) ≈ b`` makes the
     inconsistency observable at the operator level.
     """
 
@@ -105,7 +105,7 @@ class TestSpsolveJaxConsistency(unittest.TestCase):
         K_data, sparsity = _dense_to_cache(K)
         b = jnp.asarray(np.random.default_rng(5).standard_normal(n))
 
-        x = spsolve_jax(K_data, sparsity, b)
+        x = scipy_lu(K_data, sparsity, b)
         b_recovered = jnp.asarray(K) @ x
         np.testing.assert_allclose(np.asarray(b_recovered), np.asarray(b),
                                    rtol=1e-10, atol=1e-12)
@@ -118,7 +118,7 @@ def _fd_jvp(f, primals, tangents, eps=1e-6):
     return (plus - minus) / (2 * eps)
 
 
-class TestSpsolveJaxJVP(unittest.TestCase):
+class TestScipyLuJVP(unittest.TestCase):
     """Forward-mode JVP correctness vs central-difference FD."""
 
     def test_jvp_K_and_b(self) -> None:
@@ -132,7 +132,7 @@ class TestSpsolveJaxJVP(unittest.TestCase):
         b_dot = jnp.asarray(rng.standard_normal(n))
 
         def f(K_data_, b_):
-            return spsolve_jax(K_data_, sparsity, b_)
+            return scipy_lu(K_data_, sparsity, b_)
 
         _, jvp_out = jax.jvp(f, (K_data, b), (K_data_dot, b_dot))
         jvp_fd = _fd_jvp(f, (K_data, b), (K_data_dot, b_dot), eps=1e-6)
@@ -141,7 +141,7 @@ class TestSpsolveJaxJVP(unittest.TestCase):
                                    rtol=1e-5, atol=1e-7)
 
 
-class TestSpsolveJaxVJP(unittest.TestCase):
+class TestScipyLuVJP(unittest.TestCase):
     """Reverse-mode VJP correctness vs central-difference FD."""
 
     def test_vjp_K_and_b(self) -> None:
@@ -153,7 +153,7 @@ class TestSpsolveJaxVJP(unittest.TestCase):
         x_bar = jnp.asarray(np.random.default_rng(22).standard_normal(n))
 
         def f(K_data_, b_):
-            return spsolve_jax(K_data_, sparsity, b_)
+            return scipy_lu(K_data_, sparsity, b_)
 
         _, vjp_fn = jax.vjp(f, K_data, b)
         gK, gb = vjp_fn(x_bar)
@@ -177,11 +177,11 @@ class TestSpsolveJaxVJP(unittest.TestCase):
                                    rtol=1e-5, atol=1e-7)
 
 
-class TestSpsolveJaxHVP(unittest.TestCase):
+class TestScipyLuHVP(unittest.TestCase):
     """Hessian-vector product correctness via forward-over-reverse.
 
     Exercises the full AD-composition path end-to-end:
-    ``jax.jvp(jax.grad(J), …)`` re-enters ``spsolve_jax``'s JVP rule
+    ``jax.jvp(jax.grad(J), …)`` re-enters ``scipy_lu``'s JVP rule
     with non-zero ``K_data_dot`` — the same path HVPs through the FE
     adjoint will exercise once that lands.
     """
@@ -195,7 +195,7 @@ class TestSpsolveJaxHVP(unittest.TestCase):
         v = jnp.asarray(np.random.default_rng(32).standard_normal(K_data.shape[0]))
 
         def J(K_data_):
-            x = spsolve_jax(K_data_, sparsity, b)
+            x = scipy_lu(K_data_, sparsity, b)
             return 0.5 * jnp.sum(x ** 2)
 
         gradJ = jax.grad(J)
@@ -208,10 +208,10 @@ class TestSpsolveJaxHVP(unittest.TestCase):
                                    rtol=1e-3, atol=1e-5)
 
 
-class TestSpsolveJaxVmapOverRhs(unittest.TestCase):
+class TestScipyLuVmapOverRhs(unittest.TestCase):
     """Vmap over RHS routes through the 2D-RHS callback path.
 
-    Confirms vmap'd :func:`spsolve_jax` (single host callback with
+    Confirms vmap'd :func:`scipy_lu` (single host callback with
     K broadcast to a leading length-1 axis and a batched ``b``,
     amortized LU + multi back-substitute) matches per-element
     invocations outside vmap (multiple callbacks with 1D ``b``
@@ -227,18 +227,18 @@ class TestSpsolveJaxVmapOverRhs(unittest.TestCase):
         )
 
         out_v = jax.vmap(
-            lambda b: spsolve_jax(K_data, sparsity, b),
+            lambda b: scipy_lu(K_data, sparsity, b),
         )(B)
         out_seq = jnp.stack([
-            spsolve_jax(K_data, sparsity, B[i]) for i in range(batch)
+            scipy_lu(K_data, sparsity, B[i]) for i in range(batch)
         ])
 
         np.testing.assert_allclose(np.asarray(out_v), np.asarray(out_seq),
                                    rtol=1e-10, atol=1e-12)
 
 
-class TestSpsolveJaxJit(unittest.TestCase):
-    """``jit(spsolve_jax)`` round-trip on a concrete small instance."""
+class TestScipyLuJit(unittest.TestCase):
+    """``jit(scipy_lu)`` round-trip on a concrete small instance."""
 
     def test_jit_round_trip(self) -> None:
         n = 5
@@ -248,7 +248,7 @@ class TestSpsolveJaxJit(unittest.TestCase):
 
         @jax.jit
         def solve_jit(K_data_, b_):
-            return spsolve_jax(K_data_, sparsity, b_)
+            return scipy_lu(K_data_, sparsity, b_)
 
         x = solve_jit(K_data, b)
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
@@ -256,8 +256,8 @@ class TestSpsolveJaxJit(unittest.TestCase):
                                    rtol=1e-10, atol=1e-12)
 
 
-class TestCGJaxForward(unittest.TestCase):
-    """Forward-solve correctness for ``cg_jax`` on SPD K.
+class TestJaxCgForward(unittest.TestCase):
+    """Forward-solve correctness for ``jax_cg`` on SPD K.
 
     Directly tests the CG path on a hand-built ``EmbeddedSparsity``,
     independent of the FE-Newton driver's ``{type: cg}`` dispatch.
@@ -271,16 +271,16 @@ class TestCGJaxForward(unittest.TestCase):
         K_data, sparsity = _dense_to_cache(K)
         b = jnp.asarray(np.random.default_rng(51).standard_normal(n))
 
-        x = cg_jax(K_data, sparsity, b, rtol=1e-12)
+        x = jax_cg(K_data, sparsity, b, rtol=1e-12)
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
         np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
                                    rtol=1e-8, atol=1e-9)
 
 
-class TestCGAmgJaxForward(unittest.TestCase):
-    """Forward-solve correctness for ``cg_amg_jax`` on SPD K.
+class TestScipyAmgCgForward(unittest.TestCase):
+    """Forward-solve correctness for ``scipy_amg_cg`` on SPD K.
 
-    Parallels :class:`TestCGJaxForward`; covers the pyamg-preconditioned
+    Parallels :class:`TestJaxCgForward`; covers the pyamg-preconditioned
     branch with default settings (no ``pyamg_kwargs``, so pyamg uses
     the constant-vector near null space) and with an explicit
     ``B``-passing path so the ``pyamg_kwargs`` passthrough is exercised.
@@ -292,7 +292,7 @@ class TestCGAmgJaxForward(unittest.TestCase):
         K_data, sparsity = _dense_to_cache(K)
         b = jnp.asarray(np.random.default_rng(81).standard_normal(n))
 
-        x = cg_amg_jax(K_data, sparsity, b, rtol=1e-12)
+        x = scipy_amg_cg(K_data, sparsity, b, rtol=1e-12)
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
         np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
                                    rtol=1e-8, atol=1e-9)
@@ -308,7 +308,7 @@ class TestCGAmgJaxForward(unittest.TestCase):
         b = jnp.asarray(np.random.default_rng(83).standard_normal(n))
         B = np.ones((n, 1), dtype=np.float64)
 
-        x = cg_amg_jax(
+        x = scipy_amg_cg(
             K_data, sparsity, b, rtol=1e-12,
             pyamg_kwargs={"B": B},
         )
@@ -317,11 +317,11 @@ class TestCGAmgJaxForward(unittest.TestCase):
                                    rtol=1e-8, atol=1e-9)
 
 
-class TestGMRESJaxForward(unittest.TestCase):
-    """Forward-solve correctness for ``gmres_jax`` on non-symmetric K.
+class TestJaxGmresForward(unittest.TestCase):
+    """Forward-solve correctness for ``jax_gmres`` on non-symmetric K.
 
     Exercises GMRES on its native turf: a non-symmetric K where
-    :func:`cg_jax` would fail. Builds K via :func:`_random_nonsymm`
+    :func:`jax_cg` would fail. Builds K via :func:`_random_nonsymm`
     (upper-triangular + diagonally dominant), wires it through the
     same ``_dense_to_cache`` helper, and compares to a dense solve.
     """
@@ -332,7 +332,7 @@ class TestGMRESJaxForward(unittest.TestCase):
         K_data, sparsity = _dense_to_cache(K)
         b = jnp.asarray(np.random.default_rng(61).standard_normal(n))
 
-        x = gmres_jax(K_data, sparsity, b, rtol=1e-12)
+        x = jax_gmres(K_data, sparsity, b, rtol=1e-12)
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
         np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
                                    rtol=1e-8, atol=1e-9)
