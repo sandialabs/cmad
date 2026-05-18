@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 import numpy as np
-from jax import lax, vmap
+from jax import checkpoint, lax, vmap
 from jax.experimental.sparse import BCOO
 from jax.flatten_util import ravel_pytree
 from numpy.typing import NDArray
@@ -253,9 +253,12 @@ def per_element_R_and_K(
     is element-invariant (passed with ``in_axes=None``). The
     integration-point sum is a :func:`jax.lax.scan` over IPs with a
     running ``(R_blocks, dR_dU_blocks)`` accumulator, so no per-IP
-    axis is materialized. ``ip_set=0`` is always passed to the
-    evaluator; GRs with multiple ip_sets dispatch on the trailing
-    arg inside their residual_fn body (see
+    axis is materialized; the scan body is wrapped in
+    :func:`jax.checkpoint`, so the reverse-mode (gradient / Hessian)
+    pass rematerializes the per-IP intermediates rather than storing
+    them stacked over the IP axis. ``ip_set=0`` is always passed to
+    the evaluator; GRs with multiple ip_sets dispatch on the
+    trailing arg inside their residual_fn body (see
     :data:`cmad.typing.ResidualFnGR`).
 
     ``geom_per_elem`` packs the per-element-IP arrays — signed
@@ -314,7 +317,7 @@ def per_element_R_and_K(
         ), None
 
     (R_blocks, dR_dU_blocks), _ = lax.scan(
-        ip_step,
+        checkpoint(ip_step),
         _zero_R_and_dR_dU_accumulators(residual_block_shapes),
         (
             geom_shared.quad_w,
@@ -381,8 +384,11 @@ def per_element_R_and_K_coupled(
     ``xi_prev_per_ip``, and ``geom_per_elem`` carry the leading
     element axis when the caller vmaps; ``geom_shared`` and the rest
     are element-invariant. See :func:`per_element_R_and_K` for the
-    cache contract; identical here. ``ip_set=0`` and the per-IP
-    index ``ip_idx`` (used only to label the optional local-
+    cache contract; identical here. The per-IP scan body is
+    likewise :func:`jax.checkpoint`-wrapped; on the reverse pass
+    that rematerializes each IP's local Newton return-map rather
+    than storing its per-IP intermediates. ``ip_set=0`` and the
+    per-IP index ``ip_idx`` (used only to label the optional local-
     convergence print) are passed to the evaluator; multi-ip_set
     GRs dispatch on ``ip_set`` inside their residual_fn body (see
     :data:`cmad.typing.ResidualFnGR`).
@@ -430,7 +436,7 @@ def per_element_R_and_K_coupled(
         return carry, xi_flat
 
     (R_blocks, dR_dU_blocks), xi_solved_per_ip = lax.scan(
-        ip_step,
+        checkpoint(ip_step),
         _zero_R_and_dR_dU_accumulators(residual_block_shapes),
         (
             geom_shared.quad_w,
