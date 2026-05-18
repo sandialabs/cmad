@@ -181,7 +181,10 @@ class TestBoundaryConditions(unittest.TestCase):
                 "bc 1": ["displacement", 0, "xmin_sides", 0.0],
             }},
         })
-        vals = bundle.fe_problem.dof_map.evaluate_prescribed_values(t=1.0)
+        dbc_arrays = bundle.fe_problem.kernel_arrays.dbc_arrays
+        vals = bundle.fe_problem.dof_map.evaluate_prescribed_values(
+            dbc_arrays, t=1.0,
+        )
         np.testing.assert_allclose(vals, 0.0)
 
     def test_dbc_string_expression_time_ramp(self) -> None:
@@ -190,8 +193,13 @@ class TestBoundaryConditions(unittest.TestCase):
                 "bc 1": ["displacement", 0, "xmax_sides", "0.01 * t"],
             }},
         })
-        v0 = bundle.fe_problem.dof_map.evaluate_prescribed_values(t=0.0)
-        v1 = bundle.fe_problem.dof_map.evaluate_prescribed_values(t=1.0)
+        dbc_arrays = bundle.fe_problem.kernel_arrays.dbc_arrays
+        v0 = bundle.fe_problem.dof_map.evaluate_prescribed_values(
+            dbc_arrays, t=0.0,
+        )
+        v1 = bundle.fe_problem.dof_map.evaluate_prescribed_values(
+            dbc_arrays, t=1.0,
+        )
         np.testing.assert_allclose(v0, 0.0)
         np.testing.assert_allclose(v1, 0.01)
 

@@ -181,8 +181,9 @@ def build_fe_J_of_params_flat(
     state_init: StateInit = (U_init, xi_init)
     t_schedule_jax = jnp.asarray(bundle.t_schedule, dtype=jnp.float64)
 
+    dbc_arrays = fe_problem.kernel_arrays.dbc_arrays
     for t in bundle.t_schedule[1:]:
-        fe_problem.dof_map.evaluate_prescribed_values(float(t))
+        fe_problem.dof_map.evaluate_prescribed_values(dbc_arrays, float(t))
 
     block_names = list(fe_problem.models_by_block.keys())
     per_block_init: list[JaxArray] = []

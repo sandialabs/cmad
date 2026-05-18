@@ -54,11 +54,14 @@ surface at the divergent step rather than at construction).
 
 Prescribed values are evaluated on demand via
 :meth:`GlobalDofMap.evaluate_prescribed_values`, supporting time-
-dependent BCs and expression-parser-backed callables. Each resolved BC
-caches its deduplicated boundary-vertex coordinate slice at
-construction so re-evaluation is mesh-handle-free.
+dependent BCs and expression-parser-backed callables. The per-BC
+scatter indices and boundary-vertex coordinates it consumes are
+precomputed by :func:`build_dbc_arrays`; each resolved BC caches its
+deduplicated coordinate slice at construction so that precompute is
+mesh-handle-free.
 """
 from dataclasses import dataclass
+from typing import TypeAlias
 
 import jax.numpy as jnp
 import numpy as np
@@ -69,6 +72,19 @@ from cmad.fem.bcs import DirichletBC
 from cmad.fem.finite_element import EntityType, FiniteElement
 from cmad.fem.mesh import Mesh
 from cmad.typing import JaxArray
+
+DBCArrays: TypeAlias = tuple[tuple[JaxArray, JaxArray], ...]
+"""Per-DirichletBC mesh-sized prescribed-value arrays, as traced data.
+
+One ``(positions, set_coords)`` pair per resolved BC, in
+:attr:`GlobalDofMap.resolved_bcs` order. ``positions`` is the
+``(N_set * len(dofs),)`` array of indices into the flat prescribed-value
+vector this BC writes — the precomputed ``searchsorted`` of the BC's
+global equation numbers into ``prescribed_indices``. ``set_coords`` is
+the BC's ``(N_set, 3)`` deduplicated boundary-vertex coordinate slice,
+passed to value callables. :func:`build_dbc_arrays` builds it;
+:meth:`GlobalDofMap.evaluate_prescribed_values` consumes it.
+"""
 
 
 @dataclass(frozen=True)
@@ -234,22 +250,22 @@ class GlobalDofMap:
         return field_idx, local_eq // ndofs, local_eq % ndofs
 
     def evaluate_prescribed_values(
-        self, t: float | JaxArray = 0.0,
+        self, dbc_arrays: DBCArrays, t: float | JaxArray = 0.0,
     ) -> JaxArray:
         """Materialize prescribed values at time ``t`` as a JAX array.
 
         Three-step path:
 
         1. Materialize each BC's values (``None`` / ``Sequence[float]``
-           / callable) once at ``t`` via its cached deduplicated
-           boundary-vertex coordinates. Time-independent BCs ignore
-           ``t``.
-        2. Bulk-scatter every BC into the prescribed-values array,
-           locating each BC's entries via
-           ``jnp.searchsorted(prescribed_indices, rbc.eq_indices)``
-           and applying ``.at[positions].set(vals)``. Last-writer-
-           wins across BCs targeting the same equation; step 3
-           confirms agreement.
+           / callable) once at ``t`` via the boundary-vertex
+           coordinates carried in ``dbc_arrays``. Time-independent BCs
+           ignore ``t``.
+        2. Bulk-scatter every BC into the prescribed-values array at
+           the precomputed ``positions`` carried in ``dbc_arrays``
+           (each BC's indices into the flat prescribed vector),
+           applying ``.at[positions].set(vals)``. Last-writer-wins
+           across BCs targeting the same equation; step 3 confirms
+           agreement.
         3. Validate ``overprescribed_dbc_groups`` (small build-time
            set): for each group, every contributing BC must agree at
            this ``t`` (``np.isclose`` with ``rtol=atol=1e-12`` to
@@ -257,6 +273,12 @@ class GlobalDofMap:
            otherwise raises ``ValueError`` with a diagnostic naming
            the conflicting BCs and decoding the offending global
            equation to its ``(field, basis_fn, dof)`` triple.
+
+        ``dbc_arrays`` is the per-BC ``(positions, set_coords)`` carrier
+        from :func:`build_dbc_arrays`, parallel to ``resolved_bcs``;
+        threading the mesh-sized scatter indices and boundary
+        coordinates as an argument keeps them out of a surrounding
+        compiled program as baked constants.
 
         Validation is gated on ``t`` being concrete (i.e., not a
         :class:`jax.core.Tracer`). Inside a JAX trace —
@@ -274,13 +296,16 @@ class GlobalDofMap:
             return jnp.empty(0, dtype=jnp.float64)
 
         bc_vals = [
-            self._materialize_bc_values(rbc, t) for rbc in self.resolved_bcs
+            self._materialize_bc_values(rbc, set_coords, t)
+            for rbc, (_positions, set_coords) in zip(
+                self.resolved_bcs, dbc_arrays, strict=True,
+            )
         ]
 
-        presc_idx_jax = jnp.asarray(self.prescribed_indices)
         values = jnp.zeros(n_prescribed, dtype=jnp.float64)
-        for rbc, vals in zip(self.resolved_bcs, bc_vals, strict=True):
-            positions = jnp.searchsorted(presc_idx_jax, rbc.eq_indices)
+        for (positions, _set_coords), vals in zip(
+            dbc_arrays, bc_vals, strict=True,
+        ):
             values = values.at[positions].set(vals)
 
         if not isinstance(t, Tracer):
@@ -308,24 +333,27 @@ class GlobalDofMap:
 
     @staticmethod
     def _materialize_bc_values(
-        rbc: _ResolvedBC, t: float | JaxArray,
+        rbc: _ResolvedBC, set_coords: JaxArray, t: float | JaxArray,
     ) -> JaxArray:
         """Evaluate one BC's value source into a flat
         ``(N_set * len(dofs),)`` JAX array in (vertex-major, dof-minor)
-        order, matching ``rbc.eq_indices``.
+        order, matching the BC's ``eq_indices``.
 
-        Callable BC values produced via :func:`cmad.io.expressions`
-        are sympy-lambdified with ``modules="jax"``, so they accept
-        traced ``t`` and return JAX-compatible outputs; a tracer
-        passed in as ``t`` flows through unchanged.
+        ``set_coords`` is the BC's ``(N_set, 3)`` boundary-vertex
+        coordinate slice, supplied by the caller from
+        :func:`build_dbc_arrays`. Callable BC values produced via
+        :func:`cmad.io.expressions` are sympy-lambdified with
+        ``modules="jax"``, so they accept traced ``set_coords`` / ``t``
+        and return JAX-compatible outputs; tracers flow through
+        unchanged.
         """
-        n_set = rbc.set_coords.shape[0]
+        n_set = set_coords.shape[0]
         n_dofs = len(rbc.bc.dofs)
         bc_values = rbc.bc.values
         if bc_values is None:
             vals = jnp.zeros((n_set, n_dofs), dtype=jnp.float64)
         elif callable(bc_values):
-            vals_arr = jnp.asarray(bc_values(rbc.set_coords, t))
+            vals_arr = jnp.asarray(bc_values(set_coords, t))
             if vals_arr.shape != (n_set, n_dofs):
                 raise ValueError(
                     "DirichletBC values callable returned shape "
@@ -585,4 +613,32 @@ def build_dof_map(
         prescribed_indices=prescribed_indices,
         resolved_bcs=resolved_bcs,
         overprescribed_dbc_groups=overprescribed_dbc_groups,
+    )
+
+
+def build_dbc_arrays(dof_map: GlobalDofMap) -> DBCArrays:
+    """Precompute the per-DirichletBC prescribed-value arrays.
+
+    For each resolved BC, derives ``positions`` — the indices into the
+    flat prescribed-value vector the BC writes, i.e.
+    ``searchsorted(prescribed_indices, eq_indices)`` — and pairs it with
+    the BC's ``(N_set, 3)`` boundary-vertex coordinate slice. The
+    ``searchsorted`` is exact: every BC equation number is a member of
+    the sorted ``prescribed_indices`` union.
+
+    Returned as a :data:`DBCArrays`, parallel to
+    ``dof_map.resolved_bcs``. Materializing the scatter indices and
+    coordinates here lets :meth:`GlobalDofMap.evaluate_prescribed_values`
+    take them as a traced argument rather than close over them when it
+    runs inside a compiled program. Built once at
+    :class:`~cmad.fem.fe_problem.FEProblem` construction; returns an
+    empty tuple when there are no Dirichlet BCs.
+    """
+    presc_idx = dof_map.prescribed_indices
+    return tuple(
+        (
+            jnp.asarray(np.searchsorted(presc_idx, rbc.eq_indices)),
+            jnp.asarray(rbc.set_coords),
+        )
+        for rbc in dof_map.resolved_bcs
     )

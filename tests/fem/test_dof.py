@@ -11,7 +11,7 @@ import unittest
 import numpy as np
 
 from cmad.fem.bcs import DirichletBC
-from cmad.fem.dof import GlobalFieldLayout, build_dof_map
+from cmad.fem.dof import GlobalFieldLayout, build_dbc_arrays, build_dof_map
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.finite_element import (
     P1_TET,
@@ -180,13 +180,13 @@ class TestEvaluatePrescribedValues(unittest.TestCase):
     def test_homogeneous_zeros(self):
         dm = self._setup_clamped_xmin(values=None)
         np.testing.assert_array_equal(
-            dm.evaluate_prescribed_values(),
+            dm.evaluate_prescribed_values(build_dbc_arrays(dm)),
             np.zeros(9 * 3, dtype=np.float64),
         )
 
     def test_constant_sequence_broadcasts(self):
         dm = self._setup_clamped_xmin(values=[0.5, 1.0, 1.5])
-        vals = dm.evaluate_prescribed_values()
+        vals = dm.evaluate_prescribed_values(build_dbc_arrays(dm))
         # Reshape back to (9 nodes, 3 components) — every row should be
         # [0.5, 1.0, 1.5].
         np.testing.assert_allclose(
@@ -203,7 +203,7 @@ class TestEvaluatePrescribedValues(unittest.TestCase):
             out[:, 0] = 0.5 * x + y
             return out
         dm = self._setup_clamped_xmin(values=vals_fn)
-        vals = dm.evaluate_prescribed_values(t=0.0)
+        vals = dm.evaluate_prescribed_values(build_dbc_arrays(dm), t=0.0)
         # Use the BC's deduplicated coord order for the reference; the
         # returned values flat ordering matches prescribed_indices,
         # which for a single BC clamping a single face is exactly
@@ -227,8 +227,8 @@ class TestEvaluatePrescribedValues(unittest.TestCase):
                         dofs=[0], values=vals_fn),
         ]
         dm = build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
-        v0 = dm.evaluate_prescribed_values(t=0.0)
-        v3 = dm.evaluate_prescribed_values(t=3.0)
+        v0 = dm.evaluate_prescribed_values(build_dbc_arrays(dm), t=0.0)
+        v3 = dm.evaluate_prescribed_values(build_dbc_arrays(dm), t=3.0)
         np.testing.assert_allclose(v0, np.zeros_like(v0))
         np.testing.assert_allclose(v3, np.full_like(v3, 3.0))
 
@@ -251,7 +251,7 @@ class TestCrossBcConsistency(unittest.TestCase):
         # Deduplicated: should have exactly 9 prescribed eqs, not 18.
         self.assertEqual(dm.num_prescribed_dofs, 9)
         np.testing.assert_array_equal(
-            dm.evaluate_prescribed_values(),
+            dm.evaluate_prescribed_values(build_dbc_arrays(dm)),
             np.zeros(9, dtype=np.float64),
         )
 
@@ -271,7 +271,7 @@ class TestCrossBcConsistency(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, "inconsistent prescribed values"
         ):
-            dm.evaluate_prescribed_values()
+            dm.evaluate_prescribed_values(build_dbc_arrays(dm))
 
     def test_partial_component_overlap_consistent(self):
         # BC1 clamps dofs [0, 1] on xmin; BC2 clamps dofs [1, 2] on
@@ -288,7 +288,7 @@ class TestCrossBcConsistency(unittest.TestCase):
         dm = build_dof_map(mesh, [u], bcs, components_by_field={"u": 3})
         # Deduped: 9 vertices x 3 components = 27 prescribed eqs.
         self.assertEqual(dm.num_prescribed_dofs, 27)
-        vals = dm.evaluate_prescribed_values()
+        vals = dm.evaluate_prescribed_values(build_dbc_arrays(dm))
         # Per-vertex pattern is [0.5, 1.0, 2.0] for components 0/1/2.
         np.testing.assert_allclose(
             vals.reshape(9, 3),
@@ -309,7 +309,7 @@ class TestCrossBcConsistency(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, "inconsistent prescribed values"
         ):
-            dm.evaluate_prescribed_values()
+            dm.evaluate_prescribed_values(build_dbc_arrays(dm))
 
 
 class TestBuildDofMapErrors(unittest.TestCase):

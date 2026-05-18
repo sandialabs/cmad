@@ -204,8 +204,9 @@ def fe_quasistatic_drive(
         fe_problem, t_init=t_schedule[0], U_init=U_init,
     )
 
+    dbc_arrays = fe_problem.kernel_arrays.dbc_arrays
     for t in t_schedule[1:]:
-        fe_problem.dof_map.evaluate_prescribed_values(t)
+        fe_problem.dof_map.evaluate_prescribed_values(dbc_arrays, t)
 
     params_by_block = params_by_block_from_models(fe_problem)
     fe_arrays = fe_problem.kernel_arrays

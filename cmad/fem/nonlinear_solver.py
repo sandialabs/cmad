@@ -169,7 +169,9 @@ def _fe_newton_primal(
 
     dof_map = fe_problem.dof_map
     presc_idx = fe_arrays.prescribed_indices
-    presc_vals = jnp.asarray(dof_map.evaluate_prescribed_values(t))
+    presc_vals = jnp.asarray(
+        dof_map.evaluate_prescribed_values(fe_arrays.dbc_arrays, t),
+    )
 
     U_init = U_prev
 
@@ -417,7 +419,9 @@ def _fe_newton_solve_ad_jvp(
 
     def r_of_p(params_, Up_, xp_, t_):
         pv = jnp.asarray(
-            fe_problem.dof_map.evaluate_prescribed_values(t_),
+            fe_problem.dof_map.evaluate_prescribed_values(
+                fe_arrays.dbc_arrays, t_,
+            ),
         )
         K_bcoo_local, R_local, _ = assemble_global(
             fe_problem, fe_arrays, params_,
