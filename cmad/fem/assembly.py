@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 import numpy as np
-from jax import vmap
+from jax import lax, vmap
 from jax.experimental.sparse import BCOO
 from jax.flatten_util import ravel_pytree
 from numpy.typing import NDArray
@@ -163,6 +163,56 @@ def _element_eq_indices(
     return eq.reshape(n_elems, -1).astype(np.intp)
 
 
+def _zero_R_and_dR_dU_accumulators(
+        residual_block_shapes: Sequence[tuple[int, int]],
+) -> tuple[list[JaxArray], list[list[JaxArray]]]:
+    """Zero ``(R_blocks, dR_dU_blocks)`` accumulators for the per-IP scan.
+
+    ``R_blocks[r]`` is shaped ``residual_block_shapes[r]``;
+    ``dR_dU_blocks[r][s]`` is shaped ``residual_block_shapes[r] +
+    residual_block_shapes[s]``. Seeds the :func:`jax.lax.scan` carry
+    that sums per-IP contributions in :func:`per_element_R_and_K` and
+    :func:`per_element_R_and_K_coupled`.
+    """
+    num_blocks = len(residual_block_shapes)
+    R_acc = [
+        jnp.zeros(residual_block_shapes[r]) for r in range(num_blocks)
+    ]
+    dR_dU_acc = [
+        [
+            jnp.zeros(residual_block_shapes[r] + residual_block_shapes[s])
+            for s in range(num_blocks)
+        ]
+        for r in range(num_blocks)
+    ]
+    return R_acc, dR_dU_acc
+
+
+def _accumulate_ip(
+        R_acc: list[JaxArray],
+        dR_dU_acc: list[list[JaxArray]],
+        R_ip: Sequence[JaxArray],
+        dR_dU_ip: Sequence[Sequence[JaxArray]],
+        body_force_ip_per_block: Mapping[int, JaxArray],
+) -> tuple[list[JaxArray], list[list[JaxArray]]]:
+    """Sum one IP's ``(R, dR_dU)`` into the per-IP scan accumulators.
+
+    Adds ``R_ip`` / ``dR_dU_ip`` to the accumulators block by block
+    and subtracts the per-IP body force from the residual blocks it
+    targets. Folding the body-force subtraction in here keeps the
+    per-IP scan carry free of a separate forcing buffer.
+    """
+    num_blocks = len(R_acc)
+    R_acc = [R_acc[r] + R_ip[r] for r in range(num_blocks)]
+    dR_dU_acc = [
+        [dR_dU_acc[r][s] + dR_dU_ip[r][s] for s in range(num_blocks)]
+        for r in range(num_blocks)
+    ]
+    for block_idx, body_force_ip in body_force_ip_per_block.items():
+        R_acc[block_idx] = R_acc[block_idx] - body_force_ip
+    return R_acc, dR_dU_acc
+
+
 def per_element_R_and_K(
         U_elem: Sequence[JaxArray],
         U_prev_elem: Sequence[JaxArray],
@@ -201,9 +251,11 @@ def per_element_R_and_K(
     Vmap-over-elements compatible: ``U_elem``, ``U_prev_elem``, and
     ``geom_per_elem`` carry the leading element axis; ``geom_shared``
     is element-invariant (passed with ``in_axes=None``). The
-    Python-level IP loop unrolls under jit. ``ip_set=0`` is always
-    passed to the evaluator; GRs with multiple ip_sets dispatch on
-    the trailing arg inside their residual_fn body (see
+    integration-point sum is a :func:`jax.lax.scan` over IPs with a
+    running ``(R_blocks, dR_dU_blocks)`` accumulator, so no per-IP
+    axis is materialized. ``ip_set=0`` is always passed to the
+    evaluator; GRs with multiple ip_sets dispatch on the trailing
+    arg inside their residual_fn body (see
     :data:`cmad.typing.ResidualFnGR`).
 
     ``geom_per_elem`` packs the per-element-IP arrays — signed
@@ -254,26 +306,27 @@ def per_element_R_and_K(
         }
         return R_ip, dR_dU_ip, body_force_ip_per_block
 
-    R_per_ip, dR_dU_per_ip, body_force_per_ip = vmap(
-        per_ip, axis_name="ip",
-    )(
-        geom_shared.quad_w,
-        geom_per_elem.iso_jac_det,
-        geom_per_elem.coords_ip,
-        [geom_shared.field_N_per_block[r] for r in range(num_blocks)],
-        [
-            geom_per_elem.field_grad_N_phys_per_block[r]
-            for r in range(num_blocks)
-        ],
-    )
+    def ip_step(carry, ip_slice):
+        R_acc, dR_dU_acc = carry
+        R_ip, dR_dU_ip, body_force_ip_per_block = per_ip(*ip_slice)
+        return _accumulate_ip(
+            R_acc, dR_dU_acc, R_ip, dR_dU_ip, body_force_ip_per_block,
+        ), None
 
-    R_blocks = [R_per_ip[r].sum(axis=0) for r in range(num_blocks)]
-    dR_dU_blocks = [
-        [dR_dU_per_ip[r][s].sum(axis=0) for s in range(num_blocks)]
-        for r in range(num_blocks)
-    ]
-    for block_idx, bf_stacked in body_force_per_ip.items():
-        R_blocks[block_idx] = R_blocks[block_idx] - bf_stacked.sum(axis=0)
+    (R_blocks, dR_dU_blocks), _ = lax.scan(
+        ip_step,
+        _zero_R_and_dR_dU_accumulators(residual_block_shapes),
+        (
+            geom_shared.quad_w,
+            geom_per_elem.iso_jac_det,
+            geom_per_elem.coords_ip,
+            [geom_shared.field_N_per_block[r] for r in range(num_blocks)],
+            [
+                geom_per_elem.field_grad_N_phys_per_block[r]
+                for r in range(num_blocks)
+            ],
+        ),
+    )
 
     return R_blocks, dR_dU_blocks
 
@@ -321,24 +374,25 @@ def per_element_R_and_K_coupled(
     ``unravel_xi`` is a Python-side closure capturing the pytree
     treedef from ``ravel_pytree(model._init_xi)[1]``. Capture once
     at the call site; do not pass through ``static_argnums``. The
-    kernel only invokes it inside the per-IP Python loop, which
-    unrolls under jit, so the closure is seen as ordinary Python
-    by JAX.
+    kernel invokes it only inside the per-IP scan body, traced once
+    under jit, so the closure is seen as ordinary Python by JAX.
 
     Vmap-over-elements compatible: ``U_elem``, ``U_prev_elem``,
     ``xi_prev_per_ip``, and ``geom_per_elem`` carry the leading
     element axis when the caller vmaps; ``geom_shared`` and the rest
     are element-invariant. See :func:`per_element_R_and_K` for the
-    cache contract; identical here. ``ip_set=0`` is always passed
-    to the evaluator; multi-ip_set GRs dispatch on the trailing arg
-    inside their residual_fn body (see
+    cache contract; identical here. ``ip_set=0`` and the per-IP
+    index ``ip_idx`` (used only to label the optional local-
+    convergence print) are passed to the evaluator; multi-ip_set
+    GRs dispatch on ``ip_set`` inside their residual_fn body (see
     :data:`cmad.typing.ResidualFnGR`).
     """
     num_blocks = len(residual_block_shapes)
 
     def per_ip(quad_w_ip, iso_jac_det_ip, coords_ip,
                xi_prev_at_ip,
-               field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block):
+               field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block,
+               ip_idx):
         field_shapes_phys_per_block = [
             ShapeFunctionsAtIP(
                 N=field_N_at_ip_per_block[r],
@@ -350,6 +404,7 @@ def per_element_R_and_K_coupled(
         R_ip, dR_dU_ip, xi_blocks = R_and_dR_dU_and_xi_evaluator(
             params, U_elem, U_prev_elem, xi_prev_blocks,
             field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip, 0,
+            ip_idx,
         )
         # Discard the unravel callable; xi treedef is fixed by
         # the ``unravel_xi`` closure already.
@@ -364,8 +419,20 @@ def per_element_R_and_K_coupled(
         }
         return R_ip, dR_dU_ip, xi_flat, body_force_ip_per_block
 
-    R_per_ip, dR_dU_per_ip, xi_solved_per_ip, body_force_per_ip = (
-        vmap(per_ip, axis_name="ip")(
+    def ip_step(carry, ip_slice):
+        R_acc, dR_dU_acc = carry
+        R_ip, dR_dU_ip, xi_flat, body_force_ip_per_block = per_ip(
+            *ip_slice,
+        )
+        carry = _accumulate_ip(
+            R_acc, dR_dU_acc, R_ip, dR_dU_ip, body_force_ip_per_block,
+        )
+        return carry, xi_flat
+
+    (R_blocks, dR_dU_blocks), xi_solved_per_ip = lax.scan(
+        ip_step,
+        _zero_R_and_dR_dU_accumulators(residual_block_shapes),
+        (
             geom_shared.quad_w,
             geom_per_elem.iso_jac_det,
             geom_per_elem.coords_ip,
@@ -375,16 +442,9 @@ def per_element_R_and_K_coupled(
                 geom_per_elem.field_grad_N_phys_per_block[r]
                 for r in range(num_blocks)
             ],
-        )
+            jnp.arange(geom_shared.quad_w.shape[0]),
+        ),
     )
-
-    R_blocks = [R_per_ip[r].sum(axis=0) for r in range(num_blocks)]
-    dR_dU_blocks = [
-        [dR_dU_per_ip[r][s].sum(axis=0) for s in range(num_blocks)]
-        for r in range(num_blocks)
-    ]
-    for block_idx, bf_stacked in body_force_per_ip.items():
-        R_blocks[block_idx] = R_blocks[block_idx] - bf_stacked.sum(axis=0)
 
     return R_blocks, dR_dU_blocks, xi_solved_per_ip
 

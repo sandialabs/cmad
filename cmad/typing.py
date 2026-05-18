@@ -244,7 +244,7 @@ RAndDRDUAndXiEvaluator: TypeAlias = Callable[
      StateList,
      Sequence["ShapeFunctionsAtIP"],
      float | JaxArray, float | JaxArray,
-     int],
+     int, int | JaxArray],
     tuple[
         Sequence[JaxArray],
         Sequence[Sequence[JaxArray]],
@@ -258,8 +258,11 @@ runs the per-IP local Newton once and returns
 ``dR_dU_blocks`` match RAndDRDUEvaluator's return shape, plus the
 converged xi exposed as a free side-product so state-history
 storage at FE-Newton convergence is the bundled call's third
-element (no extra solve). 8-arg call shape ``(params, U, U_prev,
-xi_prev, shapes_ip, w, dv, ip_set)``; xi is internally solved from
+element (no extra solve). 9-arg call shape ``(params, U, U_prev,
+xi_prev, shapes_ip, w, dv, ip_set, ip_idx)``; the trailing
+``ip_idx`` integration-point index defaults to 0 and is consumed
+only to label the optional per-IP local-convergence print. xi is
+internally solved from
 xi_prev via ``make_newton_solve``, with JAX-AD seeing the IFT-
 corrected total via the solver's ``custom_jvp`` rule."""
 

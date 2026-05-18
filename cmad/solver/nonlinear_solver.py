@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import custom_jvp, debug, jacfwd, jvp
 from jax.flatten_util import ravel_pytree
-from jax.lax import axis_index, cond, while_loop
+from jax.lax import cond, while_loop
 
 from cmad.typing import JaxArray, PyTree, SupportsNewton
 
@@ -105,46 +105,42 @@ def make_newton_solve(
 
 
         def true_fun(carry):
-            ii, _converged, x, C, C_norm = carry
-            return ii, True, x, C, C_norm
+            ii, _converged, x, C = carry
+            return ii, True, x, C
 
 
         def false_fun(carry):
-            ii, _converged, x, C, _C_norm = carry
+            ii, _converged, x, C = carry
 
             jac = jacfwd(residual_flat)(x)
             delta_x = jnp.linalg.solve(jac, C)
             x_2 = jnp.subtract(x, delta_x)
 
             C_2 = residual_flat(x_2)
-            C_norm_2 = jnp.linalg.norm(C_2)
 
-            return ii + 1, False, x_2, C_2, C_norm_2
+            return ii + 1, False, x_2, C_2
 
 
         def cond_fun(carry):
-            ii, converged, _x, _C, _C_norm = carry
+            ii, converged, _x, _C = carry
             return jnp.logical_and(ii < max_iters, jnp.logical_not(converged))
 
 
         def body_fun(carry):
-            ii, _converged, _x, _C, C_norm = carry
+            ii, _converged, _x, C = carry
+            C_norm = jnp.linalg.norm(C)
             C_norm_rel = C_norm / C_norm_0
             if print_local_convergence:
-                elem_idx = axis_index("elem")
-                ip_idx = axis_index("ip")
                 debug.print(
-                    "[LOCAL elem={e} ip={i}] ({k}) "
-                    "abs ||C|| = {a:.6e} rel ||C|| = {r:.6e}",
-                    e=elem_idx, i=ip_idx, k=ii + 1,
-                    a=C_norm, r=C_norm_rel,
+                    "  ({k}) abs ||C|| = {a:.6e} rel ||C|| = {r:.6e}",
+                    k=ii + 1, a=C_norm, r=C_norm_rel,
                 )
             pred = jnp.logical_or(C_norm_rel < rel_tol, C_norm < abs_tol)
             return cond(pred, true_fun, false_fun, carry)
 
 
         flat_x = while_loop(cond_fun, body_fun,
-            (0, False, flat_x_prev, C0, C_norm_0))[2]
+            (0, False, flat_x_prev, C0))[2]
         return unravel(flat_x)
 
 

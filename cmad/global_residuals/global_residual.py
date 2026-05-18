@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 import numpy as np
-from jax import jacfwd, jit
+from jax import debug, jacfwd, jit
+from jax.lax import axis_index
 from numpy.typing import NDArray
 
 from cmad.fem.shapes import ShapeFunctionsAtIP
@@ -401,7 +402,12 @@ class GlobalResidual(ABC):
         dR_dU_total = jacfwd(coupled_r_total, argnums=1)
 
         def r_and_dR_dU_and_xi_at_ip(params, U, U_prev, xi_prev,
-                                     shapes_ip, w, dv, ip_set):
+                                     shapes_ip, w, dv, ip_set, ip_idx=0):
+            if print_local_convergence:
+                debug.print(
+                    "[LOCAL elem={e} ip={i}]",
+                    e=axis_index("elem"), i=ip_idx,
+                )
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(
                 U_prev, shapes_ip)
