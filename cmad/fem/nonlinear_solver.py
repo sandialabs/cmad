@@ -73,7 +73,7 @@ def _thaw(value: Any) -> Any:
 
 
 def _solve_linear(
-        K_data: JaxArray,
+        K: JaxArray,
         fe_problem: FEProblem,
         fe_arrays: FEKernelArrays,
         rhs: JaxArray,
@@ -90,7 +90,7 @@ def _solve_linear(
     sparsity = fe_arrays.embedded_sparsity
     kind = linear_solver_settings["type"]
     if kind == "direct":
-        return scipy_lu(K_data, sparsity, rhs)
+        return scipy_lu(K, sparsity, rhs)
 
     precon_spec = linear_solver_settings.get(
         "preconditioner", {"type": "jacobi"},
@@ -100,7 +100,7 @@ def _solve_linear(
     if kind == "cg":
         if precon == "jacobi":
             return jax_cg(
-                K_data, sparsity, rhs,
+                K, sparsity, rhs,
                 rtol=linear_solver_settings["rtol"],
                 max_iters=linear_solver_settings["max iters"],
             )
@@ -109,7 +109,7 @@ def _solve_linear(
             if "B" not in kwargs and fe_problem.near_null_space is not None:
                 kwargs["B"] = fe_problem.near_null_space
             return scipy_amg_cg(
-                K_data, sparsity, rhs,
+                K, sparsity, rhs,
                 rtol=linear_solver_settings["rtol"],
                 max_iters=linear_solver_settings["max iters"],
                 pyamg_kwargs=kwargs,
@@ -121,7 +121,7 @@ def _solve_linear(
     if kind == "gmres":
         if precon == "jacobi":
             return jax_gmres(
-                K_data, sparsity, rhs,
+                K, sparsity, rhs,
                 rtol=linear_solver_settings["rtol"],
                 max_iters=linear_solver_settings["max iters"],
                 restart=linear_solver_settings["restart"],
@@ -150,17 +150,19 @@ def _fe_newton_primal(
         t: float,
         nonlinear_solver_settings: dict[str, Any],
         linear_solver_settings: dict[str, Any],
-) -> JaxArray:
+) -> tuple[JaxArray, dict[str, JaxArray]]:
     """Forward Newton iteration: ``lax.while_loop`` + linear-solver dispatch.
 
-    Each body iteration assembles ``(K_bcoo, R)`` once, builds the
-    embedded-BC tangent via :func:`_embedded_bc_enforce` and the
-    matching residual via :func:`_embedded_residual`, and solves
-    ``K · dU = -r`` via the linear solver named in
-    ``linear_solver_settings['type']`` (one of ``direct``, ``cg``,
-    ``gmres``). The convergence check is on ``r`` at the iterate
-    ``U_n`` (computed alongside ``K`` in the same assembly), so each
-    iter costs one ``assemble_global``.
+    Each step assembles ``(K_bcoo, R)`` via :func:`assemble_global`,
+    builds the embedded-BC tangent ``K`` via
+    :func:`_embedded_bc_enforce` and the matching residual ``r`` via
+    :func:`_embedded_residual`, and solves ``K · dU = -r`` via the
+    linear solver named in ``linear_solver_settings['type']`` (one of
+    ``direct``, ``cg``, ``gmres``). ``cond`` checks the residual norm
+    against the absolute and relative tolerances.
+
+    Returns ``(U_star, xi_star)``: the converged displacement and the
+    solved state at it.
     """
     max_iters = nonlinear_solver_settings["max iters"]
     abs_tol = nonlinear_solver_settings["abs tol"]
@@ -175,55 +177,55 @@ def _fe_newton_primal(
 
     U_init = U_prev
 
-    K_init, R_init, _ = assemble_global(
-        fe_problem, fe_arrays, params_by_block,
-        U_init, U_prev, t,
-        xi_prev_by_block=xi_prev_by_block,
-    )
-    _, K_ii_presc_init = _embedded_bc_enforce(K_init, presc_idx)
-    r_init = _embedded_residual(
-        R_init, K_init, U_init, presc_idx, presc_vals, K_ii_presc_init,
-    )
-    R0 = jnp.maximum(jnp.linalg.norm(r_init), abs_tol)
-
-    def cond(state):
-        i, _, R_norm, R_norm_0 = state
-        return (i < max_iters) & (R_norm >= abs_tol) & (
-            R_norm >= rel_tol * R_norm_0
-        )
-
-    def body(state):
-        i, U, _, R_norm_0 = state
-        K_bcoo, R_assembled, _ = assemble_global(
+    def _assemble_enforced(U):
+        K_bcoo, R_assembled, xi = assemble_global(
             fe_problem, fe_arrays, params_by_block,
             U, U_prev, t,
             xi_prev_by_block=xi_prev_by_block,
         )
-        K_data, K_ii_presc = _embedded_bc_enforce(K_bcoo, presc_idx)
+        K, K_ii_presc = _embedded_bc_enforce(K_bcoo, presc_idx)
         r = _embedded_residual(
             R_assembled, K_bcoo, U, presc_idx, presc_vals, K_ii_presc,
         )
-        R_norm = jnp.linalg.norm(r)
+        return r, K, xi
+
+    r_init, K_init, xi_init = _assemble_enforced(U_init)
+    R0 = jnp.maximum(jnp.linalg.norm(r_init), abs_tol)
+
+    def _print_line(k, r):
         if print_global_convergence:
-            jax.debug.print(" > ({k}) Newton iteration", k=i + 1)
+            R_norm = jnp.linalg.norm(r)
+            jax.debug.print(" > ({k}) Newton iteration", k=k)
             jax.debug.print(
                 " > absolute ||R|| = {abs_r:.6e}", abs_r=R_norm,
             )
             jax.debug.print(
-                " > relative ||R|| = {rel_r:.6e}",
-                rel_r=R_norm / R_norm_0,
+                " > relative ||R|| = {rel_r:.6e}", rel_r=R_norm / R0,
             )
+
+    _print_line(1, r_init)
+
+    def cond(state):
+        i, r, _, _, _ = state
+        R_norm = jnp.linalg.norm(r)
+        return (i < max_iters) & (R_norm >= abs_tol) & (
+            R_norm >= rel_tol * R0
+        )
+
+    def body(state):
+        i, r, K, U, _ = state
         dU = _solve_linear(
-            K_data, fe_problem, fe_arrays, -r,
-            linear_solver_settings,
+            K, fe_problem, fe_arrays, -r, linear_solver_settings,
         )
         U_new = U + dU
-        return (i + 1, U_new, R_norm, R_norm_0)
+        r_new, K_new, xi_new = _assemble_enforced(U_new)
+        _print_line(i + 2, r_new)
+        return (i + 1, r_new, K_new, U_new, xi_new)
 
-    _, U_star, _, _ = lax.while_loop(
-        cond, body, (0, U_init, R0, R0),
+    _, _, _, U_star, xi_star = lax.while_loop(
+        cond, body, (0, r_init, K_init, U_init, xi_init),
     )
-    return U_star
+    return U_star, xi_star
 
 
 def fe_newton_solve(
@@ -268,7 +270,7 @@ def fe_newton_solve(
     :func:`jax.pure_callback`), ``cg`` (JAX-native CG), or ``gmres``
     (JAX-native restarted GMRES).
 
-    AD over the converged ``(U_star, xi_solved)`` is provided by an
+    AD over the converged ``(U_star, xi_star)`` is provided by an
     inner :func:`jax.custom_jvp` rule. The JVP rule is the IFT
     linear sensitivity equation
     ``K · U_star_dot = -∂r/∂(p) · p_dot`` solved through the same
@@ -299,10 +301,9 @@ def fe_newton_solve(
     COUPLED block, ignored otherwise. ``xi_prev`` stays fixed
     across global Newton iterations; the per-IP local Newton inside
     the COUPLED kernel re-solves for ``xi(U_iter, xi_prev)`` every
-    iteration. Returned ``xi_solved_by_block`` is the converged
-    value, re-extracted by one ``assemble_global`` call at
-    ``U_star`` after the loop. Empty dict for CLOSED_FORM-only
-    problems. A missing COUPLED-block entry surfaces as a
+    iteration. Returned ``xi_star`` is the converged state at
+    ``U_star``. Empty dict for CLOSED_FORM-only problems. A
+    missing COUPLED-block entry surfaces as a
     ``ValueError`` from
     :func:`cmad.fem.assembly.assemble_element_block` on the first
     body iteration.
@@ -319,8 +320,7 @@ def fe_newton_solve(
     :func:`pyamg.smoothed_aggregation_solver`. Omitted keys fall back
     to :data:`_DEFAULT_LINEAR_SOLVER_SETTINGS`.
 
-    Returns ``(U_solved, xi_solved_by_block)``. Outputs are JAX
-    arrays.
+    Returns ``(U_star, xi_star)``. Outputs are JAX arrays.
     """
     nls = {
         **_DEFAULT_NONLINEAR_SOLVER_SETTINGS,
@@ -368,16 +368,11 @@ def _fe_newton_solve_ad(
     """
     nls = _thaw(nonlinear_solver_settings_frozen)
     lss = _thaw(linear_solver_settings_frozen)
-    U_star = _fe_newton_primal(
+    U_star, xi_star = _fe_newton_primal(
         fe_problem, fe_arrays, params_by_block, U_prev, xi_prev_by_block,
         t, nls, lss,
     )
-    _, _, xi_solved = assemble_global(
-        fe_problem, fe_arrays, params_by_block,
-        U_star, U_prev, t,
-        xi_prev_by_block=xi_prev_by_block,
-    )
-    return U_star, xi_solved
+    return U_star, xi_star
 
 
 @_fe_newton_solve_ad.defjvp
@@ -396,7 +391,7 @@ def _fe_newton_solve_ad_jvp(
     ``_embedded_bc_enforce``-applied assembled tangent at ``U_star``;
     the linear solve goes through :func:`_solve_linear` so the ``K``
     cotangent flows automatically when JAX auto-transposes the rule.
-    ``xi_solved_dot`` follows from chain rule: the assembly's xi
+    ``xi_star_dot`` follows from chain rule: the assembly's xi
     output is differentiated jointly w.r.t. ``U_star`` (with tangent
     ``U_star_dot``) and w.r.t. ``p`` (with tangent ``p_dot``).
     ``t_dot`` is threaded as ceremony — no current consumer
@@ -409,7 +404,7 @@ def _fe_newton_solve_ad_jvp(
 
     lss = _thaw(linear_solver_settings_frozen)
 
-    U_star, xi_solved = _fe_newton_solve_ad(
+    U_star, xi_star = _fe_newton_solve_ad(
         fe_problem, fe_arrays, params_by_block, U_prev, xi_prev_by_block,
         t, nonlinear_solver_settings_frozen,
         linear_solver_settings_frozen,
@@ -447,10 +442,10 @@ def _fe_newton_solve_ad_jvp(
         U_star, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
-    K_data, _ = _embedded_bc_enforce(K_bcoo, presc_idx)
+    K, _ = _embedded_bc_enforce(K_bcoo, presc_idx)
 
     U_star_dot = _solve_linear(
-        K_data, fe_problem, fe_arrays, -Rp_dot, lss,
+        K, fe_problem, fe_arrays, -Rp_dot, lss,
     )
 
     def xi_of_U_p(U_, params_, Up_, xp_, t_):
@@ -461,12 +456,12 @@ def _fe_newton_solve_ad_jvp(
         )
         return xi_local
 
-    _, xi_solved_dot = jax.jvp(
+    _, xi_star_dot = jax.jvp(
         xi_of_U_p,
         (U_star, params_by_block, U_prev, xi_prev_by_block, t),
         (U_star_dot, *p_dot),
     )
 
-    primals_out = (U_star, xi_solved)
-    tangents_out = (U_star_dot, xi_solved_dot)
+    primals_out = (U_star, xi_star)
+    tangents_out = (U_star_dot, xi_star_dot)
     return primals_out, tangents_out
