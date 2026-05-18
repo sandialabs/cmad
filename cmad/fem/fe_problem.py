@@ -130,7 +130,6 @@ class FEProblem:
     geometry_cache: dict[str, BlockIPGeometryCache] = field(
         init=False, default_factory=dict,
     )
-    bc_diag_scale: float = field(init=False, default=1.0)
     embedded_sparsity: "EmbeddedSparsity" = field(init=False)
     near_null_space: NDArray[np.floating] | None = field(
         init=False, default=None,
@@ -189,22 +188,6 @@ class FEProblem:
             self.mesh, self.assembly_quadrature, layouts,
         )
         object.__setattr__(self, "geometry_cache", geometry_cache)
-
-        # Reducing per-block scales to a single ``α`` is a stand-in
-        # for a per-prescribed-dof scale array. ``max`` vs ``mean``
-        # is a judgment call: ``max`` ensures every block's diagonal
-        # entries are at most O(α) so the conditioning never gets
-        # worse than the stiffest block; ``mean`` (and similar
-        # central reductions) split the difference more evenly when
-        # block stiffnesses span orders of magnitude. Revisit when
-        # a multi-material benchmark surfaces a real difference;
-        # the principled fix is per-prescribed-dof scaling indexed
-        # by block.
-        bc_diag_scale = max(
-            self.gr.bc_diag_scale(self.models_by_block[block])
-            for block in self.models_by_block
-        )
-        object.__setattr__(self, "bc_diag_scale", bc_diag_scale)
 
         # Lazy import to break the
         # fe_problem -> sparse_solve -> assembly -> fe_problem

@@ -524,19 +524,21 @@ def cg_amg_jax(
 
 def _embedded_bc_enforce(
         K_bcoo: BCOO, presc_idx: JaxArray,
-        presc_diag_scale: float = 1.0,
-) -> JaxArray:
+) -> tuple[JaxArray, JaxArray]:
     """Embedded-BC symmetric form on a :class:`BCOO` tangent.
 
-    Returns the data buffer ``K_data`` for the embedded-BC ``K``,
-    layout-compatible with the :class:`EmbeddedSparsity` cache:
+    Returns ``(K_data, K_ii_presc)``:
 
     - ``K_data[:nnz_assembled]`` are the assembled COO values with
       prescribed rows AND prescribed columns zeroed (every entry
       with either index in ``presc_idx``), via a mask multiplication
       on ``K_bcoo.data``;
-    - ``K_data[nnz_assembled:]`` are ``presc_diag_scale`` values
-      appended at ``(presc_idx, presc_idx)``.
+    - ``K_data[nnz_assembled:]`` are the original assembled diagonal
+      values ``K_ii`` at the prescribed rows, appended at
+      ``(presc_idx, presc_idx)``;
+    - ``K_ii_presc`` is the length-``n_presc`` vector of those same
+      diagonal values, surfaced for the residual rescale at
+      prescribed rows in the Newton driver.
 
     The implicit ``(rows, cols)`` are
     ``concatenate([K_bcoo.indices[:, 0], presc_idx])`` and
@@ -544,19 +546,23 @@ def _embedded_bc_enforce(
     references them statically via ``perm``.
 
     Net structure is block-diagonal:
-    ``[K_ff (assembled) | 0; 0 | α · I_P]`` where ``K_ff`` is the
-    free-free block of the assembled tangent and ``α · I_P`` is the
-    prescribed self-block; the appended α keeps the prescribed
-    block invertible after row+column zeroing.
+    ``[K_ff (assembled) | 0; 0 | diag(K_ii)]`` where ``K_ff`` is the
+    free-free block of the assembled tangent and ``diag(K_ii)`` is the
+    prescribed self-block carrying the original assembled diagonal
+    entries. Keeping the prescribed-row pivot at the assembled local
+    stiffness preserves the matrix's local diagonal scale uniformly
+    across the boundary — AMG hierarchy construction (prolongation
+    smoothing in particular) sees a locally-consistent diagonal,
+    avoiding the boundary-region distortion a global scalar pivot
+    would introduce. The Newton solution is invariant to the choice
+    because the per-row equation
+    ``K_ii · dU = -K_ii · (U[presc] - presc_vals)`` produces
+    ``dU[presc] = presc_vals - U[presc]`` regardless of ``K_ii``.
 
-    ``presc_diag_scale`` keeps the prescribed-row pivot on the same
-    order of magnitude as the assembled diagonal so that Jacobi /
-    ILU preconditioners see a well-conditioned matrix. The Newton
-    solution is invariant to the choice provided the residual at
-    prescribed dofs is rescaled by the same factor, since the per-
-    row equation ``α·dU = -α·(U[presc] - presc_vals)`` produces
-    ``dU[presc] = presc_vals - U[presc]`` regardless of α. Callers
-    pass ``fe_problem.bc_diag_scale``.
+    ``K_ii`` is extracted via a JAX-native scatter-add of the
+    diagonal-masked COO entries (``K_bcoo.data * (rows == cols)``)
+    into a length-``n`` buffer, then indexed at ``presc_idx``. O(nnz
+    + n) traceable.
 
     The symmetric form preserves the IFT-based JVP rule's
     ``K = ∂r/∂U_star`` invariant only when the residual function
@@ -567,10 +573,9 @@ def _embedded_bc_enforce(
 
     When ``K_bcoo`` already has an entry at a prescribed ``(i, i)``,
     the output contains two values at that position: the original
-    (zeroed by the row/column mask) and the appended scaled-identity.
+    (zeroed by the row/column mask) and the appended ``K_ii``.
     :class:`EmbeddedSparsity`'s segment-sum dedup at the cache
-    boundary folds them into one unique entry with value
-    ``presc_diag_scale``.
+    boundary folds them into one unique entry with value ``K_ii``.
     """
     rows = K_bcoo.indices[:, 0]
     cols = K_bcoo.indices[:, 1]
@@ -580,11 +585,13 @@ def _embedded_bc_enforce(
     keep = ~(p_mask[rows] | p_mask[cols])
     data_zeroed = K_bcoo.data * keep
 
-    add_data = jnp.full(
-        presc_idx.shape[0], presc_diag_scale, dtype=K_bcoo.data.dtype,
+    diag_mask = rows == cols
+    K_ii_full = jnp.zeros(n, dtype=K_bcoo.data.dtype).at[rows].add(
+        K_bcoo.data * diag_mask,
     )
+    K_ii_presc = K_ii_full[presc_idx]
 
-    return jnp.concatenate([data_zeroed, add_data])
+    return jnp.concatenate([data_zeroed, K_ii_presc]), K_ii_presc
 
 
 @dataclass(frozen=True)

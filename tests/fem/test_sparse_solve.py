@@ -347,8 +347,10 @@ class TestEmbeddedBCEnforce(unittest.TestCase):
     matrix and marks rows/cols 1, 2 as prescribed; asserts the
     returned ``K_data`` matches the hand-written expected layout:
     the assembled segment with prescribed rows AND columns zeroed,
-    followed by the appended scaled-identity entries at the
-    prescribed diagonal.
+    followed by the appended assembled ``K_ii`` entries at the
+    prescribed diagonal. ``K_ii_presc`` (the second return) carries
+    those same diagonal values for the residual rescale at
+    prescribed rows.
     """
 
     def test_data_buffer_layout(self) -> None:
@@ -368,19 +370,24 @@ class TestEmbeddedBCEnforce(unittest.TestCase):
         )
 
         presc_idx = jnp.asarray([1, 2])
-        K_data = _embedded_bc_enforce(K_bcoo, presc_idx)
+        K_data, K_ii_presc = _embedded_bc_enforce(K_bcoo, presc_idx)
 
         # Expected layout: assembled segment (row-major n² entries)
         # with rows 1, 2 and cols 1, 2 zeroed, followed by 2 appended
-        # entries with value 1.0 at the (1, 1) and (2, 2) positions.
+        # entries carrying the original assembled diagonal at the
+        # prescribed (1, 1) and (2, 2) positions: K_dense[1,1]=20,
+        # K_dense[2,2]=30.
         expected = jnp.asarray([
             10.0, 0.0, 0.0, 3.0,    # row 0: cols 1, 2 zeroed
             0.0, 0.0, 0.0, 0.0,     # row 1 fully zeroed (prescribed)
             0.0, 0.0, 0.0, 0.0,     # row 2 fully zeroed (prescribed)
             11.0, 0.0, 0.0, 40.0,   # row 3: cols 1, 2 zeroed
-            1.0, 1.0,               # appended scaled-identity α=1.0
+            20.0, 30.0,             # appended K_ii at presc rows
         ])
         np.testing.assert_allclose(np.asarray(K_data), np.asarray(expected),
+                                   rtol=1e-12, atol=1e-14)
+        np.testing.assert_allclose(np.asarray(K_ii_presc),
+                                   np.asarray([20.0, 30.0]),
                                    rtol=1e-12, atol=1e-14)
 
 

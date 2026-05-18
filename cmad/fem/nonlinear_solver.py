@@ -165,7 +165,6 @@ def _fe_newton_primal(
     dof_map = fe_problem.dof_map
     presc_idx = jnp.asarray(dof_map.prescribed_indices)
     presc_vals = jnp.asarray(dof_map.evaluate_prescribed_values(t))
-    alpha = fe_problem.bc_diag_scale
 
     U_init = U_prev.at[presc_idx].set(presc_vals)
 
@@ -173,9 +172,12 @@ def _fe_newton_primal(
         fe_problem, params_by_block, U_init, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
-    r_init = R_init.at[presc_idx].set(
-        alpha * (U_init[presc_idx] - presc_vals)
-    )
+    # ``U_init`` was clamped to ``presc_vals`` at prescribed dofs so
+    # ``U_init[presc] - presc_vals = 0``; the K_ii-rescaling factor
+    # would multiply zero. Skip the rescale to avoid a redundant
+    # assemble-and-extract; the prescribed-row residual is zero by
+    # construction.
+    r_init = R_init.at[presc_idx].set(0.0)
     R0 = jnp.maximum(jnp.linalg.norm(r_init), abs_tol)
 
     def cond(state):
@@ -190,8 +192,9 @@ def _fe_newton_primal(
             fe_problem, params_by_block, U, U_prev, t,
             xi_prev_by_block=xi_prev_by_block,
         )
+        K_data, K_ii_presc = _embedded_bc_enforce(K_bcoo, presc_idx)
         r = R_assembled.at[presc_idx].set(
-            alpha * (U[presc_idx] - presc_vals)
+            K_ii_presc * (U[presc_idx] - presc_vals)
         )
         R_norm = jnp.linalg.norm(r)
         if print_global_convergence:
@@ -203,9 +206,6 @@ def _fe_newton_primal(
                 " > relative ||R|| = {rel_r:.6e}",
                 rel_r=R_norm / R_norm_0,
             )
-        K_data = _embedded_bc_enforce(
-            K_bcoo, presc_idx, presc_diag_scale=alpha,
-        )
         dU = _solve_linear(
             K_data, fe_problem, -r,
             linear_solver_settings,
@@ -236,16 +236,18 @@ def fe_newton_solve(
     into ``R`` by the assembly — no separate ``F`` vector). Each
     Newton step solves ``K · dU = -r`` for the embedded-BC residual
     ``r`` defined as ``r[free] = R(U)[free]`` and
-    ``r[prescribed] = α · (U[prescribed] - prescribed_vals(t))``
-    with ``α = fe_problem.bc_diag_scale``.
+    ``r[prescribed] = K_ii · (U[prescribed] - prescribed_vals(t))``,
+    where ``K_ii`` is the assembled diagonal at the prescribed row
+    (per-row, surfaced by :func:`_embedded_bc_enforce`).
 
     Forward iteration is :func:`jax.lax.while_loop` over Newton
     steps. Each body call assembles ``(K_bcoo, R)`` once, builds the
     embedded-BC tangent via
     :func:`cmad.fem.sparse_solve._embedded_bc_enforce` (symmetric
-    form: prescribed rows AND columns zeroed, ``α`` on the
-    prescribed diagonal — block-diagonal ``K_ff | α · I_P``), and
-    solves ``K · dU = -r`` via the linear solver chosen by
+    form: prescribed rows AND columns zeroed, original assembled
+    ``K_ii`` on the prescribed diagonal — block-diagonal
+    ``K_ff | diag(K_ii)``), and solves ``K · dU = -r`` via the
+    linear solver chosen by
     ``linear_solver_settings['type']``: ``direct`` (sparse direct
     via :func:`scipy.sparse.linalg.spsolve` through
     :func:`jax.pure_callback`), ``cg`` (JAX-native CG), or ``gmres``
@@ -395,19 +397,21 @@ def _fe_newton_solve_ad_jvp(
     )
 
     presc_idx = jnp.asarray(fe_problem.dof_map.prescribed_indices)
-    alpha = fe_problem.bc_diag_scale
 
     def r_of_p(params_, Up_, xp_, t_):
         pv = jnp.asarray(
             fe_problem.dof_map.evaluate_prescribed_values(t_),
         )
         U_star_clamped = U_star.at[presc_idx].set(pv)
-        _, R_local, _ = assemble_global(
+        K_bcoo_local, R_local, _ = assemble_global(
             fe_problem, params_, U_star_clamped, Up_, t_,
             xi_prev_by_block=xp_,
         )
+        _, K_ii_presc_local = _embedded_bc_enforce(
+            K_bcoo_local, presc_idx,
+        )
         return R_local.at[presc_idx].set(
-            alpha * (U_star[presc_idx] - pv)
+            K_ii_presc_local * (U_star[presc_idx] - pv)
         )
 
     _, Rp_dot = jax.jvp(
@@ -420,9 +424,7 @@ def _fe_newton_solve_ad_jvp(
         fe_problem, params_by_block, U_star, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
-    K_data = _embedded_bc_enforce(
-        K_bcoo, presc_idx, presc_diag_scale=alpha,
-    )
+    K_data, _ = _embedded_bc_enforce(K_bcoo, presc_idx)
 
     U_star_dot = _solve_linear(
         K_data, fe_problem, -Rp_dot, lss,

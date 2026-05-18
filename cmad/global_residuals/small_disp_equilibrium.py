@@ -67,18 +67,6 @@ class SmallDispEquilibrium(GlobalResidual):
 
         super().__init__(residual_fn)
 
-    def bc_diag_scale(self, model: Model) -> float:
-        elastic = model.parameters.values.get("elastic")
-        if elastic is None:
-            return 1.0
-        if "E" in elastic:
-            return float(elastic["E"])
-        if "kappa" in elastic and "mu" in elastic:
-            kappa = float(elastic["kappa"])
-            mu = float(elastic["mu"])
-            return 9.0 * kappa * mu / (3.0 * kappa + mu)
-        return 1.0
-
     def near_null_space(self, mesh: Mesh) -> NDArray[np.floating]:
         """Rigid-body modes for 3D elasticity at the mesh nodes.
 
