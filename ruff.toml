@@ -15,6 +15,8 @@ ignore = [
     "E501",  # line-too-long; codebase has long lines, handle separately if at all
     "E741",  # ambiguous-variable-name; `I` (identity matrix) etc. are
              # established math notation in scientific code
+    "RUF002",  # ambiguous-unicode in docstrings; `×`, `α`, etc. are
+               # deliberate math notation, same rationale as E741
 ]
 
 [lint.per-file-ignores]

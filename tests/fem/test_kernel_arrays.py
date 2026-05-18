@@ -2,9 +2,9 @@
 
 :func:`build_fe_kernel_arrays` must produce index arrays consistent with
 the assembly layer's index-derivation helpers: the carrier's U-gather
-and R-scatter eq arrays and the COO ``(rows, cols)`` are checked against
-:func:`_element_eq_indices` / :func:`assembled_coo_indices` on hex and
-tet meshes.
+and R-scatter eq arrays are checked against :func:`_element_eq_indices`,
+and the deduped COO ``(rows, cols)`` plus the dedup scatter against
+:func:`assembled_coo_dedup`, on hex and tet meshes.
 """
 import unittest
 from typing import ClassVar, cast
@@ -14,12 +14,12 @@ import numpy as np
 
 from cmad.fem.assembly import (
     _element_eq_indices,
-    assembled_coo_indices,
+    assembled_coo_dedup,
 )
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem
-from cmad.fem.finite_element import FiniteElement, P1_TET, Q1_HEX
+from cmad.fem.finite_element import P1_TET, Q1_HEX, FiniteElement
 from cmad.fem.mesh import Mesh, StructuredHexMesh, hex_to_tet_split
 from cmad.fem.quadrature import (
     QuadratureRule,
@@ -121,10 +121,13 @@ class TestKernelArraysMatchDerivation(unittest.TestCase):
         mesh = fe_problem.mesh
         dof_map = fe_problem.dof_map
 
-        # COO (rows, cols): carrier vs assembled_coo_indices.
-        rows, cols = assembled_coo_indices(fe_problem)
+        # COO (rows, cols) + dedup scatter: carrier vs assembled_coo_dedup.
+        rows, cols, scatter = assembled_coo_dedup(fe_problem)
         np.testing.assert_array_equal(np.asarray(ka.coo_rows), rows)
         np.testing.assert_array_equal(np.asarray(ka.coo_cols), cols)
+        np.testing.assert_array_equal(
+            np.asarray(ka.coo_dedup_scatter), scatter,
+        )
 
         # geometry cache / embedded sparsity: same objects, not copies.
         self.assertIs(ka.geometry_cache, fe_problem.geometry_cache)

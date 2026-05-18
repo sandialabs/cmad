@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 import jax.numpy as jnp
 from jax.tree_util import register_pytree_node_class
 
-from cmad.fem.assembly import _element_eq_indices, assembled_coo_indices
+from cmad.fem.assembly import _element_eq_indices, assembled_coo_dedup
 from cmad.fem.dof import DBCArrays, build_dbc_arrays
 from cmad.fem.neumann import NeumannSideArrays, build_neumann_side_arrays
 from cmad.fem.precompute import BlockIPGeometryCache
@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 _FEKernelArraysChildren = tuple[
     dict[str, tuple[JaxArray, ...]],
     dict[str, tuple[JaxArray, ...]],
+    JaxArray,
     JaxArray,
     JaxArray,
     dict[str, BlockIPGeometryCache],
@@ -74,9 +75,14 @@ class FEKernelArrays:
       ``(n_elems_block, num_dofs_per_element * num_dofs_per_basis_fn)``
       and gives the flat global eq indices residual block ``r``
       scatters its element residual / tangent into.
-    - ``coo_rows`` / ``coo_cols``: the assembled global tangent's COO
-      ``(rows, cols)`` — mesh-derived constants shared by every Newton
+    - ``coo_rows`` / ``coo_cols``: the deduped assembled global
+      tangent's COO ``(rows, cols)`` — one entry per structural
+      nonzero, mesh-derived constants shared by every Newton
       iteration (only the COO values vary).
+    - ``coo_dedup_scatter``: the length-``nnz`` map from each
+      with-duplicates assembly triplet to its slot in the deduped
+      ``(coo_rows, coo_cols)`` pattern; :func:`assemble_global`
+      segment-sums the concatenated per-element COO data through it.
     - ``geometry_cache``: the per-element-block reference-frame
       geometry cache; the same object as ``fe_problem.geometry_cache``.
     - ``embedded_sparsity``: the embedded-BC CSR sparsity cache; the
@@ -95,6 +101,7 @@ class FEKernelArrays:
     r_scatter_eq_by_block: dict[str, tuple[JaxArray, ...]]
     coo_rows: JaxArray
     coo_cols: JaxArray
+    coo_dedup_scatter: JaxArray
     geometry_cache: dict[str, BlockIPGeometryCache]
     embedded_sparsity: EmbeddedSparsity
     prescribed_indices: JaxArray
@@ -107,6 +114,7 @@ class FEKernelArrays:
             self.r_scatter_eq_by_block,
             self.coo_rows,
             self.coo_cols,
+            self.coo_dedup_scatter,
             self.geometry_cache,
             self.embedded_sparsity,
             self.prescribed_indices,
@@ -120,13 +128,14 @@ class FEKernelArrays:
             cls, aux_data: None, children: _FEKernelArraysChildren,
     ) -> FEKernelArrays:
         (u_gather_eq_by_block, r_scatter_eq_by_block, coo_rows, coo_cols,
-         geometry_cache, embedded_sparsity, prescribed_indices,
-         neumann_side_arrays, dbc_arrays) = children
+         coo_dedup_scatter, geometry_cache, embedded_sparsity,
+         prescribed_indices, neumann_side_arrays, dbc_arrays) = children
         return cls(
             u_gather_eq_by_block=u_gather_eq_by_block,
             r_scatter_eq_by_block=r_scatter_eq_by_block,
             coo_rows=coo_rows,
             coo_cols=coo_cols,
+            coo_dedup_scatter=coo_dedup_scatter,
             geometry_cache=geometry_cache,
             embedded_sparsity=embedded_sparsity,
             prescribed_indices=prescribed_indices,
@@ -140,10 +149,10 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
 
     The per-block index arrays are derived through the assembly
     layer's own helper (:func:`cmad.fem.assembly._element_eq_indices`)
-    and the COO ``(rows, cols)`` through
-    :func:`cmad.fem.assembly.assembled_coo_indices`, so the carrier's
-    arrays match the in-trace assembly path bit-for-bit; the Neumann
-    side arrays come from
+    and the deduped COO ``(rows, cols)`` plus the dedup scatter
+    through :func:`cmad.fem.assembly.assembled_coo_dedup`, so the
+    carrier's arrays match the in-trace assembly path bit-for-bit;
+    the Neumann side arrays come from
     :func:`cmad.fem.neumann.build_neumann_side_arrays` and the
     Dirichlet prescribed-value arrays from
     :func:`cmad.fem.dof.build_dbc_arrays`. The geometry cache and
@@ -190,7 +199,7 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
             for r in range(num_residuals)
         )
 
-    rows, cols = assembled_coo_indices(fe_problem)
+    coo_rows, coo_cols, coo_dedup_scatter = assembled_coo_dedup(fe_problem)
     neumann_side_arrays = build_neumann_side_arrays(
         mesh, dof_map, fe_problem.resolved_neumann_bcs,
     )
@@ -199,8 +208,9 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
     return FEKernelArrays(
         u_gather_eq_by_block=u_gather_eq_by_block,
         r_scatter_eq_by_block=r_scatter_eq_by_block,
-        coo_rows=jnp.asarray(rows),
-        coo_cols=jnp.asarray(cols),
+        coo_rows=jnp.asarray(coo_rows),
+        coo_cols=jnp.asarray(coo_cols),
+        coo_dedup_scatter=jnp.asarray(coo_dedup_scatter),
         geometry_cache=fe_problem.geometry_cache,
         embedded_sparsity=fe_problem.embedded_sparsity,
         prescribed_indices=jnp.asarray(dof_map.prescribed_indices),

@@ -11,7 +11,6 @@ from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.registry import register_global_residual
 from cmad.io.results import FieldSpec, ip_average_to_element
-from cmad.models.model import Model
 from cmad.models.var_types import VarType
 
 

@@ -588,8 +588,11 @@ def assemble_global(
 
     ``K`` is the global tangent ``dR/dU`` as a
     :class:`jax.experimental.sparse.BCOO` of shape
-    ``(n_dofs, n_dofs)``; duplicate ``(row, col)`` entries from
-    shared-DOF assembly are kept and sum implicitly on ``K @ v``.
+    ``(n_dofs, n_dofs)``, deduplicated at the assembly boundary:
+    duplicate ``(row, col)`` entries from shared-DOF assembly are
+    segment-summed into the unique pattern, so ``K`` carries one
+    entry per structural nonzero (``indices_sorted`` and
+    ``unique_indices`` both hold).
     ``R`` is the flat JAX residual vector of length ``n_dofs``.
     ``xi_solved_by_block`` is the per-block converged-xi dict — keys
     are exactly the set of blocks whose mode is COUPLED, each entry
@@ -621,12 +624,17 @@ def assemble_global(
     Implementation note: each block's per-element residual is
     accumulated into a flat JAX vector via
     :func:`assemble_element_block`, which also returns the block's
-    per-element-block ``vals`` (the COO data). Per-block residual
-    contributions sum into ``R``; per-block JAX ``vals`` concatenate
-    into the BCOO data buffer, paired with the static
-    ``fe_arrays.coo_rows`` / ``coo_cols`` (built once by
-    :func:`assembled_coo_indices` in the same ``(block, r, s)`` emit
-    order). Non-None ``xi_solved_per_block`` returns populate the
+    per-element-block ``vals`` (the with-duplicates COO data).
+    Per-block residual contributions sum into ``R``; the per-block
+    JAX ``vals`` concatenate into the duplicate-laden COO data
+    buffer, which is then segment-summed into the unique pattern via
+    ``fe_arrays.coo_dedup_scatter`` and paired with the static
+    deduped ``fe_arrays.coo_rows`` / ``coo_cols`` (all built once by
+    :func:`assembled_coo_dedup` in the same ``(block, r, s)`` emit
+    order). The concatenated with-duplicates buffer is a transient,
+    freed before return — the embedded-BC enforcement, the linear
+    solve, and their AD shadows see only the deduped data. Non-None
+    ``xi_solved_per_block`` returns populate the
     ``xi_solved_by_block`` dict. Surface fluxes add into ``R`` via
     :func:`cmad.fem.neumann.assemble_side_neumann` after the volume
     walk.
@@ -658,10 +666,16 @@ def assemble_global(
         t,
     )
 
+    vals = jnp.concatenate(vals_all)
+    unique_data = jnp.zeros(
+        fe_arrays.coo_rows.shape[0], dtype=vals.dtype,
+    ).at[fe_arrays.coo_dedup_scatter].add(vals)
     K = BCOO(
-        (jnp.concatenate(vals_all),
+        (unique_data,
          jnp.stack([fe_arrays.coo_rows, fe_arrays.coo_cols], axis=-1)),
         shape=(n_dofs, n_dofs),
+        indices_sorted=True,
+        unique_indices=True,
     )
     return K, R_global, xi_solved_by_block
 
@@ -669,13 +683,16 @@ def assemble_global(
 def assembled_coo_indices(
         fe_problem: FEProblem,
 ) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
-    """Static ``(rows, cols)`` of the assembled BCOO's COO triplets.
+    """Static with-duplicates ``(rows, cols)`` of the assembled COO stream.
 
-    The ``(rows, cols)`` of the BCOO returned by
-    :func:`assemble_global` are mesh-derived constants — every Newton
-    iter shares the same sparsity pattern, only ``vals`` varies. This
-    helper rebuilds them without running an assembly, matching the
-    ``(block, r, s)`` emit order of :func:`assemble_element_block`.
+    The per-element COO triplet stream from
+    :func:`assemble_element_block` carries duplicates — a basis
+    function shared by ``k`` elements yields ``k`` triplets at one
+    ``(row, col)``. Its ``(rows, cols)`` are mesh-derived constants;
+    this helper rebuilds them without running an assembly, matching
+    the ``(block, r, s)`` emit order of :func:`assemble_element_block`.
+    :func:`assembled_coo_dedup` lex-sorts this stream into the unique
+    pattern the deduped BCOO of :func:`assemble_global` carries.
 
     Keep the ``(block, r, s)`` walk in sync with
     :func:`assemble_element_block`'s COO emit: changing the iteration
@@ -716,3 +733,50 @@ def assembled_coo_indices(
                     (n_elems, n_dofs_r, n_dofs_s),
                 ).ravel())
     return np.concatenate(rows_all), np.concatenate(cols_all)
+
+
+def assembled_coo_dedup(
+        fe_problem: FEProblem,
+) -> tuple[NDArray[np.intp], NDArray[np.intp], NDArray[np.intp]]:
+    """Deduped ``(rows, cols)`` of the assembled COO + the dedup scatter.
+
+    The assembled COO triplet stream from :func:`assembled_coo_indices`
+    carries duplicates: a basis function shared by ``k`` elements
+    receives ``k`` triplets at one ``(row, col)``. This helper
+    lex-sorts that stream into the ``num_unique`` distinct
+    ``(row, col)`` entries and returns, alongside the unique pattern,
+    a length-``nnz`` ``coo_dedup_scatter`` mapping each triplet (in
+    :func:`assembled_coo_indices` emit order) to its unique slot.
+
+    :func:`assemble_global` segment-sums the ``nnz``-length COO data
+    into the ``num_unique``-length deduped buffer through
+    ``coo_dedup_scatter`` right at the assembly boundary, so the
+    embedded-BC enforcement, the linear solve, and their AD shadows
+    never carry the duplicate-laden buffer.
+
+    The unique pattern is lex-sorted ``(row, col)`` major-minor, so
+    the deduped BCOO :func:`assemble_global` builds from it satisfies
+    ``indices_sorted`` and ``unique_indices``. ``coo_dedup_scatter``
+    inherits the ``(block, r, s)`` emit-order contract of
+    :func:`assembled_coo_indices`: it is built from that output, so
+    it stays in lockstep with :func:`assemble_element_block`'s COO
+    emit.
+    """
+    rows, cols = assembled_coo_indices(fe_problem)
+    sort_perm = np.lexsort((cols, rows))
+    sorted_rows = rows[sort_perm]
+    sorted_cols = cols[sort_perm]
+
+    is_new_group = np.empty(rows.shape[0], dtype=bool)
+    is_new_group[0] = True
+    is_new_group[1:] = (sorted_rows[1:] != sorted_rows[:-1]) | (
+        sorted_cols[1:] != sorted_cols[:-1]
+    )
+    segment_of_sorted = (np.cumsum(is_new_group) - 1).astype(np.intp)
+
+    unique_rows = sorted_rows[is_new_group].astype(np.intp)
+    unique_cols = sorted_cols[is_new_group].astype(np.intp)
+
+    coo_dedup_scatter = np.empty(rows.shape[0], dtype=np.intp)
+    coo_dedup_scatter[sort_perm] = segment_of_sorted
+    return unique_rows, unique_cols, coo_dedup_scatter

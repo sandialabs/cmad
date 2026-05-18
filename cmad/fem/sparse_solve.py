@@ -721,43 +721,49 @@ def build_embedded_sparsity(
 ) -> EmbeddedSparsity:
     """Pre-compute the :class:`EmbeddedSparsity` for ``fe_problem``.
 
-    Walks the assembled COO from
-    :func:`cmad.fem.assembly.assembled_coo_indices`, filters
+    Walks the deduped assembled COO from
+    :func:`cmad.fem.assembly.assembled_coo_dedup`, filters
     structural zeros (entries whose row or column is prescribed),
     and appends ``(presc_idx, presc_idx)`` positions for the
     ``alpha`` diagonal block that :func:`_embedded_bc_enforce`
     adds at runtime. The lex-sort permutation, dedup segment ids,
-    and CSR row pointers are derived from the kept set.
+    and CSR row pointers are derived from the kept set; ``perm`` /
+    ``segment_ids`` index the ``num_unique + n_presc`` embedded-BC
+    data buffer that :func:`_embedded_bc_enforce` produces from a
+    deduped :class:`jax.experimental.sparse.BCOO`.
 
-    When an assembled ``(presc, presc)`` entry coincides with an
-    appended ``alpha`` position, the dedup folds the two into one
+    The assembled COO is already deduplicated, so the only
+    duplicates the in-solver segment-sum collapses are the
+    ``(presc, presc)`` positions where an assembled diagonal entry
+    coincides with an appended ``alpha`` position — folded into one
     unique entry with value ``alpha`` (zero from the runtime mask
-    plus appended ``alpha``) — handled by the segment_sum without
-    special-casing.
+    plus appended ``alpha``).
     """
-    from cmad.fem.assembly import assembled_coo_indices
+    from cmad.fem.assembly import assembled_coo_dedup
 
-    rows_asm, cols_asm = assembled_coo_indices(fe_problem)
+    assembled_rows, assembled_cols, _ = assembled_coo_dedup(fe_problem)
     presc_idx = np.asarray(
         fe_problem.dof_map.prescribed_indices, dtype=np.intp,
     )
     n = int(fe_problem.dof_map.num_total_dofs)
-    nnz_asm = rows_asm.shape[0]
+    n_assembled = assembled_rows.shape[0]
     n_presc = presc_idx.shape[0]
 
     is_presc = np.zeros(n, dtype=bool)
     is_presc[presc_idx] = True
 
-    free_free_mask = ~is_presc[rows_asm] & ~is_presc[cols_asm]
+    free_free_mask = (
+        ~is_presc[assembled_rows] & ~is_presc[assembled_cols]
+    )
     ff_positions = np.where(free_free_mask)[0].astype(np.intp)
 
     appended_positions = np.arange(
-        nnz_asm, nnz_asm + n_presc, dtype=np.intp,
+        n_assembled, n_assembled + n_presc, dtype=np.intp,
     )
     kept_positions = np.concatenate([ff_positions, appended_positions])
 
-    full_rows = np.concatenate([rows_asm, presc_idx])
-    full_cols = np.concatenate([cols_asm, presc_idx])
+    full_rows = np.concatenate([assembled_rows, presc_idx])
+    full_cols = np.concatenate([assembled_cols, presc_idx])
     kept_rows = full_rows[kept_positions]
     kept_cols = full_cols[kept_positions]
 

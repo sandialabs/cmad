@@ -76,37 +76,39 @@ class TestHessianFeRoundTrip(unittest.TestCase):
         ]
         hessians: dict[str, np.ndarray] = {}
         for ls in solver_configs:
-            with self.subTest(linear_solver=ls):
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    tmp = Path(tmpdir)
-                    _write_hex_cube_mesh(tmp / "mesh.exo")
-                    deck = _make_fe_hessian_deck(mesh_filename="mesh.exo")
-                    deck["linear solver"] = ls
-                    deck_path = tmp / "deck.yaml"
-                    deck_path.write_text(
-                        yaml.safe_dump(deck, sort_keys=False),
-                    )
+            with (
+                self.subTest(linear_solver=ls),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                tmp = Path(tmpdir)
+                _write_hex_cube_mesh(tmp / "mesh.exo")
+                deck = _make_fe_hessian_deck(mesh_filename="mesh.exo")
+                deck["linear solver"] = ls
+                deck_path = tmp / "deck.yaml"
+                deck_path.write_text(
+                    yaml.safe_dump(deck, sort_keys=False),
+                )
 
-                    self.assertEqual(
-                        cmad_main(["hessian", str(deck_path)]), 0,
-                    )
+                self.assertEqual(
+                    cmad_main(["hessian", str(deck_path)]), 0,
+                )
 
-                    out_dir = tmp / "out"
-                    hess = np.load(out_dir / "hess.npy")
-                    self.assertEqual(hess.shape, (2, 2))
-                    self.assertTrue(np.all(np.isfinite(hess)))
-                    np.testing.assert_allclose(
-                        hess, hess.T, rtol=0, atol=1e-12,
-                    )
+                out_dir = tmp / "out"
+                hess = np.load(out_dir / "hess.npy")
+                self.assertEqual(hess.shape, (2, 2))
+                self.assertTrue(np.all(np.isfinite(hess)))
+                np.testing.assert_allclose(
+                    hess, hess.T, rtol=0, atol=1e-12,
+                )
 
-                    self.assertTrue(
-                        (out_dir / "deck.resolved.yaml").exists(),
-                    )
-                    self.assertFalse((out_dir / "J.json").exists())
-                    self.assertFalse((out_dir / "grad.npy").exists())
-                    self.assertFalse(any(out_dir.glob("*.exo")))
+                self.assertTrue(
+                    (out_dir / "deck.resolved.yaml").exists(),
+                )
+                self.assertFalse((out_dir / "J.json").exists())
+                self.assertFalse((out_dir / "grad.npy").exists())
+                self.assertFalse(any(out_dir.glob("*.exo")))
 
-                    hessians[ls["type"]] = hess
+                hessians[ls["type"]] = hess
 
         np.testing.assert_allclose(
             hessians["cg"], hessians["direct"], rtol=1e-6, atol=1e-9,

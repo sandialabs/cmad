@@ -28,7 +28,7 @@ from typing import ClassVar, cast
 import jax.numpy as jnp
 import numpy as np
 
-from cmad.fem.assembly import assemble_element_block
+from cmad.fem.assembly import assemble_element_block, assembled_coo_indices
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem
@@ -171,8 +171,10 @@ class TestAssemblyMultiBlock(unittest.TestCase):
             self.U, self.U_prev, t=0.0,
         )
         vals = np.asarray(vals_jax)
-        rows = np.asarray(fe_arrays.coo_rows)
-        cols = np.asarray(fe_arrays.coo_cols)
+        # vals is the with-duplicates per-element-block COO data;
+        # label it with the matching with-duplicates (rows, cols).
+        # The carrier holds the deduped pattern post-assembly.
+        rows, cols = assembled_coo_indices(self.fe_problem)
         u_rows = rows < self.n_dofs_u
         u_cols = cols < self.n_dofs_u
         p_rows = ~u_rows
