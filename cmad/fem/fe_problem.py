@@ -132,6 +132,9 @@ class FEProblem:
     )
     bc_diag_scale: float = field(init=False, default=1.0)
     embedded_sparsity: "EmbeddedSparsity" = field(init=False)
+    near_null_space: NDArray[np.floating] | None = field(
+        init=False, default=None,
+    )
 
     def __post_init__(self) -> None:
         name_to_idx = {
@@ -211,6 +214,10 @@ class FEProblem:
         from cmad.fem.sparse_solve import build_embedded_sparsity
         object.__setattr__(
             self, "embedded_sparsity", build_embedded_sparsity(self),
+        )
+
+        object.__setattr__(
+            self, "near_null_space", self.gr.near_null_space(self.mesh),
         )
 
     @property

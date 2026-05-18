@@ -284,7 +284,8 @@ class TestCGAmgJaxForward(unittest.TestCase):
 
     Parallels :class:`TestCGJaxForward`; covers the pyamg-preconditioned
     branch with default settings (no ``pyamg_kwargs``, so pyamg uses
-    the constant-vector near null space).
+    the constant-vector near null space) and with an explicit
+    ``B``-passing path so the ``pyamg_kwargs`` passthrough is exercised.
     """
 
     def test_spd_matches_dense(self) -> None:
@@ -294,6 +295,25 @@ class TestCGAmgJaxForward(unittest.TestCase):
         b = jnp.asarray(np.random.default_rng(81).standard_normal(n))
 
         x = cg_amg_jax(K_data, sparsity, b, rtol=1e-12)
+        x_ref = jnp.linalg.solve(jnp.asarray(K), b)
+        np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
+                                   rtol=1e-8, atol=1e-9)
+
+    def test_pyamg_kwargs_B_passthrough(self) -> None:
+        """``pyamg_kwargs={'B': ...}`` is forwarded to
+        :func:`pyamg.smoothed_aggregation_solver` and produces the
+        same solution as the dense reference.
+        """
+        n = 10
+        K = _random_spd(n, seed=82)
+        K_data, sparsity = _dense_to_cache(K)
+        b = jnp.asarray(np.random.default_rng(83).standard_normal(n))
+        B = np.ones((n, 1), dtype=np.float64)
+
+        x = cg_amg_jax(
+            K_data, sparsity, b, rtol=1e-12,
+            pyamg_kwargs={"B": B},
+        )
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
         np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
                                    rtol=1e-8, atol=1e-9)

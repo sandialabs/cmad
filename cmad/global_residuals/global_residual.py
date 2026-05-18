@@ -19,6 +19,7 @@ from cmad.typing import GREvaluators, JaxArray, ResidualFnGR
 
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem, FEState
+    from cmad.fem.mesh import Mesh
 
 
 class GlobalResidual(ABC):
@@ -161,6 +162,27 @@ class GlobalResidual(ABC):
         ``model.parameters``.
         """
         return 1.0
+
+    def near_null_space(
+            self, mesh: "Mesh",
+    ) -> NDArray[np.floating] | None:
+        """Near-null-space basis ``B`` for AMG hierarchy construction.
+
+        :class:`cmad.fem.fe_problem.FEProblem` calls this once at
+        construction and caches the result on
+        :attr:`FEProblem.near_null_space`; the FE-Newton linear-solver
+        dispatch threads it into
+        :func:`pyamg.smoothed_aggregation_solver`'s ``B`` argument so
+        the AMG coarse spaces preserve the GR's near-null modes
+        through coarsening. Shape ``(num_total_dofs, num_modes)``,
+        matching the global DOF layout from
+        :class:`cmad.fem.dof.GlobalDofMap`.
+
+        Default ``None`` selects pyamg's constant-vector fallback,
+        correct for scalar diffusion-like operators. Mechanics GRs
+        override to return rigid-body modes.
+        """
+        return None
 
     def default_output_fields(self) -> dict[str, list[FieldSpec]]:
         """Default Exodus-output catalog for this GR.

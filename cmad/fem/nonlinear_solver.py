@@ -72,14 +72,19 @@ def _thaw(value: Any) -> Any:
 
 def _solve_linear(
         K_data: JaxArray,
-        sparsity: Any,
+        fe_problem: FEProblem,
         rhs: JaxArray,
         linear_solver_settings: dict[str, Any],
 ) -> JaxArray:
     """Dispatch on ``settings['type']`` to direct / CG / GMRES, with the
     iterative-CG arm picking a Jacobi or pyamg preconditioner from
     ``settings['preconditioner']``.
+
+    :attr:`FEProblem.near_null_space` is auto-merged into pyamg
+    ``kwargs`` as ``B`` when present and the caller hasn't already set
+    it.
     """
+    sparsity = fe_problem.embedded_sparsity
     kind = linear_solver_settings["type"]
     if kind == "direct":
         return spsolve_jax(K_data, sparsity, rhs)
@@ -97,11 +102,14 @@ def _solve_linear(
                 max_iters=linear_solver_settings["max iters"],
             )
         if precon == "pyamg":
+            kwargs = dict(precon_spec.get("kwargs") or {})
+            if "B" not in kwargs and fe_problem.near_null_space is not None:
+                kwargs["B"] = fe_problem.near_null_space
             return cg_amg_jax(
                 K_data, sparsity, rhs,
                 rtol=linear_solver_settings["rtol"],
                 max_iters=linear_solver_settings["max iters"],
-                pyamg_kwargs=precon_spec.get("kwargs"),
+                pyamg_kwargs=kwargs,
             )
         raise ValueError(
             f"unknown preconditioner type {precon!r} for cg; "
@@ -199,7 +207,7 @@ def _fe_newton_primal(
             K_bcoo, presc_idx, presc_diag_scale=alpha,
         )
         dU = _solve_linear(
-            K_data, fe_problem.embedded_sparsity, -r,
+            K_data, fe_problem, -r,
             linear_solver_settings,
         )
         U_new = U + dU
@@ -417,7 +425,7 @@ def _fe_newton_solve_ad_jvp(
     )
 
     U_star_dot = _solve_linear(
-        K_data, fe_problem.embedded_sparsity, -Rp_dot, lss,
+        K_data, fe_problem, -Rp_dot, lss,
     )
 
     def xi_of_U_p(U_, params_, Up_, xp_, t_):

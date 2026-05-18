@@ -5,6 +5,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from cmad.fem.fe_problem import FEProblem, FEState
+from cmad.fem.mesh import Mesh
 from cmad.fem.postprocess import evaluate_cauchy_at_ips
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
@@ -77,6 +78,23 @@ class SmallDispEquilibrium(GlobalResidual):
             mu = float(elastic["mu"])
             return 9.0 * kappa * mu / (3.0 * kappa + mu)
         return 1.0
+
+    def near_null_space(self, mesh: Mesh) -> NDArray[np.floating]:
+        """Rigid-body modes for 3D elasticity at the mesh nodes.
+
+        Returns the ``(3 * n_nodes, 6)`` near-null-space matrix in
+        interleaved-by-node DOF order (matching
+        :meth:`cmad.fem.dof.GlobalDofMap.eq_index`'s ``basis_fn *
+        ndofs + dof`` layout): 3 translation modes + 3 rotation
+        modes (``e_k × r`` per node). Computed via
+        :func:`pyamg.util.utils.coord_to_rbm`.
+        """
+        from pyamg.util.utils import coord_to_rbm
+        coords = np.asarray(mesh.nodes, dtype=np.float64)
+        n = coords.shape[0]
+        return coord_to_rbm(
+            n, 3, coords[:, 0], coords[:, 1], coords[:, 2],
+        )
 
     def default_output_fields(self) -> dict[str, list[FieldSpec]]:
         return {
