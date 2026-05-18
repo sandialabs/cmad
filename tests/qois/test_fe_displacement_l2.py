@@ -92,6 +92,7 @@ class TestClosureAnalytical(unittest.TestCase):
         self.qoi = FEDisplacementL2(self.fe_problem, [0.0, 1.0])
         self.closure = self.qoi.step_contribution(
             params_by_block_from_models(self.fe_problem),
+            self.fe_problem.kernel_arrays,
         )
 
     def test_zero_U_gives_zero_J(self) -> None:
@@ -170,7 +171,9 @@ class TestQoIThroughDriver(unittest.TestCase):
         )
 
         params_by_block = params_by_block_from_models(fe_problem)
-        closure = qoi.step_contribution(params_by_block)
+        closure = qoi.step_contribution(
+            params_by_block, fe_problem.kernel_arrays,
+        )
         J_manual = 0.0
         for n in range(1, len(state.t_history)):
             U = jnp.asarray(state.U_at(n))

@@ -14,6 +14,7 @@ from cmad.typing import JaxArray, Params
 
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem
+    from cmad.fem.kernel_arrays import FEKernelArrays
 
 
 @register_qoi("fe_displacement_l2")
@@ -77,17 +78,17 @@ class FEDisplacementL2(FEQoI):
     def step_contribution(
             self,
             params_by_block: Mapping[str, Params],
+            fe_arrays: FEKernelArrays,
     ) -> StepContribution:
         del params_by_block  # forward functional: params not consumed
         fe_problem = self._fe_problem
         r_disp = self._r_disp
         field_idx_disp = self._field_idx_disp
         norm_factor = self._norm_factor
-        fe_arrays = fe_problem.kernel_arrays
 
         block_data: list[tuple[str, JaxArray, JaxArray]] = []
         for block_name in fe_problem.models_by_block:
-            geom_cache = fe_problem.geometry_cache[block_name]
+            geom_cache = fe_arrays.geometry_cache[block_name]
             N_disp = geom_cache.shared.field_N_per_block[r_disp]
             quad_w = geom_cache.shared.quad_w
             iso_jac_det = geom_cache.per_elem.iso_jac_det

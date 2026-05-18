@@ -10,6 +10,7 @@ from cmad.typing import JaxArray, Params
 
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem
+    from cmad.fem.kernel_arrays import FEKernelArrays
 
 
 StepContribution: TypeAlias = Callable[
@@ -51,8 +52,9 @@ class FEQoI(QoIBase, ABC):
     """ABC for FE-shaped QoIs accumulated over a quasi-static time loop.
 
     FE QoIs build a per-step closure via a factory call
-    :meth:`step_contribution` that takes ``params_by_block`` and
-    returns a state-only callable. The factory exists to let
+    :meth:`step_contribution` that takes ``params_by_block`` and the
+    mesh kernel arrays, and returns a state-only callable. The factory
+    exists to let
     parameter-dependent QoIs (future FEMU / regularization terms)
     capture ``params_by_block`` by Python closure — AD traces through
     the capture when ``params_flat`` is the tracer in
@@ -73,12 +75,16 @@ class FEQoI(QoIBase, ABC):
     def step_contribution(
             self,
             params_by_block: Mapping[str, Params],
+            fe_arrays: FEKernelArrays,
     ) -> StepContribution:
         """Build the per-step closure that accumulates into J.
 
         ``params_by_block`` enters here so QoIs that depend on params
         — e.g. those that call ``assemble_global`` to read reaction
-        forces — can capture it via Python closure. The returned
+        forces — can capture it via Python closure. ``fe_arrays`` is
+        the mesh-derived kernel-array carrier; QoIs that interpolate
+        or integrate fields over the mesh capture it the same way and
+        read their geometry and index arrays from it. The returned
         closure has the time-varying-state-only signature
         :data:`StepContribution`; the driver calls it once per step
         with ``(U, U_prev, xi, xi_prev, t, t_prev)`` and accumulates

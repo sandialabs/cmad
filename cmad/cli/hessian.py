@@ -78,9 +78,16 @@ def _run_hessian_mp(deck_path: Path) -> int:
 
 def _run_hessian_fe(deck_path: Path) -> int:
     bundle = build_fe_problem_from_deck(deck_path, "hessian")
-    params_flat, J_of_params_flat = build_fe_J_of_params_flat(bundle)
+    params_flat, state_init, J_of_params_flat = build_fe_J_of_params_flat(
+        bundle,
+    )
+    fe_arrays = bundle.fe_problem.kernel_arrays
 
-    hess = np.asarray(jax.hessian(J_of_params_flat)(params_flat))
+    hess = np.asarray(
+        jax.jit(jax.hessian(J_of_params_flat, argnums=0))(
+            params_flat, state_init, fe_arrays,
+        ),
+    )
 
     out_dir, prefix, fmt = resolve_output(bundle.resolved, deck_path)
     write_resolved_deck(out_dir, prefix, bundle.resolved)

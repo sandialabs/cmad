@@ -21,10 +21,11 @@ from numpy.typing import NDArray
 
 from cmad.fem.bcs import DirichletBC, NeumannBC
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
-from cmad.fem.driver import fe_quasistatic_trajectory
+from cmad.fem.driver import StateInit, build_fe_quasistatic_trajectory
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem, FEState, build_fe_problem
 from cmad.fem.finite_element import P1_TET, Q1_HEX, FiniteElement
+from cmad.fem.kernel_arrays import FEKernelArrays
 from cmad.fem.quadrature import (
     QuadratureRule,
     hex_quadrature,
@@ -125,10 +126,12 @@ def build_fe_J_of_params_flat(
         print_global_convergence: bool = False,
 ) -> tuple[
     JaxArray,
-    Callable[[JaxArray], JaxArray],
+    StateInit,
+    Callable[[JaxArray, StateInit, FEKernelArrays], JaxArray],
 ]:
-    """Build the ``(params_flat_init, J_of_params_flat)`` pair for
-    ``cmad objective`` / ``gradient`` / ``hessian`` on FE problems.
+    """Build the ``(params_flat_init, state_init, J_of_params_flat)``
+    triple for ``cmad objective`` / ``gradient`` / ``hessian`` on FE
+    problems.
 
     ``params_flat`` is the concatenation of each mesh element block's
     flat-active canonical parameter vector
@@ -141,12 +144,18 @@ def build_fe_J_of_params_flat(
     are JAX constants. Hessians are therefore
     ``(num_active, num_active)``, not ``(num_total, num_total)``.
 
-    The closure reconstructs ``params_by_block`` per block, invokes
+    The cost closure ``J_of_params_flat(params_flat, state_init,
+    fe_arrays)`` reconstructs ``params_by_block`` per block, invokes
     :meth:`FEQoI.step_contribution` to build the per-step QoI closure
     against those reconstructed params, and runs the FE forward solve
-    via :func:`cmad.fem.driver.fe_quasistatic_trajectory`. The returned
-    scalar ``J`` is the QoI accumulated across the time loop, suitable
-    for direct evaluation, ``jax.grad``, or ``jax.hessian``.
+    via the ``trajectory`` closure from
+    :func:`cmad.fem.driver.build_fe_quasistatic_trajectory`. The
+    returned scalar ``J`` is the QoI accumulated across the time loop,
+    suitable for direct evaluation, ``jax.grad``, or ``jax.hessian``.
+    ``state_init`` is the ``(U_init, xi_init_by_block)`` pair seeding
+    the time loop; callers source ``fe_arrays`` (the
+    :class:`FEKernelArrays` carrier) from
+    ``bundle.fe_problem.kernel_arrays``.
 
     ``bundle.qoi`` must be non-None; the FE-side
     ``build_fe_problem_from_deck`` populates it for ``"objective"``,
@@ -169,6 +178,7 @@ def build_fe_J_of_params_flat(
         b: jnp.asarray(state.xi_at(0, b))
         for b in fe_problem.models_by_block
     }
+    state_init: StateInit = (U_init, xi_init)
     t_schedule_jax = jnp.asarray(bundle.t_schedule, dtype=jnp.float64)
 
     for t in bundle.t_schedule[1:]:
@@ -195,8 +205,17 @@ def build_fe_J_of_params_flat(
         "print convergence": print_global_convergence,
     }
     linear_solver_settings = bundle.resolved["linear solver"]
+    trajectory = build_fe_quasistatic_trajectory(
+        fe_problem,
+        nonlinear_solver_settings=nonlinear_solver_settings,
+        linear_solver_settings=linear_solver_settings,
+    )
 
-    def J_of_params_flat(params_flat: JaxArray) -> JaxArray:
+    def J_of_params_flat(
+            params_flat: JaxArray,
+            state_init: StateInit,
+            fe_arrays: FEKernelArrays,
+    ) -> JaxArray:
         params_by_block: dict[str, Any] = {}
         for i, b in enumerate(block_names):
             sub_flat = params_flat[boundaries[i]:boundaries[i + 1]]
@@ -206,20 +225,19 @@ def build_fe_J_of_params_flat(
                     sub_flat,
                 )
             )
-        qoi_step_contribution = qoi.step_contribution(params_by_block)
-        _, _, J = fe_quasistatic_trajectory(
-            fe_problem,
+        qoi_step_contribution = qoi.step_contribution(
+            params_by_block, fe_arrays,
+        )
+        _, _, J = trajectory(
+            fe_arrays,
             params_by_block,
-            U_init,
-            xi_init,
+            state_init,
             t_schedule_jax,
             qoi_step_contribution=qoi_step_contribution,
-            nonlinear_solver_settings=nonlinear_solver_settings,
-            linear_solver_settings=linear_solver_settings,
         )
         return J
 
-    return params_flat_init, J_of_params_flat
+    return params_flat_init, state_init, J_of_params_flat
 
 
 _DEFAULT_FE_PER_FAMILY: dict[ElementFamily, FiniteElement] = {

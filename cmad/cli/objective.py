@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from jax import jit
+
 from cmad.cli.common import (
     build_fe_J_of_params_flat,
     build_fe_problem_from_deck,
@@ -71,14 +73,17 @@ def _run_objective_mp(deck_path: Path) -> int:
 def _run_objective_fe(deck_path: Path) -> int:
     bundle = build_fe_problem_from_deck(deck_path, "objective")
     gr_section = bundle.resolved["residuals"]["global residual"]
-    params_flat, J_of_params_flat = build_fe_J_of_params_flat(
+    params_flat, state_init, J_of_params_flat = build_fe_J_of_params_flat(
         bundle,
         print_global_convergence=bool(
             gr_section.get("print convergence", False),
         ),
     )
+    fe_arrays = bundle.fe_problem.kernel_arrays
 
-    J = float(J_of_params_flat(params_flat))
+    J = float(
+        jit(J_of_params_flat)(params_flat, state_init, fe_arrays),
+    )
 
     out_dir, prefix, _fmt = resolve_output(bundle.resolved, deck_path)
     write_resolved_deck(out_dir, prefix, bundle.resolved)

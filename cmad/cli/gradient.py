@@ -73,9 +73,16 @@ def _run_gradient_mp(deck_path: Path) -> int:
 
 def _run_gradient_fe(deck_path: Path) -> int:
     bundle = build_fe_problem_from_deck(deck_path, "gradient")
-    params_flat, J_of_params_flat = build_fe_J_of_params_flat(bundle)
+    params_flat, state_init, J_of_params_flat = build_fe_J_of_params_flat(
+        bundle,
+    )
+    fe_arrays = bundle.fe_problem.kernel_arrays
 
-    grad = np.asarray(jax.grad(J_of_params_flat)(params_flat))
+    grad = np.asarray(
+        jax.jit(jax.grad(J_of_params_flat, argnums=0))(
+            params_flat, state_init, fe_arrays,
+        ),
+    )
 
     out_dir, prefix, fmt = resolve_output(bundle.resolved, deck_path)
     write_resolved_deck(out_dir, prefix, bundle.resolved)
