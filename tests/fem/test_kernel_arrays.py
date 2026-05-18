@@ -1,10 +1,10 @@
 """Tests for :mod:`cmad.fem.kernel_arrays`.
 
-:func:`build_fe_kernel_arrays` must produce index arrays that match the
-in-trace assembly derivation bit-for-bit: the carrier's U-gather and
-R-scatter eq arrays and COO ``(rows, cols)`` are checked against
-:func:`_gather_element_U` / :func:`_element_eq_indices` /
-:func:`assembled_coo_indices` on hex and tet meshes.
+:func:`build_fe_kernel_arrays` must produce index arrays consistent with
+the assembly layer's index-derivation helpers: the carrier's U-gather
+and R-scatter eq arrays and the COO ``(rows, cols)`` are checked against
+:func:`_element_eq_indices` / :func:`assembled_coo_indices` on hex and
+tet meshes.
 """
 import unittest
 from typing import ClassVar, cast
@@ -14,7 +14,6 @@ import numpy as np
 
 from cmad.fem.assembly import (
     _element_eq_indices,
-    _gather_element_U,
     assembled_coo_indices,
 )
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
@@ -114,8 +113,8 @@ def _build_tet_fe_problem() -> FEProblem:
     )
 
 
-class TestKernelArraysMatchInTrace(unittest.TestCase):
-    """build_fe_kernel_arrays index arrays vs the in-trace derivation."""
+class TestKernelArraysMatchDerivation(unittest.TestCase):
+    """build_fe_kernel_arrays index arrays vs the derivation helpers."""
 
     def _check(self, fe_problem: FEProblem) -> None:
         ka = fe_problem.kernel_arrays
@@ -135,22 +134,24 @@ class TestKernelArraysMatchInTrace(unittest.TestCase):
             np.asarray(dof_map.prescribed_indices),
         )
 
-        U = np.random.default_rng(0).standard_normal(
-            dof_map.num_total_dofs,
-        )
         for block_name in fe_problem.evaluators_by_block:
             conn = mesh.connectivity[mesh.element_blocks[block_name]]
+            n_elems = conn.shape[0]
 
-            # U-gather: the carrier's eq arrays gather U the same as
-            # _gather_element_U derives in-trace.
-            gathered_ref = _gather_element_U(U, dof_map, conn)
+            # U-gather: the carrier's per-field eq arrays vs the
+            # _element_eq_indices derivation, reshaped to the
+            # (n_elems, dofs_per_element, dofs_per_basis_fn) layout
+            # _gather_element_U indexes the flat global U with.
             u_gather_eqs = ka.u_gather_eq_by_block[block_name]
-            self.assertEqual(len(u_gather_eqs), len(gathered_ref))
+            self.assertEqual(
+                len(u_gather_eqs), len(dof_map.field_layouts),
+            )
             for field_idx, eq in enumerate(u_gather_eqs):
-                np.testing.assert_array_equal(
-                    U[np.asarray(eq)],
-                    np.asarray(gathered_ref[field_idx]),
-                )
+                ndofs = int(dof_map.num_dofs_per_basis_fn[field_idx])
+                eq_ref = _element_eq_indices(
+                    conn, dof_map, field_idx=field_idx,
+                ).reshape(n_elems, -1, ndofs)
+                np.testing.assert_array_equal(np.asarray(eq), eq_ref)
 
             # R-scatter: the carrier's eq arrays vs _element_eq_indices.
             r_scatter_eqs = ka.r_scatter_eq_by_block[block_name]

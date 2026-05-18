@@ -1,5 +1,6 @@
 """Element + global FE assembly machinery."""
 from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 import numpy as np
@@ -25,6 +26,9 @@ from cmad.typing import (
     RAndDRDUEvaluator,
     StateList,
 )
+
+if TYPE_CHECKING:
+    from cmad.fem.kernel_arrays import FEKernelArrays
 
 
 def params_by_block_from_models(
@@ -114,32 +118,23 @@ def _element_basis_fns(
 
 def _gather_element_U(
         U_global: NDArray[np.floating] | JaxArray,
-        dof_map: GlobalDofMap,
-        connectivity_block: NDArray[np.intp],
+        fe_arrays: "FEKernelArrays",
+        block_name: str,
 ) -> list[JaxArray]:
     """Gather per-element basis-coefficient arrays from the flat global U.
 
-    Returns one array per field in ``dof_map.field_layouts``; entry ``f``
-    has shape ``(n_elems, num_dofs_per_element_f,
-    num_dofs_per_basis_fn[f])`` ready for ``vmap`` over the leading
-    element axis. Per-element basis-fn indices come from
-    :func:`_element_basis_fns`; the eq formula is
-    ``eq = block_offset + basis_fn * num_dofs_per_basis_fn + component``.
+    Returns one array per field; entry ``f`` has shape
+    ``(n_elems, num_dofs_per_element_f, num_dofs_per_basis_fn_f)``,
+    ready for ``vmap`` over the leading element axis. The per-field
+    U-gather index arrays come from
+    ``fe_arrays.u_gather_eq_by_block[block_name]`` rather than being
+    derived from ``mesh.connectivity`` in-trace, so they enter the
+    compiled program as traced array shapes, not baked constants.
     """
     U_jax = jnp.asarray(U_global)
-    out: list[JaxArray] = []
-    for field_idx, layout in enumerate(dof_map.field_layouts):
-        bf_per_elem = _element_basis_fns(layout, connectivity_block)
-        ndofs = dof_map.num_dofs_per_basis_fn[field_idx]
-        block_offset = dof_map.block_offsets[field_idx]
-        k_arr = np.arange(ndofs)
-        eq_3d = (
-            block_offset
-            + bf_per_elem[:, :, None] * ndofs
-            + k_arr[None, None, :]
-        )
-        out.append(U_jax[eq_3d])
-    return out
+    return [
+        U_jax[eq] for eq in fe_arrays.u_gather_eq_by_block[block_name]
+    ]
 
 
 def _element_eq_indices(
@@ -396,20 +391,15 @@ def per_element_R_and_K_coupled(
 
 def assemble_element_block(
         fe_problem: FEProblem,
+        fe_arrays: "FEKernelArrays",
         params_by_block: Mapping[str, Params],
         block_name: str,
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
         t: float,
         xi_prev_per_block: NDArray[np.floating] | JaxArray | None = None,
-) -> tuple[
-    JaxArray,
-    NDArray[np.intp],
-    NDArray[np.intp],
-    JaxArray,
-    JaxArray | None,
-]:
-    """Assemble one element block's R contribution + COO triplets.
+) -> tuple[JaxArray, JaxArray, JaxArray | None]:
+    """Assemble one element block's R contribution + COO data.
 
     Dispatches on ``fe_problem.modes_by_block[block_name]``. The
     CLOSED_FORM branch vmaps :func:`per_element_R_and_K`; the COUPLED
@@ -418,35 +408,35 @@ def assemble_element_block(
     total_xi_dofs)``) through the per-IP local Newton, returning the
     converged xi at the same shape.
 
-    Returns ``(R_block, rows, cols, vals, xi_solved_per_block)``.
-    ``R_block`` is a flat JAX vector of length ``dof_map.num_total_dofs``
-    holding this block's contribution to the global residual (zero
-    outside the block's eq indices). ``(rows, cols)`` are static
-    numpy index arrays; ``vals`` is the JAX-traced COO values stream.
+    Returns ``(R_block, vals, xi_solved_per_block)``. ``R_block`` is a
+    length-``dof_map.num_total_dofs`` JAX vector: this block's
+    per-element residual contributions scattered to their global dof
+    positions, and left zero at every dof the block's elements do not
+    touch, so :func:`assemble_global` sums the per-block vectors
+    directly. ``vals`` is the JAX-traced COO data stream, emitted in
+    ``(r, s)`` residual-block / U-block order; its static
+    ``(rows, cols)`` are ``fe_arrays.coo_rows`` / ``coo_cols``, which
+    :func:`assembled_coo_indices` builds in the same emit order.
     ``xi_solved_per_block`` is the converged xi for COUPLED, ``None``
     for CLOSED_FORM.
 
-    ``xi_prev_per_block`` is required when the block is COUPLED and
-    must match the cached layout
-    ``(n_elems_block, n_ips, total_xi_dofs)``;
-    ``total_xi_dofs == ravel_pytree(model._init_xi)[0].shape[0]``.
-    For CLOSED_FORM blocks the kwarg is ignored and may be ``None``.
+    The per-element U-gather index arrays, the per-residual-block
+    R-scatter eq arrays, and the reference-frame geometry cache are
+    read from ``fe_arrays`` rather than derived from ``fe_problem`` /
+    ``mesh.connectivity`` in-trace.
 
-    Multi-residual-block GRs scatter via nested loops over
-    ``(r, s)`` residual-block / U-block pairs; each pair scatters the
-    appropriate sub-tangent into the global rows/cols using its
-    block-specific eq indices, looked up from the GR's ``var_names[r]``
-    against ``dof_map.field_layouts``. Single-block GRs are the
+    ``xi_prev_per_block`` is required when the block is COUPLED and
+    must match the cached layout ``(n_elems_block, n_ips,
+    total_xi_dofs)``; for CLOSED_FORM blocks the kwarg is ignored and
+    may be ``None``.
+
+    Multi-residual-block GRs scatter via nested loops over ``(r, s)``
+    residual-block / U-block pairs; single-block GRs are the
     degenerate ``r=s=0`` case.
     """
-    mesh = fe_problem.mesh
-    dof_map = fe_problem.dof_map
-    elem_indices = mesh.element_blocks[block_name]
-    connectivity_block = mesh.connectivity[elem_indices]
-
-    U_elem_block = _gather_element_U(U_global, dof_map, connectivity_block)
+    U_elem_block = _gather_element_U(U_global, fe_arrays, block_name)
     U_prev_elem_block = _gather_element_U(
-        U_prev_global, dof_map, connectivity_block,
+        U_prev_global, fe_arrays, block_name,
     )
 
     params = params_by_block[block_name]
@@ -454,10 +444,9 @@ def assemble_element_block(
     mode = fe_problem.modes_by_block[block_name]
     block_shapes = fe_problem.block_shapes
     num_blocks = len(block_shapes)
-    field_idx_per_block = fe_problem.field_idx_per_block
     forcing_fns_by_block_idx = fe_problem.forcing_fns_by_block_idx or {}
 
-    geom_cache = fe_problem.geometry_cache[block_name]
+    geom_cache = fe_arrays.geometry_cache[block_name]
 
     xi_solved_per_block: JaxArray | None
     if mode == GlobalResidualMode.COUPLED:
@@ -495,58 +484,33 @@ def assemble_element_block(
         )(U_elem_block, U_prev_elem_block, geom_cache.per_elem)
         xi_solved_per_block = None
 
-    eq_indices_per_block: list[NDArray[np.intp]] = [
-        _element_eq_indices(
-            connectivity_block, dof_map,
-            field_idx=field_idx_per_block[r],
-        )
-        for r in range(num_blocks)
-    ]
-
-    n_elems = connectivity_block.shape[0]
-    n_dofs = dof_map.num_total_dofs
+    eq_indices_per_block = fe_arrays.r_scatter_eq_by_block[block_name]
+    n_elems = eq_indices_per_block[0].shape[0]
+    n_dofs = fe_problem.dof_map.num_total_dofs
 
     R_block = jnp.zeros(n_dofs)
     for r in range(num_blocks):
         R_flat = R_per_elem_blocks[r].reshape(n_elems, -1)
-        eq_r = eq_indices_per_block[r]
-        R_block = R_block.at[eq_r.ravel()].add(R_flat.ravel())
+        R_block = R_block.at[eq_indices_per_block[r].ravel()].add(
+            R_flat.ravel(),
+        )
 
-    rows_all: list[NDArray[np.intp]] = []
-    cols_all: list[NDArray[np.intp]] = []
     vals_all: list[JaxArray] = []
     for r in range(num_blocks):
-        eq_r = eq_indices_per_block[r]
-        n_dofs_r = eq_r.shape[1]
+        n_dofs_r = eq_indices_per_block[r].shape[1]
         for s in range(num_blocks):
-            eq_s = eq_indices_per_block[s]
-            n_dofs_s = eq_s.shape[1]
+            n_dofs_s = eq_indices_per_block[s].shape[1]
             K_flat = K_per_elem_blocks[r][s].reshape(
                 n_elems, n_dofs_r, n_dofs_s,
             )
-            rows = np.broadcast_to(
-                eq_r[:, :, None],
-                (n_elems, n_dofs_r, n_dofs_s),
-            ).ravel()
-            cols = np.broadcast_to(
-                eq_s[:, None, :],
-                (n_elems, n_dofs_r, n_dofs_s),
-            ).ravel()
-            rows_all.append(rows)
-            cols_all.append(cols)
             vals_all.append(K_flat.ravel())
 
-    return (
-        R_block,
-        np.concatenate(rows_all),
-        np.concatenate(cols_all),
-        jnp.concatenate(vals_all),
-        xi_solved_per_block,
-    )
+    return R_block, jnp.concatenate(vals_all), xi_solved_per_block
 
 
 def assemble_global(
         fe_problem: FEProblem,
+        fe_arrays: "FEKernelArrays",
         params_by_block: Mapping[str, Params],
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
@@ -591,32 +555,30 @@ def assemble_global(
     Implementation note: each block's per-element residual is
     accumulated into a flat JAX vector via
     :func:`assemble_element_block`, which also returns the block's
-    ``(rows, cols, vals, xi_solved_per_block)``. Per-block residual
-    contributions sum into ``R``; static numpy ``(rows, cols)``
-    concatenate across blocks; per-block JAX ``vals`` concatenate
-    into the BCOO data buffer. Non-None ``xi_solved_per_block``
-    returns populate the ``xi_solved_by_block`` dict. Surface fluxes
-    add into ``R`` via :func:`cmad.fem.neumann.assemble_side_neumann`
-    after the volume walk.
+    per-element-block ``vals`` (the COO data). Per-block residual
+    contributions sum into ``R``; per-block JAX ``vals`` concatenate
+    into the BCOO data buffer, paired with the static
+    ``fe_arrays.coo_rows`` / ``coo_cols`` (built once by
+    :func:`assembled_coo_indices` in the same ``(block, r, s)`` emit
+    order). Non-None ``xi_solved_per_block`` returns populate the
+    ``xi_solved_by_block`` dict. Surface fluxes add into ``R`` via
+    :func:`cmad.fem.neumann.assemble_side_neumann` after the volume
+    walk.
     """
     xi_prev = xi_prev_by_block or {}
 
     n_dofs = fe_problem.dof_map.num_total_dofs
-    rows_all: list[NDArray[np.intp]] = []
-    cols_all: list[NDArray[np.intp]] = []
     vals_all: list[JaxArray] = []
     R_global = jnp.zeros(n_dofs)
     xi_solved_by_block: dict[str, JaxArray] = {}
 
     for block_name in fe_problem.evaluators_by_block:
-        R_block, rows, cols, vals, xi_solved = assemble_element_block(
-            fe_problem, params_by_block, block_name,
+        R_block, vals, xi_solved = assemble_element_block(
+            fe_problem, fe_arrays, params_by_block, block_name,
             U_global, U_prev_global, t,
             xi_prev_per_block=xi_prev.get(block_name),
         )
         R_global = R_global + R_block
-        rows_all.append(rows)
-        cols_all.append(cols)
         vals_all.append(vals)
         if xi_solved is not None:
             xi_solved_by_block[block_name] = xi_solved
@@ -629,12 +591,9 @@ def assemble_global(
         t,
     )
 
-    rows_concat = np.concatenate(rows_all)
-    cols_concat = np.concatenate(cols_all)
     K = BCOO(
         (jnp.concatenate(vals_all),
-         jnp.stack([jnp.asarray(rows_concat),
-                    jnp.asarray(cols_concat)], axis=-1)),
+         jnp.stack([fe_arrays.coo_rows, fe_arrays.coo_cols], axis=-1)),
         shape=(n_dofs, n_dofs),
     )
     return K, R_global, xi_solved_by_block

@@ -358,7 +358,8 @@ class TestNeumannBCThreading(unittest.TestCase):
         U_zero = np.zeros(n_dofs, dtype=np.float64)
         params_by_block = params_by_block_from_models(fe_problem)
         _, R, _ = assemble_global(
-            fe_problem, params_by_block, U_zero, U_zero, t=0.0,
+            fe_problem, fe_problem.kernel_arrays, params_by_block,
+            U_zero, U_zero, t=0.0,
         )
         local_zmax = np.array([4, 5, 6, 7])
         global_zmax = fe_problem.mesh.connectivity[0, local_zmax]

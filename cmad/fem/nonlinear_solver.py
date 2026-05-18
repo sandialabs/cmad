@@ -171,7 +171,8 @@ def _fe_newton_primal(
     U_init = U_prev
 
     K_init, R_init, _ = assemble_global(
-        fe_problem, params_by_block, U_init, U_prev, t,
+        fe_problem, fe_problem.kernel_arrays, params_by_block,
+        U_init, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
     _, K_ii_presc_init = _embedded_bc_enforce(K_init, presc_idx)
@@ -189,7 +190,8 @@ def _fe_newton_primal(
     def body(state):
         i, U, _, R_norm_0 = state
         K_bcoo, R_assembled, _ = assemble_global(
-            fe_problem, params_by_block, U, U_prev, t,
+            fe_problem, fe_problem.kernel_arrays, params_by_block,
+            U, U_prev, t,
             xi_prev_by_block=xi_prev_by_block,
         )
         K_data, K_ii_presc = _embedded_bc_enforce(K_bcoo, presc_idx)
@@ -365,7 +367,8 @@ def _fe_newton_solve_ad(
         nls, lss,
     )
     _, _, xi_solved = assemble_global(
-        fe_problem, params_by_block, U_star, U_prev, t,
+        fe_problem, fe_problem.kernel_arrays, params_by_block,
+        U_star, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
     return U_star, xi_solved
@@ -413,7 +416,8 @@ def _fe_newton_solve_ad_jvp(
             fe_problem.dof_map.evaluate_prescribed_values(t_),
         )
         K_bcoo_local, R_local, _ = assemble_global(
-            fe_problem, params_, U_star, Up_, t_,
+            fe_problem, fe_problem.kernel_arrays, params_,
+            U_star, Up_, t_,
             xi_prev_by_block=xp_,
         )
         _, K_ii_presc_local = _embedded_bc_enforce(
@@ -431,7 +435,8 @@ def _fe_newton_solve_ad_jvp(
     )
 
     K_bcoo, _, _ = assemble_global(
-        fe_problem, params_by_block, U_star, U_prev, t,
+        fe_problem, fe_problem.kernel_arrays, params_by_block,
+        U_star, U_prev, t,
         xi_prev_by_block=xi_prev_by_block,
     )
     K_data, _ = _embedded_bc_enforce(K_bcoo, presc_idx)
@@ -442,7 +447,8 @@ def _fe_newton_solve_ad_jvp(
 
     def xi_of_U_p(U_, params_, Up_, xp_, t_):
         _, _, xi_local = assemble_global(
-            fe_problem, params_, U_, Up_, t_,
+            fe_problem, fe_problem.kernel_arrays, params_,
+            U_, Up_, t_,
             xi_prev_by_block=xp_,
         )
         return xi_local

@@ -239,13 +239,10 @@ def volume_average_global_field(
         )
     r = matches[0]
 
-    mesh = fe_problem.mesh
-    dof_map = fe_problem.dof_map
-    elem_indices = mesh.element_blocks[block_name]
-    connectivity_block = mesh.connectivity[elem_indices]
-
     field_idx = fe_problem.field_idx_per_block[r]
-    U_per_field = _gather_element_U(U_global, dof_map, connectivity_block)
+    U_per_field = _gather_element_U(
+        U_global, fe_problem.kernel_arrays, block_name,
+    )
     U_elem_field = U_per_field[field_idx]
 
     block_cache = fe_problem.geometry_cache[block_name]

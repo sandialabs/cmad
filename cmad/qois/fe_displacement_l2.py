@@ -5,8 +5,6 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import jax.numpy as jnp
-import numpy as np
-from numpy.typing import NDArray
 
 from cmad.fem.assembly import _gather_element_U
 from cmad.fem.precompute import compute_ip_quadrature_weights
@@ -85,22 +83,17 @@ class FEDisplacementL2(FEQoI):
         r_disp = self._r_disp
         field_idx_disp = self._field_idx_disp
         norm_factor = self._norm_factor
-        dof_map = fe_problem.dof_map
-        mesh = fe_problem.mesh
+        fe_arrays = fe_problem.kernel_arrays
 
-        block_data: list[
-            tuple[NDArray[np.intp], JaxArray, JaxArray]
-        ] = []
+        block_data: list[tuple[str, JaxArray, JaxArray]] = []
         for block_name in fe_problem.models_by_block:
-            elem_indices = mesh.element_blocks[block_name]
-            connectivity_block = mesh.connectivity[elem_indices]
             geom_cache = fe_problem.geometry_cache[block_name]
             N_disp = geom_cache.shared.field_N_per_block[r_disp]
             quad_w = geom_cache.shared.quad_w
             iso_jac_det = geom_cache.per_elem.iso_jac_det
             weighted_iso_jac_det = iso_jac_det * quad_w
             block_data.append(
-                (connectivity_block, N_disp, weighted_iso_jac_det),
+                (block_name, N_disp, weighted_iso_jac_det),
             )
 
         def _closure(
@@ -114,10 +107,10 @@ class FEDisplacementL2(FEQoI):
             del U_prev, xi, xi_prev
             dt = t - t_prev
             total_integral = jnp.zeros(())
-            for (connectivity_block, N_disp,
+            for (block_name, N_disp,
                  weighted_iso_jac_det) in block_data:
                 U_elem_blocks = _gather_element_U(
-                    U, dof_map, connectivity_block,
+                    U, fe_arrays, block_name,
                 )
                 U_disp_per_elem = U_elem_blocks[field_idx_disp]
                 U_at_ip = jnp.einsum(

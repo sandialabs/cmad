@@ -107,10 +107,10 @@ def _split_into_two_blocks(mesh: Mesh) -> Mesh:
 
 
 class TestAssembleElementBlockCoupledShape(unittest.TestCase):
-    """``assemble_element_block`` returns the new 4-tuple; for a
-    COUPLED block the fourth slot is ``xi_solved_per_block`` shaped
-    ``(n_elems_block, n_ips, total_xi_dofs)``, and for a CLOSED_FORM
-    block it is ``None``."""
+    """``assemble_element_block`` returns ``(R_block, vals,
+    xi_solved_per_block)``; for a COUPLED block the third slot is
+    ``xi_solved_per_block`` shaped ``(n_elems_block, n_ips,
+    total_xi_dofs)``, and for a CLOSED_FORM block it is ``None``."""
 
     def test_coupled_returns_xi_solved_per_block(self) -> None:
         mesh = StructuredHexMesh(
@@ -126,15 +126,13 @@ class TestAssembleElementBlockCoupledShape(unittest.TestCase):
         xi_prev = np.zeros((1, 8, 6), dtype=np.float64)
 
         params_by_block = params_by_block_from_models(fe_problem)
-        R_block, rows, cols, vals, xi_solved = assemble_element_block(
-            fe_problem, params_by_block, "all", U, U, t=0.0,
-            xi_prev_per_block=xi_prev,
+        R_block, vals, xi_solved = assemble_element_block(
+            fe_problem, fe_problem.kernel_arrays, params_by_block, "all",
+            U, U, t=0.0, xi_prev_per_block=xi_prev,
         )
         assert xi_solved is not None
         self.assertEqual(xi_solved.shape, (1, 8, 6))
         self.assertEqual(R_block.shape, (n_dofs,))
-        self.assertEqual(rows.ndim, 1)
-        self.assertEqual(cols.ndim, 1)
         self.assertEqual(vals.ndim, 1)
 
     def test_closed_form_returns_xi_solved_None(self) -> None:
@@ -148,8 +146,9 @@ class TestAssembleElementBlockCoupledShape(unittest.TestCase):
         U = np.zeros(n_dofs, dtype=np.float64)
 
         params_by_block = params_by_block_from_models(fe_problem)
-        _, _, _, _, xi_solved = assemble_element_block(
-            fe_problem, params_by_block, "all", U, U, t=0.0,
+        _, _, xi_solved = assemble_element_block(
+            fe_problem, fe_problem.kernel_arrays, params_by_block, "all",
+            U, U, t=0.0,
         )
         self.assertIsNone(xi_solved)
 
@@ -181,15 +180,16 @@ class TestAssembleGlobalCoupledClosedFormEquivalence(unittest.TestCase):
         params_closed = params_by_block_from_models(fe_closed)
         params_coupled = params_by_block_from_models(fe_coupled)
         K_closed, R_closed, xi_closed = assemble_global(
-            fe_closed, params_closed, U, U, t=0.0,
+            fe_closed, fe_closed.kernel_arrays, params_closed, U, U,
+            t=0.0,
         )
         n_elems = mesh.connectivity.shape[0]
         xi_prev_by_block: dict[str, NDArray[np.floating]] = {
             "all": np.zeros((n_elems, 8, 6)),
         }
         K_coupled, R_coupled, xi_coupled = assemble_global(
-            fe_coupled, params_coupled, U, U, t=0.0,
-            xi_prev_by_block=xi_prev_by_block,
+            fe_coupled, fe_coupled.kernel_arrays, params_coupled, U, U,
+            t=0.0, xi_prev_by_block=xi_prev_by_block,
         )
 
         np.testing.assert_allclose(
@@ -231,8 +231,8 @@ class TestAssembleGlobalCoupledMixedMode(unittest.TestCase):
 
         params_by_block = params_by_block_from_models(fe_problem)
         _, _, xi_solved = assemble_global(
-            fe_problem, params_by_block, U, U, t=0.0,
-            xi_prev_by_block=xi_prev_by_block,
+            fe_problem, fe_problem.kernel_arrays, params_by_block, U, U,
+            t=0.0, xi_prev_by_block=xi_prev_by_block,
         )
         self.assertEqual(set(xi_solved.keys()), {"right"})
         self.assertEqual(xi_solved["right"].shape, (1, 8, 6))
@@ -255,7 +255,10 @@ class TestAssembleGlobalCoupledMissingXiPrev(unittest.TestCase):
         U = np.zeros(n_dofs, dtype=np.float64)
         params_by_block = params_by_block_from_models(fe_problem)
         with self.assertRaises(ValueError) as ctx:
-            assemble_global(fe_problem, params_by_block, U, U, t=0.0)
+            assemble_global(
+                fe_problem, fe_problem.kernel_arrays, params_by_block,
+                U, U, t=0.0,
+            )
         self.assertIn("'all'", str(ctx.exception))
 
     def test_empty_dict_when_coupled(self) -> None:
@@ -270,8 +273,8 @@ class TestAssembleGlobalCoupledMissingXiPrev(unittest.TestCase):
         params_by_block = params_by_block_from_models(fe_problem)
         with self.assertRaises(ValueError):
             assemble_global(
-                fe_problem, params_by_block, U, U, t=0.0,
-                xi_prev_by_block={},
+                fe_problem, fe_problem.kernel_arrays, params_by_block,
+                U, U, t=0.0, xi_prev_by_block={},
             )
 
     def test_missing_key_in_mixed_mode(self) -> None:
@@ -291,8 +294,8 @@ class TestAssembleGlobalCoupledMissingXiPrev(unittest.TestCase):
         params_by_block = params_by_block_from_models(fe_problem)
         with self.assertRaises(ValueError) as ctx:
             assemble_global(
-                fe_problem, params_by_block, U, U, t=0.0,
-                xi_prev_by_block={},
+                fe_problem, fe_problem.kernel_arrays, params_by_block,
+                U, U, t=0.0, xi_prev_by_block={},
             )
         self.assertIn("'right'", str(ctx.exception))
 

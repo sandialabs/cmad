@@ -56,21 +56,15 @@ def evaluate_cauchy_at_ips(
     shape values from ``fe_problem.geometry_cache[block_name]``,
     matching the assembly kernels' contract.
     """
-    mesh = fe_problem.mesh
-    dof_map = fe_problem.dof_map
-    elem_indices = mesh.element_blocks[block_name]
-    connectivity_block = mesh.connectivity[elem_indices]
-
     U_global = jnp.asarray(fe_state.U_at(step))
     U_prev_global = (
         jnp.asarray(fe_state.U_at(step - 1)) if step > 0
         else jnp.zeros_like(U_global)
     )
-    U_elem_block = _gather_element_U(
-        U_global, dof_map, connectivity_block,
-    )
+    fe_arrays = fe_problem.kernel_arrays
+    U_elem_block = _gather_element_U(U_global, fe_arrays, block_name)
     U_prev_elem_block = _gather_element_U(
-        U_prev_global, dof_map, connectivity_block,
+        U_prev_global, fe_arrays, block_name,
     )
 
     model = fe_problem.models_by_block[block_name]
