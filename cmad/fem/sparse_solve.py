@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pyamg
 import scipy.sparse
 import scipy.sparse.linalg
 from jax import lax
@@ -422,6 +423,102 @@ def gmres_jax(
     return lax.custom_linear_solve(
         matvec, b, solve, transpose_solve=transpose_solve,
         symmetric=False,
+    )
+
+
+def cg_amg_jax(
+        K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
+        rtol: float = 1e-10, max_iters: int | None = None,
+        *, pyamg_kwargs: dict | None = None,
+) -> JaxArray:
+    """Solve ``K x = b`` for SPD K via scipy CG preconditioned by
+    pyamg's smoothed-aggregation algebraic multigrid.
+
+    The CG iteration runs inside one :func:`jax.pure_callback`: scipy
+    builds a CSR from the :class:`EmbeddedSparsity` cache + deduped
+    ``K_data`` (same recipe as :func:`spsolve_jax`'s ``_build_csr``),
+    :func:`pyamg.smoothed_aggregation_solver` sets up the hierarchy,
+    its V-cycle preconditioner is exposed via ``.aspreconditioner()``,
+    and :func:`scipy.sparse.linalg.cg` runs to convergence.
+
+    AD via :func:`jax.lax.custom_linear_solve` with ``symmetric=True``;
+    the matvec used for the AD path is a JAX-traceable BCSR matmul
+    against the same dedup buffer (parallel to :func:`cg_jax` /
+    :func:`gmres_jax` / :func:`spsolve_jax`).
+
+    ``pyamg_kwargs`` are forwarded verbatim to
+    :func:`pyamg.smoothed_aggregation_solver`; ``None`` selects pyamg's
+    defaults. For a CSR ``K`` the default near null space is the
+    constant vector — correct for scalar diffusion, suboptimal for
+    elasticity (whose true near null space is the rigid-body modes),
+    but still converges. No CMAD-side validation of kwargs — pyamg
+    raises on bad keys.
+
+    Under :func:`jax.vmap` with K captured outside, ``rhs`` arrives 2D
+    at the callback (length-1 leading axes on K squeezed); scipy CG is
+    1D-RHS only, so the 2D branch loops columns reusing the same
+    hierarchy.
+
+    For non-SPD K this will silently produce wrong results.
+    """
+    unique_data = jnp.zeros(
+        sparsity.num_unique, dtype=K_data.dtype,
+    ).at[sparsity.segment_ids].add(K_data[sparsity.perm])
+
+    K_bcsr = BCSR(
+        (unique_data, sparsity.col_indices, sparsity.indptr),
+        shape=(sparsity.n, sparsity.n),
+    )
+
+    col_np = np.asarray(sparsity.col_indices)
+    indptr_np = np.asarray(sparsity.indptr)
+    n = sparsity.n
+    pyamg_kw = pyamg_kwargs or {}
+
+    def matvec(x: JaxArray) -> JaxArray:
+        return K_bcsr @ x
+
+    def _build_csr(unique_data_np: np.ndarray) -> scipy.sparse.csr_matrix:
+        ud = np.asarray(unique_data_np)
+        while ud.ndim > 1 and ud.shape[0] == 1:
+            ud = ud[0]
+        return scipy.sparse.csr_matrix(
+            (ud, col_np, indptr_np), shape=(n, n),
+        )
+
+    def _scipy_amg_cg(
+            unique_data_np: np.ndarray, b_np: np.ndarray,
+    ) -> np.ndarray:
+        K_csr = _build_csr(unique_data_np)
+        ml = pyamg.smoothed_aggregation_solver(K_csr, **pyamg_kw)
+        M = ml.aspreconditioner()
+        b_arr = np.asarray(b_np)
+        maxiter = max_iters if max_iters is not None else 10 * n
+        if b_arr.ndim == 1:
+            x, _info = scipy.sparse.linalg.cg(
+                K_csr, b_arr, M=M, rtol=rtol, maxiter=maxiter,
+            )
+            return np.asarray(x)
+        batch_shape = b_arr.shape[:-1]
+        b_2d = b_arr.reshape(-1, b_arr.shape[-1])
+        x_2d = np.empty_like(b_2d)
+        for i in range(b_2d.shape[0]):
+            x_i, _info = scipy.sparse.linalg.cg(
+                K_csr, b_2d[i], M=M, rtol=rtol, maxiter=maxiter,
+            )
+            x_2d[i] = x_i
+        return x_2d.reshape(*batch_shape, b_arr.shape[-1])
+
+    def solve(_unused_matvec, rhs: JaxArray) -> JaxArray:
+        return jax.pure_callback(
+            _scipy_amg_cg,
+            jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
+            unique_data, rhs,
+            vmap_method="expand_dims",
+        )
+
+    return lax.custom_linear_solve(
+        matvec, b, solve, symmetric=True,
     )
 
 

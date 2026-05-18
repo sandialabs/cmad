@@ -13,6 +13,7 @@ from cmad.fem.assembly import assemble_global
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.sparse_solve import (
     _embedded_bc_enforce,
+    cg_amg_jax,
     cg_jax,
     gmres_jax,
     spsolve_jax,
@@ -30,12 +31,43 @@ _DEFAULT_LINEAR_SOLVER_SETTINGS: dict[str, Any] = {
     "rtol": 1.0e-10,
     "max iters": None,
     "restart": 20,
+    "preconditioner": {"type": "jacobi"},
 }
 
 
-def _freeze(d: Mapping[str, Any]) -> tuple[tuple[str, Any], ...]:
-    """Convert a dict to a hashable tuple for ``custom_jvp`` ``nondiff_argnums``."""
-    return tuple(sorted(d.items()))
+class _FrozenDict(tuple):
+    """Hashable dict-like wrapper for ``custom_jvp`` ``nondiff_argnums``.
+
+    Subclasses :class:`tuple` and carries ``(key, value)`` pairs in
+    sorted-key order. The subclass marker disambiguates a frozen dict
+    from a frozen list at :func:`_thaw` time.
+    """
+
+
+def _freeze(value: Any) -> Any:
+    """Recursively convert a dict tree (with nested dicts / lists) to a
+    hashable structure for ``custom_jvp`` ``nondiff_argnums``.
+
+    Dicts become :class:`_FrozenDict` (a sorted, hashable tuple
+    subclass); lists become plain tuples; everything else passes
+    through unchanged.
+    """
+    if isinstance(value, Mapping):
+        return _FrozenDict(
+            (k, _freeze(v)) for k, v in sorted(value.items())
+        )
+    if isinstance(value, list):
+        return tuple(_freeze(v) for v in value)
+    return value
+
+
+def _thaw(value: Any) -> Any:
+    """Inverse of :func:`_freeze`. Restores plain Python dict / list trees."""
+    if isinstance(value, _FrozenDict):
+        return {k: _thaw(v) for k, v in value}
+    if isinstance(value, tuple):
+        return [_thaw(v) for v in value]
+    return value
 
 
 def _solve_linear(
@@ -44,22 +76,53 @@ def _solve_linear(
         rhs: JaxArray,
         linear_solver_settings: dict[str, Any],
 ) -> JaxArray:
-    """Dispatch on ``settings['type']`` to direct / CG / GMRES."""
+    """Dispatch on ``settings['type']`` to direct / CG / GMRES, with the
+    iterative-CG arm picking a Jacobi or pyamg preconditioner from
+    ``settings['preconditioner']``.
+    """
     kind = linear_solver_settings["type"]
     if kind == "direct":
         return spsolve_jax(K_data, sparsity, rhs)
+
+    precon_spec = linear_solver_settings.get(
+        "preconditioner", {"type": "jacobi"},
+    )
+    precon = precon_spec["type"]
+
     if kind == "cg":
-        return cg_jax(
-            K_data, sparsity, rhs,
-            rtol=linear_solver_settings["rtol"],
-            max_iters=linear_solver_settings["max iters"],
+        if precon == "jacobi":
+            return cg_jax(
+                K_data, sparsity, rhs,
+                rtol=linear_solver_settings["rtol"],
+                max_iters=linear_solver_settings["max iters"],
+            )
+        if precon == "pyamg":
+            return cg_amg_jax(
+                K_data, sparsity, rhs,
+                rtol=linear_solver_settings["rtol"],
+                max_iters=linear_solver_settings["max iters"],
+                pyamg_kwargs=precon_spec.get("kwargs"),
+            )
+        raise ValueError(
+            f"unknown preconditioner type {precon!r} for cg; "
+            f"expected 'jacobi' or 'pyamg'"
         )
     if kind == "gmres":
-        return gmres_jax(
-            K_data, sparsity, rhs,
-            rtol=linear_solver_settings["rtol"],
-            max_iters=linear_solver_settings["max iters"],
-            restart=linear_solver_settings["restart"],
+        if precon == "jacobi":
+            return gmres_jax(
+                K_data, sparsity, rhs,
+                rtol=linear_solver_settings["rtol"],
+                max_iters=linear_solver_settings["max iters"],
+                restart=linear_solver_settings["restart"],
+            )
+        if precon == "pyamg":
+            raise NotImplementedError(
+                "pyamg preconditioner with gmres is not implemented; "
+                "use type='cg' with preconditioner.type='pyamg' for SPD K"
+            )
+        raise ValueError(
+            f"unknown preconditioner type {precon!r} for gmres; "
+            f"expected 'jacobi'"
         )
     raise ValueError(
         f"unknown linear solver type {kind!r}; "
@@ -221,9 +284,13 @@ def fe_newton_solve(
     ``max iters`` / ``abs tol`` / ``rel tol`` / ``print convergence``;
     omitted keys fall back to :data:`_DEFAULT_NONLINEAR_SOLVER_SETTINGS`.
     ``linear_solver_settings`` is a dict with keys
-    ``type`` / ``rtol`` / ``max iters`` / ``restart`` (``restart``
-    consumed only by ``gmres``); omitted keys fall back to
-    :data:`_DEFAULT_LINEAR_SOLVER_SETTINGS`.
+    ``type`` / ``rtol`` / ``max iters`` / ``restart`` / ``preconditioner``
+    (``restart`` consumed only by ``gmres``; ``preconditioner`` ignored
+    when ``type='direct'``). ``preconditioner`` is itself a dict with
+    a required ``type`` (``'jacobi'`` or ``'pyamg'``) and an optional
+    freeform ``kwargs`` dict forwarded to
+    :func:`pyamg.smoothed_aggregation_solver`. Omitted keys fall back
+    to :data:`_DEFAULT_LINEAR_SOLVER_SETTINGS`.
 
     Returns ``(U_solved, xi_solved_by_block)``. Outputs are JAX
     arrays.
@@ -271,8 +338,8 @@ def _fe_newton_solve_ad(
     settings dicts are passed as :func:`_freeze`'d tuples so they
     are hashable for ``custom_jvp``'s nondiff-arg cache.
     """
-    nls = dict(nonlinear_solver_settings_frozen)
-    lss = dict(linear_solver_settings_frozen)
+    nls = _thaw(nonlinear_solver_settings_frozen)
+    lss = _thaw(linear_solver_settings_frozen)
     U_star = _fe_newton_primal(
         fe_problem, params_by_block, U_prev, xi_prev_by_block, t,
         nls, lss,
@@ -311,7 +378,7 @@ def _fe_newton_solve_ad_jvp(
     params_by_block, U_prev, xi_prev_by_block, t = primals
     p_dot = tangents
 
-    lss = dict(linear_solver_settings_frozen)
+    lss = _thaw(linear_solver_settings_frozen)
 
     U_star, xi_solved = _fe_newton_solve_ad(
         fe_problem, params_by_block, U_prev, xi_prev_by_block, t,

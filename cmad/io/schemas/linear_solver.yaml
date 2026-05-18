@@ -16,3 +16,14 @@ properties:
   restart:
     type: integer
     minimum: 1
+  preconditioner:
+    type: object
+    required: [type]
+    additionalProperties: false
+    properties:
+      type:
+        type: string
+        enum: [jacobi, pyamg]
+      kwargs:
+        type: object
+        additionalProperties: true

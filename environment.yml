@@ -20,5 +20,6 @@ dependencies:
   - sympy
   - jsonschema
   - pyyaml
+  - pyamg
   - pip:
     - jax[cpu]>=0.4.20

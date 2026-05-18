@@ -16,6 +16,7 @@ from jax.experimental.sparse import BCOO
 from cmad.fem.sparse_solve import (
     EmbeddedSparsity,
     _embedded_bc_enforce,
+    cg_amg_jax,
     cg_jax,
     gmres_jax,
     spsolve_jax,
@@ -273,6 +274,26 @@ class TestCGJaxForward(unittest.TestCase):
         b = jnp.asarray(np.random.default_rng(51).standard_normal(n))
 
         x = cg_jax(K_data, sparsity, b, rtol=1e-12)
+        x_ref = jnp.linalg.solve(jnp.asarray(K), b)
+        np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
+                                   rtol=1e-8, atol=1e-9)
+
+
+class TestCGAmgJaxForward(unittest.TestCase):
+    """Forward-solve correctness for ``cg_amg_jax`` on SPD K.
+
+    Parallels :class:`TestCGJaxForward`; covers the pyamg-preconditioned
+    branch with default settings (no ``pyamg_kwargs``, so pyamg uses
+    the constant-vector near null space).
+    """
+
+    def test_spd_matches_dense(self) -> None:
+        n = 10
+        K = _random_spd(n, seed=80)
+        K_data, sparsity = _dense_to_cache(K)
+        b = jnp.asarray(np.random.default_rng(81).standard_normal(n))
+
+        x = cg_amg_jax(K_data, sparsity, b, rtol=1e-12)
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
         np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
                                    rtol=1e-8, atol=1e-9)
