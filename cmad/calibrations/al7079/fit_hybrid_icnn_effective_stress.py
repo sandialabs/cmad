@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from jax import grad, jacrev, jit
 from scipy.optimize import fmin_l_bfgs_b
-from sklearn.preprocessing import MinMaxScaler
 
 from cmad.calibrations.al7079.support import (
     calibrated_hill_coefficients,
@@ -19,7 +18,10 @@ from cmad.models.effective_stress import (
     hill_effective_stress,
     hybrid_hill_effective_stress,
 )
-from cmad.neural_networks.input_convex_neural_network import InputConvexNeuralNetwork
+from cmad.neural_networks.input_convex_neural_network import (
+    AffineScaler,
+    InputConvexNeuralNetwork,
+)
 
 
 def l1_penalty(x, alpha, beta):
@@ -41,8 +43,8 @@ def extract_material_dev_cauchy_vector(sigma_c, rotation):
     return vec_dev_sigma_mat
 
 
-def make_input_scaler(sigma_c_values, rotations, Scaler=MinMaxScaler):
-    input_scaler = Scaler()
+def make_input_scaler(sigma_c_values, rotations, Scaler=AffineScaler):
+    input_scaler = Scaler(feature_range=(0.0, 1.0))
 
     unscaled_features = np.vstack([
          extract_material_dev_cauchy_vector(sigma_c, rotation)
@@ -54,8 +56,8 @@ def make_input_scaler(sigma_c_values, rotations, Scaler=MinMaxScaler):
     return input_scaler
 
 
-def make_output_scaler(sigma_c_values, Scaler=MinMaxScaler):
-    output_scaler = Scaler()
+def make_output_scaler(sigma_c_values, Scaler=AffineScaler):
+    output_scaler = Scaler(feature_range=(0.0, 1.0))
     output_scaler.fit(sigma_c_values.reshape(-1, 1))
 
     return output_scaler

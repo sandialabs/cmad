@@ -10,6 +10,29 @@ import numpy as np
 from jax.nn import softplus
 
 
+class AffineScaler:
+    """Per-feature affine scaler onto a target range.
+
+    ``fit`` sets ``scale_`` and ``min_`` so that ``scale_ * x + min_``
+    maps each feature column of the fitted data onto ``feature_range``
+    (default ``(-1, 1)``). A constant feature (zero data range) maps
+    to ``feature_range[0]``.
+    """
+
+    def __init__(self, feature_range=(-1.0, 1.0)):
+        self.feature_range = feature_range
+
+    def fit(self, samples):
+        low, high = self.feature_range
+        samples = np.asarray(samples, dtype=float)
+        data_min = samples.min(axis=0)
+        data_range = samples.max(axis=0) - data_min
+        data_range[data_range == 0.0] = 1.0
+        self.scale_ = (high - low) / data_range
+        self.min_ = low - data_min * self.scale_
+        return self
+
+
 def input_symmetric_forward(x, params):
     zero_output = forward(jnp.zeros_like(x), params)
     positive_scaled_output = forward(x, params) - zero_output
