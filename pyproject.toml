@@ -1,17 +1,12 @@
 [build-system]
-# Minimum requirements for the build system to execute.
-requires = [
-    "setuptools",
-    "wheel",
-    "numpy>=1.23",
-    "scipy>=1.7",
-]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "cmad"
 version = "1.0.0"
 description = "Constitutive Models via Automatic Differentiation"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 readme = "README.md"
 authors = [
     {name = "Tom Seidl", email = "dtseidl@sandia.gov"}
@@ -19,22 +14,27 @@ authors = [
 classifiers = ["Programming Language :: Python :: 3"]
 
 dependencies = [
-    "numpy>=1.23",
+    "numpy",
+    "scipy",
+    "jax",
     "matplotlib",
-    "scipy>=1.7",
     "sympy",
-    "scikit-learn",
-    "coverage>=6.4",
-    "pytest-cov",
-    "pytest>=4.6",
     "jsonschema",
     "pyyaml",
-    "jax[cpu]>=0.4.20",
+    "netCDF4",
+    "pyamg",
 ]
 
 [project.optional-dependencies]
-docs = ["numpydoc", "sphinx", "sphinx_automodapi", "sphinx_rtd_theme",
-        "sphinx-gallery", "jupyter"]
+dev = ["pytest", "mypy", "ruff"]
+cuda12 = ["jax[cuda12]"]
+cuda13 = ["jax[cuda13]"]
+
+[project.urls]
+Homepage = "https://github.com/sandialabs/cmad"
 
 [project.scripts]
 cmad = "cmad.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["cmad*"]
