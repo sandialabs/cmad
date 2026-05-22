@@ -658,11 +658,9 @@ def assemble_global(
             xi_solved_by_block[block_name] = xi_solved
 
     R_global = R_global + assemble_side_neumann(
-        fe_problem.mesh,
         fe_problem.dof_map,
         fe_arrays.neumann_side_arrays,
         fe_problem.resolved_neumann_bcs,
-        fe_problem.side_quadrature,
         t,
     )
 

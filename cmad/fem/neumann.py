@@ -11,25 +11,26 @@ residual at the field's basis fns on the named sides. The pipeline:
    ``(elem, local_side_id)`` pairs, group them by
    ``(family, local_side_id)``, and materialize sequence-form values
    into ndarrays.
-2. :func:`per_side_neumann_R` — per-element side residual: for one
-   element + one side IP loop, lift the side IP to a ref-volume
-   coord via :func:`cmad.fem.topology.ref_side_lift`, evaluate the
-   volume interpolant for ``N`` and ``grad_N``, build the surface
-   measure ``dA = |cross(J_surface[:, 0], J_surface[:, 1])|`` from
-   the volume Jacobian and the lift's tangent matrix, and
-   accumulate ``-N · t̄ · dA · w`` over IPs into a per-element
-   buffer of shape ``(num_basis_fns, num_components)``.
-3. :func:`assemble_side_neumann` — outer driver: iterates resolved
+2. :func:`build_neumann_side_arrays` — build-time precompute: for each
+   NBC and ``(family, local_side_id)`` group, lift the side quadrature
+   points to ref-volume coords via
+   :func:`cmad.fem.topology.ref_side_lift`, evaluate the geometric and
+   field interpolants there once, and form the per-element surface
+   measure ``dA`` and physical side-IP coordinates ``coords_ip``, the
+   mesh-uniform side shape values ``N_side`` and weights ``side_w``,
+   and the flat scatter indices ``eq_flat`` — collected per group into
+   a :class:`NeumannSideGroup`, the boundary-side analogue of the
+   volume geometry cache in :mod:`cmad.fem.precompute`, hoisted out of
+   the per-call kernel for the reasons given there.
+3. :func:`per_side_neumann_R` — per-element side residual: contract the
+   precomputed per-IP arrays into ``-N · t̄ · dA · w`` accumulated over
+   IPs into a per-element buffer of shape ``(num_basis_fns,
+   num_components)``.
+4. :func:`assemble_side_neumann` — outer driver: iterates resolved
    NBCs and ``(family, local_side_id)`` groups, vmaps
-   :func:`per_side_neumann_R` over the group's element ids, and
-   scatters per-element side residuals into the caller's ``R_global``
-   in place at precomputed equation indices.
-
-Build-time precompute. The mesh-sized per-side arrays — element node
-coordinates and scatter equation numbers — are materialized once by
-:func:`build_neumann_side_arrays`; :func:`assemble_side_neumann` takes
-the result as an argument rather than deriving it from the mesh per
-call.
+   :func:`per_side_neumann_R` over the group's per-element surface
+   arrays, and scatters per-element side residuals into the global
+   residual vector at the precomputed equation indices.
 
 Sign convention. ``R -= ∫_∂Ω N · t̄ dA`` follows the existing body-
 force scatter at :func:`cmad.fem.assembly.per_element_R_and_K`,
@@ -59,6 +60,7 @@ from typing import TypeAlias
 import jax.numpy as jnp
 import numpy as np
 from jax import vmap
+from jax.tree_util import register_pytree_node_class
 from numpy.typing import NDArray
 
 from cmad.fem.bcs import NeumannBC
@@ -67,22 +69,115 @@ from cmad.fem.element_family import ElementFamily
 from cmad.fem.finite_element import EntityType, FiniteElement
 from cmad.fem.mesh import Mesh
 from cmad.fem.quadrature import QuadratureRule
-from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.fem.topology import ref_side_lift
 from cmad.typing import JaxArray
 
+
+@register_pytree_node_class
+@dataclass(frozen=True)
+class NeumannSideShared:
+    """Mesh-uniform per-side-IP arrays for one side group (``in_axes=None``).
+
+    The boundary-side analogue of
+    :class:`cmad.fem.precompute.BlockIPGeometryShared`. Shapes (``n_ip``
+    side quadrature points, ``n_side_basis_fns`` field basis fns
+    resident on the side):
+
+    - ``N_side``: ``(n_ip, n_side_basis_fns)`` — field shape values
+      restricted to the side's basis fns.
+    - ``side_w``: ``(n_ip,)`` — side quadrature weights.
+    """
+    N_side: JaxArray
+    side_w: JaxArray
+
+    def tree_flatten(self) -> tuple[tuple[JaxArray, JaxArray], None]:
+        return (self.N_side, self.side_w), None
+
+    @classmethod
+    def tree_unflatten(
+            cls, aux_data: None, children: tuple[JaxArray, JaxArray],
+    ) -> "NeumannSideShared":
+        N_side, side_w = children
+        return cls(N_side=N_side, side_w=side_w)
+
+
+@register_pytree_node_class
+@dataclass(frozen=True)
+class NeumannSidePerElem:
+    """Per-(side-element, IP) arrays for one side group (``in_axes=0``).
+
+    The boundary-side analogue of
+    :class:`cmad.fem.precompute.BlockIPGeometryPerElem`, plus the flat
+    scatter indices ``eq_flat`` fused in so the surface kernel reads one
+    structure per side group. Shapes (``ndims`` spatial dims,
+    ``num_basis_fns`` field basis fns per element, ``num_components``
+    field components):
+
+    - ``dA``: ``(n_side_elems, n_ip)`` — surface measure
+      ``norm(cross(surface_jac[:, 0], surface_jac[:, 1]))`` per IP.
+    - ``coords_ip``: ``(n_side_elems, n_ip, ndims)`` — physical-frame
+      side-IP coordinates.
+    - ``eq_flat``: ``(n_side_elems, num_basis_fns * num_components)`` —
+      flat global equation indices the per-element side residual
+      scatters into.
+    """
+    dA: JaxArray
+    coords_ip: JaxArray
+    eq_flat: JaxArray
+
+    def tree_flatten(
+            self,
+    ) -> tuple[tuple[JaxArray, JaxArray, JaxArray], None]:
+        return (self.dA, self.coords_ip, self.eq_flat), None
+
+    @classmethod
+    def tree_unflatten(
+            cls, aux_data: None,
+            children: tuple[JaxArray, JaxArray, JaxArray],
+    ) -> "NeumannSidePerElem":
+        dA, coords_ip, eq_flat = children
+        return cls(dA=dA, coords_ip=coords_ip, eq_flat=eq_flat)
+
+
+@register_pytree_node_class
+@dataclass(frozen=True)
+class NeumannSideGroup:
+    """Per-side-group container: per-element + shared cached arrays.
+
+    Registered as a JAX pytree; the children are the already-pytree
+    :class:`NeumannSidePerElem` and :class:`NeumannSideShared`
+    sub-structures. Mirrors
+    :class:`cmad.fem.precompute.BlockIPGeometryCache`.
+    """
+    per_elem: NeumannSidePerElem
+    shared: NeumannSideShared
+
+    def tree_flatten(
+            self,
+    ) -> tuple[tuple[NeumannSidePerElem, NeumannSideShared], None]:
+        return (self.per_elem, self.shared), None
+
+    @classmethod
+    def tree_unflatten(
+            cls, aux_data: None,
+            children: tuple[NeumannSidePerElem, NeumannSideShared],
+    ) -> "NeumannSideGroup":
+        per_elem, shared = children
+        return cls(per_elem=per_elem, shared=shared)
+
+
 NeumannSideArrays: TypeAlias = tuple[
-    dict[tuple[ElementFamily, int], tuple[JaxArray, JaxArray]], ...
+    dict[tuple[ElementFamily, int], NeumannSideGroup], ...
 ]
-"""Per-NBC mesh-sized side-assembly arrays, threaded as traced data.
+"""Per-NBC cached side-assembly data, threaded as traced data.
 
 One dict per resolved Neumann BC, in :func:`resolve_neumann_bcs`
 order, keyed by ``(ElementFamily, local_side_id)`` to match
 :attr:`ResolvedNeumannBC.elem_ids_by_side`. Each value is the
-``(X_block, eq_flat)`` pair for that side group: ``X_block`` the
-``(n_side_elems, num_basis_fns, ndims)`` element node coordinates and
-``eq_flat`` the ``(n_side_elems, num_basis_fns * num_components)``
-flat global equation indices the side residual scatters into.
+:class:`NeumannSideGroup` for that side group — the precomputed
+surface geometry (``dA``, ``coords_ip``), the field shape values on
+the side (``N_side``), the side quadrature weights (``side_w``), and
+the flat scatter indices (``eq_flat``).
 :func:`build_neumann_side_arrays` builds it;
 :func:`assemble_side_neumann` consumes it.
 """
@@ -227,131 +322,22 @@ def build_neumann_side_arrays(
         mesh: Mesh,
         dof_map: GlobalDofMap,
         resolved_neumann_bcs: Sequence[ResolvedNeumannBC],
-) -> NeumannSideArrays:
-    """Precompute the per-NBC mesh-sized side-assembly arrays.
-
-    For each resolved NBC and each ``(family, local_side_id)`` side
-    group, derives the element node coordinates ``X_block`` and the
-    flat global scatter equation indices ``eq_flat``
-    (``eq = block_offset + basis_fn * num_components + component``),
-    returned as a :data:`NeumannSideArrays`.
-
-    These are mesh-derived constants; materializing them here lets
-    :func:`assemble_side_neumann` take them as a traced argument
-    rather than rebuild them from ``mesh.connectivity`` /
-    ``mesh.nodes`` inside the assembly trace. Built once at
-    :class:`~cmad.fem.fe_problem.FEProblem` construction. Returns an
-    empty tuple when there are no Neumann BCs.
-    """
-    per_nbc: list[
-        dict[tuple[ElementFamily, int], tuple[JaxArray, JaxArray]]
-    ] = []
-    for nbc in resolved_neumann_bcs:
-        num_components = nbc.num_components
-        block_offset = int(dof_map.block_offsets[nbc.field_idx])
-        k_arr = np.arange(num_components)
-        group_arrays: dict[
-            tuple[ElementFamily, int], tuple[JaxArray, JaxArray]
-        ] = {}
-        for key, elem_ids in nbc.elem_ids_by_side.items():
-            connectivity_block = mesh.connectivity[elem_ids].astype(np.intp)
-            X_block = jnp.asarray(mesh.nodes[connectivity_block])
-            n_elems = connectivity_block.shape[0]
-            eq_3d = (
-                block_offset
-                + connectivity_block[:, :, None] * num_components
-                + k_arr[None, None, :]
-            )
-            eq_flat = jnp.asarray(eq_3d.reshape(n_elems, -1))
-            group_arrays[key] = (X_block, eq_flat)
-        per_nbc.append(group_arrays)
-    return tuple(per_nbc)
-
-
-def per_side_neumann_R(
-        X_elem: JaxArray,
-        side_xi: JaxArray,
-        side_w: JaxArray,
-        origin: JaxArray,
-        tangents: JaxArray,
-        geom_interpolant_fn: Callable[
-            [JaxArray], ShapeFunctionsAtIP,
-        ],
-        field_interpolant_fn: Callable[
-            [JaxArray], ShapeFunctionsAtIP,
-        ],
-        side_basis_fns: JaxArray,
-        num_basis_fns: int,
-        num_components: int,
-        values_fn: Callable[
-            [NDArray[np.floating] | JaxArray, float],
-            NDArray[np.floating] | JaxArray,
-        ],
-        t: float,
-) -> JaxArray:
-    """Per-element side surface-flux contribution to R.
-
-    Returns an accumulator of shape ``(num_basis_fns,
-    num_components)`` holding ``-∫_side N · t̄ dA`` distributed
-    over side-resident basis fns; non-side basis fns stay zero.
-    Vmap-over-elements compatible: only ``X_elem`` carries the
-    leading element axis. The Python-level IP loop unrolls under
-    jit.
-
-    The lift ``(origin, tangents)`` carries an outward-oriented side
-    parameterization; the surface measure
-    ``dA = |cross(J_surface[:, 0], J_surface[:, 1])|`` is sign-
-    irrelevant for explicit ``(coords, t)`` flux. For follower-load
-    extensions consuming the unit normal, the sign is correct by
-    construction of the lift table.
-
-    Sign convention matches the body-force scatter in
-    :func:`cmad.fem.assembly.per_element_R_and_K` — external loads
-    subtract from R so the Newton driver solves ``K · dU = -R``.
-    """
-    def per_ip(st, w_ip):
-        xi_volume = origin + tangents @ st
-        geom_shapes = geom_interpolant_fn(xi_volume)
-        field_shapes = field_interpolant_fn(xi_volume)
-        iso_jac = X_elem.T @ geom_shapes.grad_N
-        J_surface = iso_jac @ tangents
-        cross = jnp.cross(J_surface[:, 0], J_surface[:, 1])
-        dA = jnp.linalg.norm(cross)
-        coords_ip = geom_shapes.N @ X_elem
-        t_bar = jnp.asarray(values_fn(coords_ip[None, :], t))[0]
-        N_side = field_shapes.N[side_basis_fns]
-        return jnp.einsum("a,c->ac", N_side, t_bar) * dA * w_ip
-
-    contrib_per_ip = vmap(per_ip)(side_xi, side_w)
-    contrib_total = contrib_per_ip.sum(axis=0)
-    R_elem = jnp.zeros((num_basis_fns, num_components))
-    return R_elem.at[side_basis_fns].add(-contrib_total)
-
-
-def assemble_side_neumann(
-        mesh: Mesh,
-        dof_map: GlobalDofMap,
-        neumann_side_arrays: NeumannSideArrays,
-        resolved_neumann_bcs: Sequence[ResolvedNeumannBC],
         side_quadrature: dict[ElementFamily, QuadratureRule],
-        t: float,
-) -> JaxArray:
-    """Build the Neumann surface contribution to the global residual.
+) -> NeumannSideArrays:
+    """Precompute the per-NBC :class:`NeumannSideGroup` cache.
 
-    Iterates each resolved NBC and its ``(family, local_side_id)``
-    groups, vmaps :func:`per_side_neumann_R` over the group's element
-    node coordinates, and scatters per-element side residuals into a
-    flat JAX vector of length ``dof_map.num_total_dofs``. The per-side
-    element node coordinates ``X_block`` and flat scatter equation
-    indices ``eq_flat`` are read from ``neumann_side_arrays`` (built
-    by :func:`build_neumann_side_arrays`) rather than derived from the
-    mesh in-trace. K gets no contribution. Returns a zero vector when
-    ``resolved_neumann_bcs`` is empty.
+    Builds the cached surface geometry, side shape values, and scatter
+    indices each side group needs; see the module docstring for the
+    pipeline and the per-group contents. Returns an empty tuple when
+    there are no Neumann BCs.
+
+    ``dA`` is the unsigned cross-product norm (the surface area
+    element); the lift's outward orientation is preserved in
+    ``(origin, tangents)`` for follower-load extensions that consume the
+    signed normal.
     """
-    n_dofs = dof_map.num_total_dofs
-    R_neumann = jnp.zeros(n_dofs)
     if not resolved_neumann_bcs:
-        return R_neumann
+        return ()
     if mesh.geometric_finite_element is None:
         raise ValueError(
             "Mesh.geometric_finite_element is required for "
@@ -359,18 +345,20 @@ def assemble_side_neumann(
         )
     geom_interpolant_fn = mesh.geometric_finite_element.interpolant_fn
 
-    for nbc, nbc_arrays in zip(
-            resolved_neumann_bcs, neumann_side_arrays, strict=True,
-    ):
+    per_nbc: list[
+        dict[tuple[ElementFamily, int], NeumannSideGroup]
+    ] = []
+    for nbc in resolved_neumann_bcs:
         fe = nbc.finite_element
         field_interpolant_fn = fe.interpolant_fn
-        num_basis_fns = fe.num_dofs_per_element
         num_components = nbc.num_components
-
-        values_fn = _values_fn_for(nbc.values)
-
-        for (family, local_side_id), (X_block, eq_flat) in (
-                nbc_arrays.items()
+        block_offset = int(dof_map.block_offsets[nbc.field_idx])
+        k_arr = np.arange(num_components)
+        group_arrays: dict[
+            tuple[ElementFamily, int], NeumannSideGroup
+        ] = {}
+        for (family, local_side_id), elem_ids in (
+                nbc.elem_ids_by_side.items()
         ):
             if family not in side_quadrature:
                 raise ValueError(
@@ -382,36 +370,139 @@ def assemble_side_neumann(
             side_xi = jnp.asarray(sq.xi)
             side_w = jnp.asarray(sq.w)
 
-            origin_np, tangents_np = ref_side_lift(
-                family, local_side_id,
-            )
+            origin_np, tangents_np = ref_side_lift(family, local_side_id)
             origin = jnp.asarray(origin_np)
             tangents = jnp.asarray(tangents_np)
+            side_basis_fns = fe.side_basis_fns(local_side_id)
 
-            side_basis_fns_np = fe.side_basis_fns(local_side_id)
-            side_basis_fns = jnp.asarray(
-                side_basis_fns_np, dtype=jnp.int32,
+            connectivity_block = mesh.connectivity[elem_ids].astype(np.intp)
+            X_block = jnp.asarray(mesh.nodes[connectivity_block])
+            n_elems = connectivity_block.shape[0]
+
+            xi_vol = origin[None, :] + side_xi @ tangents.T
+            geom_shapes = vmap(geom_interpolant_fn)(xi_vol)
+            field_shapes = vmap(field_interpolant_fn)(xi_vol)
+            N_side = field_shapes.N[:, side_basis_fns]
+
+            iso_jac = jnp.einsum(
+                "eai,paj->epij", X_block, geom_shapes.grad_N,
             )
+            surface_jac = jnp.einsum("epij,jm->epim", iso_jac, tangents)
+            dA = jnp.linalg.norm(
+                jnp.cross(surface_jac[..., 0], surface_jac[..., 1]),
+                axis=-1,
+            )
+            coords_ip = jnp.einsum("pa,eai->epi", geom_shapes.N, X_block)
+
+            eq_3d = (
+                block_offset
+                + connectivity_block[:, :, None] * num_components
+                + k_arr[None, None, :]
+            )
+            eq_flat = jnp.asarray(eq_3d.reshape(n_elems, -1))
+
+            group_arrays[(family, local_side_id)] = NeumannSideGroup(
+                per_elem=NeumannSidePerElem(
+                    dA=dA, coords_ip=coords_ip, eq_flat=eq_flat,
+                ),
+                shared=NeumannSideShared(N_side=N_side, side_w=side_w),
+            )
+        per_nbc.append(group_arrays)
+    return tuple(per_nbc)
+
+
+def per_side_neumann_R(
+        dA_elem: JaxArray,
+        coords_ip_elem: JaxArray,
+        N_side: JaxArray,
+        side_w: JaxArray,
+        side_basis_fns: JaxArray,
+        num_basis_fns: int,
+        num_components: int,
+        values_fn: Callable[
+            [NDArray[np.floating] | JaxArray, float],
+            NDArray[np.floating] | JaxArray,
+        ],
+        t: float,
+) -> JaxArray:
+    """Per-element side surface-flux contribution to R.
+
+    Contracts the precomputed per-IP arrays for one side element — the
+    surface measure ``dA_elem`` and physical coords ``coords_ip_elem``
+    (per-element), the field shape values ``N_side`` and weights
+    ``side_w`` (shared) — into an accumulator of shape
+    ``(num_basis_fns, num_components)``; non-side basis fns stay zero.
+    Vmap-over-elements compatible: only ``dA_elem`` / ``coords_ip_elem``
+    carry the leading element axis. See the module docstring for the
+    sign convention.
+    """
+    def per_ip(N_side_ip, w_ip, dA_ip, coords_ip_ip):
+        t_bar = jnp.asarray(values_fn(coords_ip_ip[None, :], t))[0]
+        return jnp.einsum("a,c->ac", N_side_ip, t_bar) * dA_ip * w_ip
+
+    contrib_per_ip = vmap(per_ip)(
+        N_side, side_w, dA_elem, coords_ip_elem,
+    )
+    contrib_total = contrib_per_ip.sum(axis=0)
+    R_elem = jnp.zeros((num_basis_fns, num_components))
+    return R_elem.at[side_basis_fns].add(-contrib_total)
+
+
+def assemble_side_neumann(
+        dof_map: GlobalDofMap,
+        neumann_side_arrays: NeumannSideArrays,
+        resolved_neumann_bcs: Sequence[ResolvedNeumannBC],
+        t: float,
+) -> JaxArray:
+    """Build the Neumann surface contribution to the global residual.
+
+    Iterates each resolved NBC and its ``(family, local_side_id)``
+    groups, vmaps :func:`per_side_neumann_R` over the group's
+    precomputed per-element surface arrays, and scatters the per-element
+    side residuals into a flat JAX vector of length
+    ``dof_map.num_total_dofs`` at the cached ``eq_flat`` indices. K gets
+    no contribution. Returns a zero vector when ``resolved_neumann_bcs``
+    is empty.
+    """
+    n_dofs = dof_map.num_total_dofs
+    R_neumann = jnp.zeros(n_dofs)
+    if not resolved_neumann_bcs:
+        return R_neumann
+
+    for nbc, nbc_arrays in zip(
+            resolved_neumann_bcs, neumann_side_arrays, strict=True,
+    ):
+        fe = nbc.finite_element
+        num_basis_fns = fe.num_dofs_per_element
+        num_components = nbc.num_components
+        values_fn = _values_fn_for(nbc.values)
+
+        for (_family, local_side_id), group in nbc_arrays.items():
+            side_basis_fns = jnp.asarray(
+                fe.side_basis_fns(local_side_id), dtype=jnp.int32,
+            )
+            shared = group.shared
+            per_elem = group.per_elem
 
             side_kernel = partial(
                 per_side_neumann_R,
-                side_xi=side_xi,
-                side_w=side_w,
-                origin=origin,
-                tangents=tangents,
-                geom_interpolant_fn=geom_interpolant_fn,
-                field_interpolant_fn=field_interpolant_fn,
+                N_side=shared.N_side,
+                side_w=shared.side_w,
                 side_basis_fns=side_basis_fns,
                 num_basis_fns=num_basis_fns,
                 num_components=num_components,
                 values_fn=values_fn,
                 t=t,
             )
-            R_per_elem = vmap(side_kernel)(X_block)
+            R_per_elem = vmap(side_kernel)(
+                per_elem.dA, per_elem.coords_ip,
+            )
 
-            n_elems = X_block.shape[0]
+            n_elems = per_elem.dA.shape[0]
             R_flat = R_per_elem.reshape(n_elems, -1)
-            R_neumann = R_neumann.at[eq_flat.ravel()].add(R_flat.ravel())
+            R_neumann = R_neumann.at[per_elem.eq_flat.ravel()].add(
+                R_flat.ravel(),
+            )
 
     return R_neumann
 

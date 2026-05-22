@@ -191,9 +191,11 @@ class TestAssembleSideNeumann(unittest.TestCase):
     def test_empty_nbc_short_circuits(self):
         mesh, dm = _build_hex_mesh_and_dofmap()
         n_dofs = dm.num_total_dofs
-        neumann_side_arrays = build_neumann_side_arrays(mesh, dm, [])
+        neumann_side_arrays = build_neumann_side_arrays(
+            mesh, dm, [], _SIDE_QUAD,
+        )
         R = assemble_side_neumann(
-            mesh, dm, neumann_side_arrays, [], _SIDE_QUAD, 0.0,
+            dm, neumann_side_arrays, [], 0.0,
         )
         np.testing.assert_array_equal(R, np.zeros(n_dofs))
 
@@ -210,9 +212,11 @@ class TestAssembleSideNeumann(unittest.TestCase):
             values=[0.0, 0.0, p],
         )
         resolved = resolve_neumann_bcs(mesh, dm, [bc])
-        neumann_side_arrays = build_neumann_side_arrays(mesh, dm, resolved)
+        neumann_side_arrays = build_neumann_side_arrays(
+            mesh, dm, resolved, _SIDE_QUAD,
+        )
         R = assemble_side_neumann(
-            mesh, dm, neumann_side_arrays, resolved, _SIDE_QUAD, 0.0,
+            dm, neumann_side_arrays, resolved, 0.0,
         )
         n_dofs = dm.num_total_dofs
         local_zmax = np.array([4, 5, 6, 7])
@@ -246,9 +250,11 @@ class TestAssembleSideNeumann(unittest.TestCase):
             values=[1.0, 0.0, 0.0],
         )
         resolved = resolve_neumann_bcs(mesh, dm, [bc])
-        neumann_side_arrays = build_neumann_side_arrays(mesh, dm, resolved)
+        neumann_side_arrays = build_neumann_side_arrays(
+            mesh, dm, resolved, _SIDE_QUAD,
+        )
         R = assemble_side_neumann(
-            mesh, dm, neumann_side_arrays, resolved, _SIDE_QUAD, 0.0,
+            dm, neumann_side_arrays, resolved, 0.0,
         )
         expected = -np.sqrt(3.0) / 6.0
         for node in (1, 2, 3):
@@ -281,9 +287,11 @@ class TestAssembleSideNeumann(unittest.TestCase):
             values=[0.0, 0.0, p],
         )
         resolved = resolve_neumann_bcs(mesh, dm, [bc])
-        neumann_side_arrays = build_neumann_side_arrays(mesh, dm, resolved)
+        neumann_side_arrays = build_neumann_side_arrays(
+            mesh, dm, resolved, _SIDE_QUAD,
+        )
         R = assemble_side_neumann(
-            mesh, dm, neumann_side_arrays, resolved, _SIDE_QUAD, 0.0,
+            dm, neumann_side_arrays, resolved, 0.0,
         )
         local_zmax = np.array([4, 5, 6, 7])
         e0 = mesh.connectivity[0, local_zmax]

@@ -89,8 +89,8 @@ class FEKernelArrays:
       same object as ``fe_problem.embedded_sparsity``.
     - ``prescribed_indices``: the flat global indices of the
       Dirichlet-prescribed dofs.
-    - ``neumann_side_arrays``: the per-NBC Neumann surface-assembly
-      arrays — element node coordinates and scatter equation indices,
+    - ``neumann_side_arrays``: the per-NBC cached Neumann side-assembly
+      data (surface geometry, side shape values, scatter indices),
       keyed per side group; see
       :data:`cmad.fem.neumann.NeumannSideArrays`.
     - ``dbc_arrays``: the per-DirichletBC prescribed-value arrays —
@@ -202,6 +202,7 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
     coo_rows, coo_cols, coo_dedup_scatter = assembled_coo_dedup(fe_problem)
     neumann_side_arrays = build_neumann_side_arrays(
         mesh, dof_map, fe_problem.resolved_neumann_bcs,
+        fe_problem.side_quadrature,
     )
     dbc_arrays = build_dbc_arrays(dof_map)
 
