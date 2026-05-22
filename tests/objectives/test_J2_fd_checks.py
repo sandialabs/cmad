@@ -263,139 +263,137 @@ def compute_fun(qoi, F):
     return J
 
 
-class TestJ2FDChecks(unittest.TestCase):
+def get_plane_stress_deformation_gradient():
+    strain_increment = 0.02
+    num_pts_per_increment = 50
+    init_strain = strain_increment / num_pts_per_increment
+    eps_xx = np.r_[np.zeros(1),
+                   np.linspace(init_strain, strain_increment,
+                               num_pts_per_increment),
+                   np.ones(num_pts_per_increment) * strain_increment]
+    eps_yy = np.r_[np.zeros(1),
+        np.zeros(num_pts_per_increment) * strain_increment,
+        np.linspace(
+            init_strain,
+            strain_increment,
+            num_pts_per_increment)]
 
+    def_type = DefType.PLANE_STRESS
+    ndims = def_type_ndims(def_type)
+    num_steps = 100
+    I = np.eye(ndims)
+    F = np.repeat(I[:, :, np.newaxis], num_steps + 1, axis=2)
+    F[0, 0, :] += eps_xx[:num_steps + 1]
+    F[1, 1, :] += eps_yy[:num_steps + 1]
+
+    return F
+
+
+def get_plane_stress_data_and_weight(cauchy, noise_std=0., seed=22):
+    rng = np.random.default_rng(seed=seed)
+    data = cauchy + rng.normal(0., noise_std, cauchy.shape)
+
+    weight = np.zeros((3, 3))
+    weight[0, 0] = 1.
+    weight[1, 1] = 1.
+
+    return data, weight
+
+
+def plane_stress_fd_checks(Model, scale_params):
+
+    J2_analytical_problem = J2AnalyticalProblem(scale_params)
+    J2_parameters = J2_analytical_problem.J2_parameters
+
+    J2_analytical_problem_complex = J2AnalyticalProblem(scale_params)
+    J2_parameters_complex = J2_analytical_problem_complex.J2_parameters
+
+    F = get_plane_stress_deformation_gradient()
+
+    # instantiate real model
+    model = Model(J2_parameters, DefType.PLANE_STRESS, is_complex=False)
+
+    cauchy = compute_cauchy(model, F)
+
+    # create the real qoi
+    data, weight = get_plane_stress_data_and_weight(cauchy)
+    qoi = Calibration(model, data, weight)
+
+    # evaluate FD tests at values that are offset
+    # from those used to generate the calibration data
+    true_active_param_values = model.parameters.flat_active_values(False)
+    offset_param_values = 1.1 * true_active_param_values
+    complex_offset_param_values = offset_param_values.astype(complex)
+
+    # instantiate complex model and qoi
+    model_complex = Model(J2_parameters_complex,
+        def_type=DefType.PLANE_STRESS, is_complex=True)
+    qoi_complex = Calibration(model_complex, data.astype(complex),
+        weight)
+
+    # FD perturbations
+    h = np.logspace(0, -9, 10)
+
+    model.parameters.set_active_values_from_flat(offset_param_values, False)
+    fs_fd_dir_deriv_error, adjoint_fd_dir_deriv_error = \
+        fd_grad_check(qoi, F, h)
+    assert np.allclose(fs_fd_dir_deriv_error,
+                       adjoint_fd_dir_deriv_error)
+
+    error_drop_tol = 5.
+    min_fd_error = np.min(fs_fd_dir_deriv_error)
+    max_fd_error = np.max(fs_fd_dir_deriv_error)
+    grad_log10_error_drop = np.log10(max_fd_error / min_fd_error)
+    assert grad_log10_error_drop > error_drop_tol
+
+    model.parameters.set_active_values_from_flat(offset_param_values, False)
+    fs_fd_component_error, adjoint_fd_component_error = \
+        fd_grad_check_components(qoi, F)
+    fd_component_diff_tol = 5e-8
+    fd_components_diff = fs_fd_component_error \
+        - adjoint_fd_component_error
+    assert np.linalg.norm(fd_components_diff) < fd_component_diff_tol
+
+    model_complex.parameters.set_active_values_from_flat(
+        complex_offset_param_values, False, is_complex=True
+    )
+    fs_complex_step_dir_deriv_error, adjoint_complex_step_dir_deriv_error = \
+        complex_step_grad_check(qoi, qoi_complex, F, h)
+    assert np.allclose(fs_complex_step_dir_deriv_error,
+                       adjoint_complex_step_dir_deriv_error)
+
+    complex_min_fd_error = np.min(fs_complex_step_dir_deriv_error)
+    complex_max_fd_error = np.max(fs_complex_step_dir_deriv_error)
+    complex_grad_log10_error_drop = \
+        np.log10(complex_max_fd_error / complex_min_fd_error)
+    assert complex_grad_log10_error_drop > error_drop_tol
+
+    model.parameters.set_active_values_from_flat(offset_param_values, False)
+    hessian_fd_dir_deriv_error = fd_hessian_check(qoi, F, h)
+    min_fd_error = np.min(hessian_fd_dir_deriv_error)
+    max_fd_error = np.max(hessian_fd_dir_deriv_error)
+    hessian_log10_error_drop = np.log10(max_fd_error / min_fd_error)
+    assert hessian_log10_error_drop > error_drop_tol
+
+    model_complex.parameters.set_active_values_from_flat(
+        complex_offset_param_values, False, is_complex=True)
+    hessian_complex_step_dir_deriv_error = complex_step_hessian_check(
+        qoi, qoi_complex, F, h)
+    min_complex_step_error = np.min(hessian_complex_step_dir_deriv_error)
+    max_complex_step_error = np.max(hessian_complex_step_dir_deriv_error)
+    complex_hessian_log10_error_drop = \
+        np.log10(max_complex_step_error / min_complex_step_error)
+    assert complex_hessian_log10_error_drop > error_drop_tol
+
+
+class TestJ2FDChecks(unittest.TestCase):
 
     def test_J2_finite_difference_checks(self):
         Models = [SmallElasticPlastic, SmallRateElasticPlastic]
         scale_params_list = [False, True]
 
         for Model, scale_params in zip(Models, scale_params_list, strict=True):
-            self.plane_stress_fd_checks(Model, scale_params)
-
-
-    def get_plane_stress_deformation_gradient():
-        strain_increment = 0.02
-        num_pts_per_increment = 50
-        init_strain = strain_increment / num_pts_per_increment
-        eps_xx = np.r_[np.zeros(1),
-                       np.linspace(init_strain, strain_increment,
-                                   num_pts_per_increment),
-                       np.ones(num_pts_per_increment) * strain_increment]
-        eps_yy = np.r_[np.zeros(1),
-            np.zeros(num_pts_per_increment) * strain_increment,
-            np.linspace(
-                init_strain,
-                strain_increment,
-                num_pts_per_increment)]
-
-        def_type = DefType.PLANE_STRESS
-        ndims = def_type_ndims(def_type)
-        num_steps = 100
-        I = np.eye(ndims)
-        F = np.repeat(I[:, :, np.newaxis], num_steps + 1, axis=2)
-        F[0, 0, :] += eps_xx[:num_steps + 1]
-        F[1, 1, :] += eps_yy[:num_steps + 1]
-
-        return F
-
-
-    def get_plane_stress_data_and_weight(cauchy, noise_std=0., seed=22):
-        rng = np.random.default_rng(seed=seed)
-        data = cauchy + rng.normal(0., noise_std, cauchy.shape)
-
-        weight = np.zeros((3, 3))
-        weight[0, 0] = 1.
-        weight[1, 1] = 1.
-
-        return data, weight
-
-
-    @staticmethod
-    def plane_stress_fd_checks(Model, scale_params):
-
-        J2_analytical_problem = J2AnalyticalProblem(scale_params)
-        J2_parameters = J2_analytical_problem.J2_parameters
-
-        J2_analytical_problem_complex = J2AnalyticalProblem(scale_params)
-        J2_parameters_complex = J2_analytical_problem_complex.J2_parameters
-
-        F = TestJ2FDChecks.get_plane_stress_deformation_gradient()
-
-        # instantiate real model
-        model = Model(J2_parameters, DefType.PLANE_STRESS, is_complex=False)
-
-        cauchy = compute_cauchy(model, F)
-
-        # create the real qoi
-        data, weight = TestJ2FDChecks.get_plane_stress_data_and_weight(cauchy)
-        qoi = Calibration(model, data, weight)
-
-        # evaluate FD tests at values that are offset
-        # from those used to generate the calibration data
-        true_active_param_values = model.parameters.flat_active_values(False)
-        offset_param_values = 1.1 * true_active_param_values
-        complex_offset_param_values = offset_param_values.astype(complex)
-
-        # instantiate complex model and qoi
-        model_complex = Model(J2_parameters_complex,
-            def_type=DefType.PLANE_STRESS, is_complex=True)
-        qoi_complex = Calibration(model_complex, data.astype(complex),
-            weight)
-
-        # FD perturbations
-        h = np.logspace(0, -9, 10)
-
-        model.parameters.set_active_values_from_flat(offset_param_values, False)
-        fs_fd_dir_deriv_error, adjoint_fd_dir_deriv_error = \
-            fd_grad_check(qoi, F, h)
-        assert np.allclose(fs_fd_dir_deriv_error,
-                           adjoint_fd_dir_deriv_error)
-
-        error_drop_tol = 5.
-        min_fd_error = np.min(fs_fd_dir_deriv_error)
-        max_fd_error = np.max(fs_fd_dir_deriv_error)
-        grad_log10_error_drop = np.log10(max_fd_error / min_fd_error)
-        assert grad_log10_error_drop > error_drop_tol
-
-        model.parameters.set_active_values_from_flat(offset_param_values, False)
-        fs_fd_component_error, adjoint_fd_component_error = \
-            fd_grad_check_components(qoi, F)
-        fd_component_diff_tol = 5e-8
-        fd_components_diff = fs_fd_component_error \
-            - adjoint_fd_component_error
-        assert np.linalg.norm(fd_components_diff) < fd_component_diff_tol
-
-        model_complex.parameters.set_active_values_from_flat(
-            complex_offset_param_values, False, is_complex=True
-        )
-        fs_complex_step_dir_deriv_error, adjoint_complex_step_dir_deriv_error = \
-            complex_step_grad_check(qoi, qoi_complex, F, h)
-        assert np.allclose(fs_complex_step_dir_deriv_error,
-                           adjoint_complex_step_dir_deriv_error)
-
-        complex_min_fd_error = np.min(fs_complex_step_dir_deriv_error)
-        complex_max_fd_error = np.max(fs_complex_step_dir_deriv_error)
-        complex_grad_log10_error_drop = \
-            np.log10(complex_max_fd_error / complex_min_fd_error)
-        assert complex_grad_log10_error_drop > error_drop_tol
-
-        model.parameters.set_active_values_from_flat(offset_param_values, False)
-        hessian_fd_dir_deriv_error = fd_hessian_check(qoi, F, h)
-        min_fd_error = np.min(hessian_fd_dir_deriv_error)
-        max_fd_error = np.max(hessian_fd_dir_deriv_error)
-        hessian_log10_error_drop = np.log10(max_fd_error / min_fd_error)
-        assert hessian_log10_error_drop > error_drop_tol
-
-        model_complex.parameters.set_active_values_from_flat(
-            complex_offset_param_values, False, is_complex=True)
-        hessian_complex_step_dir_deriv_error = complex_step_hessian_check(
-            qoi, qoi_complex, F, h)
-        min_complex_step_error = np.min(hessian_complex_step_dir_deriv_error)
-        max_complex_step_error = np.max(hessian_complex_step_dir_deriv_error)
-        complex_hessian_log10_error_drop = \
-            np.log10(max_complex_step_error / min_complex_step_error)
-        assert complex_hessian_log10_error_drop > error_drop_tol
+            plane_stress_fd_checks(Model, scale_params)
 
 if __name__ == "__main__":
     J2_FD_checks_test_suite = unittest.TestLoader().loadTestsFromTestCase(
