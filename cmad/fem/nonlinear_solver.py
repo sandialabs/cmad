@@ -20,7 +20,7 @@ from cmad.fem.sparse_solve import (
     scipy_amg_cg,
     scipy_lu,
 )
-from cmad.typing import JaxArray, Params
+from cmad.typing import JaxArray, Params, Scalar
 
 _DEFAULT_NONLINEAR_SOLVER_SETTINGS: dict[str, Any] = {
     "max iters": 20,
@@ -147,7 +147,7 @@ def _fe_newton_primal(
         params_by_block: Mapping[str, Params],
         U_prev: JaxArray,
         xi_prev_by_block: Mapping[str, JaxArray],
-        t: float,
+        t: Scalar,
         nonlinear_solver_settings: dict[str, Any],
         linear_solver_settings: dict[str, Any],
 ) -> tuple[JaxArray, dict[str, JaxArray]]:
@@ -348,7 +348,7 @@ def _fe_newton_solve_ad(
         params_by_block: Mapping[str, Params],
         U_prev: JaxArray,
         xi_prev_by_block: dict[str, JaxArray],
-        t: float | JaxArray,
+        t: Scalar,
         nonlinear_solver_settings_frozen: tuple[tuple[str, Any], ...],
         linear_solver_settings_frozen: tuple[tuple[str, Any], ...],
 ) -> tuple[JaxArray, dict[str, JaxArray]]:

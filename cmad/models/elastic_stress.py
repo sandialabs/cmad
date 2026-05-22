@@ -8,7 +8,7 @@ import jax.numpy as jnp
 
 from cmad.models.elastic_constants import compute_lambda, compute_mu
 from cmad.parameters.parameters import unpack_elastic_params
-from cmad.typing import JaxArray
+from cmad.typing import JaxArray, Scalar
 
 
 # form used by elastic-plastic models
@@ -70,7 +70,7 @@ def conventional_elastic_stress_fun(
         )
 
 
-def two_mu_scale_factor(params: dict[str, Any]) -> float | JaxArray:
+def two_mu_scale_factor(params: dict[str, Any]) -> Scalar:
     elastic_params_keys = params["elastic"].keys()
     if "mu" in elastic_params_keys:
         return 2. * params["elastic"]["mu"]

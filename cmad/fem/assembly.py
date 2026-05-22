@@ -24,6 +24,7 @@ from cmad.typing import (
     Params,
     RAndDRDUAndXiEvaluator,
     RAndDRDUEvaluator,
+    Scalar,
     StateList,
 )
 
@@ -221,11 +222,11 @@ def per_element_R_and_K(
         geom_shared: BlockIPGeometryShared,
         R_and_dR_dU_evaluator: RAndDRDUEvaluator,
         forcing_fns_by_block_idx: dict[int, Callable[
-            [JaxArray | NDArray[np.floating], float],
+            [JaxArray | NDArray[np.floating], Scalar],
             JaxArray | NDArray[np.floating],
         ]],
         residual_block_shapes: Sequence[tuple[int, int]],
-        t: float,
+        t: Scalar,
 ) -> tuple[list[JaxArray], list[list[JaxArray]]]:
     """Per-element ``(R_blocks, dR_dU_blocks)`` at all IPs of one element.
 
@@ -344,11 +345,11 @@ def per_element_R_and_K_coupled(
         R_and_dR_dU_and_xi_evaluator: RAndDRDUAndXiEvaluator,
         unravel_xi: Callable[[JaxArray], StateList],
         forcing_fns_by_block_idx: dict[int, Callable[
-            [JaxArray | NDArray[np.floating], float],
+            [JaxArray | NDArray[np.floating], Scalar],
             JaxArray | NDArray[np.floating],
         ]],
         residual_block_shapes: Sequence[tuple[int, int]],
-        t: float,
+        t: Scalar,
 ) -> tuple[list[JaxArray], list[list[JaxArray]], JaxArray]:
     """Per-element ``(R_blocks, dR_dU_blocks, xi_solved_per_ip)`` for COUPLED.
 
@@ -462,7 +463,7 @@ def assemble_element_block(
         block_name: str,
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
-        t: float,
+        t: Scalar,
         xi_prev_per_block: NDArray[np.floating] | JaxArray | None = None,
 ) -> tuple[JaxArray, JaxArray, JaxArray | None]:
     """Assemble one element block's R contribution + COO data.
@@ -580,7 +581,7 @@ def assemble_global(
         params_by_block: Mapping[str, Params],
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
-        t: float,
+        t: Scalar,
         xi_prev_by_block: Mapping[str, NDArray[np.floating] | JaxArray]
         | None = None,
 ) -> tuple[BCOO, JaxArray, dict[str, JaxArray]]:

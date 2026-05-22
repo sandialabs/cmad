@@ -18,6 +18,12 @@ if TYPE_CHECKING:
     from cmad.models.global_fields import GlobalFieldsAtPoint
     from cmad.models.model import Model
 
+Scalar: TypeAlias = float | JaxArray
+"""A scalar quantity: a Python float at the boundary / in tests, or a 0-d
+JaxArray under tracing (quadrature weights, Jacobian-det factors, time, elastic
+constants, ...). JAX accepts either interchangeably."""
+
+
 # ----- Pytree types -----
 
 PyTreeLeaf: TypeAlias = JaxArray | NDArray[np.floating] | float | int | bool | None
@@ -94,7 +100,7 @@ ResidualFnGR: TypeAlias = Callable[
      Sequence[JaxArray], Sequence[JaxArray],
      "Model", "GlobalResidualMode",
      Sequence["ShapeFunctionsAtIP"],
-     float, float,
+     Scalar, Scalar,
      int],
     Sequence[JaxArray],
 ]
@@ -119,7 +125,7 @@ REvaluator: TypeAlias = Callable[
     [Params,
      Sequence[JaxArray], Sequence[JaxArray],
      Sequence["ShapeFunctionsAtIP"],
-     float | JaxArray, float | JaxArray,
+     Scalar, Scalar,
      int],
     Sequence[JaxArray],
 ]
@@ -140,7 +146,7 @@ RAndDRDUEvaluator: TypeAlias = Callable[
     [Params,
      Sequence[JaxArray], Sequence[JaxArray],
      Sequence["ShapeFunctionsAtIP"],
-     float | JaxArray, float | JaxArray,
+     Scalar, Scalar,
      int],
     tuple[Sequence[JaxArray], Sequence[Sequence[JaxArray]]],
 ]
@@ -158,7 +164,7 @@ DRDUEvaluator: TypeAlias = Callable[
     [Params,
      Sequence[JaxArray], Sequence[JaxArray],
      Sequence["ShapeFunctionsAtIP"],
-     float | JaxArray, float | JaxArray,
+     Scalar, Scalar,
      int],
     Sequence[Sequence[JaxArray]],
 ]
@@ -178,7 +184,7 @@ DRDUPrevEvaluator: TypeAlias = Callable[
     [Params,
      Sequence[JaxArray], Sequence[JaxArray],
      Sequence["ShapeFunctionsAtIP"],
-     float | JaxArray, float | JaxArray,
+     Scalar, Scalar,
      int],
     Sequence[Sequence[JaxArray]],
 ]
@@ -196,7 +202,7 @@ DRDPEvaluator: TypeAlias = Callable[
     [Params,
      Sequence[JaxArray], Sequence[JaxArray],
      Sequence["ShapeFunctionsAtIP"],
-     float | JaxArray, float | JaxArray,
+     Scalar, Scalar,
      int],
     Sequence[PyTree],
 ]
@@ -213,7 +219,7 @@ DRDXIEvaluator: TypeAlias = Callable[
      Sequence[JaxArray], Sequence[JaxArray],
      StateList, StateList,
      Sequence["ShapeFunctionsAtIP"],
-     float | JaxArray, float | JaxArray,
+     Scalar, Scalar,
      int],
     Sequence[Sequence[JaxArray]],
 ]
@@ -230,7 +236,7 @@ DRDXIPrevEvaluator: TypeAlias = Callable[
      Sequence[JaxArray], Sequence[JaxArray],
      StateList, StateList,
      Sequence["ShapeFunctionsAtIP"],
-     float | JaxArray, float | JaxArray,
+     Scalar, Scalar,
      int],
     Sequence[Sequence[JaxArray]],
 ]
@@ -243,7 +249,7 @@ RAndDRDUAndXiEvaluator: TypeAlias = Callable[
      Sequence[JaxArray], Sequence[JaxArray],
      StateList,
      Sequence["ShapeFunctionsAtIP"],
-     float | JaxArray, float | JaxArray,
+     Scalar, Scalar,
      int, int | JaxArray],
     tuple[
         Sequence[JaxArray],

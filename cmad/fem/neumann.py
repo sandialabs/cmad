@@ -70,7 +70,7 @@ from cmad.fem.finite_element import EntityType, FiniteElement
 from cmad.fem.mesh import Mesh
 from cmad.fem.quadrature import QuadratureRule
 from cmad.fem.topology import ref_side_lift
-from cmad.typing import JaxArray
+from cmad.typing import JaxArray, Scalar
 
 
 @register_pytree_node_class
@@ -207,7 +207,7 @@ class ResolvedNeumannBC:
     values: (
         NDArray[np.floating]
         | Callable[
-            [NDArray[np.floating] | JaxArray, float],
+            [NDArray[np.floating] | JaxArray, Scalar],
             NDArray[np.floating] | JaxArray,
         ]
     )
@@ -291,7 +291,7 @@ def resolve_neumann_bcs(
         values: (
             NDArray[np.floating]
             | Callable[
-                [NDArray[np.floating] | JaxArray, float],
+                [NDArray[np.floating] | JaxArray, Scalar],
                 NDArray[np.floating] | JaxArray,
             ]
         )
@@ -420,10 +420,10 @@ def per_side_neumann_R(
         num_basis_fns: int,
         num_components: int,
         values_fn: Callable[
-            [NDArray[np.floating] | JaxArray, float],
+            [NDArray[np.floating] | JaxArray, Scalar],
             NDArray[np.floating] | JaxArray,
         ],
-        t: float,
+        t: Scalar,
 ) -> JaxArray:
     """Per-element side surface-flux contribution to R.
 
@@ -452,7 +452,7 @@ def assemble_side_neumann(
         dof_map: GlobalDofMap,
         neumann_side_arrays: NeumannSideArrays,
         resolved_neumann_bcs: Sequence[ResolvedNeumannBC],
-        t: float,
+        t: Scalar,
 ) -> JaxArray:
     """Build the Neumann surface contribution to the global residual.
 
@@ -511,12 +511,12 @@ def _values_fn_for(
         values: (
             NDArray[np.floating]
             | Callable[
-                [NDArray[np.floating] | JaxArray, float],
+                [NDArray[np.floating] | JaxArray, Scalar],
                 NDArray[np.floating] | JaxArray,
             ]
         ),
 ) -> Callable[
-    [NDArray[np.floating] | JaxArray, float],
+    [NDArray[np.floating] | JaxArray, Scalar],
     NDArray[np.floating] | JaxArray,
 ]:
     """Wrap a ResolvedNeumannBC.values into a unified callable.
@@ -530,7 +530,7 @@ def _values_fn_for(
     const_arr = jnp.asarray(values)
 
     def constant_values(
-            coords: NDArray[np.floating] | JaxArray, t_arg: float,
+            coords: NDArray[np.floating] | JaxArray, t_arg: Scalar,
     ) -> NDArray[np.floating] | JaxArray:
         return jnp.broadcast_to(
             const_arr, (coords.shape[0], *const_arr.shape),

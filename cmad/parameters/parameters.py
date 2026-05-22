@@ -16,6 +16,7 @@ from cmad.typing import (
     JaxArray,
     Params,
     PyTree,
+    Scalar,
     Transform,
     Transforms,
 )
@@ -26,7 +27,7 @@ T = TypeVar("T")
 def bounds_transform(
         value: float, bounds: list[float],
         transform_from_canonical: bool = True,
-) -> float | JaxArray:
+) -> Scalar:
     span = 0.5 * (bounds[1] - bounds[0])
     mean = 0.5 * (bounds[0] + bounds[1])
     if transform_from_canonical:
@@ -44,7 +45,7 @@ def bounds_transform(
 def log_transform(
         value: float, ref_value: list[float],
         transform_from_canonical: bool = True,
-) -> float | JaxArray:
+) -> Scalar:
     if transform_from_canonical:
         transformed_value = ref_value[0] * jnp.exp(value)
     else:
@@ -139,7 +140,7 @@ def get_opt_bounds(transform: Transform) -> list[float | None]:
 
 def transform_from_canonical(
         value: float, active_flag: bool, transform: Transform,
-) -> float | JaxArray:
+) -> Scalar:
     if active_flag and transform is not None:
         if len(transform) == 2:
             return bounds_transform(value, transform)
@@ -152,7 +153,7 @@ def transform_from_canonical(
 
 def transform_to_canonical(
         value: float, active_flag: bool, transform: Transform,
-) -> float | JaxArray:
+) -> Scalar:
     if active_flag and transform is not None:
         if len(transform) == 2:
             return bounds_transform(value, transform,

@@ -63,7 +63,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from cmad.typing import JaxArray
+from cmad.typing import JaxArray, Scalar
 
 
 @dataclass(frozen=True)
@@ -106,7 +106,7 @@ class DirichletBC:
     values: (
         Sequence[float]
         | Callable[
-            [NDArray[np.floating] | JaxArray, float | JaxArray],
+            [NDArray[np.floating] | JaxArray, Scalar],
             NDArray[np.floating] | JaxArray,
         ]
         | None
@@ -167,7 +167,7 @@ class NeumannBC:
     values: (
         Sequence[float]
         | Callable[
-            [NDArray[np.floating] | JaxArray, float | JaxArray],
+            [NDArray[np.floating] | JaxArray, Scalar],
             NDArray[np.floating] | JaxArray,
         ]
     )

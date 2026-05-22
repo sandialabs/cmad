@@ -71,7 +71,7 @@ from numpy.typing import NDArray
 from cmad.fem.bcs import DirichletBC
 from cmad.fem.finite_element import EntityType, FiniteElement
 from cmad.fem.mesh import Mesh
-from cmad.typing import JaxArray
+from cmad.typing import JaxArray, Scalar
 
 DBCArrays: TypeAlias = tuple[tuple[JaxArray, JaxArray], ...]
 """Per-DirichletBC mesh-sized prescribed-value arrays, as traced data.
@@ -250,7 +250,7 @@ class GlobalDofMap:
         return field_idx, local_eq // ndofs, local_eq % ndofs
 
     def evaluate_prescribed_values(
-        self, dbc_arrays: DBCArrays, t: float | JaxArray = 0.0,
+        self, dbc_arrays: DBCArrays, t: Scalar = 0.0,
     ) -> JaxArray:
         """Materialize prescribed values at time ``t`` as a JAX array.
 
@@ -333,7 +333,7 @@ class GlobalDofMap:
 
     @staticmethod
     def _materialize_bc_values(
-        rbc: _ResolvedBC, set_coords: JaxArray, t: float | JaxArray,
+        rbc: _ResolvedBC, set_coords: JaxArray, t: Scalar,
     ) -> JaxArray:
         """Evaluate one BC's value source into a flat
         ``(N_set * len(dofs),)`` JAX array in (vertex-major, dof-minor)

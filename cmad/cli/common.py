@@ -51,7 +51,7 @@ from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
 from cmad.qois.fe_qoi import FEQoI
 from cmad.qois.qoi import QoI
-from cmad.typing import JaxArray
+from cmad.typing import JaxArray, Scalar
 
 
 @dataclass(frozen=True)
@@ -564,13 +564,13 @@ def _build_neumann_bcs(
 def _build_forcing_fns(
         body_section: dict[str, Any] | None, gr: GlobalResidual,
 ) -> dict[int, Callable[
-    [NDArray[np.floating] | JaxArray, float],
+    [NDArray[np.floating] | JaxArray, Scalar],
     NDArray[np.floating] | JaxArray,
 ]]:
     if not body_section:
         return {}
     fns_by_idx: dict[int, Callable[
-        [NDArray[np.floating] | JaxArray, float],
+        [NDArray[np.floating] | JaxArray, Scalar],
         NDArray[np.floating] | JaxArray,
     ]] = {}
     for entry_name, entry in body_section.get("expression", {}).items():
@@ -600,7 +600,7 @@ def _build_forcing_fns(
 def _make_dbc_value_callable(
         scalar_fn: Callable[..., Any],
 ) -> Callable[
-    [NDArray[np.floating] | JaxArray, float | JaxArray],
+    [NDArray[np.floating] | JaxArray, Scalar],
     JaxArray,
 ]:
     """Wrap a scalar ``f(x, y, z, t)`` into a DBC ``(coords, t) ->
@@ -613,7 +613,7 @@ def _make_dbc_value_callable(
     """
     def fn(
             coords: NDArray[np.floating] | JaxArray,
-            t: float | JaxArray,
+            t: Scalar,
     ) -> JaxArray:
         n_set = coords.shape[0]
         val = jnp.asarray(scalar_fn(
@@ -626,7 +626,7 @@ def _make_dbc_value_callable(
 def _make_nbc_value_callable(
         component_fns: list[Callable[..., Any]],
 ) -> Callable[
-    [NDArray[np.floating] | JaxArray, float | JaxArray],
+    [NDArray[np.floating] | JaxArray, Scalar],
     JaxArray,
 ]:
     """Stack per-component scalar callables into an NBC ``(coords_ip, t)
@@ -639,7 +639,7 @@ def _make_nbc_value_callable(
     """
     def fn(
             coords_ip: NDArray[np.floating] | JaxArray,
-            t: float | JaxArray,
+            t: Scalar,
     ) -> JaxArray:
         n_ips = coords_ip.shape[0]
         cols = []
@@ -656,7 +656,7 @@ def _make_nbc_value_callable(
 def _make_body_force_callable(
         component_fns: list[Callable[..., Any]],
 ) -> Callable[
-    [NDArray[np.floating] | JaxArray, float | JaxArray],
+    [NDArray[np.floating] | JaxArray, Scalar],
     JaxArray,
 ]:
     """Stack per-component scalar callables into a forcing
@@ -668,7 +668,7 @@ def _make_body_force_callable(
     """
     def fn(
             coords_ip: NDArray[np.floating] | JaxArray,
-            t: float | JaxArray,
+            t: Scalar,
     ) -> JaxArray:
         cols = [
             jnp.asarray(c(

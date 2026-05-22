@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from jax.lax import cond
 
 from cmad.solver.nonlinear_solver import make_newton_solve
-from cmad.typing import JaxArray, PyTree
+from cmad.typing import JaxArray, PyTree, Scalar
 from cmad.verification.functions import jax_barlat_yield
 
 
@@ -85,7 +85,7 @@ def barlat_effective_stress(cauchy: JaxArray, params: dict[str, Any]) -> JaxArra
 
 
 def beta_initial_guess(
-        cauchy: JaxArray, equivalent_stress: float | JaxArray,
+        cauchy: JaxArray, equivalent_stress: Scalar,
         tol: float = 1e-14,
 ) -> JaxArray:
     phi_J2 = J2_effective_stress(cauchy, None)
@@ -96,7 +96,7 @@ def beta_initial_guess(
 
 def beta_make_newton_solve(
         effective_stress_fun: Callable[..., JaxArray],
-        equivalent_stress: float | JaxArray,
+        equivalent_stress: Scalar,
         max_iters: int = 10, abs_tol: float = 1e-14,
         rel_tol: float = 1e-14, max_ls_evals: int = 0,
 ) -> Callable[..., PyTree]:

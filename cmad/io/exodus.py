@@ -78,7 +78,7 @@ def _decode_name_row(byte_row: NDArray[np.bytes_]) -> str:
     return byte_row.tobytes().rstrip(b"\x00").decode("utf-8")
 
 
-def _decode_names(name_var) -> list[str]:
+def _decode_names(name_var: netCDF4.Variable) -> list[str]:
     raw = name_var[:]
     return [_decode_name_row(raw[i]) for i in range(raw.shape[0])]
 
@@ -107,7 +107,7 @@ def _read_coords(ds: netCDF4.Dataset) -> NDArray[np.float64]:
     )
 
 
-def _read_elem_type(var) -> ElementFamily:
+def _read_elem_type(var: netCDF4.Variable) -> ElementFamily:
     raw = var.getncattr("elem_type")
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8")

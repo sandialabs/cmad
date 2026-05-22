@@ -26,7 +26,7 @@ from cmad.fem.quadrature import (
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.model import Model
-from cmad.typing import GREvaluators, JaxArray, StateList
+from cmad.typing import GREvaluators, JaxArray, Scalar, StateList
 
 if TYPE_CHECKING:
     from cmad.fem.kernel_arrays import FEKernelArrays
@@ -118,7 +118,7 @@ class FEProblem:
     modes_by_block: dict[str, GlobalResidualMode]
     evaluators_by_block: dict[str, GREvaluators]
     forcing_fns_by_block_idx: dict[int, Callable[
-        [NDArray[np.floating] | JaxArray, float],
+        [NDArray[np.floating] | JaxArray, Scalar],
         NDArray[np.floating] | JaxArray,
     ]] | None
     assembly_quadrature: dict[ElementFamily, QuadratureRule]
@@ -338,7 +338,7 @@ def build_fe_problem(
         models_by_block: dict[str, Model],
         modes_by_block: dict[str, GlobalResidualMode] | None = None,
         forcing_fns_by_block_idx: dict[int, Callable[
-            [NDArray[np.floating] | JaxArray, float],
+            [NDArray[np.floating] | JaxArray, Scalar],
             NDArray[np.floating] | JaxArray,
         ]] | None = None,
         assembly_quadrature: dict[ElementFamily, QuadratureRule] | None = None,
