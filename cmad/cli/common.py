@@ -111,14 +111,19 @@ def resolve_output(
     """Resolve ``out_dir``, ``prefix``, and ``format`` from a validated deck.
 
     The path is taken relative to ``deck_path.parent`` when not absolute
-    and created. ``format`` is always present (schema default ``npy``);
-    callers that don't emit array outputs can discard it.
+    and created. ``format`` defaults to ``npy`` here (it is filled into
+    the deck only for MP); callers that don't emit array outputs can
+    discard it.
     """
     out_dir = Path(resolved["output"]["path"])
     if not out_dir.is_absolute():
         out_dir = deck_path.parent / out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir, resolved["output"]["prefix"], resolved["output"]["format"]
+    return (
+        out_dir,
+        resolved["output"]["prefix"],
+        resolved["output"].get("format", "npy"),
+    )
 
 
 def build_fe_J_of_params_flat(

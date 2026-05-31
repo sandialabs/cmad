@@ -21,8 +21,10 @@ The three passes are:
 3. **Default-filling** dispatched on ``problem.type`` (MP fills
    ``solver.newton``; FE fills ``residuals.{global, local}
    residual.nonlinear*`` plus the top-level ``linear solver``
-   section). ``output.format`` defaults to ``"npy"`` for both
-   arms; the optimizer defaults are problem-type-agnostic.
+   section). ``output.prefix`` defaults for both arms;
+   ``output.format`` is filled only for MP (FE primal writes an Exodus
+   trajectory, not arrays); the optimizer defaults are
+   problem-type-agnostic.
 
 Both normalization helpers are also re-imported by ``cmad/io/schema.py``
 so that ``validate_deck`` can be called defensively on a not-yet-
@@ -47,7 +49,6 @@ _SOLVER_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_ls_evals": 0,
     },
 }
-_OUTPUT_DEFAULTS: dict[str, Any] = {"prefix": "", "format": "npy"}
 _OPTIMIZER_DEFAULTS: dict[str, Any] = {
     "initial_guess": "from_deck",
     "options": {},
@@ -170,8 +171,13 @@ def apply_deck_defaults(deck: dict[str, Any]) -> dict[str, Any]:
             ls_in.setdefault(k, v)
 
     output_in = resolved.setdefault("output", {})
-    for k, v in _OUTPUT_DEFAULTS.items():
-        output_in.setdefault(k, v)
+    output_in.setdefault("prefix", "")
+    # `format` selects npy vs text for the array dumps (cauchy / xi /
+    # grad / hess). FE primal writes an Exodus trajectory, so format is
+    # filled only for the MP arm; FE array writers (gradient / hessian)
+    # fall back to npy at resolve_output.
+    if problem_type == "material_point":
+        output_in.setdefault("format", "npy")
 
     if "optimizer" in resolved:
         optimizer_in = resolved["optimizer"]

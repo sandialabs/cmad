@@ -60,7 +60,10 @@ class TestFEDeckSchema(unittest.TestCase):
         deck = _minimal_fe_deck()
         resolved = apply_deck_defaults(deck)
         validate_deck(resolved, "primal")
-        self.assertEqual(resolved["output"]["format"], "npy")
+        # format is filled only for MP (it selects npy/text for the
+        # array dumps; FE primal writes an Exodus trajectory), so it is
+        # not injected for FE.
+        self.assertNotIn("format", resolved["output"])
         self.assertIn(
             "nonlinear max iters",
             resolved["residuals"]["global residual"],
