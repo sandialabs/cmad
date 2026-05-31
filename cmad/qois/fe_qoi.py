@@ -58,7 +58,8 @@ class FEQoI(QoIBase, ABC):
     parameter-dependent QoIs (future FEMU / regularization terms)
     capture ``params_by_block`` by Python closure — AD traces through
     the capture when ``params_flat`` is the tracer in
-    ``J(params_flat)``. Forward-functional QoIs (e.g.
+    ``J(params_flat)``. QoIs whose value depends on the parameters
+    only through the solved state (e.g.
     :class:`cmad.qois.fe_displacement_l2.FEDisplacementL2`) ignore
     ``params_by_block`` and return a state-only closure unchanged.
 
