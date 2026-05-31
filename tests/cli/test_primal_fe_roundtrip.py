@@ -25,6 +25,8 @@ from cmad.fem.mesh import StructuredHexMesh
 from cmad.io.exodus import ExodusWriter, read_results
 from cmad.io.results import FieldSpec
 from cmad.models.var_types import VarType
+from cmad.verification.functions import J2_yield, J2_yield_normal
+from cmad.verification.solutions import compute_plastic_fields
 
 
 def _write_hex_cube_mesh(
@@ -174,9 +176,9 @@ class TestPrimalFeClosedFormRoundTrip(unittest.TestCase):
 class TestPrimalFeCoupledRoundTrip(unittest.TestCase):
     """SmallElasticPlastic (J2 + Voce, COUPLED local Newton) FE
     primal round-trip — confirms the deck-driven COUPLED dispatch +
-    local-Newton kwargs + xi flow + writer chain wire correctly.
-    Yielded-and-uniaxial loose check; pointwise return-map
-    correctness lives in the driver/model tests."""
+    local-Newton kwargs + xi flow + writer chain wire correctly, and
+    that the homogeneous terminal stress equals the analytical uniaxial
+    J2 + Voce flow stress at the applied strain."""
 
     def test_j2_voce_uniaxial_yield_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -211,12 +213,24 @@ class TestPrimalFeCoupledRoundTrip(unittest.TestCase):
                 },
             )
             cauchy_terminal = results.element["all"]["cauchy"][-1]
-            # Yielded: sigma_xx exceeds initial yield Y=200 (peak eps_x =
-            # 0.01, eps_yield = Y/E = 1e-3 -> ~10x yield strain at terminal).
-            self.assertTrue(np.all(cauchy_terminal[:, 0] > 200.0))
+            # Terminal sigma_xx equals the analytical uniaxial J2 + Voce
+            # flow stress at eps_xx = 0.01 (the ramp peak). Material params
+            # mirror _make_fe_primal_deck_coupled; this is an independent
+            # analytical reference, not a scaled solver output.
+            stress, strain, _ = compute_plastic_fields(
+                np.diag([1.0, 0.0, 0.0]), J2_yield, J2_yield_normal,
+                (200_000.0, 0.3, 200.0, 200.0, 20.0),
+                max_alpha=0.02, num_steps=10_000,
+            )
+            sigma_xx_analytic = np.interp(
+                0.01, strain[0, 0, :], stress[0, 0, :],
+            )
+            np.testing.assert_allclose(
+                cauchy_terminal[:, 0], sigma_xx_analytic, rtol=1e-3,
+            )
             # Uniaxial stress: lateral / shear components ≈ 0.
             np.testing.assert_allclose(
-                cauchy_terminal[:, 1:], 0.0, atol=1.0,
+                cauchy_terminal[:, 1:], 0.0, atol=1e-6,
             )
 
 
