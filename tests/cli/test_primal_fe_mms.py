@@ -72,7 +72,7 @@ def _make_mms_deck(
         "zmin_sides", "zmax_sides",
     )
     dbc_entries: dict[str, list[Any]] = {
-        f"{s}_d{d}": ["displacement", d, s, 0.0]
+        f"{s}_d{d}": ["equilibrium", d, s, 0.0]
         for s in sidesets
         for d in (0, 1, 2)
     }
@@ -96,7 +96,7 @@ def _make_mms_deck(
         "dirichlet bcs": {"expression": dbc_entries},
         "body forces": {
             "expression": {
-                "mms_body_force": ["displacement", *body_force_strs],
+                "mms_body_force": ["equilibrium", *body_force_strs],
             },
         },
         "output": {

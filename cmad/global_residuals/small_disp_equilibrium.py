@@ -27,7 +27,7 @@ class SmallDispEquilibrium(GlobalResidual):
     (not inside residual_fn) so this GR stays internal-force
     only.
 
-    Single residual block: ``resid_names[0] = "displacement"``,
+    Single residual block: ``resid_names[0] = "equilibrium"``,
     ``var_names[0] = "u"``. Per-element basis-fn count comes from the
     paired field's ``FiniteElement.num_dofs_per_element`` at FEProblem
     assembly time, so this GR is element-family-agnostic.
@@ -50,7 +50,7 @@ class SmallDispEquilibrium(GlobalResidual):
         self._init_residuals(1)
         self._var_types[0] = VarType.VECTOR
         self._num_eqs[0] = ndims
-        self.resid_names[0] = "displacement"
+        self.resid_names[0] = "equilibrium"
         self.var_names[0] = "u"
 
         def residual_fn(xi, xi_prev, params, U, U_prev,

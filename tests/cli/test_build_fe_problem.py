@@ -178,7 +178,7 @@ class TestBoundaryConditions(unittest.TestCase):
     def test_dbc_constant_value(self) -> None:
         bundle = self._build({
             "dirichlet bcs": {"expression": {
-                "bc 1": ["displacement", 0, "xmin_sides", 0.0],
+                "bc 1": ["equilibrium", 0, "xmin_sides", 0.0],
             }},
         })
         dbc_arrays = bundle.fe_problem.kernel_arrays.dbc_arrays
@@ -190,7 +190,7 @@ class TestBoundaryConditions(unittest.TestCase):
     def test_dbc_string_expression_time_ramp(self) -> None:
         bundle = self._build({
             "dirichlet bcs": {"expression": {
-                "bc 1": ["displacement", 0, "xmax_sides", "0.01 * t"],
+                "bc 1": ["equilibrium", 0, "xmax_sides", "0.01 * t"],
             }},
         })
         dbc_arrays = bundle.fe_problem.kernel_arrays.dbc_arrays
@@ -206,7 +206,7 @@ class TestBoundaryConditions(unittest.TestCase):
     def test_nbc_constant_components(self) -> None:
         bundle = self._build({
             "surface flux bcs": {"expression": {
-                "flux 1": ["displacement", "xmax_sides", 0.0, 0.0, 1.0],
+                "flux 1": ["equilibrium", "xmax_sides", 0.0, 0.0, 1.0],
             }},
         })
         rbcs = bundle.fe_problem.resolved_neumann_bcs
@@ -221,7 +221,7 @@ class TestBoundaryConditions(unittest.TestCase):
     def test_body_force_string_components(self) -> None:
         bundle = self._build({
             "body forces": {"expression": {
-                "bf 1": ["displacement", "0.0", "0.0", "-9.81"],
+                "bf 1": ["equilibrium", "0.0", "0.0", "-9.81"],
             }},
         })
         forcing = bundle.fe_problem.forcing_fns_by_block_idx
@@ -239,13 +239,13 @@ class TestBoundaryConditions(unittest.TestCase):
             })
         msg = str(ctx.exception)
         self.assertIn("nonsense", msg)
-        self.assertIn("displacement", msg)
+        self.assertIn("equilibrium", msg)
 
     def test_dbc_eq_out_of_range_raises(self) -> None:
         with self.assertRaises(ValueError) as ctx:
             self._build({
                 "dirichlet bcs": {"expression": {
-                    "bc 1": ["displacement", 5, "xmin_sides", 0.0],
+                    "bc 1": ["equilibrium", 5, "xmin_sides", 0.0],
                 }},
             })
         self.assertIn("5", str(ctx.exception))
@@ -254,12 +254,12 @@ class TestBoundaryConditions(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             self._build({
                 "body forces": {"expression": {
-                    "bf 1": ["displacement", "0.0", "0.0", "-9.81"],
-                    "bf 2": ["displacement", "1.0", "0.0", "0.0"],
+                    "bf 1": ["equilibrium", "0.0", "0.0", "-9.81"],
+                    "bf 2": ["equilibrium", "1.0", "0.0", "0.0"],
                 }},
             })
         msg = str(ctx.exception)
-        self.assertIn("displacement", msg)
+        self.assertIn("equilibrium", msg)
         self.assertIn("body", msg.lower())
 
 
@@ -393,7 +393,7 @@ class TestJitTraceability(unittest.TestCase):
     def test_forcing_fn_jit_traces(self) -> None:
         deck = _minimal_fe_deck()
         deck["body forces"] = {"expression": {
-            "bf 1": ["displacement", "x + t", "0.0", "y * z"],
+            "bf 1": ["equilibrium", "x + t", "0.0", "y * z"],
         }}
         with tempfile.TemporaryDirectory() as tmpdir:
             bundle = _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
@@ -408,7 +408,7 @@ class TestJitTraceability(unittest.TestCase):
         deck = _minimal_fe_deck()
         deck["surface flux bcs"] = {"expression": {
             "flux 1": [
-                "displacement", "xmax_sides",
+                "equilibrium", "xmax_sides",
                 "0.0", "0.0", "0.5 * t",
             ],
         }}

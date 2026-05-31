@@ -49,11 +49,11 @@ def _make_fe_primal_deck_no_output_specs(
         },
         "dirichlet bcs": {
             "expression": {
-                "pin_x": ["displacement", 0, "xmin_sides", "0.0"],
-                "pin_y": ["displacement", 1, "ymin_sides", "0.0"],
-                "pin_z": ["displacement", 2, "zmin_sides", "0.0"],
+                "pin_x": ["equilibrium", 0, "xmin_sides", "0.0"],
+                "pin_y": ["equilibrium", 1, "ymin_sides", "0.0"],
+                "pin_z": ["equilibrium", 2, "zmin_sides", "0.0"],
                 "ramp_x": [
-                    "displacement", 0, "xmax_sides", "0.05 * t",
+                    "equilibrium", 0, "xmax_sides", "0.05 * t",
                 ],
             },
         },

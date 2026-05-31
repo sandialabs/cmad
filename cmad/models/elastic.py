@@ -66,7 +66,7 @@ class Elastic(Model):
         self._init_residuals(num_residuals)
 
         # cauchy stress tensor
-        self.resid_names[0] = "cauchy"
+        self.var_names[0] = "cauchy"
         self._var_types[0] = VarType.SYM_TENSOR
         self._num_eqs[0] = get_num_eqs(VarType.SYM_TENSOR, 3)
         init_vec_cauchy = np.zeros(self._num_eqs[0])
@@ -75,7 +75,7 @@ class Elastic(Model):
 
         if def_type == DefType.PLANE_STRESS:
             # out of plane stretch
-            self.resid_names[1] = "out of plane stretch"
+            self.var_names[1] = "out of plane stretch"
             self._var_types[1] = VarType.SCALAR
             self._num_eqs[1] = get_num_eqs(VarType.SCALAR, ndims)
             init_oop_stretch = np.ones(self._num_eqs[1])
@@ -86,7 +86,7 @@ class Elastic(Model):
         # stress idx later
         elif def_type == DefType.UNIAXIAL_STRESS:
             # off-axis stretches
-            self.resid_names[1] = "off-axis stretches"
+            self.var_names[1] = "off-axis stretches"
             self._var_types[1] = VarType.VECTOR
             self._num_eqs[1] = get_num_eqs(VarType.VECTOR, 2)
             init_off_axis_stretches = np.ones(self._num_eqs[1])

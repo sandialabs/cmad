@@ -50,6 +50,7 @@ class Model(ABC):
     # ---- attributes set by self._init_residuals() ----
     num_residuals: int
     resid_names: list[str | None]
+    var_names: list[str | None]
 
     # ---- attributes set by self._init_state_variables() ----
     _xi: StateList
@@ -367,6 +368,7 @@ class Model(ABC):
         self._num_eqs = np.zeros(num_residuals, dtype=int)
         self._var_types = np.zeros(num_residuals, dtype=int)
         self.resid_names = [None] * num_residuals
+        self.var_names = [None] * num_residuals
 
     def _init_state_variables(self) -> None:
         """
@@ -396,14 +398,14 @@ class Model(ABC):
     def state_output_fields(self) -> list[tuple[str, VarType]]:
         """Local state variables as ``(name, var_type)`` output specs.
 
-        Sourced from ``resid_names`` + ``_var_types`` -- the variables this
+        Sourced from ``var_names`` + ``_var_types`` -- the variables this
         model carries in xi. Meaningful as element output only for
         COUPLED-bound blocks (CLOSED_FORM never solves xi); the FE catalog
         gates accordingly. Returns ``(name, var_type)`` pairs rather than
         ``FieldSpec`` so this module stays free of an ``io`` dependency.
         """
         return [
-            (cast(str, self.resid_names[r]), VarType(int(self._var_types[r])))
+            (cast(str, self.var_names[r]), VarType(int(self._var_types[r])))
             for r in range(self.num_residuals)
         ]
 

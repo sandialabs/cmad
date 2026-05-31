@@ -105,8 +105,8 @@ class TestFEDeckSchema(unittest.TestCase):
         deck = _minimal_fe_deck()
         deck["dirichlet bcs"] = {
             "expression": {
-                "bc 1": ["displacement", 0, "xmin_sides", 0.0],
-                "bc 2": ["displacement", 1, "ymin_sides", "0.01 * t"],
+                "bc 1": ["equilibrium", 0, "xmin_sides", 0.0],
+                "bc 2": ["equilibrium", 1, "ymin_sides", "0.01 * t"],
             },
         }
         validate_deck(apply_deck_defaults(deck), "primal")
@@ -115,7 +115,7 @@ class TestFEDeckSchema(unittest.TestCase):
         deck = _minimal_fe_deck()
         deck["dirichlet bcs"] = {
             "expression": {
-                "bc 1": ["displacement", 0, "xmin_sides"],
+                "bc 1": ["equilibrium", 0, "xmin_sides"],
             },
         }
         with self.assertRaises(ValueError):
@@ -125,7 +125,7 @@ class TestFEDeckSchema(unittest.TestCase):
         deck = _minimal_fe_deck()
         deck["dirichlet bcs"] = {
             "expression": {
-                "bc 1": ["displacement", -1, "xmin_sides", 0.0],
+                "bc 1": ["equilibrium", -1, "xmin_sides", 0.0],
             },
         }
         with self.assertRaises(ValueError):

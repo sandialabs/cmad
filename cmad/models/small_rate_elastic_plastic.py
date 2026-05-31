@@ -149,13 +149,15 @@ class SmallRateElasticPlastic(Model):
         self._init_residuals(num_residuals)
 
         # unrotated (material-frame) cauchy stress state
-        self.resid_names[0] = "unrotated_cauchy"
+        self.var_names[0] = "unrotated_cauchy"
+        self.resid_names[0] = "material stress"
         self._var_types[0] = VarType.SYM_TENSOR
         self._num_eqs[0] = get_num_eqs(VarType.SYM_TENSOR, 3)
         init_vec_cauchy = np.zeros(self._num_eqs[0])
 
         # isotropic hardening variable
-        self.resid_names[1] = "alpha"
+        self.var_names[1] = "alpha"
+        self.resid_names[1] = "yield surface"
         self._var_types[1] = VarType.SCALAR
         self._num_eqs[1] = get_num_eqs(VarType.SCALAR, 3)
         init_alpha = np.zeros(self._num_eqs[1])
@@ -164,7 +166,8 @@ class SmallRateElasticPlastic(Model):
 
         if def_type == DefType.PLANE_STRESS:
             # out of plane stretch
-            self.resid_names[2] = "out of plane stretch"
+            self.var_names[2] = "out of plane stretch"
+            self.resid_names[2] = "cauchy_33"
             self._var_types[2] = VarType.SCALAR
             self._num_eqs[2] = get_num_eqs(VarType.SCALAR, ndims)
             init_oop_stretch = np.ones(self._num_eqs[2])
@@ -173,13 +176,15 @@ class SmallRateElasticPlastic(Model):
 
         elif def_type == DefType.UNIAXIAL_STRESS:
             # off-axis stretches
-            self.resid_names[2] = "off-axis stretches"
+            self.var_names[2] = "off-axis stretches"
+            self.resid_names[2] = "off-axis normal stress"
             self._var_types[2] = VarType.VECTOR
             self._num_eqs[2] = get_num_eqs(VarType.VECTOR, 2)
             init_off_axis_stretches = np.ones(self._num_eqs[2])
 
             # off-axis delta strains
-            self.resid_names[3] = "off-axis delta strains"
+            self.var_names[3] = "off-axis delta strains"
+            self.resid_names[3] = "off-axis shear stress"
             self._var_types[3] = VarType.VECTOR
             self._num_eqs[3] = get_num_eqs(VarType.VECTOR, 3)
             init_off_axis_delta_strains = np.zeros(self._num_eqs[3])
