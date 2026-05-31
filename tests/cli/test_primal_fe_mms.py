@@ -133,9 +133,10 @@ class TestPrimalFeMmsCube3D(unittest.TestCase):
             pass
 
         deck = _make_mms_deck(
-            mesh_filename="mesh.exo",
+            mesh_filename=str(mesh_path),
             body_force_strs=type(self).body_force_strs,
         )
+        deck["output"]["path"] = str(work_dir / "out")
         deck_path = work_dir / "deck.yaml"
         deck_path.write_text(yaml.safe_dump(deck, sort_keys=False))
 

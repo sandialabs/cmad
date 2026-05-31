@@ -21,7 +21,7 @@ class TestDeformationTextFiles(unittest.TestCase):
             np.savetxt(tmp / "F.csv", flat, delimiter=",")
 
             arr = load_history(
-                {"history_file": "F.csv"}, tmp, expected_ndims=n,
+                {"history_file": str(tmp / "F.csv")}, expected_ndims=n,
             )
             self.assertEqual(arr.shape, (n, n, N))
             np.testing.assert_allclose(
@@ -39,7 +39,7 @@ class TestDeformationTextFiles(unittest.TestCase):
             np.savetxt(tmp / "F.txt", flat)
 
             arr = load_history(
-                {"history_file": "F.txt"}, tmp, expected_ndims=n,
+                {"history_file": str(tmp / "F.txt")}, expected_ndims=n,
             )
             self.assertEqual(arr.shape, (n, n, N))
             np.testing.assert_allclose(
@@ -54,7 +54,7 @@ class TestDeformationTextFiles(unittest.TestCase):
 
             with self.assertRaises(ValueError) as cm:
                 load_history(
-                    {"history_file": "F.csv"}, tmp, expected_ndims=3,
+                    {"history_file": str(tmp / "F.csv")}, expected_ndims=3,
                 )
             self.assertIn("5 columns", str(cm.exception))
             self.assertIn("n*n", str(cm.exception))

@@ -50,8 +50,8 @@ class TestPrimalRoundTrip(unittest.TestCase):
                         },
                     },
                 },
-                "deformation": {"history_file": "F.npy"},
-                "output": {"path": "out"},
+                "deformation": {"history_file": str(tmp / "F.npy")},
+                "output": {"path": str(tmp / "out")},
             }
             deck_path = tmp / "deck.yaml"
             deck_path.write_text(yaml.safe_dump(deck, sort_keys=False))

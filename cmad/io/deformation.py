@@ -44,7 +44,6 @@ from numpy.typing import NDArray
 
 def load_history(
         deformation_section: dict[str, Any],
-        deck_dir: Path,
         expected_ndims: int,
 ) -> NDArray[np.float64]:
     """Load the deformation-gradient history into shape ``(n, n, N)``.
@@ -54,8 +53,6 @@ def load_history(
     """
     if "history_file" in deformation_section:
         path = Path(deformation_section["history_file"])
-        if not path.is_absolute():
-            path = deck_dir / path
         arr = _load_from_file(path)
     elif "inline" in deformation_section:
         raw = np.asarray(deformation_section["inline"], dtype=np.float64)

@@ -124,9 +124,9 @@ class TestPrimalFeClosedFormRoundTrip(unittest.TestCase):
             tmp = Path(tmpdir)
             _write_hex_cube_mesh(tmp / "mesh.exo")
             deck = _make_fe_primal_deck_elastic(
-                mesh_filename="mesh.exo",
+                mesh_filename=str(tmp / "mesh.exo"),
                 output_section={
-                    "path": "out",
+                    "path": str(tmp / "out"),
                     "exodus filename": "primal.exo",
                     "global residual": ["u"],
                     "local residual": {"all": ["cauchy"]},
@@ -185,9 +185,9 @@ class TestPrimalFeCoupledRoundTrip(unittest.TestCase):
             tmp = Path(tmpdir)
             _write_hex_cube_mesh(tmp / "mesh.exo")
             deck = _make_fe_primal_deck_coupled(
-                mesh_filename="mesh.exo",
+                mesh_filename=str(tmp / "mesh.exo"),
                 output_section={
-                    "path": "out",
+                    "path": str(tmp / "out"),
                     "exodus filename": "primal.exo",
                     "global residual": ["u"],
                     "local residual": {"all": ["cauchy"]},
@@ -245,9 +245,9 @@ class TestPrimalFeWithQoi(unittest.TestCase):
             tmp = Path(tmpdir)
             _write_hex_cube_mesh(tmp / "mesh.exo")
             deck = _make_fe_primal_deck_elastic(
-                mesh_filename="mesh.exo",
+                mesh_filename=str(tmp / "mesh.exo"),
                 output_section={
-                    "path": "primal_out",
+                    "path": str(tmp / "primal_out"),
                     "exodus filename": "primal.exo",
                     "global residual": ["u"],
                     "local residual": {"all": ["cauchy"]},
@@ -274,7 +274,7 @@ class TestPrimalFeWithQoi(unittest.TestCase):
 
             # Run cmad objective on the same deck (modulo output-dir
             # rename to avoid file collisions).
-            deck["output"]["path"] = "objective_out"
+            deck["output"]["path"] = str(tmp / "objective_out")
             objective_deck_path = tmp / "objective.yaml"
             objective_deck_path.write_text(
                 yaml.safe_dump(deck, sort_keys=False),

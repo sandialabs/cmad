@@ -71,7 +71,8 @@ class TestGradientFeRoundTrip(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             _write_hex_cube_mesh(tmp / "mesh.exo")
-            deck = _make_fe_gradient_deck(mesh_filename="mesh.exo")
+            deck = _make_fe_gradient_deck(mesh_filename=str(tmp / "mesh.exo"))
+            deck["output"]["path"] = str(tmp / "out")
             deck_path = tmp / "deck.yaml"
             deck_path.write_text(yaml.safe_dump(deck, sort_keys=False))
 

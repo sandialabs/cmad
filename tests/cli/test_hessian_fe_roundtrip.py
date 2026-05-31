@@ -81,7 +81,8 @@ class TestHessianFeRoundTrip(unittest.TestCase):
             ):
                 tmp = Path(tmpdir)
                 _write_hex_cube_mesh(tmp / "mesh.exo")
-                deck = _make_fe_hessian_deck(mesh_filename="mesh.exo")
+                deck = _make_fe_hessian_deck(mesh_filename=str(tmp / "mesh.exo"))
+                deck["output"]["path"] = str(tmp / "out")
                 deck["linear solver"] = ls
                 deck_path = tmp / "deck.yaml"
                 deck_path.write_text(

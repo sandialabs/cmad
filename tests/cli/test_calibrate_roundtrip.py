@@ -101,7 +101,7 @@ def _truth_cauchy(F: np.ndarray) -> np.ndarray:
     return cauchy
 
 
-def _deck(init_factor: float) -> dict[str, Any]:
+def _deck(tmp: Path, init_factor: float) -> dict[str, Any]:
     Y = 200.0 * init_factor
     S = 200.0 * init_factor
     D = 20.0 * init_factor
@@ -139,10 +139,10 @@ def _deck(init_factor: float) -> dict[str, Any]:
                 },
             },
         },
-        "deformation": {"history_file": "F.npy"},
+        "deformation": {"history_file": str(tmp / "F.npy")},
         "qoi": {
             "name": "calibration",
-            "data_file": "cauchy_data.npy",
+            "data_file": str(tmp / "cauchy_data.npy"),
             "weight": [[1, 0, 0], [0, 1, 0], [0, 0, 0]],
         },
         "sensitivity": {"type": "adjoint"},
@@ -150,7 +150,7 @@ def _deck(init_factor: float) -> dict[str, Any]:
             "algorithm": "L-BFGS-B",
             "options": {"ftol": 1e-14, "gtol": 1e-10, "maxiter": 200},
         },
-        "output": {"path": "out"},
+        "output": {"path": str(tmp / "out")},
     }
 
 
@@ -164,7 +164,7 @@ class TestCalibrateRoundTrip(unittest.TestCase):
             np.save(tmp / "F.npy", F)
             np.save(tmp / "cauchy_data.npy", cauchy_data)
 
-            deck = _deck(init_factor=1.1)
+            deck = _deck(tmp, init_factor=1.1)
             deck_path = tmp / "deck.yaml"
             deck_path.write_text(yaml.safe_dump(deck, sort_keys=False))
 

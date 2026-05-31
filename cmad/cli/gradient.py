@@ -64,7 +64,7 @@ def _run_gradient_mp(deck_path: Path) -> int:
     x = graph.parameters.flat_active_values(return_canonical=True)
     result = driver.evaluate_grad(x)
 
-    out_dir, prefix, fmt = resolve_output(graph.resolved, deck_path)
+    out_dir, prefix, fmt = resolve_output(graph.resolved)
     write_resolved_deck(out_dir, prefix, graph.resolved)
     write_J(out_dir, prefix, result.J)
     write_grad(out_dir, prefix, result.grad, fmt)
@@ -84,7 +84,7 @@ def _run_gradient_fe(deck_path: Path) -> int:
         ),
     )
 
-    out_dir, prefix, fmt = resolve_output(bundle.resolved, deck_path)
+    out_dir, prefix, fmt = resolve_output(bundle.resolved)
     write_resolved_deck(out_dir, prefix, bundle.resolved)
     write_grad(out_dir, prefix, grad, fmt)
     return 0

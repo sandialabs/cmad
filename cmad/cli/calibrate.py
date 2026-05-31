@@ -91,7 +91,7 @@ def run_calibrate(deck_path: Path) -> int:
 
     parameters.set_active_values_from_flat(result.x, are_canonical=True)
 
-    out_dir, prefix, _ = resolve_output(graph.resolved, deck_path)
+    out_dir, prefix, _ = resolve_output(graph.resolved)
     write_resolved_deck(out_dir, prefix, graph.resolved)
     write_opt_history(out_dir, prefix, history, active_param_paths)
     write_opt_params(

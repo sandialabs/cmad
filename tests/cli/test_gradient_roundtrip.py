@@ -46,7 +46,9 @@ def _truth_cauchy(F: np.ndarray) -> np.ndarray:
     return cauchy
 
 
-def _deck_with_sensitivity(stype: str, out_subdir: str) -> dict[str, Any]:
+def _deck_with_sensitivity(
+        stype: str, tmp: Path, out_subdir: str,
+) -> dict[str, Any]:
     return {
         "problem": {"type": "material_point"},
         "model": {
@@ -81,14 +83,14 @@ def _deck_with_sensitivity(stype: str, out_subdir: str) -> dict[str, Any]:
                 },
             },
         },
-        "deformation": {"history_file": "F.npy"},
+        "deformation": {"history_file": str(tmp / "F.npy")},
         "qoi": {
             "name": "calibration",
-            "data_file": "cauchy_data.npy",
+            "data_file": str(tmp / "cauchy_data.npy"),
             "weight": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
         },
         "sensitivity": {"type": stype},
-        "output": {"path": out_subdir},
+        "output": {"path": str(tmp / out_subdir)},
     }
 
 
@@ -119,7 +121,7 @@ class TestGradientRoundTrip(unittest.TestCase):
             np.save(tmp / "cauchy_data.npy", cauchy_data)
 
             for stype in strategies:
-                deck = _deck_with_sensitivity(stype, f"out_{stype}")
+                deck = _deck_with_sensitivity(stype, tmp, f"out_{stype}")
                 deck_path = tmp / f"deck_{stype}.yaml"
                 deck_path.write_text(yaml.safe_dump(deck, sort_keys=False))
 

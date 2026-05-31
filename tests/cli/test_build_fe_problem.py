@@ -137,7 +137,7 @@ class TestTimeSchedule(unittest.TestCase):
             deck = _minimal_fe_deck()
             deck["discretization"] = {
                 "mesh file": "cube.exo",
-                "times file": "t.npy",
+                "times file": str(tmp / "t.npy"),
             }
             bundle = _build_bundle(deck, _hex_cube_mesh(), tmp)
         np.testing.assert_allclose(bundle.t_schedule, expected)
@@ -150,7 +150,7 @@ class TestTimeSchedule(unittest.TestCase):
             deck = _minimal_fe_deck()
             deck["discretization"] = {
                 "mesh file": "cube.exo",
-                "times file": "t.txt",
+                "times file": str(tmp / "t.txt"),
             }
             bundle = _build_bundle(deck, _hex_cube_mesh(), tmp)
         np.testing.assert_allclose(bundle.t_schedule, expected)

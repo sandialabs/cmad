@@ -85,13 +85,13 @@ class TestObjectiveRoundTrip(unittest.TestCase):
                         },
                     },
                 },
-                "deformation": {"history_file": "F.npy"},
+                "deformation": {"history_file": str(tmp / "F.npy")},
                 "qoi": {
                     "name": "calibration",
-                    "data_file": "cauchy_data.npy",
+                    "data_file": str(tmp / "cauchy_data.npy"),
                     "weight": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                 },
-                "output": {"path": "out"},
+                "output": {"path": str(tmp / "out")},
             }
             deck_path = tmp / "deck.yaml"
             deck_path.write_text(yaml.safe_dump(deck, sort_keys=False))

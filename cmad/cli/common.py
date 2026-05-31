@@ -100,8 +100,7 @@ def build_mp_problem(
     model = model_cls.from_deck(resolved["model"], parameters, def_type)
 
     F = load_history(
-        resolved["deformation"], deck_path.parent,
-        expected_ndims=model.ndims,
+        resolved["deformation"], expected_ndims=model.ndims,
     )
 
     qoi: QoI | None = None
@@ -114,7 +113,7 @@ def build_mp_problem(
                 f"deck has problem.type='material_point'"
             )
         assert issubclass(qoi_cls, QoI)
-        data, weight = load_qoi_data(resolved["qoi"], deck_path.parent)
+        data, weight = load_qoi_data(resolved["qoi"])
         qoi = qoi_cls.from_deck(resolved["qoi"], model, data, weight)
 
     return MPProblem(
@@ -124,18 +123,16 @@ def build_mp_problem(
 
 
 def resolve_output(
-        resolved: dict[str, Any], deck_path: Path,
+        resolved: dict[str, Any],
 ) -> tuple[Path, str, str]:
     """Resolve ``out_dir``, ``prefix``, and ``format`` from a validated deck.
 
-    The path is taken relative to ``deck_path.parent`` when not absolute
-    and created. ``format`` defaults to ``npy`` here (it is filled into
-    the deck only for MP); callers that don't emit array outputs can
-    discard it.
+    The path is taken relative to the current working directory when not
+    absolute, then created. ``format`` defaults to ``npy`` here (it is
+    filled into the deck only for MP); callers that don't emit array
+    outputs can discard it.
     """
     out_dir = Path(resolved["output"]["path"])
-    if not out_dir.is_absolute():
-        out_dir = deck_path.parent / out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     return (
         out_dir,
@@ -307,8 +304,6 @@ def build_fe_problem_from_deck(
     validate_deck(resolved, subcommand)
 
     mesh_path = Path(resolved["discretization"]["mesh file"])
-    if not mesh_path.is_absolute():
-        mesh_path = deck_path.parent / mesh_path
     mesh = read_mesh(mesh_path)
     ndims = int(mesh.nodes.shape[1])
 
@@ -367,9 +362,7 @@ def build_fe_problem_from_deck(
         ),
     )
 
-    t_schedule = _load_t_schedule(
-        resolved["discretization"], deck_path.parent,
-    )
+    t_schedule = _load_t_schedule(resolved["discretization"])
 
     qoi: FEQoI | None = None
     if "qoi" in resolved:
@@ -709,7 +702,7 @@ def _make_body_force_callable(
 
 
 def _load_t_schedule(
-        disc_section: dict[str, Any], base_dir: Path,
+        disc_section: dict[str, Any],
 ) -> NDArray[np.float64]:
     """Materialize the time schedule from the ``discretization`` section.
 
@@ -725,8 +718,6 @@ def _load_t_schedule(
         ).ravel()
     if "times file" in disc_section:
         path = Path(disc_section["times file"])
-        if not path.is_absolute():
-            path = base_dir / path
         suffix = path.suffix.lower()
         if suffix == ".npy":
             data = np.load(path)

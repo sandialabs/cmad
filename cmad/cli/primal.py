@@ -68,7 +68,7 @@ def _run_primal_mp(deck_path: Path) -> int:
         graph.model, graph.F, num_steps, newton_kwargs,
     )
 
-    out_dir, prefix, fmt = resolve_output(graph.resolved, deck_path)
+    out_dir, prefix, fmt = resolve_output(graph.resolved)
     write_cauchy(out_dir, prefix, cauchy, fmt)
     write_xi(out_dir, prefix, xi_trajectory, fmt)
     write_solver_log(out_dir, prefix, solver_log)
@@ -99,7 +99,7 @@ def _run_primal_fe(deck_path: Path) -> int:
         qoi=bundle.qoi,
     )
 
-    out_dir, prefix, _fmt = resolve_output(bundle.resolved, deck_path)
+    out_dir, prefix, _fmt = resolve_output(bundle.resolved)
     output_section = bundle.resolved["output"]
     if "exodus filename" not in output_section:
         name = bundle.resolved["problem"].get("name") or deck_path.stem

@@ -61,7 +61,7 @@ def _run_objective_mp(deck_path: Path) -> int:
         graph.model, graph.F, num_steps, newton_kwargs, qoi=qoi,
     )
 
-    out_dir, prefix, fmt = resolve_output(graph.resolved, deck_path)
+    out_dir, prefix, fmt = resolve_output(graph.resolved)
     write_cauchy(out_dir, prefix, cauchy, fmt)
     write_xi(out_dir, prefix, xi_trajectory, fmt)
     write_solver_log(out_dir, prefix, solver_log)
@@ -85,7 +85,7 @@ def _run_objective_fe(deck_path: Path) -> int:
         jit(J_of_params_flat)(params_flat, state_init, fe_arrays),
     )
 
-    out_dir, prefix, _fmt = resolve_output(bundle.resolved, deck_path)
+    out_dir, prefix, _fmt = resolve_output(bundle.resolved)
     write_resolved_deck(out_dir, prefix, bundle.resolved)
     write_J(out_dir, prefix, J)
     return 0
