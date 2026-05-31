@@ -11,7 +11,7 @@ grow with the mesh even though the kernel op count does not.
 carrier. Threaded through a ``jit`` boundary as a traced argument, the
 compiled module holds only their shapes, so compile cost tracks the
 (mesh-independent) op count rather than the literal bytes. The per-step
-solution state — displacement and internal variables — is the
+solution state — the nodal solution and internal variables — is the
 trajectory carry and is threaded separately; the carrier holds only
 what is constant across the solve.
 

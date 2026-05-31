@@ -26,11 +26,12 @@ def interpolate_global_fields_at_ip(
     ``"p"`` for pressure, ``"T"`` for temperature — and is the dict key
     used in ``U_ip.fields[var_names[i]]`` and
     ``U_ip.grad_fields[var_names[i]]``. The corresponding governing-
-    equation label (``"displacement"``, ``"pressure"``, ``"energy"``,
-    ...) lives in parallel as ``GlobalResidual.resid_names``; the split
-    lets each name carry its semantic load — ``resid_names`` for output,
-    deck schema, and post-processing, and ``var_names`` for the
-    field-symbol-keyed pytree consumed by Models.
+    equation label (``"equilibrium"``, ``"mass balance"``, ``"energy
+    balance"``, ...) lives in parallel as ``GlobalResidual.resid_names``;
+    the split lets each name carry its own load — ``var_names`` keys the
+    field pytree consumed by Models and names output fields, while
+    ``resid_names`` labels the governing equation and keys the deck's
+    boundary-condition and forcing entries.
 
     Output convention: ``fields[name]`` has shape ``(num_eqs[i],)``;
     ``grad_fields[name]`` has shape ``(num_eqs[i], ndims)`` with

@@ -20,8 +20,8 @@ the mesh's entity tables: ``mesh.entity_count(et) *
 fe.dofs_per_entity[et]`` summed across entity types. P1 / Q1 fields
 have ``{VERTEX: 1}`` and reduce to one basis-fn per mesh vertex.
 
-Per-field component counts (3 for a vector displacement field, 1 for a
-scalar pressure / temperature field) are owned by the GlobalResidual
+Per-field component counts (3 for a vector field, 1 for a scalar
+field) are owned by the GlobalResidual
 (``gr._num_eqs[r]`` keyed by residual block) and supplied to
 :func:`build_dof_map` via the ``components_by_field`` dict keyed by
 field name. The DofMap stores the resulting per-field array as
@@ -95,9 +95,9 @@ class GlobalFieldLayout:
     used as the dict key in ``U.fields[name]`` / ``U.grad_fields[name]``
     and matched against ``DirichletBC.field_name``. By convention
     matches the corresponding entry in ``GlobalResidual.var_names``.
-    The parallel ``GlobalResidual.resid_names`` carries the governing-
-    equation label (``"displacement"``, ``"pressure"``, ``"energy"``)
-    separately for output / deck schema / post-processing.
+    The parallel ``GlobalResidual.resid_names`` carries the
+    governing-equation label (``"equilibrium"``, ``"mass balance"``,
+    ...) separately for the deck's boundary-condition keying.
 
     ``finite_element`` is the :class:`FiniteElement` spec; its
     ``dofs_per_entity`` table determines how many basis-function
@@ -108,8 +108,8 @@ class GlobalFieldLayout:
     :func:`build_dof_map` time.
 
     Component count (the per-basis-function DOF multiplicity, 3 for a
-    vector displacement field, 1 for a scalar pressure / temperature
-    field) is owned by the GlobalResidual (``gr._num_eqs[r]``) and
+    vector field, 1 for a scalar field) is owned by the GlobalResidual
+    (``gr._num_eqs[r]``) and
     threaded into :func:`build_dof_map` via ``components_by_field``;
     it lives on :class:`GlobalDofMap` rather than on the layout.
     """
@@ -174,8 +174,8 @@ class GlobalDofMap:
     the field-major ordering of the global eq vector.
 
     ``num_dofs_per_basis_fn`` is a length-``n_fields`` int array of
-    per-field component counts (3 for a vector displacement field, 1
-    for a scalar). Sourced from the ``components_by_field`` arg to
+    per-field component counts (3 for a vector field, 1 for a scalar).
+    Sourced from the ``components_by_field`` arg to
     :func:`build_dof_map` (which in turn comes from
     ``GlobalResidual._num_eqs``); stored here so the eq-formula
     lookup and element scatter don't have to round-trip through the
@@ -398,7 +398,7 @@ def build_dof_map(
     ascending).
 
     ``components_by_field`` maps each field name to its component
-    multiplicity (3 for a vector displacement field, 1 for a scalar).
+    multiplicity (3 for a vector field, 1 for a scalar).
     The DofMap stores it as ``num_dofs_per_basis_fn`` (intp array,
     parallel to ``field_layouts``) rather than on the layout itself,
     so the GR-owned per-residual ``_num_eqs`` is the single source of

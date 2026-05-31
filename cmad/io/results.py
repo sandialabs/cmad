@@ -32,8 +32,8 @@ if TYPE_CHECKING:
 class FieldSpec:
     """Declares a result field for Exodus I/O.
 
-    ``name`` is the cmad-side root name (``"displacement"``,
-    ``"cauchy"``, etc.); the writer derives Exodus-side decorated
+    ``name`` is the cmad-side root name (``"u"``, ``"cauchy"``, etc.);
+    the writer derives Exodus-side decorated
     component names via :func:`component_names`. ``var_type`` controls
     component count and naming (SCALAR -> bare; VECTOR -> _x/_y/_z;
     SYM_TENSOR -> Exodus order _xx/_yy/_zz/_xy/_xz/_yz; TENSOR ->

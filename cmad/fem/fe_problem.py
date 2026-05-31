@@ -251,8 +251,8 @@ class FEProblem:
 class FEState:
     """Time-indexed mutable state companion to :class:`FEProblem`.
 
-    Holds the U history (full nodal displacement at each step), per-
-    block xi history (per-element per-IP state arrays), and t history.
+    Holds the U history (full nodal solution at each step), per-block
+    xi history (per-element per-IP state arrays), and t history.
     The driver builds an FEState via :meth:`from_problem` before the
     time loop, appends one ``(U, xi_by_block, t)`` tuple per converged
     step via :meth:`append`, and the writer / QoI / adjoint stages
