@@ -215,6 +215,9 @@ class SmallElasticPlastic(Model):
             uniaxial_stress_idx=model_section.get("uniaxial_stress_idx", 0),
         )
 
+    def derived_output_field_names(self) -> list[str]:
+        return ["cauchy"]
+
     @staticmethod
     def _residual_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],

@@ -129,6 +129,9 @@ class Elastic(Model):
             ),
         )
 
+    def derived_output_field_names(self) -> list[str]:
+        return ["cauchy"]
+
     @staticmethod
     def _residual_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],

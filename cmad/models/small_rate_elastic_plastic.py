@@ -148,8 +148,8 @@ class SmallRateElasticPlastic(Model):
 
         self._init_residuals(num_residuals)
 
-        # cauchy stress tensor
-        self.resid_names[0] = "cauchy"
+        # unrotated (material-frame) cauchy stress state
+        self.resid_names[0] = "unrotated_cauchy"
         self._var_types[0] = VarType.SYM_TENSOR
         self._num_eqs[0] = get_num_eqs(VarType.SYM_TENSOR, 3)
         init_vec_cauchy = np.zeros(self._num_eqs[0])
@@ -225,6 +225,9 @@ class SmallRateElasticPlastic(Model):
             def_type=DefType[model_section["def_type"].upper()],
             uniaxial_stress_idx=model_section.get("uniaxial_stress_idx", 0),
         )
+
+    def derived_output_field_names(self) -> list[str]:
+        return ["cauchy"]
 
     @staticmethod
     def _residual_fn(

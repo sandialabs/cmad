@@ -393,6 +393,26 @@ class Model(ABC):
     def resid_name(self, residual: int) -> str | None:
         return self.resid_names[residual]
 
+    def state_output_fields(self) -> list[tuple[str, VarType]]:
+        """Local state variables as ``(name, var_type)`` output specs.
+
+        Sourced from ``resid_names`` + ``_var_types`` -- the variables this
+        model carries in xi. Meaningful as element output only for
+        COUPLED-bound blocks (CLOSED_FORM never solves xi); the FE catalog
+        gates accordingly. Returns ``(name, var_type)`` pairs rather than
+        ``FieldSpec`` so this module stays free of an ``io`` dependency.
+        """
+        return [
+            (cast(str, self.resid_names[r]), VarType(int(self._var_types[r])))
+            for r in range(self.num_residuals)
+        ]
+
+    def derived_output_field_names(self) -> list[str]:
+        """Names of post-processed quantities this model produces (e.g.
+        ``cauchy``); keys into the FE derived-output registry. Base: none.
+        """
+        return []
+
     @property
     def ndims(self) -> int:
         return self._ndims
