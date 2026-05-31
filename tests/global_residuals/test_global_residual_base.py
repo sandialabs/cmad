@@ -1,10 +1,10 @@
 """Contract tests for the :class:`GlobalResidual` base output API.
 
-A test-local stub subclass that does not override
-:meth:`default_output_fields` / :meth:`evaluate_nodal_field` /
-:meth:`evaluate_element_field` exercises the base defaults — empty
-catalog and ``ValueError`` on any field-name dispatch — so the
-contract is regression-protected independently of any concrete GR.
+A test-local stub subclass exercises the base output surface:
+:meth:`primary_output_fields` (generic, from ``var_names`` +
+``_var_types``) and the ``ValueError`` raised by the un-overridden
+:meth:`evaluate_nodal_field`, so the contract is regression-protected
+independently of any concrete GR.
 """
 import unittest
 
@@ -23,7 +23,7 @@ class _StubGR(GlobalResidual):
         self._init_residuals(1)
         self._var_types[0] = VarType.VECTOR
         self._num_eqs[0] = 3
-        self.resid_names[0] = "displacement"
+        self.resid_names[0] = "equilibrium"
         self.var_names[0] = "u"
 
         def residual_fn(xi, xi_prev, params, U, U_prev,
@@ -36,10 +36,10 @@ class _StubGR(GlobalResidual):
 
 
 class TestGlobalResidualBaseOutputAPI(unittest.TestCase):
-    def test_default_output_fields_returns_empty_buckets(self):
+    def test_primary_output_fields_from_var_names(self):
         gr = _StubGR()
         self.assertEqual(
-            gr.default_output_fields(), {"nodal": [], "element": []},
+            gr.primary_output_fields(), [("u", VarType.VECTOR)],
         )
 
     def test_evaluate_nodal_field_raises_value_error_with_name_and_class(self):
@@ -50,17 +50,6 @@ class TestGlobalResidualBaseOutputAPI(unittest.TestCase):
         self.assertIn("disp", msg)
         self.assertIn("_StubGR", msg)
         self.assertIn("nodal", msg)
-
-    def test_evaluate_element_field_raises_value_error_with_name_and_class(self):
-        gr = _StubGR()
-        with self.assertRaises(ValueError) as ctx:
-            gr.evaluate_element_field(
-                "flux", None, None, 0, "blk",  # type: ignore[arg-type]
-            )
-        msg = str(ctx.exception)
-        self.assertIn("flux", msg)
-        self.assertIn("_StubGR", msg)
-        self.assertIn("element", msg)
 
 
 if __name__ == "__main__":

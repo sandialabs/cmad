@@ -12,6 +12,9 @@ the IP-level array is returned unreduced for callers that want the
 raw per-Gauss-point data (diagnostics, projection-to-nodes work,
 custom reductions).
 """
+from collections.abc import Callable
+from dataclasses import dataclass
+
 import jax.numpy as jnp
 import numpy as np
 from jax import vmap
@@ -25,7 +28,8 @@ from cmad.global_residuals.interpolation import (
     interpolate_global_fields_at_ip,
 )
 from cmad.global_residuals.modes import GlobalResidualMode
-from cmad.models.var_types import get_vector_from_sym_tensor
+from cmad.models.var_types import VarType, get_vector_from_sym_tensor
+from cmad.typing import JaxArray
 
 
 def evaluate_cauchy_at_ips(
@@ -166,3 +170,58 @@ def evaluate_cauchy_at_ips(
         raise ValueError(f"unsupported GlobalResidualMode: {mode}")
 
     return np.asarray(cauchy_blocks)
+
+
+def evaluate_state_var_at_ips(
+        fe_problem: FEProblem,
+        fe_state: FEState,
+        step: int,
+        block_name: str,
+        resid_idx: int,
+) -> NDArray[np.floating]:
+    """One local state variable at every (elem, IP) of a COUPLED block.
+
+    Reads the per-IP flat xi from ``fe_state.xi_at(step, block_name)``,
+    unravels it to the model's state list, and returns residual block
+    ``resid_idx`` as ``(n_elems, n_ip, n_comp)`` in the model's storage
+    order. Compose with :func:`cmad.io.results.ip_average_to_element`.
+
+    State variables are solved only in COUPLED mode, so this is meaningful
+    only for COUPLED-bound blocks; the caller gates on mode.
+    """
+    model = fe_problem.models_by_block[block_name]
+    xi_history = jnp.asarray(fe_state.xi_at(step, block_name))
+    _, unravel = ravel_pytree(model._init_xi)
+    nips = int(
+        fe_problem.geometry_cache[block_name].shared.quad_w.shape[0],
+    )
+
+    def per_elem(xi_per_ip: JaxArray) -> JaxArray:
+        return jnp.stack([
+            jnp.atleast_1d(unravel(xi_per_ip[ip])[resid_idx])
+            for ip in range(nips)
+        ])
+
+    return np.asarray(vmap(per_elem)(xi_history))
+
+
+@dataclass(frozen=True)
+class DerivedOutput:
+    """A post-processed (non-state) FE output field.
+
+    ``var_type`` is the field's intrinsic type. ``evaluator`` maps
+    ``fe_problem, fe_state, step, block`` to per-IP values of shape
+    ``(n_elems, n_ip, n_comp)``, composed with
+    :func:`cmad.io.results.ip_average_to_element` by the caller. Adding a
+    derived output is one entry in :data:`DERIVED_OUTPUT_REGISTRY`.
+    """
+
+    var_type: VarType
+    evaluator: Callable[
+        [FEProblem, FEState, int, str], NDArray[np.floating]
+    ]
+
+
+DERIVED_OUTPUT_REGISTRY: dict[str, DerivedOutput] = {
+    "cauchy": DerivedOutput(VarType.SYM_TENSOR, evaluate_cauchy_at_ips),
+}

@@ -1,10 +1,11 @@
 """``cmad primal --fe`` default-output behavior.
 
-When the deck omits ``output.{nodal fields, element fields by block}``
-the writer falls back to the GR's ``default_output_fields()`` surface,
-replicated across every mesh element block. For
-``SmallDispEquilibrium`` the surface is ``displacement`` (nodal) +
-``cauchy`` (per-block element).
+When the deck omits ``output.{global residual, local residual}`` the
+writer falls back to each source's full advertised set: the GR's
+``primary_output_fields()`` (nodal) + each block model's state +
+derived fields (element). For ``SmallDispEquilibrium`` + ``Elastic``
+(CLOSED_FORM, no solved state) that is ``u`` (nodal) + ``cauchy``
+(per-block element).
 """
 import tempfile
 import unittest
@@ -79,15 +80,15 @@ class TestPrimalFeDefaultOutput(unittest.TestCase):
                 cmad_main(["primal", str(deck_path)]), 0,
             )
 
-            # GR-default surface for SmallDispEquilibrium:
-            #   nodal=[displacement (vector)],
+            # Default surface for SmallDispEquilibrium + Elastic:
+            #   nodal=[u (vector)],
             #   element=[cauchy (sym_tensor)].
             # Successful read against these specs proves the fallback
             # fired and the writer produced the right variables.
             results = read_results(
                 tmp / "out" / "primal.exo",
                 nodal_field_specs=[
-                    FieldSpec("displacement", VarType.VECTOR),
+                    FieldSpec("u", VarType.VECTOR),
                 ],
                 element_field_specs={
                     "all": [FieldSpec("cauchy", VarType.SYM_TENSOR)],
@@ -96,7 +97,7 @@ class TestPrimalFeDefaultOutput(unittest.TestCase):
             self.assertEqual(results.time.shape, (6,))
             # 1-element hex cube -> 8 corner nodes x 3 components.
             self.assertEqual(
-                results.nodal["displacement"][-1].shape, (8, 3),
+                results.nodal["u"][-1].shape, (8, 3),
             )
             self.assertEqual(
                 results.element["all"]["cauchy"][-1].shape, (1, 6),

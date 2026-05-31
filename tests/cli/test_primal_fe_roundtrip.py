@@ -131,14 +131,8 @@ class TestPrimalFeClosedFormRoundTrip(unittest.TestCase):
                 output_section={
                     "path": "out",
                     "exodus filename": "primal.exo",
-                    "nodal fields": [
-                        {"name": "displacement", "var_type": "vector"},
-                    ],
-                    "element fields by block": {
-                        "all": [
-                            {"name": "cauchy", "var_type": "sym_tensor"},
-                        ],
-                    },
+                    "global residual": ["u"],
+                    "local residual": {"all": ["cauchy"]},
                 },
             )
             deck_path = tmp / "deck.yaml"
@@ -156,7 +150,7 @@ class TestPrimalFeClosedFormRoundTrip(unittest.TestCase):
             results = read_results(
                 out_dir / "primal.exo",
                 nodal_field_specs=[
-                    FieldSpec("displacement", VarType.VECTOR),
+                    FieldSpec("u", VarType.VECTOR),
                 ],
                 element_field_specs={
                     "all": [FieldSpec("cauchy", VarType.SYM_TENSOR)],
@@ -198,14 +192,8 @@ class TestPrimalFeCoupledRoundTrip(unittest.TestCase):
                 output_section={
                     "path": "out",
                     "exodus filename": "primal.exo",
-                    "nodal fields": [
-                        {"name": "displacement", "var_type": "vector"},
-                    ],
-                    "element fields by block": {
-                        "all": [
-                            {"name": "cauchy", "var_type": "sym_tensor"},
-                        ],
-                    },
+                    "global residual": ["u"],
+                    "local residual": {"all": ["cauchy"]},
                 },
                 ramp_expression="0.01 * t",
             )
@@ -252,14 +240,8 @@ class TestPrimalFeWithQoi(unittest.TestCase):
                 output_section={
                     "path": "primal_out",
                     "exodus filename": "primal.exo",
-                    "nodal fields": [
-                        {"name": "displacement", "var_type": "vector"},
-                    ],
-                    "element fields by block": {
-                        "all": [
-                            {"name": "cauchy", "var_type": "sym_tensor"},
-                        ],
-                    },
+                    "global residual": ["u"],
+                    "local residual": {"all": ["cauchy"]},
                 },
             )
             deck["qoi"] = {"name": "fe_displacement_l2"}

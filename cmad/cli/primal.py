@@ -22,6 +22,7 @@ from cmad.cli.common import (
 from cmad.fem.driver import fe_quasistatic_drive
 from cmad.io.deck import load_deck, unwrap_top_level
 from cmad.io.writers import (
+    resolve_fe_output_plan,
     write_cauchy,
     write_fe_exodus,
     write_J,
@@ -77,6 +78,9 @@ def _run_primal_mp(deck_path: Path) -> int:
 
 def _run_primal_fe(deck_path: Path) -> int:
     bundle = build_fe_problem_from_deck(deck_path, "primal")
+    output_plan = resolve_fe_output_plan(
+        bundle.resolved["output"], bundle.fe_problem,
+    )
     gr_section = bundle.resolved["residuals"]["global residual"]
     nonlinear_solver_settings = {
         "max iters": int(gr_section["nonlinear max iters"]),
@@ -101,7 +105,8 @@ def _run_primal_fe(deck_path: Path) -> int:
         name = bundle.resolved["problem"].get("name") or deck_path.stem
         output_section["exodus filename"] = f"{name}.exo"
     write_fe_exodus(
-        out_dir, prefix, bundle.fe_problem, fe_state, output_section,
+        out_dir, prefix, bundle.fe_problem, fe_state,
+        output_plan, output_section["exodus filename"],
     )
     write_resolved_deck(out_dir, prefix, bundle.resolved)
     if bundle.qoi is not None:

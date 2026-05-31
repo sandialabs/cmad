@@ -26,18 +26,20 @@ structured outputs ignore it.
   live in ``opt_params.yaml``.
 
 FE-side trajectories are written via :func:`write_fe_exodus` to a single
-Exodus II file (``output.exodus filename``); the file's nodal and
-element fields are configured via ``output.nodal fields`` and
-``output.element fields by block`` (with per-GR defaults). FE primal
-additionally writes ``J.json`` when the deck supplies a ``qoi``
-section.
+Exodus II file; the nodal + per-block element fields come from a
+:class:`FEOutputPlan` (built by :func:`resolve_fe_output_plan` from the
+deck's source-grouped ``output.global residual`` / ``output.local
+residual`` selection). FE primal additionally writes ``J.json`` when the
+deck supplies a ``qoi`` section.
 """
 
 from __future__ import annotations
 
 import copy
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -46,8 +48,13 @@ import yaml
 from numpy.typing import NDArray
 
 from cmad.fem.fe_problem import FEProblem, FEState
+from cmad.fem.postprocess import (
+    DERIVED_OUTPUT_REGISTRY,
+    evaluate_state_var_at_ips,
+)
+from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.exodus import ExodusWriter
-from cmad.io.results import FieldSpec
+from cmad.io.results import FieldSpec, ip_average_to_element
 from cmad.models.var_types import VarType
 
 _CAUCHY_HEADER = "S11 S12 S13 S21 S22 S23 S31 S32 S33"
@@ -178,55 +185,154 @@ def write_resolved_deck(
         )
 
 
-_VAR_TYPE_BY_DECK_NAME: dict[str, VarType] = {
-    "scalar": VarType.SCALAR,
-    "vector": VarType.VECTOR,
-    "sym_tensor": VarType.SYM_TENSOR,
-    "tensor": VarType.TENSOR,
-}
+@dataclass(frozen=True)
+class ResolvedNodalField:
+    """A nodal (GR) output field resolved against the GR's
+    ``primary_output_fields()`` catalog; the writer materializes it via
+    ``gr.evaluate_nodal_field(name, ...)``.
+    """
+
+    name: str
+    var_type: VarType
 
 
-def _field_spec_from_deck(d: dict[str, Any]) -> FieldSpec:
-    return FieldSpec(
-        name=d["name"],
-        var_type=_VAR_TYPE_BY_DECK_NAME[d["var_type"]],
-    )
+@dataclass(frozen=True)
+class ResolvedElementField:
+    """An element (Model) output field resolved against a block's catalog.
+
+    ``evaluator`` returns per-IP values ``(n_elems, n_ip, n_comp)`` for one
+    block at one step; the writer reduces them with
+    :func:`cmad.io.results.ip_average_to_element`. State variables bind
+    :func:`cmad.fem.postprocess.evaluate_state_var_at_ips` at a fixed
+    ``resid_idx``; derived fields carry their
+    :data:`cmad.fem.postprocess.DERIVED_OUTPUT_REGISTRY` evaluator.
+    """
+
+    name: str
+    var_type: VarType
+    evaluator: Callable[
+        [FEProblem, FEState, int, str], NDArray[np.floating]
+    ]
 
 
-def _resolve_fe_field_specs(
+@dataclass(frozen=True)
+class FEOutputPlan:
+    """The fully resolved Exodus output selection for an FE primal run.
+
+    ``nodal`` are the GR fields written per vertex; ``element_by_block``
+    are the per-block model fields written per element (IP-averaged). Built
+    by :func:`resolve_fe_output_plan` from the deck ``output`` section and
+    the catalogs the GR + per-block Models advertise.
+    """
+
+    nodal: list[ResolvedNodalField]
+    element_by_block: dict[str, list[ResolvedElementField]]
+
+
+def _element_catalog_for_block(
+        fe_problem: FEProblem, block: str,
+) -> dict[str, ResolvedElementField]:
+    """The block's selectable element-output fields, keyed by name.
+
+    State variables (meaningful only on a COUPLED block -- CLOSED_FORM
+    never solves xi) bind ``evaluate_state_var_at_ips`` at the residual
+    index; derived quantities the model advertises via
+    ``derived_output_field_names()`` carry their ``DERIVED_OUTPUT_REGISTRY``
+    evaluator. Raises if a state-variable name collides with a derived name.
+    """
+    model = fe_problem.models_by_block[block]
+    mode = fe_problem.modes_by_block[block]
+
+    catalog: dict[str, ResolvedElementField] = {}
+    if mode == GlobalResidualMode.COUPLED:
+        for resid_idx, (name, var_type) in enumerate(
+                model.state_output_fields(),
+        ):
+            catalog[name] = ResolvedElementField(
+                name, var_type,
+                partial(evaluate_state_var_at_ips, resid_idx=resid_idx),
+            )
+
+    for name in model.derived_output_field_names():
+        if name in catalog:
+            raise ValueError(
+                f"block '{block}': derived output {name!r} collides with a "
+                f"local state-variable name (state vars: {sorted(catalog)}); "
+                f"rename one",
+            )
+        derived = DERIVED_OUTPUT_REGISTRY.get(name)
+        if derived is None:
+            raise ValueError(
+                f"block '{block}': model advertises derived output {name!r} "
+                f"absent from DERIVED_OUTPUT_REGISTRY "
+                f"({sorted(DERIVED_OUTPUT_REGISTRY)})",
+            )
+        catalog[name] = ResolvedElementField(
+            name, derived.var_type, derived.evaluator,
+        )
+    return catalog
+
+
+def resolve_fe_output_plan(
         output_section: dict[str, Any],
         fe_problem: FEProblem,
-) -> tuple[list[FieldSpec], dict[str, Sequence[FieldSpec]]]:
-    """Resolve writer field specs from deck or GR defaults.
+) -> FEOutputPlan:
+    """Resolve the deck ``output`` selection into an :class:`FEOutputPlan`.
 
-    Each (nodal, element) bucket independently falls back to
-    ``fe_problem.gr.default_output_fields()`` when the deck omits it.
-    Element defaults are replicated across every key in
-    ``fe_problem.mesh.element_blocks``; deck-supplied element specs
-    are taken as-is, letting the user emit different fields on
-    different blocks.
+    Output is grouped by source: ``output["global residual"]`` lists GR
+    field names (resolved against ``gr.primary_output_fields()``);
+    ``output["local residual"]`` is ``{block: [names]}`` (resolved against
+    each block's state + derived catalog). Either group may be omitted, in
+    which case that source's full advertised set is written (GR: every
+    var_name; per block: every state variable + derived field). An unknown
+    field name or unknown block raises -- the build-time guarantee that a
+    requested output is producible.
     """
-    gr_defaults = fe_problem.gr.default_output_fields()
-    blocks = list(fe_problem.mesh.element_blocks)
-
-    nodal_deck = output_section.get("nodal fields")
-    nodal_specs = (
-        list(gr_defaults["nodal"]) if nodal_deck is None
-        else [_field_spec_from_deck(d) for d in nodal_deck]
-    )
-
-    element_specs_by_block: dict[str, Sequence[FieldSpec]]
-    element_deck = output_section.get("element fields by block")
-    if element_deck is None:
-        element_specs_by_block = {
-            block: list(gr_defaults["element"]) for block in blocks
-        }
+    gr = fe_problem.gr
+    nodal_catalog = dict(gr.primary_output_fields())
+    nodal_sel = output_section.get("global residual")
+    if nodal_sel is None:
+        nodal_names = list(nodal_catalog)
     else:
-        element_specs_by_block = {
-            block: [_field_spec_from_deck(d) for d in specs]
-            for block, specs in element_deck.items()
-        }
-    return nodal_specs, element_specs_by_block
+        for name in nodal_sel:
+            if name not in nodal_catalog:
+                raise ValueError(
+                    f"output.global residual: unknown field {name!r}; the "
+                    f"GR exposes {sorted(nodal_catalog)}",
+                )
+        nodal_names = list(nodal_sel)
+    nodal = [
+        ResolvedNodalField(name, nodal_catalog[name])
+        for name in nodal_names
+    ]
+
+    blocks = list(fe_problem.mesh.element_blocks)
+    element_sel = output_section.get("local residual")
+    if element_sel is not None:
+        unknown_blocks = set(element_sel) - set(blocks)
+        if unknown_blocks:
+            raise ValueError(
+                f"output.local residual: unknown block(s) "
+                f"{sorted(unknown_blocks)}; mesh element blocks are "
+                f"{sorted(blocks)}",
+            )
+
+    element_by_block: dict[str, list[ResolvedElementField]] = {}
+    for block in blocks:
+        catalog = _element_catalog_for_block(fe_problem, block)
+        if element_sel is None or block not in element_sel:
+            names = list(catalog)
+        else:
+            for name in element_sel[block]:
+                if name not in catalog:
+                    raise ValueError(
+                        f"output.local residual['{block}']: unknown field "
+                        f"{name!r}; the block exposes {sorted(catalog)}",
+                    )
+            names = list(element_sel[block])
+        element_by_block[block] = [catalog[name] for name in names]
+
+    return FEOutputPlan(nodal=nodal, element_by_block=element_by_block)
 
 
 def write_fe_exodus(
@@ -234,27 +340,30 @@ def write_fe_exodus(
         prefix: str,
         fe_problem: FEProblem,
         fe_state: FEState,
-        output_section: dict[str, Any],
+        output_plan: FEOutputPlan,
+        exodus_filename: str,
 ) -> None:
-    """Write FE results to an Exodus II file.
+    """Write FE results to an Exodus II file from a resolved output plan.
 
-    Resolves nodal + per-block element :class:`FieldSpec` lists from
-    the deck's ``output`` section; when either bucket is omitted,
-    falls back to ``fe_problem.gr.default_output_fields()`` (element
-    defaults replicated across every mesh element block). Opens an
-    :class:`ExodusWriter` at
-    ``out_dir / f"{prefix}{output_section['exodus filename']}"`` and
-    iterates over ``fe_state.t_history`` calling
-    ``gr.evaluate_nodal_field`` and ``gr.evaluate_element_field`` per
-    declared spec at each step. The schema requires ``exodus filename``
-    for ``cmad primal`` (the only subcommand that writes the
-    trajectory).
+    Opens an :class:`ExodusWriter` at
+    ``out_dir / f"{prefix}{exodus_filename}"`` with the plan's nodal +
+    per-block element :class:`FieldSpec` lists, then iterates over
+    ``fe_state.t_history`` writing each field per step: nodal via
+    ``gr.evaluate_nodal_field`` and element via the field's per-IP
+    evaluator reduced with
+    :func:`cmad.io.results.ip_average_to_element`. The
+    :func:`resolve_fe_output_plan` selection is validated at build time,
+    so every name here is known.
     """
-    nodal_specs, element_specs_by_block = _resolve_fe_field_specs(
-        output_section, fe_problem,
-    )
-    out_path = out_dir / f"{prefix}{output_section['exodus filename']}"
+    out_path = out_dir / f"{prefix}{exodus_filename}"
     gr = fe_problem.gr
+    nodal_specs = [
+        FieldSpec(f.name, f.var_type) for f in output_plan.nodal
+    ]
+    element_specs_by_block: dict[str, Sequence[FieldSpec]] = {
+        block: [FieldSpec(f.name, f.var_type) for f in fields]
+        for block, fields in output_plan.element_by_block.items()
+    }
     with ExodusWriter(
             out_path,
             mesh=fe_problem.mesh,
@@ -263,19 +372,20 @@ def write_fe_exodus(
     ) as writer:
         for step in range(len(fe_state.t_history)):
             nodal_data = {
-                spec.name: gr.evaluate_nodal_field(
-                    spec.name, fe_problem, fe_state, step,
+                f.name: gr.evaluate_nodal_field(
+                    f.name, fe_problem, fe_state, step,
                 )
-                for spec in nodal_specs
+                for f in output_plan.nodal
             }
             element_data = {
                 block: {
-                    spec.name: gr.evaluate_element_field(
-                        spec.name, fe_problem, fe_state, step, block,
+                    f.name: ip_average_to_element(
+                        f.evaluator(fe_problem, fe_state, step, block),
+                        fe_problem.geometry_cache, block,
                     )
-                    for spec in specs
+                    for f in fields
                 }
-                for block, specs in element_specs_by_block.items()
+                for block, fields in output_plan.element_by_block.items()
             }
             writer.write_step(
                 fe_state.t_history[step],

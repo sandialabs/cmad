@@ -1,13 +1,4 @@
 $schema: https://json-schema.org/draft/2020-12/schema
-$defs:
-  field_spec:
-    type: object
-    required: [name, var_type]
-    additionalProperties: false
-    properties:
-      name: {type: string}
-      var_type:
-        enum: [scalar, vector, sym_tensor, tensor]
 type: object
 additionalProperties: false
 required: [path]
@@ -18,13 +9,11 @@ properties:
     enum: [npy, text]
     default: npy
   exodus filename: {type: string}
-  nodal fields:
+  global residual:
     type: array
-    items:
-      $ref: '#/$defs/field_spec'
-  element fields by block:
+    items: {type: string}
+  local residual:
     type: object
     additionalProperties:
       type: array
-      items:
-        $ref: '#/$defs/field_spec'
+      items: {type: string}

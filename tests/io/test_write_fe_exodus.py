@@ -1,9 +1,12 @@
-"""Tests for :func:`cmad.io.writers.write_fe_exodus`.
+"""Tests for :func:`cmad.io.writers.resolve_fe_output_plan` and
+:func:`cmad.io.writers.write_fe_exodus`.
 
-Spec-resolution unit tests use a stub :class:`FEProblem`; the round-
-trip smoke test builds a real 1-block hex-cube FE problem with zero
-displacement and confirms the Exodus file reads back with the GR's
-declared default surface populated.
+Plan-resolution unit tests use stub GR / Model / FEProblem objects (only
+the catalog methods are exercised; the resolved evaluators are stored,
+not called). The round-trip smoke test builds a real 1-block hex-cube FE
+problem with zero displacement and confirms the Exodus file reads back
+with the default output surface (nodal ``u`` + element ``cauchy``)
+populated.
 """
 import tempfile
 import unittest
@@ -20,14 +23,38 @@ from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
 from cmad.io.exodus import read_results
 from cmad.io.results import FieldSpec
-from cmad.io.writers import _resolve_fe_field_specs, write_fe_exodus
+from cmad.io.writers import resolve_fe_output_plan, write_fe_exodus
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
 from cmad.models.var_types import VarType
 from cmad.parameters.parameters import Parameters
 
-_DISPLACEMENT_FS = FieldSpec("displacement", VarType.VECTOR)
+_U_FS = FieldSpec("u", VarType.VECTOR)
 _CAUCHY_FS = FieldSpec("cauchy", VarType.SYM_TENSOR)
+
+
+class _StubGR:
+    def __init__(self, primary: list[tuple[str, VarType]]) -> None:
+        self._primary = primary
+
+    def primary_output_fields(self) -> list[tuple[str, VarType]]:
+        return self._primary
+
+
+class _StubModel:
+    def __init__(
+            self,
+            state_fields: list[tuple[str, VarType]],
+            derived_names: list[str],
+    ) -> None:
+        self._state = state_fields
+        self._derived = derived_names
+
+    def state_output_fields(self) -> list[tuple[str, VarType]]:
+        return self._state
+
+    def derived_output_field_names(self) -> list[str]:
+        return self._derived
 
 
 class _StubMesh:
@@ -35,113 +62,125 @@ class _StubMesh:
         self.element_blocks = {b: np.array([0]) for b in blocks}
 
 
-class _StubGR:
-    def __init__(self, defaults: dict[str, list[FieldSpec]]) -> None:
-        self._defaults = defaults
-
-    def default_output_fields(self) -> dict[str, list[FieldSpec]]:
-        return self._defaults
-
-
 class _StubFEProblem:
     def __init__(
             self,
+            gr: _StubGR,
             blocks: tuple[str, ...],
-            defaults: dict[str, list[FieldSpec]],
+            models_by_block: dict,
+            modes_by_block: dict,
     ) -> None:
+        self.gr = gr
         self.mesh = _StubMesh(blocks)
-        self.gr = _StubGR(defaults)
+        self.models_by_block = models_by_block
+        self.modes_by_block = modes_by_block
 
 
-def _stub_problem(
-        blocks: tuple[str, ...] = ("blk_a",),
-) -> _StubFEProblem:
+def _coupled_plasticity_problem() -> _StubFEProblem:
+    """COUPLED block: state [plastic strain, alpha] + derived [cauchy]."""
+    model = _StubModel(
+        state_fields=[
+            ("plastic strain", VarType.SYM_TENSOR),
+            ("alpha", VarType.SCALAR),
+        ],
+        derived_names=["cauchy"],
+    )
     return _StubFEProblem(
-        blocks,
-        defaults={"nodal": [_DISPLACEMENT_FS], "element": [_CAUCHY_FS]},
+        gr=_StubGR([("u", VarType.VECTOR)]),
+        blocks=("all",),
+        models_by_block={"all": model},
+        modes_by_block={"all": GlobalResidualMode.COUPLED},
     )
 
 
-class TestResolveFieldSpecs(unittest.TestCase):
-    def test_default_when_deck_omits_both(self):
-        fe_problem = _stub_problem(blocks=("blk_a", "blk_b"))
-        nodal, elem_by_block = _resolve_fe_field_specs(
-            output_section={}, fe_problem=fe_problem,  # type: ignore[arg-type]
-        )
-        self.assertEqual(nodal, [_DISPLACEMENT_FS])
+class TestResolveFEOutputPlan(unittest.TestCase):
+    @staticmethod
+    def _names(fields):
+        return [f.name for f in fields]
+
+    def test_blank_groups_default_to_full_advertised_set(self):
+        fe_problem = _coupled_plasticity_problem()
+        plan = resolve_fe_output_plan({}, fe_problem)  # type: ignore[arg-type]
+        self.assertEqual(self._names(plan.nodal), ["u"])
+        self.assertEqual(plan.nodal[0].var_type, VarType.VECTOR)
         self.assertEqual(
-            elem_by_block,
-            {"blk_a": [_CAUCHY_FS], "blk_b": [_CAUCHY_FS]},
+            self._names(plan.element_by_block["all"]),
+            ["plastic strain", "alpha", "cauchy"],
         )
 
-    def test_deck_overrides_nodal_only(self):
-        fe_problem = _stub_problem()
-        deck = {
-            "nodal fields": [
-                {"name": "displacement", "var_type": "vector"},
-            ],
-        }
-        nodal, elem_by_block = _resolve_fe_field_specs(
-            output_section=deck, fe_problem=fe_problem,  # type: ignore[arg-type]
+    def test_closed_form_block_skips_state_defaults_to_derived(self):
+        # CLOSED_FORM never solves xi, so state vars are not selectable;
+        # the blank-group default is the derived set only.
+        model = _StubModel(
+            state_fields=[("cauchy", VarType.SYM_TENSOR)],
+            derived_names=["cauchy"],
         )
-        self.assertEqual(nodal, [_DISPLACEMENT_FS])
-        self.assertEqual(elem_by_block, {"blk_a": [_CAUCHY_FS]})
+        fe_problem = _StubFEProblem(
+            gr=_StubGR([("u", VarType.VECTOR)]),
+            blocks=("all",),
+            models_by_block={"all": model},
+            modes_by_block={"all": GlobalResidualMode.CLOSED_FORM},
+        )
+        plan = resolve_fe_output_plan({}, fe_problem)  # type: ignore[arg-type]
+        self.assertEqual(
+            self._names(plan.element_by_block["all"]), ["cauchy"],
+        )
 
-    def test_deck_overrides_element_only(self):
-        fe_problem = _stub_problem()
-        deck = {
-            "element fields by block": {
-                "blk_a": [
-                    {"name": "cauchy", "var_type": "sym_tensor"},
-                ],
+    def test_explicit_selection_subsets_the_catalog(self):
+        fe_problem = _coupled_plasticity_problem()
+        plan = resolve_fe_output_plan(
+            {
+                "global residual": ["u"],
+                "local residual": {"all": ["cauchy"]},
             },
-        }
-        nodal, elem_by_block = _resolve_fe_field_specs(
-            output_section=deck, fe_problem=fe_problem,  # type: ignore[arg-type]
+            fe_problem,  # type: ignore[arg-type]
         )
-        self.assertEqual(nodal, [_DISPLACEMENT_FS])
-        self.assertEqual(elem_by_block, {"blk_a": [_CAUCHY_FS]})
-
-    def test_deck_overrides_both(self):
-        fe_problem = _stub_problem()
-        deck = {
-            "nodal fields": [
-                {"name": "u_alt", "var_type": "vector"},
-            ],
-            "element fields by block": {
-                "blk_a": [
-                    {"name": "stress_alt", "var_type": "sym_tensor"},
-                ],
-            },
-        }
-        nodal, elem_by_block = _resolve_fe_field_specs(
-            output_section=deck, fe_problem=fe_problem,  # type: ignore[arg-type]
-        )
+        self.assertEqual(self._names(plan.nodal), ["u"])
         self.assertEqual(
-            nodal, [FieldSpec("u_alt", VarType.VECTOR)],
-        )
-        self.assertEqual(
-            elem_by_block,
-            {"blk_a": [FieldSpec("stress_alt", VarType.SYM_TENSOR)]},
+            self._names(plan.element_by_block["all"]), ["cauchy"],
         )
 
-    def test_var_type_string_coerces_to_enum(self):
-        fe_problem = _stub_problem()
-        deck = {
-            "nodal fields": [
-                {"name": "scalar_field", "var_type": "scalar"},
-                {"name": "vec_field", "var_type": "vector"},
-                {"name": "sym_field", "var_type": "sym_tensor"},
-                {"name": "ten_field", "var_type": "tensor"},
-            ],
-        }
-        nodal, _ = _resolve_fe_field_specs(
-            output_section=deck, fe_problem=fe_problem,  # type: ignore[arg-type]
+    def test_unknown_nodal_field_raises(self):
+        fe_problem = _coupled_plasticity_problem()
+        with self.assertRaises(ValueError) as ctx:
+            resolve_fe_output_plan(
+                {"global residual": ["nope"]},
+                fe_problem,  # type: ignore[arg-type]
+            )
+        self.assertIn("nope", str(ctx.exception))
+
+    def test_unknown_element_field_raises(self):
+        fe_problem = _coupled_plasticity_problem()
+        with self.assertRaises(ValueError) as ctx:
+            resolve_fe_output_plan(
+                {"local residual": {"all": ["nope"]}},
+                fe_problem,  # type: ignore[arg-type]
+            )
+        self.assertIn("nope", str(ctx.exception))
+
+    def test_unknown_block_raises(self):
+        fe_problem = _coupled_plasticity_problem()
+        with self.assertRaises(ValueError) as ctx:
+            resolve_fe_output_plan(
+                {"local residual": {"ghost": ["cauchy"]}},
+                fe_problem,  # type: ignore[arg-type]
+            )
+        self.assertIn("ghost", str(ctx.exception))
+
+    def test_state_derived_name_collision_raises(self):
+        model = _StubModel(
+            state_fields=[("cauchy", VarType.SYM_TENSOR)],
+            derived_names=["cauchy"],
         )
-        self.assertEqual(nodal[0].var_type, VarType.SCALAR)
-        self.assertEqual(nodal[1].var_type, VarType.VECTOR)
-        self.assertEqual(nodal[2].var_type, VarType.SYM_TENSOR)
-        self.assertEqual(nodal[3].var_type, VarType.TENSOR)
+        fe_problem = _StubFEProblem(
+            gr=_StubGR([("u", VarType.VECTOR)]),
+            blocks=("all",),
+            models_by_block={"all": model},
+            modes_by_block={"all": GlobalResidualMode.COUPLED},
+        )
+        with self.assertRaises(ValueError) as ctx:
+            resolve_fe_output_plan({}, fe_problem)  # type: ignore[arg-type]
+        self.assertIn("cauchy", str(ctx.exception))
 
 
 def _elastic_parameters(
@@ -172,30 +211,31 @@ class TestWriteFeExodusRoundTrip(unittest.TestCase):
     def test_default_output_zero_state_round_trip(self):
         fe_problem = _build_elastic_problem()
         fe_state = FEState.from_problem(fe_problem, t_init=0.0)
+        output_plan = resolve_fe_output_plan({}, fe_problem)
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
             write_fe_exodus(
                 out_dir=out_dir, prefix="", fe_problem=fe_problem,
-                fe_state=fe_state,
-                output_section={"exodus filename": "primal.exo"},
+                fe_state=fe_state, output_plan=output_plan,
+                exodus_filename="primal.exo",
             )
             exo_path = out_dir / "primal.exo"
             self.assertTrue(exo_path.exists())
 
             results = read_results(
                 exo_path,
-                nodal_field_specs=[_DISPLACEMENT_FS],
+                nodal_field_specs=[_U_FS],
                 element_field_specs={"all": [_CAUCHY_FS]},
             )
             n_nodes = fe_problem.mesh.nodes.shape[0]
             n_elems = len(fe_problem.mesh.element_blocks["all"])
             self.assertEqual(results.time.shape, (1,))
             self.assertEqual(
-                results.nodal["displacement"].shape,
+                results.nodal["u"].shape,
                 (1, n_nodes, 3),
             )
             self.assertTrue(
-                np.allclose(results.nodal["displacement"], 0.0),
+                np.allclose(results.nodal["u"], 0.0),
             )
             self.assertEqual(
                 results.element["all"]["cauchy"].shape,

@@ -145,14 +145,14 @@ class TestPrimalFeMmsCube3D(unittest.TestCase):
         results = read_results(
             work_dir / "out" / "primal.exo",
             nodal_field_specs=[
-                FieldSpec("displacement", VarType.VECTOR),
+                FieldSpec("u", VarType.VECTOR),
             ],
         )
         # SmallDispEquilibrium: single field block, ndofs=3, block_offset=0.
         # Node-major dof-fastest reshape matches the dof_map's eq layout
         # since the CLI builder reads the mesh in Exodus node order.
         U_solved = np.asarray(
-            results.nodal["displacement"][-1], dtype=np.float64,
+            results.nodal["u"][-1], dtype=np.float64,
         ).reshape(-1)
 
         bundle = build_fe_problem_from_deck(deck_path, "primal")
