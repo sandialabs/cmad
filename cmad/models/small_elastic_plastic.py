@@ -212,10 +212,11 @@ class SmallElasticPlastic(Model):
             cls,
             model_section: dict[str, Any],
             parameters: Parameters,
+            def_type: int,
     ) -> "SmallElasticPlastic":
         return cls(
             parameters=parameters,
-            def_type=DefType[model_section["def_type"].upper()],
+            def_type=def_type,
             uniaxial_stress_idx=model_section.get("uniaxial_stress_idx", 0),
         )
 

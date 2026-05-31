@@ -120,10 +120,11 @@ class Elastic(Model):
             cls,
             model_section: dict[str, Any],
             parameters: Parameters,
+            def_type: int,
     ) -> "Elastic":
         return cls(
             parameters=parameters,
-            def_type=DefType[model_section["def_type"].upper()],
+            def_type=def_type,
             elastic_stress_fun=conventional_elastic_stress_fun(
                 model_section.get("elastic_stress", "isotropic_linear"),
             ),

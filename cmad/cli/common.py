@@ -47,6 +47,7 @@ from cmad.io.registry import (
     resolve_qoi,
 )
 from cmad.io.schema import validate_deck
+from cmad.models.deformation_types import DefType
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
 from cmad.qois.fe_qoi import FEQoI
@@ -79,7 +80,8 @@ def build_mp_problem(
 
     model_cls = resolve_model(resolved["model"]["name"])
     parameters = build_parameters(resolved["parameters"])
-    model = model_cls.from_deck(resolved["model"], parameters)
+    def_type = DefType[resolved["model"]["def_type"].upper()]
+    model = model_cls.from_deck(resolved["model"], parameters, def_type)
 
     F = load_history(
         resolved["deformation"], deck_path.parent,
@@ -490,9 +492,10 @@ def _build_models_by_block(
             f"({sorted(mesh_blocks)})",
         )
     model_cls = resolve_model(local_section["type"])
+    def_type = DefType[local_section["def_type"].upper()]
     return {
         block: model_cls.from_deck(
-            local_section, build_parameters(materials[block]),
+            local_section, build_parameters(materials[block]), def_type,
         )
         for block in materials
     }

@@ -91,13 +91,18 @@ class Model(ABC):
             cls,
             model_section: dict[str, Any],
             parameters: Parameters,
+            def_type: int,
     ) -> "Model":
-        """Build a :class:`Model` instance from the deck's ``model:`` section.
+        """Build a :class:`Model` from its deck section and ``def_type``.
 
-        Concrete subclasses translate deck fields (``def_type``,
-        ``effective_stress``, etc.) into constructor kwargs. The base stub
-        exists so the registry's ``type[Model]`` return is statically
-        callable via ``cls.from_deck(...)``; subclasses must override.
+        ``def_type`` is passed in by the deck builder rather than read from
+        the section: for FE problems it is the single source of truth on
+        the global residual; for material-point problems it comes from the
+        model section. Subclasses translate the remaining deck fields
+        (``uniaxial_stress_idx``, ``elastic_stress``, ...) into constructor
+        kwargs. The base stub exists so the registry's ``type[Model]``
+        return is statically callable via ``cls.from_deck(...)``;
+        subclasses must override.
         """
         raise NotImplementedError
 
