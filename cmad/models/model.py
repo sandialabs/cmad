@@ -106,6 +106,17 @@ class Model(ABC):
         """
         raise NotImplementedError
 
+    @classmethod
+    def material_defaults(cls) -> dict[str, Any]:
+        """Deck-material keys this model fills in when the deck omits them.
+
+        The deck builder setdefault-merges these into the model's deck
+        section before :func:`cmad.io.params_builder.build_parameters`,
+        which splits the default across the parallel parameter trees as a
+        non-active parameter. Base: none.
+        """
+        return {}
+
     def __init__(
             self, residual_fun: ResidualFn, cauchy_fun: CauchyFn,
             cauchy_closed_form_fun: Callable[..., JaxArray] | None = None,

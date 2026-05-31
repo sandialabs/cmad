@@ -232,6 +232,14 @@ class SmallRateElasticPlastic(Model):
             uniaxial_stress_idx=model_section.get("uniaxial_stress_idx", 0),
         )
 
+    @classmethod
+    def material_defaults(cls) -> dict[str, Any]:
+        return {
+            "rotation matrix": [
+                [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0],
+            ],
+        }
+
     def derived_output_field_names(self) -> list[str]:
         return ["cauchy"]
 

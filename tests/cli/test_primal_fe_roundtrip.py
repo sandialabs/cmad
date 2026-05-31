@@ -85,9 +85,6 @@ def _make_fe_primal_deck_coupled(
                 "type": "small_elastic_plastic",
                 "materials": {
                     "all": {
-                        "rotation matrix": [
-                            [1, 0, 0], [0, 1, 0], [0, 0, 1],
-                        ],
                         "elastic": {"E": 200_000.0, "nu": 0.3},
                         "plastic": {
                             "effective stress": {"J2": {}},
