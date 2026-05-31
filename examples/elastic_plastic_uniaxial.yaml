@@ -1,0 +1,69 @@
+# Elastic-plastic uniaxial-stress benchmark: a unit cube pulled in x to
+# ~3x yield strain with J2 + Voce isotropic hardening. The y/z max faces
+# are free, so the homogeneous stress state is uniaxial and every
+# element's terminal sigma_xx matches the analytical uniaxial J2 + Voce
+# flow stress.
+#
+#   python examples/make_cube_mesh.py    # writes examples/cube_hex_8.exo
+#   cmad primal    examples/elastic_plastic_uniaxial.yaml
+#   cmad objective examples/elastic_plastic_uniaxial.yaml
+#   cmad gradient  examples/elastic_plastic_uniaxial.yaml
+#   cmad hessian   examples/elastic_plastic_uniaxial.yaml
+
+problem:
+  type: fe
+  name: elastic_plastic_uniaxial
+
+discretization:
+  mesh file: cube_hex_8.exo
+  num steps: 5
+  step size: 0.2
+
+residuals:
+  global residual:
+    type: small_disp_equilibrium
+    def_type: full_3d
+    nonlinear max iters: 10
+    nonlinear absolute tol: 1.0e-12
+    nonlinear relative tol: 1.0e-12
+  local residual:
+    type: small_elastic_plastic
+    nonlinear max iters: 30
+    nonlinear absolute tol: 1.0e-14
+    nonlinear relative tol: 1.0e-14
+    materials:
+      all:
+        # active leaves are the ones cmad gradient / hessian differentiate.
+        elastic:
+          E:  {value: 200000.0, active: true}
+          nu: {value: 0.3,      active: true}
+        plastic:
+          effective stress: {J2: {}}
+          flow stress:
+            initial yield:
+              Y: {value: 200.0, active: true}
+            hardening:
+              voce:
+                S: {value: 200.0, active: true}
+                D: {value: 20.0,  active: true}
+
+# Dirichlet BCs key on the governing-equation name ("equilibrium"). The
+# free y/z max faces let the cube contract laterally -> uniaxial stress.
+dirichlet bcs:
+  expression:
+    pin_x:  [equilibrium, 0, xmin_sides, "0.0"]
+    pin_y:  [equilibrium, 1, ymin_sides, "0.0"]
+    pin_z:  [equilibrium, 2, zmin_sides, "0.0"]
+    ramp_x: [equilibrium, 0, xmax_sides, "0.003 * t"]
+
+linear solver:
+  type: direct
+
+qoi:
+  name: fe_displacement_l2
+
+output:
+  path: results
+  global residual: [u]      # GR nodal field
+  local residual:
+    all: [cauchy]           # model element field, IP-averaged
