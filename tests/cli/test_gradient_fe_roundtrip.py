@@ -40,10 +40,9 @@ def _make_fe_gradient_deck(mesh_filename: str) -> dict[str, Any]:
             "step size": 0.2,
         },
         "residuals": {
-            "global residual": {"type": "small_disp_equilibrium"},
+            "global residual": {"type": "small_disp_equilibrium", "def_type": "full_3d"},
             "local residual": {
                 "type": "elastic",
-                "def_type": "full_3d",
                 "materials": {
                     "all": {
                         "elastic": {

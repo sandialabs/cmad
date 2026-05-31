@@ -9,6 +9,7 @@ from cmad.fem.mesh import Mesh
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.registry import register_global_residual
+from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.var_types import VarType
 
 
@@ -103,10 +104,22 @@ class SmallDispEquilibrium(GlobalResidual):
     ) -> "SmallDispEquilibrium":
         """Construct from the resolved ``residuals.global residual`` section.
 
-        ``gr_section`` carries the GR-side fields (``type``, nonlinear-
-        solver kwargs); ``ndims`` is sourced from the mesh by the deck-
-        side builder. This GR has no GR-specific config beyond ``ndims``,
-        so the section dict is unread; future GRs that need extra deck
-        keys will read them here.
+        Requires ``def_type`` and cross-checks the spatial dimension it
+        implies against ``ndims``, which the deck builder sources from the
+        mesh. A def_type whose dimension disagrees with the mesh raises.
         """
+        def_type_name = gr_section.get("def_type")
+        if def_type_name is None:
+            raise ValueError(
+                "residuals.global residual: small_disp_equilibrium "
+                "requires 'def_type'",
+            )
+        def_type = DefType[def_type_name.upper()]
+        expected_ndims = def_type_ndims(def_type)
+        if expected_ndims != ndims:
+            raise ValueError(
+                f"residuals.global residual: def_type '{def_type_name}' "
+                f"implies ndims={expected_ndims} but the mesh has "
+                f"ndims={ndims}",
+            )
         return cls(ndims=ndims)

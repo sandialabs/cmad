@@ -48,6 +48,8 @@ properties:
     additionalProperties: false
     properties:
       type: {type: string}
+      def_type:
+        enum: [full_3d, plane_strain, plane_stress, uniaxial_stress]
       nonlinear max iters:
         type: integer
         minimum: 1

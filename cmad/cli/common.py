@@ -300,8 +300,9 @@ def build_fe_problem_from_deck(
     gr_cls = resolve_global_residual(gr_section["type"])
     gr = gr_cls.from_deck(gr_section, ndims=ndims)
 
+    def_type = DefType[gr_section["def_type"].upper()]
     local_section = resolved["residuals"]["local residual"]
-    models_by_block = _build_models_by_block(local_section, mesh)
+    models_by_block = _build_models_by_block(local_section, mesh, def_type)
     modes_by_block = {
         block: (
             GlobalResidualMode.CLOSED_FORM
@@ -480,7 +481,7 @@ def _quad_rule(
 
 
 def _build_models_by_block(
-        local_section: dict[str, Any], mesh: Any,
+        local_section: dict[str, Any], mesh: Any, def_type: int,
 ) -> dict[str, Model]:
     materials = local_section["materials"]
     mesh_blocks = set(mesh.element_blocks.keys())
@@ -492,7 +493,6 @@ def _build_models_by_block(
             f"({sorted(mesh_blocks)})",
         )
     model_cls = resolve_model(local_section["type"])
-    def_type = DefType[local_section["def_type"].upper()]
     return {
         block: model_cls.from_deck(
             local_section, build_parameters(materials[block]), def_type,
