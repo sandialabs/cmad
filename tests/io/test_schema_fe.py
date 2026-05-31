@@ -66,13 +66,14 @@ class TestFEDeckSchema(unittest.TestCase):
             resolved["residuals"]["global residual"],
         )
 
-    def test_fe_primal_requires_exodus_filename(self) -> None:
+    def test_fe_primal_allows_missing_exodus_filename(self) -> None:
+        # Optional now: the FE-primal writer defaults the filename to
+        # {problem.name}.exo (deck-stem fallback), so a deck that omits
+        # it still validates.
         deck = _minimal_fe_deck()
         del deck["output"]["exodus filename"]
         resolved = apply_deck_defaults(deck)
-        with self.assertRaises(ValueError) as ctx:
-            validate_deck(resolved, "primal")
-        self.assertIn("exodus filename", str(ctx.exception))
+        validate_deck(resolved, "primal")
 
     def test_missing_required_section_errors(self) -> None:
         deck = _minimal_fe_deck()

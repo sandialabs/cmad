@@ -96,9 +96,12 @@ def _run_primal_fe(deck_path: Path) -> int:
     )
 
     out_dir, prefix, _fmt = resolve_output(bundle.resolved, deck_path)
+    output_section = bundle.resolved["output"]
+    if "exodus filename" not in output_section:
+        name = bundle.resolved["problem"].get("name") or deck_path.stem
+        output_section["exodus filename"] = f"{name}.exo"
     write_fe_exodus(
-        out_dir, prefix, bundle.fe_problem, fe_state,
-        bundle.resolved["output"],
+        out_dir, prefix, bundle.fe_problem, fe_state, output_section,
     )
     write_resolved_deck(out_dir, prefix, bundle.resolved)
     if bundle.qoi is not None:

@@ -118,8 +118,6 @@ def validate_deck(deck: dict[str, Any], subcommand: str) -> None:
     _check_model_registered(deck, problem_type)
     if problem_type == "fe":
         _check_global_residual_registered(deck)
-    if (problem_type, subcommand) == ("fe", "primal"):
-        _check_fe_primal_exodus_filename(deck)
     qoi_name: str | None = None
     if "qoi" in all_sections and "qoi" in deck:
         _check_qoi_registered(deck)
@@ -191,17 +189,6 @@ def _check_global_residual_registered(deck: dict[str, Any]) -> None:
         raise ValueError(
             f"residuals.global residual.type: '{name}' is not registered. "
             f"Registered global residual names: {listing}",
-        )
-
-
-def _check_fe_primal_exodus_filename(deck: dict[str, Any]) -> None:
-    """FE primal's only output is the trajectory; the writer needs a name."""
-    output = deck.get("output")
-    if not isinstance(output, dict) or "exodus filename" not in output:
-        raise ValueError(
-            "output.exodus filename: required for ('fe', 'primal'); "
-            "the FE primal subcommand's only output is the Exodus II "
-            "trajectory and the writer needs an explicit filename.",
         )
 
 
