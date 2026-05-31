@@ -1,0 +1,25 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+required: [name, sideset, components]
+additionalProperties: false
+oneOf:
+  - required: [data_file]
+  - required: [output_file]
+properties:
+  name:
+    const: fe_load_match
+  sideset:
+    type: string
+  components:
+    type: array
+    items:
+      type: integer
+      minimum: 0
+    minItems: 1
+    uniqueItems: true
+  data_file:
+    type: string
+  output_file:
+    type: string
+  weight:
+    type: number

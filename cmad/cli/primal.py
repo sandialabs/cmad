@@ -91,12 +91,16 @@ def _run_primal_fe(deck_path: Path) -> int:
         ),
     }
     linear_solver_settings = bundle.resolved["linear solver"]
+    qoi = bundle.qoi
+    write_qoi = (
+        qoi if qoi is not None and qoi.produces_primal_output() else None
+    )
     fe_state, J = fe_quasistatic_drive(
         bundle.fe_problem,
         bundle.t_schedule.tolist(),
         nonlinear_solver_settings=nonlinear_solver_settings,
         linear_solver_settings=linear_solver_settings,
-        qoi=bundle.qoi,
+        qoi=None if write_qoi is not None else qoi,
     )
 
     out_dir, prefix, _fmt = resolve_output(bundle.resolved)
@@ -109,7 +113,9 @@ def _run_primal_fe(deck_path: Path) -> int:
         output_plan, output_section["exodus filename"],
     )
     write_resolved_deck(out_dir, prefix, bundle.resolved)
-    if bundle.qoi is not None:
+    if write_qoi is not None:
+        write_qoi.write_primal_outputs(bundle.fe_problem, fe_state)
+    elif qoi is not None:
         write_J(out_dir, prefix, float(J))
     return 0
 

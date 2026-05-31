@@ -5,9 +5,11 @@
 the pair of float64 arrays that :meth:`cmad.qois.qoi.QoI.from_deck`
 expects (``.npy`` only).
 
-:func:`load_calibration_data` reads the per-step nodal displacement
-field an FE data-matching QoI compares against (``.npy`` or a
-``cmad primal`` Exodus output).
+:func:`load_displacement_data` reads the per-step nodal displacement
+field an FE displacement-matching QoI compares against (``.npy`` or a
+``cmad primal`` Exodus output). :func:`load_reaction_data` reads the
+per-step (per-component) load an FE load-matching QoI compares against
+(``.npy`` / ``.csv`` / ``.txt``).
 
 No shape checks happen here; each QoI constructor asserts its own shape
 contract.
@@ -35,10 +37,10 @@ def load_qoi_data(
     return data, weight
 
 
-def load_calibration_data(
+def load_displacement_data(
         qoi_section: dict[str, Any],
 ) -> NDArray[np.float64]:
-    """Return the per-step nodal displacement target for a calibration QoI.
+    """Return the per-step nodal displacement target for a displacement QoI.
 
     Reads ``qoi_section["data_file"]`` as a ``(num_steps, num_nodes,
     ndims)`` array of nodal displacements — the layout
@@ -67,6 +69,35 @@ def load_calibration_data(
         raise ValueError(
             f"qoi.data_file: unsupported extension '{ext}' "
             f"(path: {path}); supported: .npy, .exo, .ex2",
+        )
+    out: NDArray[np.float64] = np.asarray(arr, dtype=np.float64)
+    return out
+
+
+def load_reaction_data(
+        qoi_section: dict[str, Any],
+) -> NDArray[np.float64]:
+    """Return the per-step measured-load target for a load-matching QoI.
+
+    Reads ``qoi_section["data_file"]`` as a per-step load series aligned to
+    the FE time schedule: shape ``(num_steps,)`` for a single component or
+    ``(num_steps, num_components)``. ``.npy`` -> :func:`numpy.load`; ``.csv``
+    / ``.txt`` -> :func:`numpy.loadtxt`.
+    """
+    path = Path(qoi_section["data_file"])
+    if not path.exists():
+        raise FileNotFoundError(
+            f"qoi.data_file: file not found at {path}",
+        )
+    ext = path.suffix.lower()
+    if ext == ".npy":
+        arr = np.load(path)
+    elif ext in {".csv", ".txt"}:
+        arr = np.loadtxt(path)
+    else:
+        raise ValueError(
+            f"qoi.data_file: unsupported extension '{ext}' "
+            f"(path: {path}); supported: .npy, .csv, .txt",
         )
     out: NDArray[np.float64] = np.asarray(arr, dtype=np.float64)
     return out

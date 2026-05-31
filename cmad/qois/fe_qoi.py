@@ -9,7 +9,7 @@ from cmad.qois.qoi_base import QoIBase
 from cmad.typing import JaxArray, Params
 
 if TYPE_CHECKING:
-    from cmad.fem.fe_problem import FEProblem
+    from cmad.fem.fe_problem import FEProblem, FEState
     from cmad.fem.kernel_arrays import FEKernelArrays
 
 
@@ -111,3 +111,26 @@ class FEQoI(QoIBase, ABC):
         construction.
         """
         ...
+
+    def produces_primal_output(self) -> bool:
+        """Whether this QoI writes an output from the solved trajectory
+        rather than being an objective accumulated over the time loop.
+
+        Default ``False``. A QoI that returns ``True`` is asked by ``cmad
+        primal`` to emit its file via :meth:`write_primal_outputs` after the
+        solve, and is not evaluated as an objective.
+        """
+        return False
+
+    def write_primal_outputs(
+            self, fe_problem: FEProblem, fe_state: FEState,
+    ) -> None:
+        """Write an output from the solved trajectory ``fe_state``.
+
+        Called by ``cmad primal`` only when :meth:`produces_primal_output`
+        is ``True``; the default raises, since an objective QoI has nothing
+        to write.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not produce a primal output"
+        )

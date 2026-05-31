@@ -249,6 +249,40 @@ class GlobalDofMap:
         ndofs = int(self.num_dofs_per_basis_fn[field_idx])
         return field_idx, local_eq // ndofs, local_eq % ndofs
 
+    def dirichlet_eqs_for_component(
+            self, sideset: str, field: str, component: int,
+    ) -> NDArray[np.intp]:
+        """Global eq numbers for ``(field, component)`` prescribed by
+        Dirichlet BCs on ``sideset``.
+
+        Walks ``resolved_bcs`` for BCs that cover ``sideset`` and prescribe
+        ``component`` of ``field``, gathering that component's column of each
+        BC's ``eq_indices`` (vertex-major / dof-minor); deduplicated and
+        sorted. Raises if the component is not prescribed there -- reading a
+        reaction over it needs a Dirichlet-constrained dof.
+        """
+        cols: list[NDArray[np.intp]] = []
+        for rbc in self.resolved_bcs:
+            bc = rbc.bc
+            if (
+                sideset in bc.sideset_names
+                and bc.field_name == field
+                and component in bc.dofs
+            ):
+                dofs = list(bc.dofs)
+                n_set = rbc.eq_indices.shape[0] // len(dofs)
+                cols.append(
+                    rbc.eq_indices.reshape(n_set, len(dofs))[
+                        :, dofs.index(component)
+                    ]
+                )
+        if not cols:
+            raise ValueError(
+                f"no Dirichlet BC prescribes component {component} of field "
+                f"{field!r} on sideset {sideset!r}"
+            )
+        return np.unique(np.concatenate(cols))
+
     def evaluate_prescribed_values(
         self, dbc_arrays: DBCArrays, t: Scalar = 0.0,
     ) -> JaxArray:

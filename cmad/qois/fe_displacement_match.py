@@ -8,7 +8,7 @@ import jax.numpy as jnp
 
 from cmad.fem.assembly import _gather_element_U
 from cmad.fem.precompute import compute_ip_quadrature_weights
-from cmad.io.qoi_data import load_calibration_data
+from cmad.io.qoi_data import load_displacement_data
 from cmad.io.registry import register_qoi
 from cmad.qois.fe_qoi import FEQoI, StepContribution
 from cmad.typing import JaxArray, Params
@@ -88,7 +88,7 @@ class FEDisplacementMatch(FEQoI):
             t_schedule: Sequence[float],
     ) -> FEDisplacementMatch:
         data = jnp.asarray(
-            load_calibration_data(qoi_section), dtype=jnp.float64,
+            load_displacement_data(qoi_section), dtype=jnp.float64,
         )
         weight = float(qoi_section.get("weight", 1.0))
         return cls(fe_problem, t_schedule, data, weight)
