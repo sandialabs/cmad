@@ -412,6 +412,9 @@ def _fe_newton_solve_ad_jvp(
 
     presc_idx = fe_arrays.prescribed_indices
 
+    # Trailing-underscore params (params_ <-> params_by_block, Up_ <->
+    # U_prev, xp_ <-> xi_prev_by_block, t_ <-> t) are this helper's explicit
+    # jvp-differentiated inputs; U_star is captured, held fixed by the IFT.
     def r_of_p(params_, Up_, xp_, t_):
         pv = jnp.asarray(
             fe_problem.dof_map.evaluate_prescribed_values(
