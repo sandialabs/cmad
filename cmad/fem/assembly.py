@@ -24,6 +24,7 @@ from cmad.typing import (
     Params,
     RAndDRDUAndXiEvaluator,
     RAndDRDUEvaluator,
+    REvaluator,
     Scalar,
     StateList,
 )
@@ -335,6 +336,81 @@ def per_element_R_and_K(
     return R_blocks, dR_dU_blocks
 
 
+def per_element_R(
+        U_elem: Sequence[JaxArray],
+        U_prev_elem: Sequence[JaxArray],
+        params: Params,
+        geom_per_elem: BlockIPGeometryPerElem,
+        geom_shared: BlockIPGeometryShared,
+        R_evaluator: REvaluator,
+        forcing_fns_by_block_idx: dict[int, Callable[
+            [JaxArray | NDArray[np.floating], Scalar],
+            JaxArray | NDArray[np.floating],
+        ]],
+        residual_block_shapes: Sequence[tuple[int, int]],
+        t: Scalar,
+) -> list[JaxArray]:
+    """Per-element ``R_blocks`` for a CLOSED_FORM block (residual only).
+
+    Residual-only counterpart of :func:`per_element_R_and_K`, used by
+    :func:`assemble_global_residual`: it calls the ``"R"`` evaluator and
+    accumulates only the residual blocks (no tangent), so a reaction-reading
+    QoI evaluates ``R`` without building ``K``. CLOSED_FORM blocks carry no
+    local state variables -- stress comes from
+    ``model.cauchy_closed_form``, with no per-IP local Newton -- so there is
+    no ``xi`` here; the COUPLED counterpart that threads ``xi_prev`` is
+    :func:`per_element_R_coupled`, and :func:`assemble_element_block_residual`
+    dispatches between the two on the block's mode. Each IP contributes the
+    net residual ``R_int - f_ext`` (body force subtracted in place); the
+    per-IP :func:`jax.lax.scan`, :func:`jax.checkpoint`-wrapped for
+    reverse-mode rematerialization, sums them. See :func:`per_element_R_and_K`
+    for the geometry-cache and vmap contract.
+    """
+    num_blocks = len(residual_block_shapes)
+
+    def per_ip(quad_w_ip, iso_jac_det_ip, coords_ip,
+               field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block):
+        field_shapes_phys_per_block = [
+            ShapeFunctionsAtIP(
+                N=field_N_at_ip_per_block[r],
+                grad_N=field_grad_N_phys_at_ip_per_block[r],
+            )
+            for r in range(num_blocks)
+        ]
+        R_ip = list(R_evaluator(
+            params, U_elem, U_prev_elem,
+            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip, 0,
+        ))
+        for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
+            f_ext = jnp.einsum(
+                "a,k->ak",
+                field_shapes_phys_per_block[block_idx].N,
+                jnp.asarray(forcing_fn(coords_ip, t)),
+            ) * quad_w_ip * iso_jac_det_ip
+            R_ip[block_idx] = R_ip[block_idx] - f_ext
+        return R_ip
+
+    def ip_step(R_acc, ip_slice):
+        R_ip = per_ip(*ip_slice)
+        return [R_acc[r] + R_ip[r] for r in range(num_blocks)], None
+
+    R_blocks, _ = lax.scan(
+        checkpoint(ip_step),
+        [jnp.zeros(shape) for shape in residual_block_shapes],
+        (
+            geom_shared.quad_w,
+            geom_per_elem.iso_jac_det,
+            geom_per_elem.coords_ip,
+            [geom_shared.field_N_per_block[r] for r in range(num_blocks)],
+            [
+                geom_per_elem.field_grad_N_phys_per_block[r]
+                for r in range(num_blocks)
+            ],
+        ),
+    )
+    return R_blocks
+
+
 def per_element_R_and_K_coupled(
         U_elem: Sequence[JaxArray],
         U_prev_elem: Sequence[JaxArray],
@@ -456,6 +532,83 @@ def per_element_R_and_K_coupled(
     return R_blocks, dR_dU_blocks, xi_solved_per_ip
 
 
+def per_element_R_coupled(
+        U_elem: Sequence[JaxArray],
+        U_prev_elem: Sequence[JaxArray],
+        params: Params,
+        xi_prev_per_ip: JaxArray,
+        geom_per_elem: BlockIPGeometryPerElem,
+        geom_shared: BlockIPGeometryShared,
+        R_coupled_evaluator: Callable[..., Sequence[JaxArray]],
+        unravel_xi: Callable[[JaxArray], StateList],
+        forcing_fns_by_block_idx: dict[int, Callable[
+            [JaxArray | NDArray[np.floating], Scalar],
+            JaxArray | NDArray[np.floating],
+        ]],
+        residual_block_shapes: Sequence[tuple[int, int]],
+        t: Scalar,
+) -> list[JaxArray]:
+    """Per-element ``R_blocks`` for a COUPLED block (residual only).
+
+    Residual-only counterpart of :func:`per_element_R_and_K_coupled`, used by
+    :func:`assemble_global_residual`. ``R_coupled_evaluator`` is the COUPLED
+    ``"R"`` evaluator (``coupled_r_total``), which runs the per-IP local
+    Newton from ``xi_prev`` and returns ``R`` only -- no tangent, and no
+    converged-xi side-product, since a reaction read needs neither. Its 8-arg
+    call shape ``(params, U, U_prev, xi_prev, shapes_ip, w, dv, ip_set)``
+    differs from the CLOSED_FORM :class:`cmad.typing.REvaluator`, hence the
+    loose callable type. ``xi_prev_per_ip`` is flat-trailing ``(n_ips,
+    total_xi_dofs)``, unraveled per IP as in
+    :func:`per_element_R_and_K_coupled`. Each IP contributes the net residual
+    ``R_int - f_ext``; the checkpointed per-IP scan sums them.
+    """
+    num_blocks = len(residual_block_shapes)
+
+    def per_ip(quad_w_ip, iso_jac_det_ip, coords_ip, xi_prev_at_ip,
+               field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block):
+        field_shapes_phys_per_block = [
+            ShapeFunctionsAtIP(
+                N=field_N_at_ip_per_block[r],
+                grad_N=field_grad_N_phys_at_ip_per_block[r],
+            )
+            for r in range(num_blocks)
+        ]
+        xi_prev_blocks = unravel_xi(xi_prev_at_ip)
+        R_ip = list(R_coupled_evaluator(
+            params, U_elem, U_prev_elem, xi_prev_blocks,
+            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip, 0,
+        ))
+        for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
+            f_ext = jnp.einsum(
+                "a,k->ak",
+                field_shapes_phys_per_block[block_idx].N,
+                jnp.asarray(forcing_fn(coords_ip, t)),
+            ) * quad_w_ip * iso_jac_det_ip
+            R_ip[block_idx] = R_ip[block_idx] - f_ext
+        return R_ip
+
+    def ip_step(R_acc, ip_slice):
+        R_ip = per_ip(*ip_slice)
+        return [R_acc[r] + R_ip[r] for r in range(num_blocks)], None
+
+    R_blocks, _ = lax.scan(
+        checkpoint(ip_step),
+        [jnp.zeros(shape) for shape in residual_block_shapes],
+        (
+            geom_shared.quad_w,
+            geom_per_elem.iso_jac_det,
+            geom_per_elem.coords_ip,
+            xi_prev_per_ip,
+            [geom_shared.field_N_per_block[r] for r in range(num_blocks)],
+            [
+                geom_per_elem.field_grad_N_phys_per_block[r]
+                for r in range(num_blocks)
+            ],
+        ),
+    )
+    return R_blocks
+
+
 def assemble_element_block(
         fe_problem: FEProblem,
         fe_arrays: "FEKernelArrays",
@@ -575,6 +728,87 @@ def assemble_element_block(
     return R_block, jnp.concatenate(vals_all), xi_solved_per_block
 
 
+def assemble_element_block_residual(
+        fe_problem: FEProblem,
+        fe_arrays: "FEKernelArrays",
+        params_by_block: Mapping[str, Params],
+        block_name: str,
+        U_global: NDArray[np.floating] | JaxArray,
+        U_prev_global: NDArray[np.floating] | JaxArray,
+        t: Scalar,
+        xi_prev_per_block: NDArray[np.floating] | JaxArray | None = None,
+) -> JaxArray:
+    """Assemble one element block's global ``R`` contribution (no tangent).
+
+    Residual-only counterpart of :func:`assemble_element_block`: dispatches
+    on ``fe_problem.modes_by_block[block_name]``, vmaps
+    :func:`per_element_R` (CLOSED_FORM) or :func:`per_element_R_coupled`
+    (COUPLED) over the block's elements, and scatters the per-element
+    residual blocks to their global dof positions exactly as
+    :func:`assemble_element_block` does -- but emits no COO tangent data.
+    ``xi_prev_per_block`` (shape ``(n_elems_block, n_ips, total_xi_dofs)``)
+    is required for COUPLED blocks and ignored for CLOSED_FORM.
+    """
+    U_elem_block = _gather_element_U(U_global, fe_arrays, block_name)
+    U_prev_elem_block = _gather_element_U(
+        U_prev_global, fe_arrays, block_name,
+    )
+
+    params = params_by_block[block_name]
+    evaluators = fe_problem.evaluators_by_block[block_name]
+    mode = fe_problem.modes_by_block[block_name]
+    block_shapes = fe_problem.block_shapes
+    num_blocks = len(block_shapes)
+    forcing_fns_by_block_idx = fe_problem.forcing_fns_by_block_idx or {}
+    geom_cache = fe_arrays.geometry_cache[block_name]
+
+    if mode == GlobalResidualMode.COUPLED:
+        if xi_prev_per_block is None:
+            raise ValueError(
+                f"COUPLED block '{block_name}' requires "
+                f"xi_prev_per_block; got None"
+            )
+        unravel_xi = fe_problem.unravel_xi_by_block[block_name]
+        xi_prev_jax = jnp.asarray(xi_prev_per_block)
+        R_per_elem_blocks = vmap(
+            lambda U, Up, geom, xi_prev: per_element_R_coupled(
+                U, Up, params, xi_prev,
+                geom, geom_cache.shared,
+                evaluators["R"],
+                unravel_xi,
+                forcing_fns_by_block_idx, block_shapes, t,
+            ),
+            in_axes=(0, 0, 0, 0),
+            axis_name="elem",
+        )(
+            U_elem_block, U_prev_elem_block,
+            geom_cache.per_elem, xi_prev_jax,
+        )
+    else:
+        R_per_elem_blocks = vmap(
+            lambda U, Up, geom: per_element_R(
+                U, Up, params,
+                geom, geom_cache.shared,
+                evaluators["R"],
+                forcing_fns_by_block_idx, block_shapes, t,
+            ),
+            in_axes=(0, 0, 0),
+            axis_name="elem",
+        )(U_elem_block, U_prev_elem_block, geom_cache.per_elem)
+
+    eq_indices_per_block = fe_arrays.r_scatter_eq_by_block[block_name]
+    n_elems = eq_indices_per_block[0].shape[0]
+    n_dofs = fe_problem.dof_map.num_total_dofs
+
+    R_block = jnp.zeros(n_dofs)
+    for r in range(num_blocks):
+        R_flat = R_per_elem_blocks[r].reshape(n_elems, -1)
+        R_block = R_block.at[eq_indices_per_block[r].ravel()].add(
+            R_flat.ravel(),
+        )
+    return R_block
+
+
 def assemble_global(
         fe_problem: FEProblem,
         fe_arrays: "FEKernelArrays",
@@ -677,6 +911,57 @@ def assemble_global(
         unique_indices=True,
     )
     return K, R_global, xi_solved_by_block
+
+
+def assemble_global_residual(
+        fe_problem: FEProblem,
+        fe_arrays: "FEKernelArrays",
+        params_by_block: Mapping[str, Params],
+        U_global: NDArray[np.floating] | JaxArray,
+        U_prev_global: NDArray[np.floating] | JaxArray,
+        t: Scalar,
+        xi_prev_by_block: Mapping[str, NDArray[np.floating] | JaxArray]
+        | None = None,
+) -> JaxArray:
+    """Global residual ``R(U) = R_int - F_ext`` without the tangent ``K``.
+
+    Residual-only counterpart of :func:`assemble_global`: the same ``R`` as
+    its second return (body force and surface flux folded in), just without
+    building the tangent it would discard. For consumers that need only
+    ``R``: a reaction-reading QoI
+    (:class:`cmad.qois.fe_load_match.FELoadMatch`), or line-search
+    trial-point evaluation -- matching ``assemble_global``'s ``R`` value for
+    value is what keeps a trial residual consistent with the Newton solve it
+    backtracks.
+
+    Such a QoI reads this ``R`` at the Dirichlet dofs, where it is the
+    consistent-nodal reaction -- the internal force minus the volumetric
+    body force lumped to those nodes. The surface flux never enters a
+    reaction: a dof is either Dirichlet-constrained or Neumann-loaded, never
+    both, so :func:`cmad.fem.neumann.assemble_side_neumann` writes only the
+    Neumann dofs and leaves the Dirichlet dofs untouched. It is added here
+    solely so the returned vector matches ``assemble_global``'s ``R`` value
+    for value. Walks each block via :func:`assemble_element_block_residual`
+    (CLOSED_FORM / COUPLED dispatch).
+    """
+    xi_prev = xi_prev_by_block or {}
+    n_dofs = fe_problem.dof_map.num_total_dofs
+    R_global = jnp.zeros(n_dofs)
+
+    for block_name in fe_problem.evaluators_by_block:
+        R_global = R_global + assemble_element_block_residual(
+            fe_problem, fe_arrays, params_by_block, block_name,
+            U_global, U_prev_global, t,
+            xi_prev_per_block=xi_prev.get(block_name),
+        )
+
+    R_global = R_global + assemble_side_neumann(
+        fe_problem.dof_map,
+        fe_arrays.neumann_side_arrays,
+        fe_problem.resolved_neumann_bcs,
+        t,
+    )
+    return R_global
 
 
 def assembled_coo_indices(
