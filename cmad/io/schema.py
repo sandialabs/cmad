@@ -92,6 +92,12 @@ _SECTIONS: dict[tuple[str, str], tuple[list[str], list[str]]] = {
         ["dirichlet bcs", "surface flux bcs", "body forces",
          "linear solver"],
     ),
+    ("fe", "calibrate"): (
+        ["problem", "discretization", "residuals", "qoi",
+         "optimizer", "output"],
+        ["dirichlet bcs", "surface flux bcs", "body forces",
+         "linear solver"],
+    ),
 }
 
 

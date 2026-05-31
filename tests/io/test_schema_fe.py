@@ -88,10 +88,10 @@ class TestFEDeckSchema(unittest.TestCase):
     def test_unknown_problem_subcommand_pair_raises(self) -> None:
         deck = _minimal_fe_deck()
         with self.assertRaises(ValueError) as ctx:
-            validate_deck(apply_deck_defaults(deck), "calibrate")
+            validate_deck(apply_deck_defaults(deck), "bogus_subcommand")
         msg = str(ctx.exception)
         self.assertIn("fe", msg)
-        self.assertIn("calibrate", msg)
+        self.assertIn("bogus_subcommand", msg)
 
     def test_optional_sections_are_optional(self) -> None:
         deck = _minimal_fe_deck()

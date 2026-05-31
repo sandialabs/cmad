@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import copy
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -437,6 +437,50 @@ def write_opt_params(
             {"parameters": updated},
             f, default_flow_style=False, sort_keys=False,
         )
+
+
+def write_fe_opt_params(
+        out_dir: Path,
+        prefix: str,
+        materials_resolved: dict[str, Any],
+        values_by_block: Mapping[str, Any],
+) -> None:
+    """Write optimized per-block materials as a re-loadable deck subtree.
+
+    The FE analogue of :func:`write_opt_params`: each block's deck
+    ``materials[<block>]`` subtree has its leaf values rewritten from
+    ``values_by_block[<block>]`` (the block's native ``Parameters.values``),
+    preserving envelope metadata and inactive leaves. Written under a single
+    ``materials:`` key so it drops back into a deck's ``residuals.local
+    residual`` section.
+    """
+    updated = {
+        block: _inject_values(
+            copy.deepcopy(materials_resolved[block]), values,
+        )
+        for block, values in values_by_block.items()
+    }
+    with (out_dir / f"{prefix}opt_params.yaml").open("w") as f:
+        yaml.safe_dump(
+            {"materials": updated},
+            f, default_flow_style=False, sort_keys=False,
+        )
+
+
+def write_fe_active_params(
+        out_dir: Path,
+        prefix: str,
+        active: Mapping[str, float],
+) -> None:
+    """Write the calibrated (active) parameters as a flat name->value table.
+
+    ``active`` maps each block-qualified dotted path
+    (``"<block>.<dotted.path>"``) to its native optimized value -- just the
+    calibrated parameters, a compact summary (not a re-loadable subtree like
+    :func:`write_fe_opt_params`). Written as ``<prefix>active_params.json``.
+    """
+    with (out_dir / f"{prefix}active_params.json").open("w") as f:
+        json.dump(dict(active), f, indent=2)
 
 
 def write_opt_status(
