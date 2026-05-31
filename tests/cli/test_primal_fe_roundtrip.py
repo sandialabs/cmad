@@ -85,7 +85,6 @@ def _make_fe_primal_deck_coupled(
             "local residual": {
                 "type": "small_elastic_plastic",
                 "def_type": "full_3d",
-                "effective_stress": "J2",
                 "materials": {
                     "all": {
                         "rotation matrix": [
@@ -93,7 +92,7 @@ def _make_fe_primal_deck_coupled(
                         ],
                         "elastic": {"E": 200_000.0, "nu": 0.3},
                         "plastic": {
-                            "effective stress": {"J2": 0.0},
+                            "effective stress": {"J2": {}},
                             "flow stress": {
                                 "initial yield": {"Y": 200.0},
                                 "hardening": {

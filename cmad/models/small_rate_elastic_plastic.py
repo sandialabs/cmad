@@ -223,9 +223,6 @@ class SmallRateElasticPlastic(Model):
         return cls(
             parameters=parameters,
             def_type=DefType[model_section["def_type"].upper()],
-            effective_stress_fun=conventional_effective_stress_fun(
-                model_section["effective_stress"],
-            ),
             uniaxial_stress_idx=model_section.get("uniaxial_stress_idx", 0),
         )
 
