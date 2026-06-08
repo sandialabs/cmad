@@ -41,7 +41,7 @@ from numpy.typing import NDArray
 
 from cmad.fem.dof import GlobalFieldLayout
 from cmad.fem.element_family import ElementFamily
-from cmad.fem.mesh import Mesh
+from cmad.fem.mesh import Mesh, element_rms_edge_sizes
 from cmad.fem.quadrature import QuadratureRule
 from cmad.typing import JaxArray
 
@@ -62,18 +62,25 @@ class BlockIPGeometryPerElem:
     - ``coords_ip``: ``(n_b, n_ip, ndims)``
     - ``field_grad_N_phys_per_block[r]``:
       ``(n_b, n_ip, n_dofs_b_r, ndims)``
+    - ``element_size``: ``(n_b,)`` -- the characteristic element size
+      (RMS edge length), an IP-invariant geometric scalar the stabilized
+      mixed formulation reads for its pressure term.
     """
     iso_jac_det: JaxArray
     coords_ip: JaxArray
     field_grad_N_phys_per_block: tuple[JaxArray, ...]
+    element_size: JaxArray
 
     def tree_flatten(
             self,
-    ) -> tuple[tuple[JaxArray, JaxArray, tuple[JaxArray, ...]], None]:
+    ) -> tuple[
+        tuple[JaxArray, JaxArray, tuple[JaxArray, ...], JaxArray], None,
+    ]:
         children = (
             self.iso_jac_det,
             self.coords_ip,
             self.field_grad_N_phys_per_block,
+            self.element_size,
         )
         return children, None
 
@@ -81,13 +88,17 @@ class BlockIPGeometryPerElem:
     def tree_unflatten(
             cls,
             aux_data: None,
-            children: tuple[JaxArray, JaxArray, tuple[JaxArray, ...]],
+            children: tuple[
+                JaxArray, JaxArray, tuple[JaxArray, ...], JaxArray,
+            ],
     ) -> "BlockIPGeometryPerElem":
-        iso_jac_det, coords_ip, field_grad_N_phys_per_block = children
+        (iso_jac_det, coords_ip, field_grad_N_phys_per_block,
+         element_size) = children
         return cls(
             iso_jac_det=iso_jac_det,
             coords_ip=coords_ip,
             field_grad_N_phys_per_block=tuple(field_grad_N_phys_per_block),
+            element_size=element_size,
         )
 
 
@@ -215,11 +226,14 @@ def precompute_block_geometry(
         field_N_per_block=tuple(field_N_per_block),
     )
 
+    element_sizes = element_rms_edge_sizes(mesh)
+
     cache: dict[str, BlockIPGeometryCache] = {}
     for block_name, elem_indices in mesh.element_blocks.items():
         connectivity_block = mesh.connectivity[elem_indices]
         X_block = jnp.asarray(mesh.nodes[connectivity_block])
         # X_block: (n_b, n_geom_dofs, ndims)
+        element_size = jnp.asarray(element_sizes[elem_indices])
 
         # iso_jac[e, p, i, j] = sum_a X_block[e, a, i] * grad_N_geom[p, a, j]
         iso_jac = jnp.einsum(
@@ -248,6 +262,7 @@ def precompute_block_geometry(
             iso_jac_det=iso_jac_det,
             coords_ip=coords_ip,
             field_grad_N_phys_per_block=field_grad_N_phys_per_block,
+            element_size=element_size,
         )
         cache[block_name] = BlockIPGeometryCache(
             per_elem=per_elem, shared=shared,

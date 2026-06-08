@@ -31,7 +31,7 @@ class GlobalResidual(ABC):
     for the required underlying-callable signature:
 
       (xi, xi_prev, params, U, U_prev, model, mode, shapes_ip, w,
-       dv, ip_set) -> Sequence[Array]
+       dv, h, ip_set) -> Sequence[Array]
 
     where xi/xi_prev are Model's per-integration-point local state
     (threaded through GR's call to model.cauchy; GR has no xi of its
@@ -42,7 +42,9 @@ class GlobalResidual(ABC):
     closure was built for (the body branches on it to dispatch the
     per-physics flux call), shapes_ip is a per-block list of
     :class:`ShapeFunctionsAtIP`, w/dv are the quadrature weight and
-    reference-volume factor, and ip_set is the integration-point-set
+    reference-volume factor, h is the characteristic element size
+    (RMS edge length) the stabilized mixed formulation reads, and
+    ip_set is the integration-point-set
     index dispatched by the assembly layer (single-ip_set GRs ignore
     it; multi-ip_set GRs use it to dispatch term-specific
     contributions). The xi/xi_prev args are part of the underlying-
@@ -60,7 +62,7 @@ class GlobalResidual(ABC):
     XLA CSE between R and its tangent — the Newton-step call). The
     CLOSED_FORM public closures are U-only — xi/xi_prev are bound to
     zeros internally because ``model.cauchy_closed_form`` is consulted
-    instead. COUPLED mode exposes 2 keys, both 8-arg Newton-running
+    instead. COUPLED mode exposes 2 keys, both 9-arg Newton-running
     (xi internally solved from ``xi_prev``): ``"R"`` (R-only, for
     global-FE linesearch trial points) and ``"R_and_dR_dU_and_xi"``
     (fused R + IFT-corrected tangent + converged xi for the FE-
@@ -225,8 +227,8 @@ class GlobalResidual(ABC):
         U_ip_prev)`` for COUPLED). Returns a mode-specific dict of
         jit'd public evaluators keyed by string names:
 
-        - CLOSED_FORM (2 keys, both 7-arg sig
-          ``(params, U, U_prev, shapes_ip, w, dv, ip_set)`` —
+        - CLOSED_FORM (2 keys, both 8-arg sig
+          ``(params, U, U_prev, shapes_ip, w, dv, h, ip_set)`` —
           U-only because ``cauchy_closed_form`` never consults xi):
           ``"R"`` (residual only, for linesearch trial points and
           other cheap residual probes) and ``"R_and_dR_dU"`` (fused
@@ -240,8 +242,8 @@ class GlobalResidual(ABC):
           ``(num_basis_fns_r, num_eqs_r, num_basis_fns_s,
           num_eqs_s)``.
 
-        - COUPLED (2 keys, both 8-arg sig
-          ``(params, U, U_prev, xi_prev, shapes_ip, w, dv,
+        - COUPLED (2 keys, both 9-arg sig
+          ``(params, U, U_prev, xi_prev, shapes_ip, w, dv, h,
           ip_set)``; xi internally solved from ``xi_prev`` via
           ``make_newton_solve`` wrapping ``model._residual``):
           ``"R"`` returning ``R_blocks`` (R-only — the per-IP
@@ -310,24 +312,24 @@ class GlobalResidual(ABC):
         xi_zeros = [jnp.zeros_like(b) for b in model._init_xi]
 
         # Public-closure argnums: params=0, U=1, U_prev=2,
-        # shapes_ip=3, w=4, dv=5, ip_set=6.
-        def r_at_ip(params, U, U_prev, shapes_ip, w, dv, ip_set):
+        # shapes_ip=3, w=4, dv=5, h=6, ip_set=7.
+        def r_at_ip(params, U, U_prev, shapes_ip, w, dv, h, ip_set):
             return residual_fn(
                 xi_zeros, xi_zeros, params, U, U_prev,
                 model, GlobalResidualMode.CLOSED_FORM,
-                shapes_ip, w, dv, ip_set,
+                shapes_ip, w, dv, h, ip_set,
             )
 
         dR_dU_at_ip = jacfwd(r_at_ip, argnums=1)
 
         def r_and_dR_dU_at_ip(
-                params, U, U_prev, shapes_ip, w, dv, ip_set,
+                params, U, U_prev, shapes_ip, w, dv, h, ip_set,
         ):
             R = r_at_ip(
-                params, U, U_prev, shapes_ip, w, dv, ip_set,
+                params, U, U_prev, shapes_ip, w, dv, h, ip_set,
             )
             dR_dU = dR_dU_at_ip(
-                params, U, U_prev, shapes_ip, w, dv, ip_set,
+                params, U, U_prev, shapes_ip, w, dv, h, ip_set,
             )
             return R, dR_dU
 
@@ -355,9 +357,9 @@ class GlobalResidual(ABC):
 
         # Public-closure argnums:
         #   params=0, U=1, U_prev=2, xi_prev=3,
-        #   shapes_ip=4, w=5, dv=6, ip_set=7.
+        #   shapes_ip=4, w=5, dv=6, h=7, ip_set=8.
         def coupled_r_total(params, U, U_prev, xi_prev,
-                            shapes_ip, w, dv, ip_set):
+                            shapes_ip, w, dv, h, ip_set):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(
                 U_prev, shapes_ip)
@@ -365,13 +367,13 @@ class GlobalResidual(ABC):
             return residual_fn(
                 xi, xi_prev, params, U, U_prev,
                 model, GlobalResidualMode.COUPLED,
-                shapes_ip, w, dv, ip_set,
+                shapes_ip, w, dv, h, ip_set,
             )
 
         dR_dU_total = jacfwd(coupled_r_total, argnums=1)
 
         def r_and_dR_dU_and_xi_at_ip(params, U, U_prev, xi_prev,
-                                     shapes_ip, w, dv, ip_set, ip_idx=0):
+                                     shapes_ip, w, dv, h, ip_set, ip_idx=0):
             if print_local_convergence:
                 debug.print(
                     "[LOCAL elem={e} ip={i}]",
@@ -384,11 +386,11 @@ class GlobalResidual(ABC):
             R = residual_fn(
                 xi, xi_prev, params, U, U_prev,
                 model, GlobalResidualMode.COUPLED,
-                shapes_ip, w, dv, ip_set,
+                shapes_ip, w, dv, h, ip_set,
             )
             dR_dU = dR_dU_total(
                 params, U, U_prev, xi_prev,
-                shapes_ip, w, dv, ip_set,
+                shapes_ip, w, dv, h, ip_set,
             )
             return R, dR_dU, xi
 

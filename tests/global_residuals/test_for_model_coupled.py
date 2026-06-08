@@ -77,8 +77,9 @@ def _j2_plastic_inputs(model: SmallElasticPlastic):
     shapes_ip = [_tet_barycenter_shapes()]
     w = 1.0
     dv = 1.0 / 6.0
+    h = 1.0
     ip_set = 0
-    return params, U, U_prev, shapes_ip, w, dv, ip_set
+    return params, U, U_prev, shapes_ip, w, dv, h, ip_set
 
 
 class _ToyEquilibrium(GlobalResidual):
@@ -101,7 +102,7 @@ class _ToyEquilibrium(GlobalResidual):
         self.var_names[0] = "u"
 
         def residual_fn(xi, xi_prev, params, U, U_prev,
-                        model, mode, shapes_ip, w, dv, ip_set):
+                        model, mode, shapes_ip, w, dv, h, ip_set):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(U_prev, shapes_ip)
             if mode == GlobalResidualMode.CLOSED_FORM:
@@ -123,8 +124,9 @@ def _test_inputs(model: Elastic):
     shapes_ip = [_tet_barycenter_shapes()]
     w = 1.0
     dv = 1.0 / 6.0
+    h = 1.0
     ip_set = 0
-    return params, U, U_prev, shapes_ip, w, dv, ip_set
+    return params, U, U_prev, shapes_ip, w, dv, h, ip_set
 
 
 class TestForModelCoupledShape(unittest.TestCase):
@@ -138,21 +140,21 @@ class TestForModelCoupledShape(unittest.TestCase):
             {"R", "R_and_dR_dU_and_xi"},
         )
 
-    def test_evaluators_callable_with_8arg_sig(self):
+    def test_evaluators_callable_with_9arg_sig(self):
         gr = _ToyEquilibrium()
         model = _make_linear_elastic_model()
         evaluators = gr.for_model(
             model, mode=GlobalResidualMode.COUPLED)
-        params, U, U_prev, shapes_ip, w, dv, ip_set = (
+        params, U, U_prev, shapes_ip, w, dv, h, ip_set = (
             _test_inputs(model))
         xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
 
-        # Both COUPLED evaluators take 8 args:
-        # (params, U, U_prev, xi_prev, shapes_ip, w, dv, ip_set).
+        # Both COUPLED evaluators take 9 args:
+        # (params, U, U_prev, xi_prev, shapes_ip, w, dv, h, ip_set).
         for key in ("R", "R_and_dR_dU_and_xi"):
             evaluators[key](
                 params, U, U_prev, xi_prev,
-                shapes_ip, w, dv, ip_set,
+                shapes_ip, w, dv, h, ip_set,
             )
 
     def test_R_and_dR_dU_and_xi_returns_triple(self):
@@ -160,13 +162,13 @@ class TestForModelCoupledShape(unittest.TestCase):
         model = _make_linear_elastic_model()
         evaluators = gr.for_model(
             model, mode=GlobalResidualMode.COUPLED)
-        params, U, U_prev, shapes_ip, w, dv, ip_set = (
+        params, U, U_prev, shapes_ip, w, dv, h, ip_set = (
             _test_inputs(model))
         xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
 
         R_blocks, dR_dU_blocks, xi = evaluators["R_and_dR_dU_and_xi"](
             params, U, U_prev, xi_prev,
-            shapes_ip, w, dv, ip_set,
+            shapes_ip, w, dv, h, ip_set,
         )
         self.assertEqual(len(R_blocks), 1)
         self.assertEqual(R_blocks[0].shape, (4, 3))
@@ -198,17 +200,17 @@ class TestForModelCoupledClosedFormEquivalence(unittest.TestCase):
         ev_coupled = gr_coupled.for_model(
             model, mode=GlobalResidualMode.COUPLED)
 
-        params, U, U_prev, shapes_ip, w, dv, ip_set = (
+        params, U, U_prev, shapes_ip, w, dv, h, ip_set = (
             _test_inputs(model))
         xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
 
         R_closed, dR_dU_closed = ev_closed["R_and_dR_dU"](
-            params, U, U_prev, shapes_ip, w, dv, ip_set,
+            params, U, U_prev, shapes_ip, w, dv, h, ip_set,
         )
         R_coupled, dR_dU_coupled, _xi = ev_coupled[
             "R_and_dR_dU_and_xi"](
             params, U, U_prev, xi_prev,
-            shapes_ip, w, dv, ip_set,
+            shapes_ip, w, dv, h, ip_set,
         )
 
         self.assertTrue(jnp.allclose(
@@ -231,12 +233,12 @@ class TestForModelCoupledJ2LocalNewton(unittest.TestCase):
         model = _make_J2_model()
         evaluators = gr.for_model(
             model, mode=GlobalResidualMode.COUPLED)
-        params, U, U_prev, shapes_ip, w, dv, ip_set = (
+        params, U, U_prev, shapes_ip, w, dv, h, ip_set = (
             _j2_plastic_inputs(model))
         xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
 
         _, _, xi_solved = evaluators["R_and_dR_dU_and_xi"](
-            params, U, U_prev, xi_prev, shapes_ip, w, dv, ip_set)
+            params, U, U_prev, xi_prev, shapes_ip, w, dv, h, ip_set)
 
         # xi at equilibrium for the loading: model._residual ≈ 0.
         U_ip = gr.interpolate_global_fields_at_ip(U, shapes_ip)
@@ -265,13 +267,13 @@ class TestForModelCoupledJVPvsFD(unittest.TestCase):
         model = _make_J2_model()
         evaluators = gr.for_model(
             model, mode=GlobalResidualMode.COUPLED)
-        params, U, U_prev, shapes_ip, w, dv, ip_set = (
+        params, U, U_prev, shapes_ip, w, dv, h, ip_set = (
             _j2_plastic_inputs(model))
         xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
 
         _, dR_dU_blocks, _ = evaluators["R_and_dR_dU_and_xi"](
             params, U, U_prev, xi_prev,
-            shapes_ip, w, dv, ip_set)
+            shapes_ip, w, dv, h, ip_set)
         ad_arr = np.asarray(dR_dU_blocks[0][0])  # (4, 3, 4, 3)
 
         eps = 1e-6
@@ -282,10 +284,10 @@ class TestForModelCoupledJVPvsFD(unittest.TestCase):
                 U_minus = [U[0].at[b, k].add(-eps)]
                 R_plus = evaluators["R"](
                     params, U_plus, U_prev, xi_prev,
-                    shapes_ip, w, dv, ip_set)
+                    shapes_ip, w, dv, h, ip_set)
                 R_minus = evaluators["R"](
                     params, U_minus, U_prev, xi_prev,
-                    shapes_ip, w, dv, ip_set)
+                    shapes_ip, w, dv, h, ip_set)
                 fd_arr[:, :, b, k] = (
                     R_plus[0] - R_minus[0]) / (2 * eps)
 
@@ -328,15 +330,15 @@ class TestForModelMixedModeBindings(unittest.TestCase):
         self.assertEqual(
             set(ev_coupled.keys()), {"R", "R_and_dR_dU_and_xi"})
 
-        params, U, U_prev, shapes_ip, w, dv, ip_set = (
+        params, U, U_prev, shapes_ip, w, dv, h, ip_set = (
             _test_inputs(model))
         xi_zeros = [jnp.zeros_like(b) for b in model._init_xi]
 
         R_closed = ev_closed["R"](
-            params, U, U_prev, shapes_ip, w, dv, ip_set)
+            params, U, U_prev, shapes_ip, w, dv, h, ip_set)
         R_coupled, _, _ = ev_coupled["R_and_dR_dU_and_xi"](
             params, U, U_prev, xi_zeros,
-            shapes_ip, w, dv, ip_set)
+            shapes_ip, w, dv, h, ip_set)
 
         # Same-mode fresh-GR references: catches cross-
         # contamination of captured params / state across bindings.
@@ -348,11 +350,11 @@ class TestForModelMixedModeBindings(unittest.TestCase):
             model, mode=GlobalResidualMode.COUPLED)
 
         R_closed_ref = ev_closed_ref["R"](
-            params, U, U_prev, shapes_ip, w, dv, ip_set)
+            params, U, U_prev, shapes_ip, w, dv, h, ip_set)
         R_coupled_ref, _, _ = ev_coupled_ref[
             "R_and_dR_dU_and_xi"](
             params, U, U_prev, xi_zeros,
-            shapes_ip, w, dv, ip_set)
+            shapes_ip, w, dv, h, ip_set)
 
         self.assertTrue(np.allclose(
             np.asarray(R_closed[0]),

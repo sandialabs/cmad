@@ -100,7 +100,7 @@ ResidualFnGR: TypeAlias = Callable[
      Sequence[JaxArray], Sequence[JaxArray],
      "Model", "GlobalResidualMode",
      Sequence["ShapeFunctionsAtIP"],
-     Scalar, Scalar,
+     Scalar, Scalar, Scalar,
      int],
     Sequence[JaxArray],
 ]
@@ -114,18 +114,20 @@ body branches on it to dispatch the per-physics flux call.
 ``GlobalResidual.for_model`` captures one mode per closure, so
 independent bindings on the same GR don't share state. ``w``
 and ``dv`` are the quadrature weight and reference-volume
-factor at the IP. The trailing int is the integration-point-set
-index dispatched by the assembly layer; single-ip_set GRs ignore
-it, multi-ip_set GRs (e.g. mixed u-p with two quadrature orders
-for divergence + pressure-mass terms) read it to dispatch term-
-specific residual contributions via lax.switch or per-ip_set
-branches."""
+factor at the IP; ``h`` is the characteristic element size
+(RMS edge length), an IP-invariant scalar the stabilized mixed
+formulation reads for its pressure term and other GRs ignore.
+The trailing int is the integration-point-set index dispatched
+by the assembly layer; single-ip_set GRs ignore it, multi-ip_set
+GRs (e.g. mixed u-p with two quadrature orders for divergence +
+pressure-mass terms) read it to dispatch term-specific residual
+contributions via lax.switch or per-ip_set branches."""
 
 REvaluator: TypeAlias = Callable[
     [Params,
      Sequence[JaxArray], Sequence[JaxArray],
      Sequence["ShapeFunctionsAtIP"],
-     Scalar, Scalar,
+     Scalar, Scalar, Scalar,
      int],
     Sequence[JaxArray],
 ]
@@ -135,18 +137,19 @@ GlobalResidual.for_model in CLOSED_FORM mode. The closure binds the
 are not arguments because CLOSED_FORM evaluates stress through
 ``model.cauchy_closed_form(params, U_ip, U_ip_prev)`` and never
 consults state. Returns the per-residual-block ``R_blocks`` list.
-``w`` and ``dv`` accept Python floats (test-side scalars) or 0-d
-JaxArrays (assembly-side quadrature weights and Jacobian
-determinants). In COUPLED mode the ``R`` evaluator is a raw
-partial at supplied ξ with the different 9-arg call shape
-``(params, U, U_prev, xi, xi_prev, shapes_ip, w, dv, ip_set)``;
-that signature is not captured by this alias."""
+``w``, ``dv``, and ``h`` accept Python floats (test-side scalars)
+or 0-d JaxArrays (assembly-side quadrature weights, Jacobian
+determinants, and element sizes). In COUPLED mode the ``R``
+evaluator (``coupled_r_total``) instead takes ``(params, U,
+U_prev, xi_prev, shapes_ip, w, dv, h, ip_set)`` — xi internally
+solved from xi_prev — and that signature is not captured by this
+alias."""
 
 RAndDRDUEvaluator: TypeAlias = Callable[
     [Params,
      Sequence[JaxArray], Sequence[JaxArray],
      Sequence["ShapeFunctionsAtIP"],
-     Scalar, Scalar,
+     Scalar, Scalar, Scalar,
      int],
     tuple[Sequence[JaxArray], Sequence[Sequence[JaxArray]]],
 ]
@@ -160,96 +163,12 @@ this fused evaluator; use ``RAndDRDUAndXiEvaluator`` instead, which
 also returns the converged xi as a free side-product of the local
 Newton solve."""
 
-DRDUEvaluator: TypeAlias = Callable[
-    [Params,
-     Sequence[JaxArray], Sequence[JaxArray],
-     Sequence["ShapeFunctionsAtIP"],
-     Scalar, Scalar,
-     int],
-    Sequence[Sequence[JaxArray]],
-]
-"""Signature of the standalone ``dR/dU`` evaluator returned by
-GlobalResidual.for_model. ``dR_dU`` is the *total* derivative the
-consumer plugs into K and K^T. In CLOSED_FORM mode the closure
-boundary matches REvaluator (7-arg, U-only); ``dR_dU`` is a direct
-``jacfwd`` over the U-only closure (xi(U) baked into
-``cauchy_closed_form``). In COUPLED mode it's the IFT-corrected
-total via ``custom_jvp`` around the per-IP local Newton, with the
-8-arg call shape ``(params, U, U_prev, xi_prev, shapes_ip, w, dv,
-ip_set)`` (xi internally solved from xi_prev via
-``make_newton_solve``). Same return shape, same consumer-facing
-role; mode determines implementation and input sig."""
-
-DRDUPrevEvaluator: TypeAlias = Callable[
-    [Params,
-     Sequence[JaxArray], Sequence[JaxArray],
-     Sequence["ShapeFunctionsAtIP"],
-     Scalar, Scalar,
-     int],
-    Sequence[Sequence[JaxArray]],
-]
-"""Signature of the standalone ``dR/dU_prev`` evaluator returned by
-GlobalResidual.for_model. In CLOSED_FORM mode the closure boundary
-matches REvaluator (7-arg, U-only); zero-valued for GRs whose
-``residual_fn`` doesn't depend on U_prev (the currently-implemented
-mechanical residuals), and non-trivial for GRs that read previous-
-step global fields (e.g., a thermal residual with a transient term
-reading T_prev). In COUPLED mode it's a raw partial at supplied ξ
-— not an IFT-corrected total — with the 9-arg call shape
-``(params, U, U_prev, xi, xi_prev, shapes_ip, w, dv, ip_set)``."""
-
-DRDPEvaluator: TypeAlias = Callable[
-    [Params,
-     Sequence[JaxArray], Sequence[JaxArray],
-     Sequence["ShapeFunctionsAtIP"],
-     Scalar, Scalar,
-     int],
-    Sequence[PyTree],
-]
-"""Signature of the standalone ``dR/dparams`` evaluator returned by
-GlobalResidual.for_model. In CLOSED_FORM mode the closure boundary
-matches REvaluator (7-arg, U-only); returns a per-residual-block
-pytree parallel to ``params``. In COUPLED mode it's a raw partial
-at supplied ξ — not an IFT-corrected total — with the 9-arg call
-shape ``(params, U, U_prev, xi, xi_prev, shapes_ip, w, dv,
-ip_set)``."""
-
-DRDXIEvaluator: TypeAlias = Callable[
-    [Params,
-     Sequence[JaxArray], Sequence[JaxArray],
-     StateList, StateList,
-     Sequence["ShapeFunctionsAtIP"],
-     Scalar, Scalar,
-     int],
-    Sequence[Sequence[JaxArray]],
-]
-"""Signature of the standalone ``dR/dxi`` evaluator returned by
-GlobalResidual.for_model in COUPLED mode (no CLOSED_FORM
-counterpart — xi is bound to zeros in CLOSED_FORM). Raw partial
-at supplied ξ via ``jacfwd`` over the residual closure with
-respect to xi. 9-arg call shape ``(params, U, U_prev, xi, xi_prev,
-shapes_ip, w, dv, ip_set)``; returns a list-of-lists indexed by
-``(residual_block_r, xi_block_s)``."""
-
-DRDXIPrevEvaluator: TypeAlias = Callable[
-    [Params,
-     Sequence[JaxArray], Sequence[JaxArray],
-     StateList, StateList,
-     Sequence["ShapeFunctionsAtIP"],
-     Scalar, Scalar,
-     int],
-    Sequence[Sequence[JaxArray]],
-]
-"""Signature of the standalone ``dR/dxi_prev`` evaluator returned by
-GlobalResidual.for_model in COUPLED mode. Mirror of DRDXIEvaluator
-for the previous-step xi (no CLOSED_FORM counterpart)."""
-
 RAndDRDUAndXiEvaluator: TypeAlias = Callable[
     [Params,
      Sequence[JaxArray], Sequence[JaxArray],
      StateList,
      Sequence["ShapeFunctionsAtIP"],
-     Scalar, Scalar,
+     Scalar, Scalar, Scalar,
      int, int | JaxArray],
     tuple[
         Sequence[JaxArray],
@@ -264,8 +183,8 @@ runs the per-IP local Newton once and returns
 ``dR_dU_blocks`` match RAndDRDUEvaluator's return shape, plus the
 converged xi exposed as a free side-product so state-history
 storage at FE-Newton convergence is the bundled call's third
-element (no extra solve). 9-arg call shape ``(params, U, U_prev,
-xi_prev, shapes_ip, w, dv, ip_set, ip_idx)``; the trailing
+element (no extra solve). 10-arg call shape ``(params, U, U_prev,
+xi_prev, shapes_ip, w, dv, h, ip_set, ip_idx)``; the trailing
 ``ip_idx`` integration-point index defaults to 0 and is consumed
 only to label the optional per-IP local-convergence print. xi is
 internally solved from
@@ -276,34 +195,24 @@ corrected total via the solver's ``custom_jvp`` rule."""
 class GREvaluators(TypedDict, total=False):
     """Per-(GR, model, mode) evaluator dict from GlobalResidual.for_model.
 
-    Keys present depend on the mode passed to ``for_model``.
+    Keys present depend on the mode passed to ``for_model``; each mode
+    populates two.
 
-    CLOSED_FORM populates 5 keys, all 7-arg sig (U-only):
-    ``R`` (residual only — linesearch trial points and finite-
-    difference probes), ``R_and_dR_dU`` (fused for the Newton step,
-    XLA CSEs interpolation / kinematics / Cauchy-stress between R
-    and its tangent), and the standalone first-derivative evaluators
-    ``dR_dU`` / ``dR_dU_prev`` / ``dR_dp``.
+    CLOSED_FORM (both U-only, the 8-arg sig ``(params, U, U_prev,
+    shapes_ip, w, dv, h, ip_set)``): ``R`` (residual only — linesearch
+    trial points and finite-difference probes) and ``R_and_dR_dU``
+    (fused R + tangent for the Newton step, XLA CSEs interpolation /
+    kinematics / Cauchy-stress between R and its tangent).
 
-    COUPLED populates 7 keys with mixed sigs. Raw partials at
-    supplied ξ (9-arg sig including ``xi`` and ``xi_prev``):
-    ``R``, ``dR_dU_prev``, ``dR_dp``, ``dR_dxi``, ``dR_dxi_prev``.
-    Newton-running totals (8-arg sig — xi internally solved from
-    ``xi_prev``): ``dR_dU`` (IFT-corrected total via ``custom_jvp``
-    around the per-IP local Newton — the global tangent K, transpose
-    K^T for the adjoint) and the bundled ``R_and_dR_dU_and_xi``
-    (FE-Newton hot path; returns ``(R, dR_dU, xi)``). The dict
-    shape differs per mode — there is no cross-mode key symmetry,
-    and ``dR_dxi`` / ``dR_dxi_prev`` / ``R_and_dR_dU_and_xi``
-    don't exist in CLOSED_FORM.
+    COUPLED (xi internally solved from ``xi_prev``): ``R``
+    (``coupled_r_total``, residual only) and ``R_and_dR_dU_and_xi``
+    (the FE-Newton hot path; returns ``(R, dR_dU, xi)`` with ``dR_dU``
+    the IFT-corrected total via ``custom_jvp`` around the per-IP local
+    Newton — the global tangent K, transpose K^T for the adjoint).
+    ``R_and_dR_dU_and_xi`` has no CLOSED_FORM counterpart.
     """
     R: REvaluator
     R_and_dR_dU: RAndDRDUEvaluator
-    dR_dU: DRDUEvaluator
-    dR_dU_prev: DRDUPrevEvaluator
-    dR_dp: DRDPEvaluator
-    dR_dxi: DRDXIEvaluator
-    dR_dxi_prev: DRDXIPrevEvaluator
     R_and_dR_dU_and_xi: RAndDRDUAndXiEvaluator
 
 

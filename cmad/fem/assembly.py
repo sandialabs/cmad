@@ -299,7 +299,8 @@ def per_element_R_and_K(
         ]
         R_ip, dR_dU_ip = R_and_dR_dU_evaluator(
             params, U_elem, U_prev_elem,
-            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip, 0,
+            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip,
+            geom_per_elem.element_size, 0,
         )
         body_force_ip_per_block = {
             block_idx: jnp.einsum(
@@ -379,7 +380,8 @@ def per_element_R(
         ]
         R_ip = list(R_evaluator(
             params, U_elem, U_prev_elem,
-            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip, 0,
+            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip,
+            geom_per_elem.element_size, 0,
         ))
         for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
             f_ext = jnp.einsum(
@@ -486,7 +488,8 @@ def per_element_R_and_K_coupled(
         xi_prev_blocks = unravel_xi(xi_prev_at_ip)
         R_ip, dR_dU_ip, xi_blocks = R_and_dR_dU_and_xi_evaluator(
             params, U_elem, U_prev_elem, xi_prev_blocks,
-            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip, 0,
+            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip,
+            geom_per_elem.element_size, 0,
             ip_idx,
         )
         # Discard the unravel callable; xi treedef is fixed by
@@ -554,8 +557,8 @@ def per_element_R_coupled(
     :func:`assemble_global_residual`. ``R_coupled_evaluator`` is the COUPLED
     ``"R"`` evaluator (``coupled_r_total``), which runs the per-IP local
     Newton from ``xi_prev`` and returns ``R`` only -- no tangent, and no
-    converged-xi side-product, since a reaction read needs neither. Its 8-arg
-    call shape ``(params, U, U_prev, xi_prev, shapes_ip, w, dv, ip_set)``
+    converged-xi side-product, since a reaction read needs neither. Its 9-arg
+    call shape ``(params, U, U_prev, xi_prev, shapes_ip, w, dv, h, ip_set)``
     differs from the CLOSED_FORM :class:`cmad.typing.REvaluator`, hence the
     loose callable type. ``xi_prev_per_ip`` is flat-trailing ``(n_ips,
     total_xi_dofs)``, unraveled per IP as in
@@ -576,7 +579,8 @@ def per_element_R_coupled(
         xi_prev_blocks = unravel_xi(xi_prev_at_ip)
         R_ip = list(R_coupled_evaluator(
             params, U_elem, U_prev_elem, xi_prev_blocks,
-            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip, 0,
+            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip,
+            geom_per_elem.element_size, 0,
         ))
         for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
             f_ext = jnp.einsum(

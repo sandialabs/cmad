@@ -619,3 +619,18 @@ def coordinate_side_sets(
             if faces.shape[0] > 0:
                 side_sets[name] = faces
     return side_sets
+
+
+def element_rms_edge_sizes(mesh: Mesh) -> NDArray[np.floating]:
+    """Characteristic size of each element: the RMS of its edge lengths.
+
+    ``h[e] = sqrt( mean_k l_{e,k}^2 )`` over element ``e``'s edges -- the
+    length scale used by the mixed formulation pressure stabilization. Pure
+    mesh geometry, evaluated once. Returns shape ``(n_elems,)``.
+    """
+    local_edges = _LOCAL_EDGES_PER_ELEMENT[mesh.element_family]
+    edge_nodes = mesh.connectivity[:, local_edges]   # (n_elems, n_edges, 2)
+    edge_coords = mesh.nodes[edge_nodes]             # (n_elems, n_edges, 2, ndims)
+    edge_vectors = edge_coords[:, :, 1, :] - edge_coords[:, :, 0, :]
+    edge_length_sq = np.sum(edge_vectors ** 2, axis=-1)   # (n_elems, n_edges)
+    return np.sqrt(np.mean(edge_length_sq, axis=-1))      # (n_elems,)
