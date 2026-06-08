@@ -224,6 +224,7 @@ def build_fe_J_of_params_flat(
         "abs tol": float(gr_section["nonlinear absolute tol"]),
         "rel tol": float(gr_section["nonlinear relative tol"]),
         "print convergence": print_global_convergence,
+        "line search": gr_section.get("line search", {}),
     }
     linear_solver_settings = bundle.resolved["linear solver"]
     trajectory = build_fe_quasistatic_trajectory(

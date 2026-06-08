@@ -60,6 +60,13 @@ _FE_RESIDUALS_DEFAULTS: dict[str, dict[str, Any]] = {
         "nonlinear absolute tol": 1.0e-12,
         "nonlinear relative tol": 1.0e-12,
         "print convergence": False,
+        "line search": {
+            "max evals": 4,
+            "sufficient decrease": 1.0e-4,
+            "min backtrack factor": 0.5,
+            "max backtrack factor": 0.9,
+            "print": False,
+        },
     },
     "local residual": {
         "nonlinear max iters": 30,

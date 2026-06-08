@@ -38,6 +38,15 @@ $defs:
         else:
           additionalProperties:
             $ref: '#/$defs/node'
+  line_search:
+    type: object
+    additionalProperties: false
+    properties:
+      max evals: {type: integer, minimum: 1}
+      sufficient decrease: {type: number, exclusiveMinimum: 0}
+      min backtrack factor: {type: number, exclusiveMinimum: 0, maximum: 1}
+      max backtrack factor: {type: number, exclusiveMinimum: 0, maximum: 1}
+      print: {type: boolean}
 type: object
 required: [global residual, local residual]
 additionalProperties: false
@@ -61,6 +70,8 @@ properties:
         exclusiveMinimum: 0
       print convergence:
         type: boolean
+      line search:
+        $ref: '#/$defs/line_search'
   local residual:
     type: object
     required: [type, materials]

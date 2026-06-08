@@ -31,8 +31,8 @@ from cmad.io.writers import (
     write_xi,
 )
 from cmad.models.global_fields import mp_U_from_F
-from cmad.qois.qoi import QoI
 from cmad.models.nonlinear_solver import newton_solve
+from cmad.qois.qoi import QoI
 from cmad.typing import SupportsPrimalLoop
 
 
@@ -89,6 +89,7 @@ def _run_primal_fe(deck_path: Path) -> int:
         "print convergence": bool(
             gr_section.get("print convergence", False),
         ),
+        "line search": gr_section.get("line search", {}),
     }
     linear_solver_settings = bundle.resolved["linear solver"]
     qoi = bundle.qoi
