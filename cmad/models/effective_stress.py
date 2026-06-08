@@ -7,7 +7,7 @@ from typing import Any
 import jax.numpy as jnp
 from jax.lax import cond
 
-from cmad.solver.nonlinear_solver import make_newton_solve
+from cmad.models.nonlinear_solver import make_newton_solve
 from cmad.typing import JaxArray, PyTree, Scalar
 from cmad.verification.functions import jax_barlat_yield
 

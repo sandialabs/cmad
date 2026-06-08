@@ -32,7 +32,7 @@ from cmad.io.writers import (
 )
 from cmad.models.global_fields import mp_U_from_F
 from cmad.qois.qoi import QoI
-from cmad.solver.nonlinear_solver import newton_solve
+from cmad.models.nonlinear_solver import newton_solve
 from cmad.typing import SupportsPrimalLoop
 
 

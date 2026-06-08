@@ -15,7 +15,7 @@ from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.model import Model
 from cmad.models.var_types import VarType
-from cmad.solver.nonlinear_solver import make_newton_solve
+from cmad.models.nonlinear_solver import make_newton_solve
 from cmad.typing import GREvaluators, JaxArray, ResidualFnGR
 
 if TYPE_CHECKING:

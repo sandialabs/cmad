@@ -9,7 +9,7 @@ from cmad.models.global_fields import mp_U_from_F
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.objectives.mp_objective import MPAdjointObjective, MPDirectObjective
 from cmad.qois.calibration import Calibration
-from cmad.solver.nonlinear_solver import newton_solve
+from cmad.models.nonlinear_solver import newton_solve
 from tests.support.test_problems import J2AnalyticalProblem
 
 

@@ -17,7 +17,7 @@ from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.objectives.mp_jvp_objective import MPJVPObjective
 from cmad.objectives.mp_objective import MPDirectAdjointObjective
 from cmad.qois.calibration import Calibration
-from cmad.solver.nonlinear_solver import make_newton_solve, newton_solve
+from cmad.models.nonlinear_solver import make_newton_solve, newton_solve
 from tests.support.test_problems import J2AnalyticalProblem
 
 

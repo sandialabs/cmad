@@ -24,7 +24,7 @@ from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.global_fields import mp_U_from_F
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.parameters.parameters import Parameters
-from cmad.solver.nonlinear_solver import newton_solve
+from cmad.models.nonlinear_solver import newton_solve
 
 
 def _truth_parameters() -> Parameters:

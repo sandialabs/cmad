@@ -28,7 +28,7 @@ from cmad.objectives.mp_objective import (
     MPObjective,
 )
 from cmad.qois.qoi import QoI
-from cmad.solver.nonlinear_solver import make_newton_solve
+from cmad.models.nonlinear_solver import make_newton_solve
 from cmad.typing import GradientResult, HessianResult, StateList
 
 

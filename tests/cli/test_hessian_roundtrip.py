@@ -20,7 +20,7 @@ from cmad.cli.main import main as cmad_main
 from cmad.models.deformation_types import DefType
 from cmad.models.global_fields import mp_U_from_F
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
-from cmad.solver.nonlinear_solver import newton_solve
+from cmad.models.nonlinear_solver import newton_solve
 from tests.support.test_problems import J2AnalyticalProblem
 
 

@@ -14,7 +14,7 @@ from cmad.models.elastic_stress import (
     isotropic_linear_elastic_cauchy_stress,
 )
 from cmad.models.global_fields import mp_U_from_F
-from cmad.solver.nonlinear_solver import newton_solve
+from cmad.models.nonlinear_solver import newton_solve
 from tests.support.test_problems import params_hyperelastic
 
 

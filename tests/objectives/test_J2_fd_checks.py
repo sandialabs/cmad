@@ -15,7 +15,7 @@ from cmad.objectives.mp_objective import (
 )
 from cmad.parameters.parameters import Parameters
 from cmad.qois.calibration import Calibration
-from cmad.solver.nonlinear_solver import newton_solve
+from cmad.models.nonlinear_solver import newton_solve
 from tests.support.test_problems import J2AnalyticalProblem
 
 
