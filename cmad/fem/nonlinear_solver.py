@@ -13,6 +13,7 @@ from cmad.fem.assembly import assemble_global
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.kernel_arrays import FEKernelArrays
 from cmad.fem.sparse_solve import (
+    _bcsr_operator,
     _embedded_bc_enforce,
     _embedded_residual,
     jax_cg,
@@ -21,12 +22,14 @@ from cmad.fem.sparse_solve import (
     scipy_lu,
 )
 from cmad.typing import JaxArray, Params, Scalar
+from cmad.util.line_search import DEFAULT_LINE_SEARCH_SETTINGS, line_search
 
 _DEFAULT_NONLINEAR_SOLVER_SETTINGS: dict[str, Any] = {
     "max iters": 20,
     "abs tol": 1.0e-10,
     "rel tol": 1.0e-10,
     "print convergence": False,
+    "line search": DEFAULT_LINE_SEARCH_SETTINGS,
 }
 _DEFAULT_LINEAR_SOLVER_SETTINGS: dict[str, Any] = {
     "type": "direct",
@@ -168,8 +171,14 @@ def _fe_newton_primal(
     abs_tol = nonlinear_solver_settings["abs tol"]
     rel_tol = nonlinear_solver_settings["rel tol"]
     print_global_convergence = nonlinear_solver_settings["print convergence"]
+    ls_settings = {
+        **DEFAULT_LINE_SEARCH_SETTINGS,
+        **nonlinear_solver_settings.get("line search", {}),
+    }
+    ls_max_evals = ls_settings["max evals"]
 
     dof_map = fe_problem.dof_map
+    sparsity = fe_arrays.embedded_sparsity
     presc_idx = fe_arrays.prescribed_indices
     presc_vals = jnp.asarray(
         dof_map.evaluate_prescribed_values(fe_arrays.dbc_arrays, t),
@@ -213,12 +222,27 @@ def _fe_newton_primal(
         )
 
     def body(state):
-        i, r, K, U, _ = state
+        i, r, K, U, xi = state
         dU = _solve_linear(
             K, fe_problem, fe_arrays, -r, linear_solver_settings,
         )
-        U_new = U + dU
-        r_new, K_new, xi_new = _assemble_enforced(U_new)
+        if ls_max_evals > 0:
+            r_norm_sq = r @ r
+
+            def eval_fn(alpha):
+                r_trial, K_trial, xi_trial = _assemble_enforced(U + alpha * dU)
+                _, matvec = _bcsr_operator(K_trial, sparsity)
+                slope = r_trial @ matvec(dU)
+                phi = 0.5 * (r_trial @ r_trial)
+                return phi, slope, (r_trial, K_trial, xi_trial)
+
+            alpha, (r_new, K_new, xi_new) = line_search(
+                eval_fn, 0.5 * r_norm_sq, -r_norm_sq, ls_settings, (r, K, xi),
+            )
+            U_new = U + alpha * dU
+        else:
+            U_new = U + dU
+            r_new, K_new, xi_new = _assemble_enforced(U_new)
         _print_line(i + 2, r_new)
         return (i + 1, r_new, K_new, U_new, xi_new)
 
@@ -309,8 +333,12 @@ def fe_newton_solve(
     body iteration.
 
     ``nonlinear_solver_settings`` is a dict with keys
-    ``max iters`` / ``abs tol`` / ``rel tol`` / ``print convergence``;
-    omitted keys fall back to :data:`_DEFAULT_NONLINEAR_SOLVER_SETTINGS`.
+    ``max iters`` / ``abs tol`` / ``rel tol`` / ``print convergence`` /
+    ``line search``; omitted keys fall back to
+    :data:`_DEFAULT_NONLINEAR_SOLVER_SETTINGS`. ``line search`` is a dict
+    (the keys of
+    :data:`cmad.util.line_search.DEFAULT_LINE_SEARCH_SETTINGS`); its
+    ``max evals = 0`` disables the search and takes the full Newton step.
     ``linear_solver_settings`` is a dict with keys
     ``type`` / ``rtol`` / ``max iters`` / ``restart`` / ``preconditioner``
     (``restart`` consumed only by ``gmres``; ``preconditioner`` ignored
