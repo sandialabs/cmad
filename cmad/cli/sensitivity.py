@@ -20,6 +20,7 @@ from typing import Any, Protocol, cast
 import numpy as np
 from numpy.typing import NDArray
 
+from cmad.models.nonlinear_solver import make_newton_solve
 from cmad.objectives.mp_jvp_objective import MPJVPObjective
 from cmad.objectives.mp_objective import (
     MPAdjointObjective,
@@ -28,7 +29,6 @@ from cmad.objectives.mp_objective import (
     MPObjective,
 )
 from cmad.qois.qoi import QoI
-from cmad.models.nonlinear_solver import make_newton_solve
 from cmad.typing import GradientResult, HessianResult, StateList
 
 

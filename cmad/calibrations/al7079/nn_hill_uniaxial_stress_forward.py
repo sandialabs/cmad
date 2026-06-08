@@ -18,9 +18,9 @@ from cmad.models.effective_stress import (
     scaled_effective_stress,
 )
 from cmad.models.global_fields import mp_U_from_F
+from cmad.models.nonlinear_solver import newton_solve
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.neural_networks.input_convex_neural_network import InputConvexNeuralNetwork
-from cmad.models.nonlinear_solver import newton_solve
 from cmad.verification.functions import jax_barlat_yield
 
 

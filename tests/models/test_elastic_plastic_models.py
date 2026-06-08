@@ -4,10 +4,10 @@ import numpy as np
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.global_fields import mp_U_from_F
+from cmad.models.nonlinear_solver import newton_solve
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.qois.calibration import Calibration
-from cmad.models.nonlinear_solver import newton_solve
 from tests.support.plotting import plot_uniaxial_cauchy
 from tests.support.test_problems import J2AnalyticalProblem
 

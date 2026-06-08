@@ -11,10 +11,10 @@ from cmad.calibrations.al7079.support import (
 )
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.global_fields import mp_U_from_F
+from cmad.models.nonlinear_solver import newton_solve
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.objectives.mp_objective import MPAdjointObjective
 from cmad.qois.uniaxial_calibration import UniaxialCalibration
-from cmad.models.nonlinear_solver import newton_solve
 
 
 def multiobjective(x, objective, Rmats, data):

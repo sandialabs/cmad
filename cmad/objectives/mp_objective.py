@@ -13,9 +13,9 @@ from numpy.typing import NDArray
 
 from cmad.models.global_fields import mp_U_from_F
 from cmad.models.model import Model
+from cmad.models.nonlinear_solver import newton_solve
 from cmad.parameters.parameters import Parameters
 from cmad.qois.qoi import QoI
-from cmad.models.nonlinear_solver import newton_solve
 from cmad.typing import GradientResult, HessianResult, StateList
 
 

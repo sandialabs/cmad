@@ -13,11 +13,11 @@ import numpy as np
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.global_fields import mp_U_from_F
+from cmad.models.nonlinear_solver import make_newton_solve, newton_solve
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.objectives.mp_jvp_objective import MPJVPObjective
 from cmad.objectives.mp_objective import MPDirectAdjointObjective
 from cmad.qois.calibration import Calibration
-from cmad.models.nonlinear_solver import make_newton_solve, newton_solve
 from tests.support.test_problems import J2AnalyticalProblem
 
 
