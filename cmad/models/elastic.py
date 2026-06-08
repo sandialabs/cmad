@@ -7,6 +7,7 @@ import numpy as np
 
 from cmad.io.registry import register_model
 from cmad.models.deformation_types import DefType, def_type_ndims
+from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.elastic_stress import (
     conventional_elastic_stress_fun,
     isotropic_linear_elastic_cauchy_stress,
@@ -22,7 +23,7 @@ from cmad.models.var_types import (
     get_vector_from_sym_tensor,
 )
 from cmad.parameters.parameters import Parameters
-from cmad.typing import JaxArray, StateList
+from cmad.typing import JaxArray, Scalar, StateList
 
 
 @register_model("elastic")
@@ -32,6 +33,7 @@ class Elastic(Model):
     """
 
     supports_closed_form_cauchy: ClassVar[bool] = True
+    supports_mixed: ClassVar[bool] = True
 
     _def_type: int
     _ndims: int
@@ -191,3 +193,31 @@ class Elastic(Model):
 
         F = jnp.eye(3) + U.grad_fields["u"]
         return elastic_stress(F, params)
+
+    @staticmethod
+    def dev_cauchy_closed_form(
+            params: dict[str, Any],
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+    ) -> JaxArray:
+        grad_u = U.grad_fields["u"]
+        eps = 0.5 * (grad_u + grad_u.T)
+        dev_eps = eps - jnp.trace(eps) / 3. * jnp.eye(3)
+        return 2. * ElasticConstants.from_params(params["elastic"]).mu * dev_eps
+
+    @staticmethod
+    def hydro_cauchy_closed_form(
+            params: dict[str, Any],
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+    ) -> Scalar:
+        grad_u = U.grad_fields["u"]
+        eps = 0.5 * (grad_u + grad_u.T)
+        return ElasticConstants.from_params(params["elastic"]).kappa \
+            * jnp.trace(eps)
+
+    @staticmethod
+    def pressure_scale_factor(params: dict[str, Any]) -> Scalar:
+        return ElasticConstants.from_params(params["elastic"]).kappa
+
+    @staticmethod
+    def shear_scale_factor(params: dict[str, Any]) -> Scalar:
+        return ElasticConstants.from_params(params["elastic"]).mu

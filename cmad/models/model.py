@@ -37,6 +37,7 @@ class Model(ABC):
 
     # ---- class configuration (subclasses may override) ----
     supports_closed_form_cauchy: ClassVar[bool] = False
+    supports_mixed: ClassVar[bool] = False
 
     # ---- attributes the subclass must set before super().__init__() ----
     parameters: Parameters
