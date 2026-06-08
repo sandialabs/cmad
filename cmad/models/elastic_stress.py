@@ -6,8 +6,7 @@ from typing import Any
 
 import jax.numpy as jnp
 
-from cmad.models.elastic_constants import compute_lambda, compute_mu
-from cmad.parameters.parameters import unpack_elastic_params
+from cmad.models.elastic_constants import ElasticConstants
 from cmad.typing import JaxArray, Scalar
 
 
@@ -15,14 +14,11 @@ from cmad.typing import JaxArray, Scalar
 def isotropic_linear_elastic_stress(
         elastic_strain: JaxArray, params: dict[str, Any],
 ) -> JaxArray:
-    E, nu = unpack_elastic_params(params)
-    lame_lambda = compute_lambda(E, nu)
-    lame_mu = compute_mu(E, nu)
-
-    cauchy = lame_lambda * jnp.trace(elastic_strain) * jnp.eye(3) \
-        + 2. * lame_mu * elastic_strain
-
-    return cauchy
+    elastic_constants = ElasticConstants.from_params(params["elastic"])
+    return (
+        elastic_constants.lmbda * jnp.trace(elastic_strain) * jnp.eye(3)
+        + 2. * elastic_constants.mu * elastic_strain
+    )
 
 
 # alternative form used by elasticity-only models
@@ -35,10 +31,11 @@ def isotropic_linear_elastic_cauchy_stress(
     trace_epsilon = jnp.trace(epsilon)
     dev_epsilon = epsilon - trace_epsilon / 3. * I
 
-    kappa = params["elastic"]["kappa"]
-    mu = params["elastic"]["mu"]
-
-    return kappa * trace_epsilon * I + 2. * mu * dev_epsilon
+    elastic_constants = ElasticConstants.from_params(params["elastic"])
+    return (
+        elastic_constants.kappa * trace_epsilon * I
+        + 2. * elastic_constants.mu * dev_epsilon
+    )
 
 
 def compressible_neohookean_cauchy_stress(
@@ -51,10 +48,11 @@ def compressible_neohookean_cauchy_stress(
     bbar = Jm23 * (F @ F.T)
     dev_bbar = bbar - jnp.trace(bbar) / 3. * I
 
-    kappa = params["elastic"]["kappa"]
-    mu = params["elastic"]["mu"]
-
-    return J**-1 * (0.5 * kappa * (J**2 - 1.) * I + mu * dev_bbar)
+    elastic_constants = ElasticConstants.from_params(params["elastic"])
+    return J**-1 * (
+        0.5 * elastic_constants.kappa * (J**2 - 1.) * I
+        + elastic_constants.mu * dev_bbar
+    )
 
 
 def conventional_elastic_stress_fun(
@@ -71,12 +69,4 @@ def conventional_elastic_stress_fun(
 
 
 def two_mu_scale_factor(params: dict[str, Any]) -> Scalar:
-    elastic_params_keys = params["elastic"].keys()
-    if "mu" in elastic_params_keys:
-        return 2. * params["elastic"]["mu"]
-    elif "E" in elastic_params_keys and "nu" in elastic_params_keys:
-        E = params["elastic"]["E"]
-        nu = params["elastic"]["nu"]
-        return 2. * compute_mu(E, nu)
-    else:
-        raise NotImplementedError
+    return 2. * ElasticConstants.from_params(params["elastic"]).mu
