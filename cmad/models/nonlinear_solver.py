@@ -123,8 +123,8 @@ def make_newton_solve(
             delta_x = jnp.linalg.solve(jac, C)
 
             def eval_fn(alpha):
-                C_trial, dC = jvp(residual_flat, (x - alpha * delta_x,), (-delta_x,))
-                return 0.5 * (C_trial @ C_trial), C_trial @ dC, C_trial
+                C_trial = residual_flat(x - alpha * delta_x)
+                return 0.5 * (C_trial @ C_trial), None, C_trial
 
             alpha, C_next = line_search(
                 eval_fn, 0.5 * (C @ C), -(C @ C), ls_settings, C,
