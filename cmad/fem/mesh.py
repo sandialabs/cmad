@@ -580,3 +580,42 @@ def hex_to_tet_split(mesh: Mesh) -> Mesh:
         node_set_ids=dict(mesh.node_set_ids),
         side_set_ids=dict(mesh.side_set_ids),
     )
+
+
+def coordinate_side_sets(
+        mesh: Mesh, rel_tol: float = 1e-7,
+) -> dict[str, NDArray[np.intp]]:
+    """Build side sets for the bounding box faces, by coordinate extreme.
+
+    A face lies on a bounding box extreme when all of its vertices share
+    that extreme coordinate, within a per-axis tolerance of ``rel_tol``
+    times the axis extent. Returns the ``{x,y,z}{min,max}_sides`` that
+    have at least one such face, as ``(elem_id, local_face_id)`` pairs
+    matching :attr:`Mesh.side_sets`; an extreme with no faces is dropped
+    rather than returned empty, so the result lists only the sides the
+    mesh actually has (a slab gives the two ``z`` sides, a rounded body
+    none).
+
+    ``mesh`` is not modified; the caller merges the result into its
+    ``side_sets``.
+    """
+    local_faces = _LOCAL_FACES_PER_ELEMENT[mesh.element_family]
+    face_nodes = mesh.connectivity[:, local_faces]   # (n_elems, n_faces, n_verts)
+    face_coords = mesh.nodes[face_nodes]             # (..., n_verts, 3)
+    lo = mesh.nodes.min(axis=0)
+    hi = mesh.nodes.max(axis=0)
+    tol = rel_tol * (hi - lo)                        # per-axis, scaled to extent
+    name_pairs = [
+        ("xmin_sides", "xmax_sides"),
+        ("ymin_sides", "ymax_sides"),
+        ("zmin_sides", "zmax_sides"),
+    ]
+    side_sets: dict[str, NDArray[np.intp]] = {}
+    for axis, (name_lo, name_hi) in enumerate(name_pairs):
+        coord = face_coords[..., axis]               # (n_elems, n_faces, n_verts)
+        for name, plane in ((name_lo, lo[axis]), (name_hi, hi[axis])):
+            on_plane = np.all(np.abs(coord - plane) < tol[axis], axis=2)
+            faces = np.column_stack(np.nonzero(on_plane)).astype(np.intp)
+            if faces.shape[0] > 0:
+                side_sets[name] = faces
+    return side_sets

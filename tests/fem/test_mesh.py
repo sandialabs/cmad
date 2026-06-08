@@ -14,6 +14,7 @@ from cmad.fem.interpolants import hex_linear
 from cmad.fem.mesh import (
     Mesh,
     StructuredHexMesh,
+    coordinate_side_sets,
     hex_to_tet_split,
 )
 
@@ -354,6 +355,48 @@ class TestGeometricFiniteElement(unittest.TestCase):
             geometric_finite_element=custom,
         )
         self.assertIs(mesh.geometric_finite_element, custom)
+
+
+def _as_pair_set(side_set: np.ndarray) -> set[tuple[int, ...]]:
+    """A side set's ``(elem, local_face)`` rows as an order-free set."""
+    return set(map(tuple, side_set.tolist()))
+
+
+class TestCoordinateSideSets(unittest.TestCase):
+    """`coordinate_side_sets` builds side sets on the bounding box faces."""
+
+    def test_reproduces_structured_hex_side_sets(self):
+        # The structured hex builder already carries correct coordinate
+        # side sets, so deriving them from coordinates must reproduce them
+        # name-for-name and face-for-face (the local_face_id, not just the
+        # count). Non-cube box keeps the three axes distinct.
+        mesh = StructuredHexMesh((1.0, 2.0, 0.5), (2, 3, 1))
+        built = coordinate_side_sets(mesh)
+        self.assertEqual(sorted(built), sorted(mesh.side_sets))
+        for name, expected in mesh.side_sets.items():
+            self.assertEqual(_as_pair_set(built[name]), _as_pair_set(expected))
+
+    def test_reproduces_tet_split_side_sets(self):
+        # Same after splitting to tets: the remapped tet side sets must
+        # fall out of the coordinate test on their own.
+        mesh = hex_to_tet_split(StructuredHexMesh((1.0, 2.0, 0.5), (2, 3, 1)))
+        built = coordinate_side_sets(mesh)
+        self.assertEqual(sorted(built), sorted(mesh.side_sets))
+        for name, expected in mesh.side_sets.items():
+            self.assertEqual(_as_pair_set(built[name]), _as_pair_set(expected))
+
+    def test_omits_extremes_with_no_coplanar_face(self):
+        # The reference tet is flat on the three min planes only; its slant
+        # face meets each max plane at a single vertex, not a whole face,
+        # so the three max names are dropped rather than returned empty.
+        built = coordinate_side_sets(_build_unit_tet_mesh())
+        self.assertEqual(
+            sorted(built), ["xmin_sides", "ymin_sides", "zmin_sides"],
+        )
+        # Each is the single tet face on that plane (-x=2, -y=0, -z=3).
+        self.assertEqual(_as_pair_set(built["xmin_sides"]), {(0, 2)})
+        self.assertEqual(_as_pair_set(built["ymin_sides"]), {(0, 0)})
+        self.assertEqual(_as_pair_set(built["zmin_sides"]), {(0, 3)})
 
 
 if __name__ == "__main__":
