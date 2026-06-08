@@ -76,6 +76,7 @@ def evaluate_cauchy_at_ips(
     mode = fe_problem.modes_by_block[block_name]
     var_names = fe_problem.gr.var_names
     num_blocks = len(fe_problem.block_shapes)
+    is_mixed = getattr(fe_problem.gr, "mixed", False)
 
     geom_cache = fe_problem.geometry_cache[block_name]
     geom_per_elem = geom_cache.per_elem
@@ -110,7 +111,13 @@ def evaluate_cauchy_at_ips(
                 U_prev_ip = interpolate_global_fields_at_ip(
                     U_prev_e, shapes_ip, var_names,
                 )
-                sigma = cauchy_fn(params, U_ip, U_prev_ip)
+                if is_mixed:
+                    dev = model.dev_cauchy_closed_form(
+                        params, U_ip, U_prev_ip,
+                    )
+                    sigma = dev - U_ip.fields["p"][0] * jnp.eye(3)
+                else:
+                    sigma = cauchy_fn(params, U_ip, U_prev_ip)
                 cauchy_per_ip = cauchy_per_ip.at[ip_idx].set(
                     get_vector_from_sym_tensor(sigma, 3),
                 )

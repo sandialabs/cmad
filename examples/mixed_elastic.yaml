@@ -1,0 +1,54 @@
+# Mixed u-p elastic example: a unit cube pulled in x at a near
+# incompressible Poisson ratio (nu = 0.49). The mixed formulation solves
+# the pressure p as its own field alongside the displacement u, which
+# avoids the volumetric locking that a displacement only formulation
+# develops near nu = 0.5. The indefinite saddle point tangent needs the
+# direct linear solver.
+#
+# Generate the mesh from the repo root, then run cmad from examples/
+# (deck paths resolve against the working directory):
+#   python examples/make_cube_mesh.py   # writes examples/meshes/cube_hex_8.exo
+#   cd examples
+#   cmad primal mixed_elastic.yaml
+
+problem:
+  type: fe
+  name: mixed_elastic
+
+discretization:
+  mesh file: meshes/cube_hex_8.exo
+  num steps: 1
+  step size: 1.0
+
+residuals:
+  global residual:
+    type: small_disp_equilibrium
+    def_type: full_3d
+    mixed: true
+    stabilization multiplier: 1.0
+    nonlinear max iters: 10
+    nonlinear absolute tol: 1.0e-10
+    nonlinear relative tol: 1.0e-10
+  local residual:
+    type: elastic
+    materials:
+      all:
+        elastic: {E: 200000.0, nu: 0.49}
+
+# Symmetry on the three min faces; the x=max face is pulled in +x.
+dirichlet bcs:
+  expression:
+    pin_x:  [equilibrium, 0, xmin_sides, "0.0"]
+    pin_y:  [equilibrium, 1, ymin_sides, "0.0"]
+    pin_z:  [equilibrium, 2, zmin_sides, "0.0"]
+    ramp_x: [equilibrium, 0, xmax_sides, "0.003 * t"]
+
+linear solver:
+  type: direct
+
+output:
+  path: results
+  exodus filename: mixed_primal.exo
+  global residual: [u, p]
+  local residual:
+    all: [cauchy]

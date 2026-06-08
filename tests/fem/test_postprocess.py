@@ -68,6 +68,24 @@ def _build_plastic_problem():
     )
 
 
+def _build_mixed_problem():
+    mesh = StructuredHexMesh((1.0, 1.0, 1.0), (1, 1, 1))
+    layouts = [
+        GlobalFieldLayout(name="u", finite_element=Q1_HEX),
+        GlobalFieldLayout(name="p", finite_element=Q1_HEX),
+    ]
+    dof_map = build_dof_map(
+        mesh, layouts, [], components_by_field={"u": 3, "p": 1},
+    )
+    gr = SmallDispEquilibrium(ndims=3, mixed=True)
+    model = Elastic(_elastic_parameters(), def_type=DefType.FULL_3D)
+    return build_fe_problem(
+        mesh=mesh, dof_map=dof_map, gr=gr,
+        models_by_block={"all": model},
+        modes_by_block={"all": GlobalResidualMode.CLOSED_FORM},
+    )
+
+
 def _U_uniaxial_x(mesh, eps: float) -> np.ndarray:
     """Linear-ramp displacement: u_x = eps * x (others zero).
 
@@ -124,6 +142,40 @@ class TestCauchyAtIpsClosedForm(unittest.TestCase):
         fe_state = FEState.from_problem(fe_problem)
         cauchy = evaluate_cauchy_at_ips(fe_problem, fe_state, 0, "all")
         np.testing.assert_allclose(cauchy, 0.0, atol=1e-12)
+
+
+class TestCauchyAtIpsMixed(unittest.TestCase):
+    """Mixed mode: the output cauchy is the mixed stress dev - p*I, using
+    the independent pressure dof rather than the stress from the
+    displacement alone."""
+
+    def test_mixed_cauchy_is_dev_minus_p(self):
+        eps = 0.01
+        p_val = 7.0
+        fe_problem = _build_mixed_problem()
+        fe_state = FEState.from_problem(fe_problem)
+        n_nodes = fe_problem.mesh.nodes.shape[0]
+        # The u dofs come first (each node's 3 components in order), then
+        # the pressure dofs. Set u_x = eps * x and p = p_val everywhere.
+        U = np.zeros(n_nodes * 3 + n_nodes)
+        U[: n_nodes * 3][0::3] = eps * fe_problem.mesh.nodes[:, 0]
+        U[n_nodes * 3:] = p_val
+        fe_state.U_history[0] = U
+
+        cauchy = evaluate_cauchy_at_ips(fe_problem, fe_state, 0, "all")
+
+        mu = 50.0
+        eps_t = np.diag([eps, 0.0, 0.0])
+        dev_eps = eps_t - (np.trace(eps_t) / 3.0) * np.eye(3)
+        sigma = 2.0 * mu * dev_eps - p_val * np.eye(3)
+        expected = np.asarray(
+            get_vector_from_sym_tensor(jnp.asarray(sigma), 3),
+        )
+        for e in range(cauchy.shape[0]):
+            for ip in range(cauchy.shape[1]):
+                np.testing.assert_allclose(
+                    cauchy[e, ip], expected, rtol=1e-12, atol=1e-12,
+                )
 
 
 class TestCauchyAtIpsCoupledDispatch(unittest.TestCase):

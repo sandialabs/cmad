@@ -70,6 +70,11 @@ properties:
         exclusiveMinimum: 0
       print convergence:
         type: boolean
+      mixed:
+        type: boolean
+      stabilization multiplier:
+        type: number
+        exclusiveMinimum: 0
       line search:
         $ref: '#/$defs/line_search'
   local residual:

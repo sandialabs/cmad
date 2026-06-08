@@ -110,6 +110,11 @@ class SmallDispEquilibrium(GlobalResidual):
 
         super().__init__(residual_fn)
 
+    @property
+    def mixed(self) -> bool:
+        """True for the displacement-pressure (u-p) formulation."""
+        return self._mixed
+
     def for_model(
             self,
             model: Model,
@@ -192,8 +197,8 @@ class SmallDispEquilibrium(GlobalResidual):
         Requires ``def_type`` and cross-checks the spatial dimension it
         implies against ``ndims``, which the deck builder sources from the
         mesh. A def_type whose dimension disagrees with the mesh raises.
-        ``formulation`` selects ``displacement`` (default) or ``mixed``
-        u-p; ``stabilization multiplier`` scales the mixed pressure
+        ``mixed`` (bool, default false) selects the displacement-pressure
+        formulation; ``stabilization multiplier`` scales its pressure
         stabilization (default 1.0).
         """
         def_type_name = gr_section.get("def_type")
@@ -210,15 +215,9 @@ class SmallDispEquilibrium(GlobalResidual):
                 f"implies ndims={expected_ndims} but the mesh has "
                 f"ndims={ndims}",
             )
-        formulation = gr_section.get("formulation", "displacement")
-        if formulation not in ("displacement", "mixed"):
-            raise ValueError(
-                "residuals.global residual: formulation must be "
-                f"'displacement' or 'mixed'; got '{formulation}'",
-            )
         return cls(
             ndims=ndims,
-            mixed=(formulation == "mixed"),
+            mixed=bool(gr_section.get("mixed", False)),
             stabilization_multiplier=gr_section.get(
                 "stabilization multiplier", 1.0),
         )

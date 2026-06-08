@@ -22,7 +22,7 @@ from cmad.fem.fe_problem import (
     _DEFAULT_SIDE_QUADRATURE,
 )
 from cmad.fem.finite_element import Q1_HEX
-from cmad.fem.mesh import Mesh, StructuredHexMesh
+from cmad.fem.mesh import Mesh, StructuredHexMesh, hex_to_tet_split
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
 
@@ -458,6 +458,55 @@ class TestBuildCoordinateSideSets(unittest.TestCase):
             self.assertRaisesRegex(ValueError, "would redefine side set"),
         ):
             _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
+
+
+class TestMixed(unittest.TestCase):
+    """``mixed: true`` builds a 2-block (u, p) problem, and rejects a
+    solver that is not direct or a quadrature degree that is too low."""
+
+    def _mixed_deck(self) -> dict[str, Any]:
+        deck = _minimal_fe_deck()
+        deck["residuals"]["global residual"]["mixed"] = True
+        return deck
+
+    def test_mixed_deck_builds_two_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = _build_bundle(
+                self._mixed_deck(), _hex_cube_mesh(), Path(tmpdir),
+            )
+        gr = bundle.fe_problem.gr
+        self.assertTrue(gr.mixed)
+        self.assertEqual(gr.num_residuals, 2)
+        self.assertEqual(
+            [layout.name for layout in bundle.fe_problem.dof_map.field_layouts],
+            ["u", "p"],
+        )
+
+    def test_mixed_requires_direct_solver(self) -> None:
+        deck = self._mixed_deck()
+        deck["linear solver"] = {"type": "cg"}
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            self.assertRaisesRegex(ValueError, "direct"),
+        ):
+            _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
+
+    def test_mixed_rejects_low_volume_quadrature(self) -> None:
+        deck = self._mixed_deck()
+        deck["discretization"]["quadrature"] = {"volume degree": 1}
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            self.assertRaisesRegex(ValueError, "degree"),
+        ):
+            _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
+
+    def test_mixed_tet_defaults_to_degree2(self) -> None:
+        tet_mesh = hex_to_tet_split(_hex_cube_mesh())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = _build_bundle(self._mixed_deck(), tet_mesh, Path(tmpdir))
+        rule = bundle.fe_problem.assembly_quadrature[ElementFamily.TET_LINEAR]
+        # tet degree-2 has 4 IPs; the family default (degree 1) has 1.
+        self.assertEqual(rule.xi.shape[0], 4)
 
 
 if __name__ == "__main__":
