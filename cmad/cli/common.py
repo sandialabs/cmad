@@ -348,6 +348,13 @@ def build_fe_problem_from_deck(
         resolved["discretization"], mesh.element_family,
     )
 
+    local_newton_settings = {
+        "max_iters": int(local_section["nonlinear max iters"]),
+        "abs_tol": float(local_section["nonlinear absolute tol"]),
+        "rel_tol": float(local_section["nonlinear relative tol"]),
+        "line_search_settings": local_section.get("line search", {}),
+    }
+
     fe_problem = build_fe_problem(
         mesh=mesh,
         dof_map=dof_map,
@@ -361,6 +368,7 @@ def build_fe_problem_from_deck(
         print_local_convergence=bool(
             local_section.get("print convergence", False),
         ),
+        local_newton_settings=local_newton_settings,
     )
 
     t_schedule = _load_t_schedule(resolved["discretization"])

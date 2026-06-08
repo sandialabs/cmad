@@ -28,9 +28,9 @@ residuals:
     nonlinear relative tol: 1.0e-12
   local residual:
     type: small_elastic_plastic
-    nonlinear max iters: 30
-    nonlinear absolute tol: 1.0e-14
-    nonlinear relative tol: 1.0e-14
+    nonlinear max iters: 20
+    nonlinear absolute tol: 1.0e-12
+    nonlinear relative tol: 1.0e-12
     materials:
       all:
         # active leaves are the ones cmad gradient / hessian differentiate.

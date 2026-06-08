@@ -1,7 +1,7 @@
 """FEProblem + FEState dataclasses for the FE forward problem."""
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from jax.flatten_util import ravel_pytree
@@ -345,6 +345,7 @@ def build_fe_problem(
         neumann_bcs: Sequence[NeumannBC] = (),
         side_quadrature: dict[ElementFamily, QuadratureRule] | None = None,
         print_local_convergence: bool = False,
+        local_newton_settings: dict[str, Any] | None = None,
 ) -> FEProblem:
     """Validate FE inputs and build an immutable :class:`FEProblem`.
 
@@ -359,7 +360,9 @@ def build_fe_problem(
 
     Each (block, model, mode) triple is bound via
     ``gr.for_model(model, mode=mode)`` at construction so the
-    per-block evaluator dicts compile once.
+    per-block evaluator dicts compile once. ``local_newton_settings``
+    is forwarded to ``for_model`` for COUPLED blocks only (CLOSED_FORM
+    blocks receive ``None``).
 
     ``forcing_fns_by_block_idx`` keys must lie in ``[0, gr.num_residuals)``;
     the builder also probes each callable at the origin (best-effort)
@@ -419,14 +422,20 @@ def build_fe_problem(
                     f"(gr._num_eqs[{block_idx}])"
                 )
 
-    evaluators_by_block: dict[str, GREvaluators] = {
-        b: gr.for_model(
+    evaluators_by_block: dict[str, GREvaluators] = {}
+    for b in models_by_block:
+        mode = modes_by_block[b]
+        block_local_settings = (
+            local_newton_settings
+            if mode == GlobalResidualMode.COUPLED
+            else None
+        )
+        evaluators_by_block[b] = gr.for_model(
             models_by_block[b],
-            mode=modes_by_block[b],
+            mode=mode,
+            local_newton_settings=block_local_settings,
             print_local_convergence=print_local_convergence,
         )
-        for b in models_by_block
-    }
 
     return FEProblem(
         mesh=mesh,

@@ -81,6 +81,8 @@ properties:
       nonlinear absolute tol: {type: number, exclusiveMinimum: 0}
       nonlinear relative tol: {type: number, exclusiveMinimum: 0}
       print convergence: {type: boolean, default: false}
+      line search:
+        $ref: '#/$defs/line_search'
       materials:
         type: object
         additionalProperties:
