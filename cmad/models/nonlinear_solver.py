@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
@@ -7,6 +8,7 @@ from jax.flatten_util import ravel_pytree
 from jax.lax import cond, while_loop
 
 from cmad.typing import JaxArray, PyTree, SupportsNewton
+from cmad.util.line_search import DEFAULT_LINE_SEARCH_SETTINGS, line_search
 
 
 def newton_solve(
@@ -89,7 +91,13 @@ def make_newton_solve(
         abs_tol: float = 1e-14,
         rel_tol: float = 1e-14,
         print_local_convergence: bool = False,
+        line_search_settings: dict[str, Any] | None = None,
 ) -> Callable[..., PyTree]:
+
+    ls_settings = {
+        **DEFAULT_LINE_SEARCH_SETTINGS,
+        **(line_search_settings or {}),
+    }
 
     @custom_jvp
     def newton_solve(x_prev, *other_fixed_args):
@@ -111,14 +119,17 @@ def make_newton_solve(
 
         def false_fun(carry):
             ii, _converged, x, C = carry
-
             jac = jacfwd(residual_flat)(x)
             delta_x = jnp.linalg.solve(jac, C)
-            x_2 = jnp.subtract(x, delta_x)
 
-            C_2 = residual_flat(x_2)
+            def eval_fn(alpha):
+                C_trial, dC = jvp(residual_flat, (x - alpha * delta_x,), (-delta_x,))
+                return 0.5 * (C_trial @ C_trial), C_trial @ dC, C_trial
 
-            return ii + 1, False, x_2, C_2
+            alpha, C_next = line_search(
+                eval_fn, 0.5 * (C @ C), -(C @ C), ls_settings, C,
+            )
+            return ii + 1, False, x - alpha * delta_x, C_next
 
 
         def cond_fun(carry):
