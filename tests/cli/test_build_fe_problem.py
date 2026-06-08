@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -54,6 +55,11 @@ def _hex_cube_mesh(
         divisions: tuple[int, int, int] = (2, 2, 2),
 ) -> Mesh:
     return StructuredHexMesh((1.0, 1.0, 1.0), divisions)
+
+
+def _hex_cube_mesh_no_sidesets() -> Mesh:
+    """`_hex_cube_mesh` with its side sets dropped, like a mesh that has none."""
+    return replace(_hex_cube_mesh(), side_sets={})
 
 
 def _two_block_mesh() -> Mesh:
@@ -419,6 +425,39 @@ class TestJitTraceability(unittest.TestCase):
         out = np.asarray(jitted(jnp.zeros((4, 3)), 0.5))
         self.assertEqual(out.shape, (4, 3))
         np.testing.assert_allclose(out[:, 2], 0.25)
+
+
+class TestBuildCoordinateSideSets(unittest.TestCase):
+    """``discretization.build coordinate sidesets`` builds them at load."""
+
+    def test_option_builds_sidesets_for_a_mesh_with_none(self) -> None:
+        deck = _minimal_fe_deck()
+        deck["discretization"]["build coordinate sidesets"] = True
+        # The DBCs name sidesets the mesh does not carry; they resolve
+        # only because the option builds them from coordinates.
+        deck["dirichlet bcs"] = {
+            "expression": {
+                "pin_x": ["equilibrium", 0, "xmin_sides", "0.0"],
+                "pin_y": ["equilibrium", 1, "ymin_sides", "0.0"],
+                "pin_z": ["equilibrium", 2, "zmin_sides", "0.0"],
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = _build_bundle(
+                deck, _hex_cube_mesh_no_sidesets(), Path(tmpdir),
+            )
+        self.assertIsInstance(bundle, FEProblemBundle)
+
+    def test_collision_with_existing_sideset_raises(self) -> None:
+        deck = _minimal_fe_deck()
+        deck["discretization"]["build coordinate sidesets"] = True
+        # The structured mesh already carries xmin_sides etc.; rebuilding
+        # them must error rather than silently redefine.
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            self.assertRaisesRegex(ValueError, "would redefine side set"),
+        ):
+            _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
 
 
 if __name__ == "__main__":

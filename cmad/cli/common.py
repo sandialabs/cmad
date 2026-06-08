@@ -11,7 +11,7 @@ shape: deck → mesh → GR → per-block Models → DBCs / NBCs / forcing →
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,7 @@ from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem, FEState, build_fe_problem
 from cmad.fem.finite_element import P1_TET, Q1_HEX, FiniteElement
 from cmad.fem.kernel_arrays import FEKernelArrays
+from cmad.fem.mesh import coordinate_side_sets
 from cmad.fem.quadrature import (
     QuadratureRule,
     hex_quadrature,
@@ -306,6 +307,16 @@ def build_fe_problem_from_deck(
 
     mesh_path = Path(resolved["discretization"]["mesh file"])
     mesh = read_mesh(mesh_path)
+    if resolved["discretization"].get("build coordinate sidesets", False):
+        built = coordinate_side_sets(mesh)
+        clash = sorted(set(built) & set(mesh.side_sets))
+        if clash:
+            raise ValueError(
+                "discretization.build coordinate sidesets would redefine "
+                f"side set(s) already in the mesh: {clash}; remove the option "
+                "or rename the existing set(s)"
+            )
+        mesh = replace(mesh, side_sets={**mesh.side_sets, **built})
     ndims = int(mesh.nodes.shape[1])
 
     gr_section = resolved["residuals"]["global residual"]
