@@ -1,0 +1,57 @@
+# Eighth-symmetry notched plate, near-Tresca Hosford (a=100) plasticity.
+# The mesh has no sidesets; `build coordinate sidesets` creates the six
+# bounding box face sets at load time, and the symmetry and load BCs use
+# them. The sharp yield surface and the ramped load exercise both the
+# local (per-IP return map) and global Newton line searches.
+#
+# Deck paths resolve against the working directory, so run from here:
+#   cd examples
+#   cmad primal notch_hosford.yaml
+
+problem:
+  type: fe
+  name: notch_hosford
+
+discretization:
+  mesh file: meshes/notch.exo
+  build coordinate sidesets: true
+  num steps: 4
+  step size: 1.0
+
+residuals:
+  global residual:
+    type: small_disp_equilibrium
+    def_type: full_3d
+    nonlinear max iters: 15
+    nonlinear absolute tol: 1.0e-8
+    nonlinear relative tol: 1.0e-8
+  local residual:
+    type: small_elastic_plastic
+    nonlinear max iters: 500
+    nonlinear absolute tol: 1.0e-12
+    nonlinear relative tol: 1.0e-12
+    line search:
+      max evals: 100
+    materials:
+      block_1:
+        elastic: {E: 1000.0, nu: 0.25}
+        plastic:
+          effective stress: {hosford: {a: 100.0}}
+          flow stress:
+            initial yield: {Y: 2.0}
+            hardening: {voce: {S: 10.0, D: 2.0}}
+
+# Symmetry on the three min faces; the y=max face is pulled in +y.
+dirichlet bcs:
+  expression:
+    sym_x:  [equilibrium, 0, xmin_sides, "0.0"]
+    sym_y:  [equilibrium, 1, ymin_sides, "0.0"]
+    sym_z:  [equilibrium, 2, zmin_sides, "0.0"]
+    load_y: [equilibrium, 1, ymax_sides, "0.01 * t"]
+
+output:
+  path: results
+  exodus filename: notch_primal.exo
+  global residual: [u]
+  local residual:
+    block_1: [cauchy, alpha]

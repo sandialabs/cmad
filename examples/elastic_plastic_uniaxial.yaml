@@ -4,18 +4,21 @@
 # element's terminal sigma_xx matches the analytical uniaxial J2 + Voce
 # flow stress.
 #
-#   python examples/make_cube_mesh.py    # writes examples/cube_hex_8.exo
-#   cmad primal    examples/elastic_plastic_uniaxial.yaml
-#   cmad objective examples/elastic_plastic_uniaxial.yaml
-#   cmad gradient  examples/elastic_plastic_uniaxial.yaml
-#   cmad hessian   examples/elastic_plastic_uniaxial.yaml
+# Generate the mesh from the repo root, then run cmad from examples/
+# (deck paths resolve against the working directory):
+#   python examples/make_cube_mesh.py   # writes examples/meshes/cube_hex_8.exo
+#   cd examples
+#   cmad primal    elastic_plastic_uniaxial.yaml
+#   cmad objective elastic_plastic_uniaxial.yaml
+#   cmad gradient  elastic_plastic_uniaxial.yaml
+#   cmad hessian   elastic_plastic_uniaxial.yaml
 
 problem:
   type: fe
   name: elastic_plastic_uniaxial
 
 discretization:
-  mesh file: cube_hex_8.exo
+  mesh file: meshes/cube_hex_8.exo
   num steps: 5
   step size: 0.2
 

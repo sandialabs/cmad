@@ -28,7 +28,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--out", default=None,
-        help="output path (default examples/cube_{kind}_{n}.exo)",
+        help="output path (default examples/meshes/cube_{kind}_{n}.exo)",
     )
     args = parser.parse_args()
 
@@ -36,7 +36,7 @@ def main() -> None:
     if args.kind == "tet":
         mesh = hex_to_tet_split(mesh)
 
-    out = args.out or f"examples/cube_{args.kind}_{args.n}.exo"
+    out = args.out or f"examples/meshes/cube_{args.kind}_{args.n}.exo"
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     with ExodusWriter(out, mesh):
         pass
