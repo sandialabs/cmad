@@ -31,7 +31,7 @@ from cmad.fem.assembly import _element_eq_indices, assembled_coo_dedup
 from cmad.fem.dof import DBCArrays, build_dbc_arrays
 from cmad.fem.neumann import NeumannSideArrays, build_neumann_side_arrays
 from cmad.fem.precompute import BlockIPGeometryCache
-from cmad.fem.sparse_solve import EmbeddedSparsity
+from cmad.fem.sparse_solve import BlockSparsity, EmbeddedSparsity
 from cmad.typing import JaxArray
 
 if TYPE_CHECKING:
@@ -46,6 +46,7 @@ _FEKernelArraysChildren = tuple[
     JaxArray,
     dict[str, BlockIPGeometryCache],
     EmbeddedSparsity,
+    BlockSparsity | None,
     JaxArray,
     NeumannSideArrays,
     DBCArrays,
@@ -87,6 +88,9 @@ class FEKernelArrays:
       geometry cache; the same object as ``fe_problem.geometry_cache``.
     - ``embedded_sparsity``: the embedded-BC CSR sparsity cache; the
       same object as ``fe_problem.embedded_sparsity``.
+    - ``block_sparsity``: the field partition of the global sparsity used
+      by the block preconditioner, or ``None`` when there is only one
+      field; the same object as ``fe_problem.block_sparsity``.
     - ``prescribed_indices``: the flat global indices of the
       Dirichlet-prescribed dofs.
     - ``neumann_side_arrays``: the per-NBC cached Neumann side-assembly
@@ -104,6 +108,7 @@ class FEKernelArrays:
     coo_dedup_scatter: JaxArray
     geometry_cache: dict[str, BlockIPGeometryCache]
     embedded_sparsity: EmbeddedSparsity
+    block_sparsity: BlockSparsity | None
     prescribed_indices: JaxArray
     neumann_side_arrays: NeumannSideArrays
     dbc_arrays: DBCArrays
@@ -117,6 +122,7 @@ class FEKernelArrays:
             self.coo_dedup_scatter,
             self.geometry_cache,
             self.embedded_sparsity,
+            self.block_sparsity,
             self.prescribed_indices,
             self.neumann_side_arrays,
             self.dbc_arrays,
@@ -128,7 +134,7 @@ class FEKernelArrays:
             cls, aux_data: None, children: _FEKernelArraysChildren,
     ) -> FEKernelArrays:
         (u_gather_eq_by_block, r_scatter_eq_by_block, coo_rows, coo_cols,
-         coo_dedup_scatter, geometry_cache, embedded_sparsity,
+         coo_dedup_scatter, geometry_cache, embedded_sparsity, block_sparsity,
          prescribed_indices, neumann_side_arrays, dbc_arrays) = children
         return cls(
             u_gather_eq_by_block=u_gather_eq_by_block,
@@ -138,6 +144,7 @@ class FEKernelArrays:
             coo_dedup_scatter=coo_dedup_scatter,
             geometry_cache=geometry_cache,
             embedded_sparsity=embedded_sparsity,
+            block_sparsity=block_sparsity,
             prescribed_indices=prescribed_indices,
             neumann_side_arrays=neumann_side_arrays,
             dbc_arrays=dbc_arrays,
@@ -214,6 +221,7 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
         coo_dedup_scatter=jnp.asarray(coo_dedup_scatter),
         geometry_cache=fe_problem.geometry_cache,
         embedded_sparsity=fe_problem.embedded_sparsity,
+        block_sparsity=fe_problem.block_sparsity,
         prescribed_indices=jnp.asarray(dof_map.prescribed_indices),
         neumann_side_arrays=neumann_side_arrays,
         dbc_arrays=dbc_arrays,

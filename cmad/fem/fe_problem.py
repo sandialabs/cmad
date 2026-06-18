@@ -30,7 +30,7 @@ from cmad.typing import GREvaluators, JaxArray, Scalar, StateList
 
 if TYPE_CHECKING:
     from cmad.fem.kernel_arrays import FEKernelArrays
-    from cmad.fem.sparse_solve import EmbeddedSparsity
+    from cmad.fem.sparse_solve import BlockSparsity, EmbeddedSparsity
 
 _DEFAULT_ASSEMBLY_QUADRATURE: dict[ElementFamily, QuadratureRule] = {
     ElementFamily.HEX_LINEAR: hex_quadrature(degree=2),
@@ -141,6 +141,7 @@ class FEProblem:
         init=False, default_factory=dict,
     )
     embedded_sparsity: "EmbeddedSparsity" = field(init=False)
+    block_sparsity: "BlockSparsity | None" = field(init=False, default=None)
     kernel_arrays: "FEKernelArrays" = field(init=False)
     near_null_space: NDArray[np.floating] | None = field(
         init=False, default=None,
@@ -205,10 +206,20 @@ class FEProblem:
         # cycle; assembly imports FEProblem at module scope, so
         # fe_problem can only reference sparse_solve from inside
         # a function body.
-        from cmad.fem.sparse_solve import build_embedded_sparsity
+        from cmad.fem.sparse_solve import (
+            build_block_sparsity,
+            build_embedded_sparsity,
+        )
         object.__setattr__(
             self, "embedded_sparsity", build_embedded_sparsity(self),
         )
+        if self.gr.num_residuals > 1:
+            object.__setattr__(
+                self, "block_sparsity",
+                build_block_sparsity(
+                    self.embedded_sparsity, self.dof_map.block_offsets,
+                ),
+            )
 
         object.__setattr__(
             self, "near_null_space", self.gr.near_null_space(self.mesh),

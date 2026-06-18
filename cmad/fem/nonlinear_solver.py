@@ -16,6 +16,7 @@ from cmad.fem.sparse_solve import (
     _bcsr_operator,
     _embedded_bc_enforce,
     _embedded_residual,
+    jax_block_gmres,
     jax_cg,
     jax_gmres,
     scipy_amg_cg,
@@ -83,8 +84,9 @@ def _solve_linear(
         linear_solver_settings: dict[str, Any],
 ) -> JaxArray:
     """Dispatch on ``settings['type']`` to direct / CG / GMRES, with the
-    iterative-CG arm picking a Jacobi or pyamg preconditioner from
-    ``settings['preconditioner']``.
+    iterative arms picking a preconditioner from
+    ``settings['preconditioner']``: Jacobi or pyamg for CG, Jacobi or a
+    block preconditioner (:func:`jax_block_gmres`) for GMRES.
 
     :attr:`FEProblem.near_null_space` is auto-merged into pyamg
     ``kwargs`` as ``B`` when present and the caller hasn't already set
@@ -129,6 +131,22 @@ def _solve_linear(
                 max_iters=linear_solver_settings["max iters"],
                 restart=linear_solver_settings["restart"],
             )
+        if precon == "block":
+            block_sparsity = fe_arrays.block_sparsity
+            if block_sparsity is None:
+                raise ValueError(
+                    "block preconditioner requires a problem with more "
+                    "than one residual block"
+                )
+            return jax_block_gmres(
+                K, sparsity, rhs, block_sparsity,
+                coupling=precon_spec.get("coupling", "lower"),
+                diagonal_block=precon_spec.get("diagonal_block", "raw"),
+                inner=precon_spec.get("inner", "jacobi"),
+                rtol=linear_solver_settings["rtol"],
+                max_iters=linear_solver_settings["max iters"],
+                restart=linear_solver_settings["restart"],
+            )
         if precon == "pyamg":
             raise NotImplementedError(
                 "pyamg preconditioner with gmres is not implemented; "
@@ -136,7 +154,7 @@ def _solve_linear(
             )
         raise ValueError(
             f"unknown preconditioner type {precon!r} for gmres; "
-            f"expected 'jacobi'"
+            f"expected 'jacobi' or 'block'"
         )
     raise ValueError(
         f"unknown linear solver type {kind!r}; "
@@ -343,9 +361,10 @@ def fe_newton_solve(
     ``type`` / ``rtol`` / ``max iters`` / ``restart`` / ``preconditioner``
     (``restart`` consumed only by ``gmres``; ``preconditioner`` ignored
     when ``type='direct'``). ``preconditioner`` is itself a dict with
-    a required ``type`` (``'jacobi'`` or ``'pyamg'``) and an optional
-    freeform ``kwargs`` dict forwarded to
-    :func:`pyamg.smoothed_aggregation_solver`. Omitted keys fall back
+    a required ``type`` (``'jacobi'``, ``'pyamg'``, or ``'block'``). pyamg
+    takes an optional freeform ``kwargs`` dict forwarded to
+    :func:`pyamg.smoothed_aggregation_solver`; block takes a ``coupling``
+    (``'diagonal'`` / ``'lower'`` / ``'upper'``). Omitted keys fall back
     to :data:`_DEFAULT_LINEAR_SOLVER_SETTINGS`.
 
     Returns ``(U_star, xi_star)``. Outputs are JAX arrays.
