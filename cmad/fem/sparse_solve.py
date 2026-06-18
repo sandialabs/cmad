@@ -572,7 +572,7 @@ def _block_diagonal(
     )
 
 
-_POWER_ITERATION_STEPS = 10
+_LANCZOS_STEPS = 15
 _CHEBYSHEV_DEFAULT_DEGREE = 3
 _CHEBYSHEV_LMIN_FRACTION = 1.0 / 30.0
 _CHEBYSHEV_LMAX_SAFETY = 1.1
@@ -614,27 +614,47 @@ def _diag_block_matvec(
     return out
 
 
-def _power_iteration(
+def _lanczos_dominant_eigenvalue(
         matvec: Callable[[JaxArray], JaxArray], n: int, dtype: np.dtype,
 ) -> JaxArray:
-    """Estimate the eigenvalue of ``matvec`` with the largest magnitude, sign kept.
+    """Dominant eigenvalue of ``matvec`` (largest magnitude, sign kept), via Lanczos.
 
-    Runs a fixed number of power iteration steps from a deterministic start
-    (``1, 2, ..., n`` normalized), then returns the Rayleigh quotient
-    ``(v . matvec(v)) / (v . v)``. The sign is kept, so a field whose dominant
-    eigenvalue is negative (a pressure block under stabilization) returns a
-    negative estimate.
+    Runs ``min(_LANCZOS_STEPS, n)`` symmetric Lanczos steps from a deterministic
+    start and returns the resulting tridiagonal's eigenvalue of largest
+    magnitude. The sign is kept, so a negative definite block (a stabilized
+    pressure block) returns a negative estimate. The largest Ritz value
+    approaches the dominant eigenvalue from below, so the bracket keeps its
+    safety inflation. ``matvec`` is assumed symmetric.
     """
-    v0 = jnp.arange(1, n + 1, dtype=dtype)
-    v0 = v0 / jnp.linalg.norm(v0)
+    steps = min(_LANCZOS_STEPS, n)
+    q0 = jnp.arange(1, n + 1, dtype=dtype)
+    q0 = q0 / jnp.linalg.norm(q0)
 
-    def step(_: int, v: JaxArray) -> JaxArray:
-        av = matvec(v)
-        return av / jnp.linalg.norm(av)
+    def step(
+            j: int,
+            carry: tuple[JaxArray, JaxArray, JaxArray, JaxArray, JaxArray],
+    ) -> tuple[JaxArray, JaxArray, JaxArray, JaxArray, JaxArray]:
+        q, q_prev, beta_prev, alphas, betas = carry
+        w = matvec(q) - beta_prev * q_prev
+        alpha = jnp.dot(q, w)
+        w = w - alpha * q
+        beta = jnp.linalg.norm(w)
+        q_next = w / jnp.where(beta > 0.0, beta, 1.0)
+        return q_next, q, beta, alphas.at[j].set(alpha), betas.at[j].set(beta)
 
-    v = lax.fori_loop(0, _POWER_ITERATION_STEPS, step, v0)
-    av = matvec(v)
-    return jnp.dot(v, av) / jnp.dot(v, v)
+    zeros_k = jnp.zeros(steps, dtype=dtype)
+    init = (
+        q0, jnp.zeros_like(q0), jnp.asarray(0.0, dtype=dtype), zeros_k, zeros_k,
+    )
+    _q, _q_prev, _beta, alphas, betas = lax.fori_loop(0, steps, step, init)
+
+    tridiagonal = (
+        jnp.diag(alphas)
+        + jnp.diag(betas[:steps - 1], 1)
+        + jnp.diag(betas[:steps - 1], -1)
+    )
+    ritz = jnp.linalg.eigvalsh(tridiagonal)
+    return ritz[jnp.argmax(jnp.abs(ritz))]
 
 
 def _chebyshev_apply(
@@ -676,14 +696,14 @@ def _chebyshev_field_bounds(
 ) -> tuple[tuple[JaxArray, JaxArray], ...]:
     """Spectrum bracket ``(lmin, lmax)`` for each field's diagonal block.
 
-    For field ``i``, power iteration on the forward diagonal block matvec gives
-    the eigenvalue of largest magnitude with its sign. That end carries a small
-    safety margin: power iteration approaches it from below and the Chebyshev
-    polynomial grows past the bracket, so the dominant end must not sit under the
-    true eigenvalue. The other end is a fixed fraction of it. The pair is ordered
-    so ``lmin <= lmax``; both keep the eigenvalue's sign, so a negative definite
-    block yields two negative bounds. Computed once per solve; a block and its
-    transpose share eigenvalues, so the same bracket serves the transpose sweep.
+    Each field's dominant eigenvalue comes from a short Lanczos run on its
+    forward diagonal block matvec, sign kept. The dominant end is inflated by a
+    safety margin: the largest Ritz value approaches it from below and the
+    Chebyshev polynomial grows past the bracket, so that end must not sit under
+    the true eigenvalue. The other end is a fixed fraction of it. The pair is
+    ordered so ``lmin <= lmax``; both keep the sign, so a negative definite block
+    yields two negative bounds. A block and its transpose share eigenvalues, so
+    the same bracket serves the transpose sweep.
     """
     bounds: list[tuple[JaxArray, JaxArray]] = []
     for i in range(bs.num_fields):
@@ -695,9 +715,9 @@ def _chebyshev_field_bounds(
                 diagonal_block=diagonal_block, transpose=False,
             )
 
-        rho = _power_iteration(block_matvec, n_i, unique_data.dtype)
-        lo = rho * _CHEBYSHEV_LMIN_FRACTION
-        hi = rho * _CHEBYSHEV_LMAX_SAFETY
+        lam = _lanczos_dominant_eigenvalue(block_matvec, n_i, unique_data.dtype)
+        lo = lam * _CHEBYSHEV_LMIN_FRACTION
+        hi = lam * _CHEBYSHEV_LMAX_SAFETY
         bounds.append((jnp.minimum(lo, hi), jnp.maximum(lo, hi)))
     return tuple(bounds)
 

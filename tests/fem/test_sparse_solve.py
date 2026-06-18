@@ -18,8 +18,8 @@ from cmad.fem.sparse_solve import (
     EmbeddedSparsity,
     _chebyshev_apply,
     _embedded_bc_enforce,
+    _lanczos_dominant_eigenvalue,
     _near_null_by_field,
-    _power_iteration,
     build_block_sparsity,
     jax_block_gmres,
     jax_cg,
@@ -644,8 +644,8 @@ class TestChebyshevApply(unittest.TestCase):
         self._check_converges(-_spd_with_spectrum(eigs, seed=910), b_seed=911)
 
 
-class TestPowerIteration(unittest.TestCase):
-    """``_power_iteration`` recovers the dominant eigenvalue, sign kept."""
+class TestLanczosDominantEigenvalue(unittest.TestCase):
+    """``_lanczos_dominant_eigenvalue`` recovers the dominant eigenvalue, sign kept."""
 
     def _dominant(self, A: np.ndarray) -> float:
         a_jax = jnp.asarray(A)
@@ -653,7 +653,7 @@ class TestPowerIteration(unittest.TestCase):
         def matvec(x: JaxArray) -> JaxArray:
             return a_jax @ x
 
-        return float(_power_iteration(matvec, A.shape[0], A.dtype))
+        return float(_lanczos_dominant_eigenvalue(matvec, A.shape[0], A.dtype))
 
     def test_spd_positive(self) -> None:
         eigs = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 20.0])
@@ -664,6 +664,19 @@ class TestPowerIteration(unittest.TestCase):
         eigs = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 20.0])
         A = -_spd_with_spectrum(eigs, seed=930)
         self.assertAlmostEqual(self._dominant(A), -20.0, places=4)
+
+    def test_spd_more_dofs_than_steps(self) -> None:
+        # n far larger than the Lanczos step count: a separated dominant
+        # eigenvalue is still recovered, since Lanczos converges to the
+        # isolated top within a few steps.
+        eigs = np.concatenate([np.linspace(1.0, 10.0, 63), [30.0]])
+        A = _spd_with_spectrum(eigs, seed=940)
+        self.assertAlmostEqual(self._dominant(A) / 30.0, 1.0, places=3)
+
+    def test_negative_definite_more_dofs_than_steps(self) -> None:
+        eigs = np.concatenate([np.linspace(1.0, 10.0, 63), [30.0]])
+        A = -_spd_with_spectrum(eigs, seed=950)
+        self.assertAlmostEqual(self._dominant(A) / -30.0, 1.0, places=3)
 
 
 class TestJaxBlockGmresChebyshevForward(unittest.TestCase):
