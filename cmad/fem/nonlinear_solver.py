@@ -89,7 +89,8 @@ def _solve_linear(
     iterative arms picking a preconditioner from
     ``settings['preconditioner']``: Jacobi or pyamg for CG, Jacobi or a
     block preconditioner for GMRES (:func:`jax_block_gmres` with a Jacobi
-    inner solve, :func:`scipy_block_gmres` with an AMG inner solve).
+    or Chebyshev inner solve, :func:`scipy_block_gmres` with an AMG inner
+    solve).
 
     :attr:`FEProblem.near_null_space` is auto-merged into pyamg
     ``kwargs`` as ``B`` when present and the caller hasn't already set
@@ -144,11 +145,11 @@ def _solve_linear(
             coupling = precon_spec.get("coupling", "lower")
             diagonal_block = precon_spec.get("diagonal_block", "assembled")
             inner = precon_spec.get("inner", "jacobi")
-            if inner == "jacobi":
+            if inner in ("jacobi", "chebyshev"):
                 return jax_block_gmres(
                     K, sparsity, rhs, block_sparsity,
                     coupling=coupling, diagonal_block=diagonal_block,
-                    inner=inner,
+                    inner=inner, degree=precon_spec.get("degree"),
                     rtol=linear_solver_settings["rtol"],
                     max_iters=linear_solver_settings["max iters"],
                     restart=linear_solver_settings["restart"],
@@ -167,7 +168,7 @@ def _solve_linear(
                 )
             raise ValueError(
                 f"unknown inner solve {inner!r} for the block "
-                f"preconditioner; expected 'jacobi' or 'amg'"
+                f"preconditioner; expected 'jacobi', 'chebyshev', or 'amg'"
             )
         if precon == "pyamg":
             raise NotImplementedError(
@@ -387,8 +388,9 @@ def fe_newton_solve(
     takes an optional freeform ``kwargs`` dict forwarded to
     :func:`pyamg.smoothed_aggregation_solver`; block takes ``coupling``
     (``'diagonal'`` / ``'lower'`` / ``'upper'``), ``diagonal_block``
-    (``'assembled'`` / ``'schur'``), and ``inner`` (``'jacobi'`` / ``'amg'``).
-    Omitted keys fall back to :data:`_DEFAULT_LINEAR_SOLVER_SETTINGS`.
+    (``'assembled'`` / ``'schur'``), ``inner`` (``'jacobi'`` / ``'chebyshev'``
+    / ``'amg'``), and ``degree`` (the Chebyshev step count). Omitted keys fall
+    back to :data:`_DEFAULT_LINEAR_SOLVER_SETTINGS`.
 
     Returns ``(U_star, xi_star)``. Outputs are JAX arrays.
     """

@@ -572,10 +572,142 @@ def _block_diagonal(
     )
 
 
+_POWER_ITERATION_STEPS = 10
+_CHEBYSHEV_DEFAULT_DEGREE = 3
+_CHEBYSHEV_LMIN_FRACTION = 1.0 / 30.0
+_CHEBYSHEV_LMAX_SAFETY = 1.1
+
+
+def _diag_block_matvec(
+        bs: BlockSparsity, unique_data: JaxArray,
+        pair_index: dict[tuple[int, int], int], i: int, x: JaxArray, *,
+        diagonal_block: str, transpose: bool,
+) -> JaxArray:
+    """Apply the operator for field ``i``'s diagonal block to a field-``i`` vector.
+
+    ``"assembled"`` applies the assembled block ``(i, i)``. ``"schur"`` applies
+    the approximate Schur complement
+    ``(i, i) - sum_{j != i} (i, j) diag((j, j))^-1 (j, i)``, formed on the fly
+    from block matvecs with nothing materialized: it approximates the other
+    fields' inverses by their diagonals, pure block arithmetic with no
+    assumption about what the fields are.
+
+    ``transpose=True`` threads the flag through every block matvec, which gives
+    the transpose of the forward operator, so the adjoint sweep reuses this with
+    no separate derivation.
+    """
+    out = _block_op_apply(
+        bs, unique_data, pair_index, i, i, x, transpose=transpose,
+    )
+    if diagonal_block != "schur":
+        return out
+    for j in range(bs.num_fields):
+        if j == i:
+            continue
+        proj = _block_op_apply(
+            bs, unique_data, pair_index, j, i, x, transpose=transpose,
+        )
+        proj = proj / _block_diagonal(bs, unique_data, pair_index, j)
+        out = out - _block_op_apply(
+            bs, unique_data, pair_index, i, j, proj, transpose=transpose,
+        )
+    return out
+
+
+def _power_iteration(
+        matvec: Callable[[JaxArray], JaxArray], n: int, dtype: np.dtype,
+) -> JaxArray:
+    """Estimate the eigenvalue of ``matvec`` with the largest magnitude, sign kept.
+
+    Runs a fixed number of power iteration steps from a deterministic start
+    (``1, 2, ..., n`` normalized), then returns the Rayleigh quotient
+    ``(v . matvec(v)) / (v . v)``. The sign is kept, so a field whose dominant
+    eigenvalue is negative (a pressure block under stabilization) returns a
+    negative estimate.
+    """
+    v0 = jnp.arange(1, n + 1, dtype=dtype)
+    v0 = v0 / jnp.linalg.norm(v0)
+
+    def step(_: int, v: JaxArray) -> JaxArray:
+        av = matvec(v)
+        return av / jnp.linalg.norm(av)
+
+    v = lax.fori_loop(0, _POWER_ITERATION_STEPS, step, v0)
+    av = matvec(v)
+    return jnp.dot(v, av) / jnp.dot(v, v)
+
+
+def _chebyshev_apply(
+        matvec: Callable[[JaxArray], JaxArray], r: JaxArray,
+        lmin: JaxArray, lmax: JaxArray, degree: int,
+) -> JaxArray:
+    """Approximately solve ``A z = r`` with a Chebyshev iteration of fixed degree.
+
+    ``matvec`` applies ``A``; ``[lmin, lmax]`` brackets ``A``'s spectrum, both
+    bounds the same sign, so a negative definite block is handled by passing two
+    negative bounds. The result is a polynomial in ``A`` of degree ``degree``
+    applied to ``r`` that approaches ``A^-1 r`` as the degree grows. Used as a
+    smoother, not run to a tolerance, so it carries no inner convergence test.
+    """
+    theta = (lmax + lmin) / 2.0
+    delta = (lmax - lmin) / 2.0
+    sigma = theta / delta
+    rho0 = 1.0 / sigma
+    z0 = jnp.zeros_like(r)
+    d0 = r / theta
+
+    def step(
+            _: int, carry: tuple[JaxArray, JaxArray, JaxArray, JaxArray],
+    ) -> tuple[JaxArray, JaxArray, JaxArray, JaxArray]:
+        z, res, d, rho = carry
+        z = z + d
+        res = res - matvec(d)
+        rho_next = 1.0 / (2.0 * sigma - rho)
+        d = rho * rho_next * d + (2.0 * rho_next / delta) * res
+        return z, res, d, rho_next
+
+    z, _res, _d, _rho = lax.fori_loop(0, degree, step, (z0, r, d0, rho0))
+    return z
+
+
+def _chebyshev_field_bounds(
+        bs: BlockSparsity, unique_data: JaxArray,
+        pair_index: dict[tuple[int, int], int], diagonal_block: str,
+) -> tuple[tuple[JaxArray, JaxArray], ...]:
+    """Spectrum bracket ``(lmin, lmax)`` for each field's diagonal block.
+
+    For field ``i``, power iteration on the forward diagonal block matvec gives
+    the eigenvalue of largest magnitude with its sign. That end carries a small
+    safety margin: power iteration approaches it from below and the Chebyshev
+    polynomial grows past the bracket, so the dominant end must not sit under the
+    true eigenvalue. The other end is a fixed fraction of it. The pair is ordered
+    so ``lmin <= lmax``; both keep the eigenvalue's sign, so a negative definite
+    block yields two negative bounds. Computed once per solve; a block and its
+    transpose share eigenvalues, so the same bracket serves the transpose sweep.
+    """
+    bounds: list[tuple[JaxArray, JaxArray]] = []
+    for i in range(bs.num_fields):
+        n_i = bs.field_offsets[i + 1] - bs.field_offsets[i]
+
+        def block_matvec(x: JaxArray, i: int = i) -> JaxArray:
+            return _diag_block_matvec(
+                bs, unique_data, pair_index, i, x,
+                diagonal_block=diagonal_block, transpose=False,
+            )
+
+        rho = _power_iteration(block_matvec, n_i, unique_data.dtype)
+        lo = rho * _CHEBYSHEV_LMIN_FRACTION
+        hi = rho * _CHEBYSHEV_LMAX_SAFETY
+        bounds.append((jnp.minimum(lo, hi), jnp.maximum(lo, hi)))
+    return tuple(bounds)
+
+
 def _block_precon_apply(
         bs: BlockSparsity, unique_data: JaxArray,
         pair_index: dict[tuple[int, int], int], r: JaxArray, *,
         coupling: str, diagonal_block: str, inner: str, transpose: bool,
+        chebyshev_degree: int = 0,
+        chebyshev_bounds: tuple[tuple[JaxArray, JaxArray], ...] | None = None,
 ) -> JaxArray:
     """Apply the block preconditioner once: approximately solve ``M z = r``.
 
@@ -590,20 +722,31 @@ def _block_precon_apply(
       (i,j) @ z_j)``, fields in increasing order.
     - ``"upper"``: the same in decreasing order over ``j > i``.
 
-    ``diagonal_block`` must be ``"assembled"`` -- the assembled block ``(i, i)``.
-    ``inner`` must be ``"jacobi"`` -- divide by that block's diagonal.
+    ``inner`` sets the approximate inverse of each field's own block ``(i, i)``:
+    ``"jacobi"`` divides by the assembled block's diagonal; ``"chebyshev"`` runs
+    ``chebyshev_degree`` Chebyshev steps (spectrum bracket per field in
+    ``chebyshev_bounds``) on the diagonal block matvec. ``diagonal_block`` picks
+    that matvec: ``"assembled"`` is the block ``(i, i)`` as stored, ``"schur"``
+    its approximate Schur complement. ``"jacobi"`` pairs only with
+    ``"assembled"``; ``"chebyshev"`` pairs with either.
 
     ``transpose=True`` runs the sweep on the transpose operator for the
     adjoint solve.
     """
-    if diagonal_block != "assembled":
+    if inner not in ("jacobi", "chebyshev"):
+        raise NotImplementedError(
+            f"inner={inner!r} not implemented; "
+            f"only 'jacobi' and 'chebyshev' are available"
+        )
+    if diagonal_block not in ("assembled", "schur"):
         raise NotImplementedError(
             f"diagonal_block={diagonal_block!r} not implemented; "
-            f"only 'assembled' is available"
+            f"only 'assembled' and 'schur' are available"
         )
-    if inner != "jacobi":
+    if inner == "jacobi" and diagonal_block != "assembled":
         raise NotImplementedError(
-            f"inner={inner!r} not implemented; only 'jacobi' is available"
+            "inner='jacobi' supports only diagonal_block='assembled'; "
+            "use inner='chebyshev' for the schur diagonal block"
         )
 
     num_fields = bs.num_fields
@@ -614,8 +757,18 @@ def _block_precon_apply(
     ]
 
     def apply_block_inverse(i: int, rhs: JaxArray) -> JaxArray:
-        # Jacobi: divide by field i's own-block diagonal.
-        return rhs / _block_diagonal(bs, unique_data, pair_index, i)
+        if inner == "jacobi":
+            return rhs / _block_diagonal(bs, unique_data, pair_index, i)
+        assert chebyshev_bounds is not None
+        lmin, lmax = chebyshev_bounds[i]
+
+        def block_matvec(x: JaxArray) -> JaxArray:
+            return _diag_block_matvec(
+                bs, unique_data, pair_index, i, x,
+                diagonal_block=diagonal_block, transpose=transpose,
+            )
+
+        return _chebyshev_apply(block_matvec, rhs, lmin, lmax, chebyshev_degree)
 
     order = (
         range(num_fields) if coupling != "upper"
@@ -643,7 +796,7 @@ def jax_block_gmres(
         K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
         block_sparsity: BlockSparsity, *,
         coupling: str = "lower", diagonal_block: str = "assembled",
-        inner: str = "jacobi",
+        inner: str = "jacobi", degree: int | None = None,
         rtol: float = 1e-10, max_iters: int | None = None,
         restart: int = 20,
 ) -> JaxArray:
@@ -659,17 +812,30 @@ def jax_block_gmres(
     closures, so the derivative rules see only the global matvec --
     gradients and Hessians match the other solvers.
 
-    ``coupling``, ``diagonal_block``, and ``inner`` select the
-    preconditioner.
+    ``coupling``, ``diagonal_block``, and ``inner`` select the preconditioner.
+    ``degree`` matters only when ``inner="chebyshev"`` (it sets the Chebyshev
+    step count); ``None`` selects the built-in default, and the jacobi path
+    ignores it.
     """
     unique_data, matvec = _bcsr_operator(K_data, sparsity)
     pair_index = {pair: k for k, pair in enumerate(block_sparsity.pairs)}
+    if inner == "chebyshev":
+        chebyshev_degree = (
+            _CHEBYSHEV_DEFAULT_DEGREE if degree is None else degree
+        )
+        chebyshev_bounds = _chebyshev_field_bounds(
+            block_sparsity, unique_data, pair_index, diagonal_block,
+        )
+    else:
+        chebyshev_degree = 0
+        chebyshev_bounds = None
 
     def precon_forward(r: JaxArray) -> JaxArray:
         return _block_precon_apply(
             block_sparsity, unique_data, pair_index, r,
             coupling=coupling, diagonal_block=diagonal_block, inner=inner,
             transpose=False,
+            chebyshev_degree=chebyshev_degree, chebyshev_bounds=chebyshev_bounds,
         )
 
     def precon_transpose(r: JaxArray) -> JaxArray:
@@ -677,6 +843,7 @@ def jax_block_gmres(
             block_sparsity, unique_data, pair_index, r,
             coupling=coupling, diagonal_block=diagonal_block, inner=inner,
             transpose=True,
+            chebyshev_degree=chebyshev_degree, chebyshev_bounds=chebyshev_bounds,
         )
 
     def solve(matvec_: Callable[[JaxArray], JaxArray],

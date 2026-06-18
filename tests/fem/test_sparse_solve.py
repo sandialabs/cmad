@@ -16,8 +16,10 @@ from jax.experimental.sparse import BCOO
 from cmad.fem.sparse_solve import (
     BlockSparsity,
     EmbeddedSparsity,
+    _chebyshev_apply,
     _embedded_bc_enforce,
     _near_null_by_field,
+    _power_iteration,
     build_block_sparsity,
     jax_block_gmres,
     jax_cg,
@@ -66,6 +68,19 @@ def _random_nonsymm(n: int, seed: int = 1) -> np.ndarray:
     rng = np.random.default_rng(seed)
     A = np.triu(rng.standard_normal((n, n)))
     return A + n * np.eye(n)
+
+
+def _spd_with_spectrum(eigvals: np.ndarray, seed: int) -> np.ndarray:
+    """Dense SPD matrix with the given eigenvalues in a random orthogonal basis.
+
+    Fixes the spectrum exactly, so the Chebyshev convergence rate and the
+    dominant eigenvalue are known up front rather than left to a random draw's
+    conditioning.
+    """
+    rng = np.random.default_rng(seed)
+    n = eigvals.shape[0]
+    q, _ = np.linalg.qr(rng.standard_normal((n, n)))
+    return (q * eigvals) @ q.T
 
 
 def _random_block_matrix(
@@ -545,6 +560,7 @@ class TestJaxBlockGmresVJP(unittest.TestCase):
         _, vjp_fn = jax.vjp(f, K_data, b)
         gK, gb = vjp_fn(x_bar)
 
+        @jax.jit
         def J(K_data_: JaxArray, b_: JaxArray) -> JaxArray:
             return jnp.dot(x_bar, f(K_data_, b_))
 
@@ -582,6 +598,219 @@ class TestJaxBlockGmresHVP(unittest.TestCase):
             return 0.5 * jnp.sum(x ** 2)
 
         gradJ = jax.grad(J)
+        _, hvp_for = jax.jvp(gradJ, (K_data,), (v,))
+        eps = 1e-4
+        hvp_fd = (gradJ(K_data + eps * v) - gradJ(K_data - eps * v)) / (2 * eps)
+        np.testing.assert_allclose(np.asarray(hvp_for), np.asarray(hvp_fd),
+                                   rtol=1e-3, atol=1e-5)
+
+
+class TestChebyshevApply(unittest.TestCase):
+    """``_chebyshev_apply`` approaches ``A^-1 b`` as the degree grows.
+
+    Drives the recurrence in isolation with exact spectrum bounds, on an SPD
+    matrix and a negative definite one.
+    """
+
+    def _check_converges(self, A: np.ndarray, b_seed: int) -> None:
+        n = A.shape[0]
+        b = jnp.asarray(np.random.default_rng(b_seed).standard_normal(n))
+        x_ref = np.linalg.solve(A, np.asarray(b))
+        eigs = np.linalg.eigvalsh(A)
+        lmin = jnp.asarray(float(eigs.min()))
+        lmax = jnp.asarray(float(eigs.max()))
+        a_jax = jnp.asarray(A)
+
+        def matvec(x: JaxArray) -> JaxArray:
+            return a_jax @ x
+
+        errs = [
+            float(np.linalg.norm(
+                np.asarray(_chebyshev_apply(matvec, b, lmin, lmax, degree))
+                - x_ref,
+            ))
+            for degree in (5, 10, 20)
+        ]
+        for k in range(1, len(errs)):
+            self.assertLess(errs[k], errs[k - 1])
+        self.assertLess(errs[-1], 1e-8)
+
+    def test_spd(self) -> None:
+        eigs = np.linspace(1.0, 4.0, 8)
+        self._check_converges(_spd_with_spectrum(eigs, seed=900), b_seed=901)
+
+    def test_negative_definite(self) -> None:
+        eigs = np.linspace(1.0, 4.0, 8)
+        self._check_converges(-_spd_with_spectrum(eigs, seed=910), b_seed=911)
+
+
+class TestPowerIteration(unittest.TestCase):
+    """``_power_iteration`` recovers the dominant eigenvalue, sign kept."""
+
+    def _dominant(self, A: np.ndarray) -> float:
+        a_jax = jnp.asarray(A)
+
+        def matvec(x: JaxArray) -> JaxArray:
+            return a_jax @ x
+
+        return float(_power_iteration(matvec, A.shape[0], A.dtype))
+
+    def test_spd_positive(self) -> None:
+        eigs = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 20.0])
+        A = _spd_with_spectrum(eigs, seed=920)
+        self.assertAlmostEqual(self._dominant(A), 20.0, places=4)
+
+    def test_negative_definite_sign(self) -> None:
+        eigs = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 20.0])
+        A = -_spd_with_spectrum(eigs, seed=930)
+        self.assertAlmostEqual(self._dominant(A), -20.0, places=4)
+
+
+class TestJaxBlockGmresChebyshevForward(unittest.TestCase):
+    """Forward solve for ``jax_block_gmres`` with the chebyshev inner vs dense.
+
+    Covers two and three fields and the assembled and schur diagonal blocks.
+    With ``restart=n`` GMRES reaches the exact solution regardless of the
+    preconditioner, so this checks that the chebyshev machinery runs and stays
+    consistent on the forward and transpose sweeps. The coupling sweep is
+    independent of the inner solve and is covered by the jacobi forward test.
+    """
+
+    def test_matches_dense(self) -> None:
+        cases = [(4, 2), (3, 2, 2)]
+        for seed, field_sizes in enumerate(cases):
+            K, offsets = _random_block_matrix(
+                field_sizes, symmetric=False, seed=800 + seed,
+            )
+            n = K.shape[0]
+            K_data, sparsity, bs = _dense_to_block_cache(K, offsets)
+            b = jnp.asarray(
+                np.random.default_rng(810 + seed).standard_normal(n),
+            )
+            x_ref = np.linalg.solve(K, np.asarray(b))
+            for diagonal_block in ("assembled", "schur"):
+                with self.subTest(field_sizes=field_sizes,
+                                  diagonal_block=diagonal_block):
+                    x = jax_block_gmres(
+                        K_data, sparsity, b, bs, coupling="lower",
+                        diagonal_block=diagonal_block, inner="chebyshev",
+                        degree=10, rtol=1e-12, max_iters=8, restart=n,
+                    )
+                    np.testing.assert_allclose(
+                        np.asarray(x), x_ref, rtol=1e-7, atol=1e-9,
+                    )
+
+
+class TestJaxBlockGmresChebyshevJVP(unittest.TestCase):
+    """Forward-mode JVP vs FD for the chebyshev inner (assembled and schur)."""
+
+    def test_jvp_K_and_b(self) -> None:
+        K, offsets = _random_block_matrix((4, 2), symmetric=False, seed=820)
+        n = K.shape[0]
+        K_data, sparsity, bs = _dense_to_block_cache(K, offsets)
+        b = jnp.asarray(np.random.default_rng(821).standard_normal(n))
+        rng = np.random.default_rng(822)
+        K_data_dot = jnp.asarray(rng.standard_normal(K_data.shape[0]))
+        b_dot = jnp.asarray(rng.standard_normal(n))
+
+        for diagonal_block in ("assembled", "schur"):
+            with self.subTest(diagonal_block=diagonal_block):
+                def f(K_data_: JaxArray, b_: JaxArray,
+                      diagonal_block: str = diagonal_block) -> JaxArray:
+                    return jax_block_gmres(
+                        K_data_, sparsity, b_, bs, coupling="lower",
+                        diagonal_block=diagonal_block, inner="chebyshev",
+                        degree=10, rtol=1e-12, max_iters=8, restart=n,
+                    )
+
+                _, jvp_out = jax.jvp(f, (K_data, b), (K_data_dot, b_dot))
+                jvp_fd = _fd_jvp(
+                    jax.jit(f), (K_data, b), (K_data_dot, b_dot), eps=1e-6,
+                )
+                np.testing.assert_allclose(
+                    np.asarray(jvp_out), np.asarray(jvp_fd),
+                    rtol=1e-5, atol=1e-7,
+                )
+
+
+class TestJaxBlockGmresChebyshevVJP(unittest.TestCase):
+    """Reverse-mode VJP vs FD for the chebyshev inner (assembled and schur).
+
+    Exercises the transpose_solve path -- the block sweep on the transpose
+    operator with the chebyshev inner, including the matrix-free schur transpose
+    the adjoint relies on.
+    """
+
+    def test_vjp_K_and_b(self) -> None:
+        K, offsets = _random_block_matrix((4, 2), symmetric=False, seed=830)
+        n = K.shape[0]
+        K_data, sparsity, bs = _dense_to_block_cache(K, offsets)
+        b = jnp.asarray(np.random.default_rng(831).standard_normal(n))
+        x_bar = jnp.asarray(np.random.default_rng(832).standard_normal(n))
+
+        for diagonal_block in ("assembled", "schur"):
+            with self.subTest(diagonal_block=diagonal_block):
+                def f(K_data_: JaxArray, b_: JaxArray,
+                      diagonal_block: str = diagonal_block) -> JaxArray:
+                    return jax_block_gmres(
+                        K_data_, sparsity, b_, bs, coupling="lower",
+                        diagonal_block=diagonal_block, inner="chebyshev",
+                        degree=10, rtol=1e-12, max_iters=8, restart=n,
+                    )
+
+                _, vjp_fn = jax.vjp(f, K_data, b)
+                gK, gb = vjp_fn(x_bar)
+
+                @jax.jit
+                def big_j(K_data_: JaxArray, b_: JaxArray) -> JaxArray:
+                    return jnp.dot(x_bar, f(K_data_, b_))
+
+                eps = 1e-6
+                gK_fd = np.zeros_like(np.asarray(K_data))
+                for i in range(K_data.shape[0]):
+                    ei = jnp.zeros_like(K_data).at[i].set(eps)
+                    gK_fd[i] = (
+                        big_j(K_data + ei, b) - big_j(K_data - ei, b)
+                    ) / (2 * eps)
+                gb_fd = np.zeros_like(np.asarray(b))
+                for i in range(b.shape[0]):
+                    ei = jnp.zeros_like(b).at[i].set(eps)
+                    gb_fd[i] = (
+                        big_j(K_data, b + ei) - big_j(K_data, b - ei)
+                    ) / (2 * eps)
+
+                np.testing.assert_allclose(np.asarray(gK), gK_fd,
+                                           rtol=1e-5, atol=1e-7)
+                np.testing.assert_allclose(np.asarray(gb), gb_fd,
+                                           rtol=1e-5, atol=1e-7)
+
+
+class TestJaxBlockGmresChebyshevHVP(unittest.TestCase):
+    """HVP via forward-over-reverse vs FD for the chebyshev inner (schur).
+
+    The forward-over-reverse path is the shared ``custom_linear_solve`` wrapper
+    the jacobi HVP already covers; this confirms it carries through the chebyshev
+    schur precon (forward and matrix-free transpose) at second order.
+    """
+
+    def test_hvp_K(self) -> None:
+        K, offsets = _random_block_matrix((4, 2), symmetric=False, seed=840)
+        n = K.shape[0]
+        K_data, sparsity, bs = _dense_to_block_cache(K, offsets)
+        b = jnp.asarray(np.random.default_rng(841).standard_normal(n))
+        v = jnp.asarray(
+            np.random.default_rng(842).standard_normal(K_data.shape[0]),
+        )
+
+        def big_j(K_data_: JaxArray) -> JaxArray:
+            x = jax_block_gmres(
+                K_data_, sparsity, b, bs, coupling="lower",
+                diagonal_block="schur", inner="chebyshev",
+                degree=10, rtol=1e-12, max_iters=8, restart=n,
+            )
+            return 0.5 * jnp.sum(x ** 2)
+
+        gradJ = jax.jit(jax.grad(big_j))
         _, hvp_for = jax.jvp(gradJ, (K_data,), (v,))
         eps = 1e-4
         hvp_fd = (gradJ(K_data + eps * v) - gradJ(K_data - eps * v)) / (2 * eps)
