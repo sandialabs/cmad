@@ -512,6 +512,20 @@ class TestMixed(unittest.TestCase):
         self.assertTrue(bundle.fe_problem.gr.mixed)
         self.assertIsNotNone(bundle.fe_problem.block_sparsity)
 
+    def test_mixed_accepts_block_gmres_chebyshev(self) -> None:
+        deck = self._mixed_deck()
+        deck["linear solver"] = {
+            "type": "gmres",
+            "preconditioner": {
+                "type": "block", "coupling": "lower",
+                "diagonal_block": "schur", "inner": "chebyshev", "degree": 4,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
+        self.assertTrue(bundle.fe_problem.gr.mixed)
+        self.assertIsNotNone(bundle.fe_problem.block_sparsity)
+
     def test_mixed_rejects_low_volume_quadrature(self) -> None:
         deck = self._mixed_deck()
         deck["discretization"]["quadrature"] = {"volume degree": 1}

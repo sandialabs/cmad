@@ -40,4 +40,7 @@ properties:
             enum: [assembled, schur]
           inner:
             type: string
-            enum: [jacobi, amg]
+            enum: [jacobi, chebyshev, amg]
+          degree:
+            type: integer
+            minimum: 1
