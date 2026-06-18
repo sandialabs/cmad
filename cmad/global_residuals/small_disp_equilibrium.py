@@ -30,17 +30,18 @@ class SmallDispEquilibrium(GlobalResidual):
 
     - **mixed** (displacement-pressure, stabilized equal order): two
       blocks, ``u`` (VECTOR, "equilibrium") and ``p`` (SCALAR,
-      "pressure"). The momentum stress is ``sigma = dev - p*I`` with
-      ``dev = model.dev_cauchy_closed_form(...)`` -- the deviatoric part
-      from the displacement, the hydrostatic part from the pressure dof.
-      The pressure block weakly ties ``p`` to
-      ``-model.hydro_cauchy_closed_form(...)`` and adds a pressure-
-      gradient term ``tau * grad(p).grad(q)`` that supplies the inf-sup
-      stability equal-order pairs lack, with ``tau = mult * 0.5 * h^2 /
-      mu`` (``mu = model.shear_scale_factor``, ``h`` the element size).
-      Mixed needs a model with ``supports_mixed`` and is bound
-      CLOSED_FORM (the COUPLED plastic case is a later stage). It is
-      restricted to ``ndims == 3`` for now.
+      "pressure"). The momentum stress is ``sigma = dev - p*I`` -- the
+      deviatoric part from the model, the hydrostatic part from the
+      pressure dof. The pressure block weakly ties ``p`` to ``-hydro``
+      and adds a pressure-gradient term ``tau * grad(p).grad(q)`` that
+      supplies the inf-sup stability equal-order pairs lack, with
+      ``tau = mult * 0.5 * h^2 / mu`` (``mu = model.shear_scale_factor``,
+      ``h`` the element size). The ``dev`` and ``hydro`` parts come from
+      the model's ``dev_cauchy_closed_form`` / ``hydro_cauchy_closed_form``
+      when bound CLOSED_FORM (elastic) and from ``dev_cauchy`` /
+      ``hydro_cauchy`` (reading the converged local state) when bound
+      COUPLED (plastic). Mixed needs a model with ``supports_mixed`` and
+      is restricted to ``ndims == 3`` for now.
 
     The body-force contribution ``f_ext = N · b · w · dv`` is applied by
     the assembly layer (not inside residual_fn) so this GR stays
@@ -84,12 +85,20 @@ class SmallDispEquilibrium(GlobalResidual):
             U_ip_prev = self.interpolate_global_fields_at_ip(U_prev, shapes_ip)
 
             if self._mixed:
-                dev = model.dev_cauchy_closed_form(params, U_ip, U_ip_prev)
+                if mode == GlobalResidualMode.CLOSED_FORM:
+                    dev = model.dev_cauchy_closed_form(
+                        params, U_ip, U_ip_prev)
+                    hydro = model.hydro_cauchy_closed_form(
+                        params, U_ip, U_ip_prev)
+                else:
+                    dev = model.dev_cauchy(
+                        xi, xi_prev, params, U_ip, U_ip_prev)
+                    hydro = model.hydro_cauchy(
+                        xi, xi_prev, params, U_ip, U_ip_prev)
                 p = U_ip.fields["p"][0]
                 sigma = dev - p * jnp.eye(self._ndims)
                 R_u = (shapes_ip[0].grad_N @ sigma) * w * dv
 
-                hydro = model.hydro_cauchy_closed_form(params, U_ip, U_ip_prev)
                 psf = model.pressure_scale_factor(params)
                 mu = model.shear_scale_factor(params)
                 tau = self._stabilization_multiplier * 0.5 * h ** 2 / mu
