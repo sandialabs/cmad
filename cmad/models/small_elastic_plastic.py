@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from functools import partial
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import jax.numpy as jnp
 import numpy as np
@@ -9,6 +9,7 @@ from jax import grad
 from cmad.io.registry import register_model
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.effective_stress import conventional_effective_stress_fun
+from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.elastic_stress import (
     isotropic_linear_elastic_stress,
     two_mu_scale_factor,
@@ -26,7 +27,7 @@ from cmad.models.var_types import (
     get_vector_from_sym_tensor,
 )
 from cmad.parameters.parameters import Parameters
-from cmad.typing import JaxArray, StateList
+from cmad.typing import JaxArray, Scalar, StateList
 
 
 def compute_elastic_strain(
@@ -98,6 +99,8 @@ class SmallElasticPlastic(Model):
     Elastic: Modular linear elasticity
     Plastic: Modular effective stress and hardening
     """
+
+    supports_mixed: ClassVar[bool] = True
 
     _def_type: int
     _ndims: int
@@ -316,3 +319,29 @@ class SmallElasticPlastic(Model):
         global_cauchy = Q @ material_cauchy @ Q.T
 
         return global_cauchy
+
+    def dev_cauchy(
+            self,
+            xi: StateList, xi_prev: StateList, params: dict[str, Any],
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+    ) -> JaxArray:
+        cauchy = self.cauchy(xi, xi_prev, params, U, U_prev)
+        return cauchy - jnp.trace(cauchy) / 3. * jnp.eye(3)
+
+    @staticmethod
+    def hydro_cauchy(
+            xi: StateList, xi_prev: StateList, params: dict[str, Any],
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+    ) -> Scalar:
+        grad_u = U.grad_fields["u"]
+        eps = 0.5 * (grad_u + grad_u.T)
+        return ElasticConstants.from_params(params["elastic"]).kappa \
+            * jnp.trace(eps)
+
+    @staticmethod
+    def pressure_scale_factor(params: dict[str, Any]) -> Scalar:
+        return ElasticConstants.from_params(params["elastic"]).kappa
+
+    @staticmethod
+    def shear_scale_factor(params: dict[str, Any]) -> Scalar:
+        return ElasticConstants.from_params(params["elastic"]).mu
