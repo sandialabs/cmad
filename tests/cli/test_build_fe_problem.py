@@ -83,16 +83,17 @@ def _two_block_mesh() -> Mesh:
 def _build_bundle(
         deck: dict[str, Any], mesh: Mesh, tmp: Path,
 ) -> FEProblemBundle:
-    """Write the deck and build, with ``read_mesh`` patched to return ``mesh``.
+    """Write the deck and build, with ``read_mesh_file`` patched to return
+    ``mesh``.
 
     Patches the symbol where the builder imports it
-    (``cmad.cli.common.read_mesh``) so disk I/O for the mesh file is
-    skipped — Exodus reader correctness is covered by tests in
-    ``tests/io/test_exodus.py``.
+    (``cmad.cli.common.read_mesh_file``) so disk I/O for the mesh file is
+    skipped — reader correctness is covered by ``tests/io/test_exodus.py``
+    and ``tests/io/test_gmsh.py``.
     """
     deck_path = tmp / "deck.yaml"
     deck_path.write_text(yaml.safe_dump(deck, sort_keys=False))
-    with patch("cmad.cli.common.read_mesh", return_value=mesh):
+    with patch("cmad.cli.common.read_mesh_file", return_value=mesh):
         return build_fe_problem_from_deck(deck_path, "primal")
 
 

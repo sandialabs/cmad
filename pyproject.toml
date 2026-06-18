@@ -22,6 +22,7 @@ dependencies = [
     "jsonschema",
     "pyyaml",
     "netCDF4",
+    "gmsh",
     "pyamg",
 ]
 

@@ -38,8 +38,8 @@ from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.deck import apply_deck_defaults, load_deck
 from cmad.io.deformation import load_history
-from cmad.io.exodus import read_mesh
 from cmad.io.expressions import parse_scalar_expression
+from cmad.io.mesh_io import read_mesh_file
 from cmad.io.params_builder import build_parameters
 from cmad.io.qoi_data import load_qoi_data
 from cmad.io.registry import (
@@ -306,7 +306,7 @@ def build_fe_problem_from_deck(
     validate_deck(resolved, subcommand)
 
     mesh_path = Path(resolved["discretization"]["mesh file"])
-    mesh = read_mesh(mesh_path)
+    mesh = read_mesh_file(mesh_path)
     if resolved["discretization"].get("build coordinate sidesets", False):
         built = coordinate_side_sets(mesh)
         clash = sorted(set(built) & set(mesh.side_sets))
