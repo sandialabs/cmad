@@ -31,6 +31,7 @@ import scipy.sparse.linalg
 from jax import lax
 from jax.experimental.sparse import BCOO, BCSR
 from jax.tree_util import register_pytree_node_class
+from numpy.typing import NDArray
 
 from cmad.typing import JaxArray
 
@@ -514,6 +515,191 @@ def scipy_amg_cg(
     )
 
 
+def _block_op_apply(
+        bs: BlockSparsity, unique_data: JaxArray,
+        pair_index: dict[tuple[int, int], int],
+        i: int, j: int, x: JaxArray, *, transpose: bool,
+) -> JaxArray:
+    """Multiply one field block of the operator by a vector.
+
+    The unknowns are grouped by field, so the operator splits into blocks:
+    block ``(i, j)`` couples field ``j``'s unknowns to field ``i``'s
+    equations. This applies that one block, taking a field-``j`` vector to
+    a field-``i`` vector.
+
+    ``transpose=True`` applies the transpose operator's ``(i, j)`` block,
+    which is the stored ``(j, i)`` block with its rows and columns swapped.
+    Each block holds the global matrix entries that lie in it; the product
+    is a scatter-add, so swapping the gather and scatter indices transposes
+    it. An empty field pair contributes nothing.
+    """
+    n_i = bs.field_offsets[i + 1] - bs.field_offsets[i]
+    if not transpose:
+        key = (i, j)
+        if key not in pair_index:
+            return jnp.zeros(n_i, dtype=unique_data.dtype)
+        k = pair_index[key]
+        data = unique_data[bs.global_data_indices[k]]
+        return jnp.zeros(n_i, dtype=unique_data.dtype).at[bs.local_rows[k]].add(
+            data * x[bs.local_cols[k]],
+        )
+    key = (j, i)
+    if key not in pair_index:
+        return jnp.zeros(n_i, dtype=unique_data.dtype)
+    k = pair_index[key]
+    data = unique_data[bs.global_data_indices[k]]
+    return jnp.zeros(n_i, dtype=unique_data.dtype).at[bs.local_cols[k]].add(
+        data * x[bs.local_rows[k]],
+    )
+
+
+def _block_diagonal(
+        bs: BlockSparsity, unique_data: JaxArray,
+        pair_index: dict[tuple[int, int], int], i: int,
+) -> JaxArray:
+    """Main diagonal of field ``i``'s own block ``(i, i)``.
+
+    Unchanged by transposing, so the Jacobi inverse is the same on the
+    forward and transpose sweeps.
+    """
+    n_i = bs.field_offsets[i + 1] - bs.field_offsets[i]
+    k = pair_index[(i, i)]
+    data = unique_data[bs.global_data_indices[k]]
+    rows = bs.local_rows[k]
+    cols = bs.local_cols[k]
+    return jnp.zeros(n_i, dtype=unique_data.dtype).at[rows].add(
+        jnp.where(rows == cols, data, 0.0),
+    )
+
+
+def _block_precon_apply(
+        bs: BlockSparsity, unique_data: JaxArray,
+        pair_index: dict[tuple[int, int], int], r: JaxArray, *,
+        coupling: str, diagonal_block: str, inner: str, transpose: bool,
+) -> JaxArray:
+    """Apply the block preconditioner once: approximately solve ``M z = r``.
+
+    ``M`` approximates the global tangent from its field blocks. Writing
+    ``r_i`` for field ``i``'s part of ``r`` and ``solve_i`` for the
+    approximate inverse of field ``i``'s own block ``(i, i)``, the sweep
+    over fields is:
+
+    - ``"diagonal"`` (block Jacobi): ``z_i = solve_i(r_i)``, each field
+      independent.
+    - ``"lower"`` (block Gauss-Seidel): ``z_i = solve_i(r_i - sum_{j<i}
+      (i,j) @ z_j)``, fields in increasing order.
+    - ``"upper"``: the same in decreasing order over ``j > i``.
+
+    ``diagonal_block`` must be ``"raw"`` -- the assembled block ``(i, i)``.
+    ``inner`` must be ``"jacobi"`` -- divide by that block's diagonal.
+
+    ``transpose=True`` runs the sweep on the transpose operator for the
+    adjoint solve.
+    """
+    if diagonal_block != "raw":
+        raise NotImplementedError(
+            f"diagonal_block={diagonal_block!r} not implemented; "
+            f"only 'raw' is available"
+        )
+    if inner != "jacobi":
+        raise NotImplementedError(
+            f"inner={inner!r} not implemented; only 'jacobi' is available"
+        )
+
+    num_fields = bs.num_fields
+    offs = bs.field_offsets
+    r_fields = [r[offs[i]:offs[i + 1]] for i in range(num_fields)]
+    z_fields: list[JaxArray] = [
+        jnp.zeros_like(r_fields[i]) for i in range(num_fields)
+    ]
+
+    def apply_block_inverse(i: int, rhs: JaxArray) -> JaxArray:
+        # Jacobi: divide by field i's own-block diagonal.
+        return rhs / _block_diagonal(bs, unique_data, pair_index, i)
+
+    order = (
+        range(num_fields) if coupling != "upper"
+        else range(num_fields - 1, -1, -1)
+    )
+    for i in order:
+        rhs = r_fields[i]
+        if coupling == "lower":
+            for j in range(i):
+                rhs = rhs - _block_op_apply(
+                    bs, unique_data, pair_index, i, j,
+                    z_fields[j], transpose=transpose,
+                )
+        elif coupling == "upper":
+            for j in range(i + 1, num_fields):
+                rhs = rhs - _block_op_apply(
+                    bs, unique_data, pair_index, i, j,
+                    z_fields[j], transpose=transpose,
+                )
+        z_fields[i] = apply_block_inverse(i, rhs)
+    return jnp.concatenate(z_fields)
+
+
+def jax_block_gmres(
+        K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
+        block_sparsity: BlockSparsity, *,
+        coupling: str = "lower", diagonal_block: str = "raw",
+        inner: str = "jacobi",
+        rtol: float = 1e-10, max_iters: int | None = None,
+        restart: int = 20,
+) -> JaxArray:
+    """Solve ``K x = b`` with GMRES and a block preconditioner.
+
+    GMRES drives the same global matvec as the other solvers; the
+    preconditioner is the field-block sweep of :func:`_block_precon_apply`
+    over the partition in ``block_sparsity``. Fully JAX-native, so it
+    composes with :func:`jax.vmap` and runs on GPU.
+
+    Differentiation goes through :func:`jax.lax.custom_linear_solve`, with
+    the preconditioner confined to the ``solve`` and ``transpose_solve``
+    closures, so the derivative rules see only the global matvec --
+    gradients and Hessians match the other solvers.
+
+    ``coupling``, ``diagonal_block``, and ``inner`` select the
+    preconditioner.
+    """
+    unique_data, matvec = _bcsr_operator(K_data, sparsity)
+    pair_index = {pair: k for k, pair in enumerate(block_sparsity.pairs)}
+
+    def precon_forward(r: JaxArray) -> JaxArray:
+        return _block_precon_apply(
+            block_sparsity, unique_data, pair_index, r,
+            coupling=coupling, diagonal_block=diagonal_block, inner=inner,
+            transpose=False,
+        )
+
+    def precon_transpose(r: JaxArray) -> JaxArray:
+        return _block_precon_apply(
+            block_sparsity, unique_data, pair_index, r,
+            coupling=coupling, diagonal_block=diagonal_block, inner=inner,
+            transpose=True,
+        )
+
+    def solve(matvec_: Callable[[JaxArray], JaxArray],
+              rhs: JaxArray) -> JaxArray:
+        x, _info = jax.scipy.sparse.linalg.gmres(
+            matvec_, rhs, M=precon_forward, tol=rtol, maxiter=max_iters,
+            restart=restart,
+        )
+        return x
+
+    def transpose_solve(vecmat: Callable[[JaxArray], JaxArray],
+                        rhs: JaxArray) -> JaxArray:
+        x, _info = jax.scipy.sparse.linalg.gmres(
+            vecmat, rhs, M=precon_transpose, tol=rtol, maxiter=max_iters,
+            restart=restart,
+        )
+        return x
+
+    return lax.custom_linear_solve(
+        matvec, b, solve, transpose_solve=transpose_solve, symmetric=False,
+    )
+
+
 def _embedded_bc_enforce(
         K_bcoo: BCOO, presc_idx: JaxArray,
 ) -> tuple[JaxArray, JaxArray]:
@@ -806,4 +992,112 @@ def build_embedded_sparsity(
         indptr=jnp.asarray(indptr),
         col_indices=jnp.asarray(col_indices),
         diag_idx=jnp.asarray(diag_idx),
+    )
+
+
+@register_pytree_node_class
+@dataclass(frozen=True)
+class BlockSparsity:
+    """Field partition of the global tangent's sparsity.
+
+    The unknowns are grouped by field, so the global matrix splits into
+    blocks, one per pair of fields. This records, for each field pair that
+    holds any entries, where those entries sit in the deduped global data
+    and their row and column positions within the block, so the block
+    preconditioner can multiply by one field block at a time without
+    re-deriving the layout every solve.
+
+    Fields:
+
+    - ``field_offsets``: each field's start in the global vector, with the
+      total length last (length one more than the field count).
+    - ``pairs``: the ``(i, j)`` field pairs that hold entries.
+    - ``global_data_indices``: per pair, the position of each block entry in
+      the deduped global data.
+    - ``local_rows`` / ``local_cols``: per pair, the row and column index
+      of each entry within the block.
+
+    Registered as a JAX pytree: the per-pair arrays are the children;
+    ``field_offsets`` and ``pairs`` are static.
+    """
+    field_offsets: tuple[int, ...]
+    pairs: tuple[tuple[int, int], ...]
+    global_data_indices: tuple[JaxArray, ...]
+    local_rows: tuple[JaxArray, ...]
+    local_cols: tuple[JaxArray, ...]
+
+    @property
+    def num_fields(self) -> int:
+        """Number of fields the global vector is partitioned into."""
+        return len(self.field_offsets) - 1
+
+    def tree_flatten(
+            self,
+    ) -> tuple[
+        tuple[tuple[JaxArray, ...], ...],
+        tuple[tuple[int, ...], tuple[tuple[int, int], ...]],
+    ]:
+        children = (self.global_data_indices, self.local_rows, self.local_cols)
+        aux_data = (self.field_offsets, self.pairs)
+        return children, aux_data
+
+    @classmethod
+    def tree_unflatten(
+            cls,
+            aux_data: tuple[tuple[int, ...], tuple[tuple[int, int], ...]],
+            children: tuple[tuple[JaxArray, ...], ...],
+    ) -> BlockSparsity:
+        field_offsets, pairs = aux_data
+        global_data_indices, local_rows, local_cols = children
+        return cls(
+            field_offsets=field_offsets, pairs=pairs,
+            global_data_indices=global_data_indices,
+            local_rows=local_rows, local_cols=local_cols,
+        )
+
+
+def build_block_sparsity(
+        embedded_sparsity: EmbeddedSparsity,
+        block_offsets: NDArray[np.intp],
+) -> BlockSparsity:
+    """Build the :class:`BlockSparsity` for a field-major DOF layout.
+
+    ``block_offsets`` gives each field's boundaries: field ``i`` owns the
+    global indices ``block_offsets[i]`` up to ``block_offsets[i + 1]``.
+    Each unique entry of the deduped global sparsity is sorted into its
+    field block by the field of its row and the field of its column.
+    """
+    offsets = np.asarray(block_offsets, dtype=np.intp)
+    num_fields = offsets.shape[0] - 1
+    n = int(offsets[-1])
+    indptr = np.asarray(embedded_sparsity.indptr)
+    col_indices = np.asarray(embedded_sparsity.col_indices)
+    unique_rows = np.repeat(np.arange(n, dtype=np.intp), np.diff(indptr))
+    field_of_row = np.searchsorted(offsets, unique_rows, side="right") - 1
+    field_of_col = np.searchsorted(offsets, col_indices, side="right") - 1
+
+    pairs: list[tuple[int, int]] = []
+    global_data_indices: list[JaxArray] = []
+    local_rows: list[JaxArray] = []
+    local_cols: list[JaxArray] = []
+    for i in range(num_fields):
+        for j in range(num_fields):
+            sel = np.where((field_of_row == i) & (field_of_col == j))[0]
+            if sel.shape[0] == 0:
+                continue
+            pairs.append((i, j))
+            global_data_indices.append(jnp.asarray(sel.astype(np.intp)))
+            local_rows.append(
+                jnp.asarray((unique_rows[sel] - int(offsets[i])).astype(np.intp)),
+            )
+            local_cols.append(
+                jnp.asarray((col_indices[sel] - int(offsets[j])).astype(np.intp)),
+            )
+
+    return BlockSparsity(
+        field_offsets=tuple(int(x) for x in offsets),
+        pairs=tuple(pairs),
+        global_data_indices=tuple(global_data_indices),
+        local_rows=tuple(local_rows),
+        local_cols=tuple(local_cols),
     )

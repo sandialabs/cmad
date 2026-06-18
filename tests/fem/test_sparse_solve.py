@@ -14,8 +14,11 @@ import numpy as np
 from jax.experimental.sparse import BCOO
 
 from cmad.fem.sparse_solve import (
+    BlockSparsity,
     EmbeddedSparsity,
     _embedded_bc_enforce,
+    build_block_sparsity,
+    jax_block_gmres,
     jax_cg,
     jax_gmres,
     scipy_amg_cg,
@@ -61,6 +64,51 @@ def _random_nonsymm(n: int, seed: int = 1) -> np.ndarray:
     rng = np.random.default_rng(seed)
     A = np.triu(rng.standard_normal((n, n)))
     return A + n * np.eye(n)
+
+
+def _random_block_matrix(
+        field_sizes: tuple[int, ...], *, symmetric: bool, seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Indefinite block matrix with the given field sizes.
+
+    Each diagonal block is SPD, with the last one negated so the whole
+    matrix is indefinite; the off-diagonal blocks are small. With
+    ``symmetric=True`` the cross blocks are transposes of each other,
+    otherwise they are independent. Returns ``(K, field_offsets)``.
+    """
+    rng = np.random.default_rng(seed)
+    offsets = np.concatenate([[0], np.cumsum(field_sizes)]).astype(np.intp)
+    n = int(offsets[-1])
+    num_fields = len(field_sizes)
+    K = np.zeros((n, n))
+    for a in range(num_fields):
+        s, e = int(offsets[a]), int(offsets[a + 1])
+        m = e - s
+        block = rng.standard_normal((m, m))
+        spd = block @ block.T + m * np.eye(m)
+        K[s:e, s:e] = spd if a < num_fields - 1 else -spd
+    for a in range(num_fields):
+        for c in range(a + 1, num_fields):
+            sa, ea = int(offsets[a]), int(offsets[a + 1])
+            sc, ec = int(offsets[c]), int(offsets[c + 1])
+            cross = 0.3 * rng.standard_normal((ea - sa, ec - sc))
+            K[sa:ea, sc:ec] = cross
+            K[sc:ec, sa:ea] = (
+                cross.T if symmetric
+                else 0.3 * rng.standard_normal((ec - sc, ea - sa))
+            )
+    return K, offsets
+
+
+def _dense_to_block_cache(
+        K_dense: np.ndarray, field_offsets: np.ndarray,
+) -> tuple[JaxArray, EmbeddedSparsity, BlockSparsity]:
+    """``_dense_to_cache`` plus the matching :class:`BlockSparsity`."""
+    K_data, sparsity = _dense_to_cache(K_dense)
+    block_sparsity = build_block_sparsity(
+        sparsity, np.asarray(field_offsets, dtype=np.intp),
+    )
+    return K_data, sparsity, block_sparsity
 
 
 class TestScipyLuForward(unittest.TestCase):
@@ -387,6 +435,156 @@ class TestEmbeddedBCEnforce(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(K_ii_presc),
                                    np.asarray([20.0, 30.0]),
                                    rtol=1e-12, atol=1e-14)
+
+
+class TestBuildBlockSparsity(unittest.TestCase):
+    """:func:`build_block_sparsity` partitions the global sparsity by field."""
+
+    def test_partition_recovers_matrix(self) -> None:
+        K, offsets = _random_block_matrix((4, 2), symmetric=False, seed=100)
+        K_data, _sparsity, bs = _dense_to_block_cache(K, offsets)
+
+        self.assertEqual(bs.num_fields, 2)
+        self.assertEqual(set(bs.pairs), {(0, 0), (0, 1), (1, 0), (1, 1)})
+
+        # Reassemble each field block from its recorded entries and confirm
+        # the result matches the original dense matrix.
+        unique_data = np.asarray(K_data)
+        recovered = np.zeros_like(K)
+        for k, (i, j) in enumerate(bs.pairs):
+            si, sj = int(offsets[i]), int(offsets[j])
+            data = unique_data[np.asarray(bs.global_data_indices[k])]
+            rows = np.asarray(bs.local_rows[k])
+            cols = np.asarray(bs.local_cols[k])
+            recovered[si + rows, sj + cols] = data
+        np.testing.assert_allclose(recovered, K, rtol=1e-12, atol=1e-14)
+
+
+class TestJaxBlockGmresForward(unittest.TestCase):
+    """Forward-solve correctness for ``jax_block_gmres`` vs a dense solve.
+
+    Covers two and three fields, symmetric and non-symmetric block
+    matrices, and all three couplings -- every case through the one
+    ``symmetric=False`` path.
+    """
+
+    def test_matches_dense(self) -> None:
+        cases = [
+            ((4, 2), True), ((4, 2), False),
+            ((3, 2, 2), True), ((3, 2, 2), False),
+        ]
+        for seed, (field_sizes, symmetric) in enumerate(cases):
+            K, offsets = _random_block_matrix(
+                field_sizes, symmetric=symmetric, seed=200 + seed,
+            )
+            n = K.shape[0]
+            K_data, sparsity, bs = _dense_to_block_cache(K, offsets)
+            b = jnp.asarray(
+                np.random.default_rng(300 + seed).standard_normal(n),
+            )
+            x_ref = np.linalg.solve(K, np.asarray(b))
+            for coupling in ("diagonal", "lower", "upper"):
+                with self.subTest(field_sizes=field_sizes,
+                                  symmetric=symmetric, coupling=coupling):
+                    x = jax_block_gmres(
+                        K_data, sparsity, b, bs, coupling=coupling,
+                        rtol=1e-12, max_iters=4, restart=n,
+                    )
+                    np.testing.assert_allclose(
+                        np.asarray(x), x_ref, rtol=1e-7, atol=1e-9,
+                    )
+
+
+class TestJaxBlockGmresJVP(unittest.TestCase):
+    """Forward-mode JVP vs central-difference FD (non-symmetric blocks)."""
+
+    def test_jvp_K_and_b(self) -> None:
+        K, offsets = _random_block_matrix((4, 2), symmetric=False, seed=400)
+        n = K.shape[0]
+        K_data, sparsity, bs = _dense_to_block_cache(K, offsets)
+        b = jnp.asarray(np.random.default_rng(401).standard_normal(n))
+
+        rng = np.random.default_rng(402)
+        K_data_dot = jnp.asarray(rng.standard_normal(K_data.shape[0]))
+        b_dot = jnp.asarray(rng.standard_normal(n))
+
+        def f(K_data_: JaxArray, b_: JaxArray) -> JaxArray:
+            return jax_block_gmres(
+                K_data_, sparsity, b_, bs, coupling="lower",
+                rtol=1e-12, max_iters=4, restart=n,
+            )
+
+        _, jvp_out = jax.jvp(f, (K_data, b), (K_data_dot, b_dot))
+        jvp_fd = _fd_jvp(f, (K_data, b), (K_data_dot, b_dot), eps=1e-6)
+        np.testing.assert_allclose(np.asarray(jvp_out), np.asarray(jvp_fd),
+                                   rtol=1e-5, atol=1e-7)
+
+
+class TestJaxBlockGmresVJP(unittest.TestCase):
+    """Reverse-mode VJP vs central-difference FD (non-symmetric blocks).
+
+    Exercises the ``transpose_solve`` path -- the block sweep on the
+    transpose operator -- that the adjoint gradient relies on.
+    """
+
+    def test_vjp_K_and_b(self) -> None:
+        K, offsets = _random_block_matrix((4, 2), symmetric=False, seed=500)
+        n = K.shape[0]
+        K_data, sparsity, bs = _dense_to_block_cache(K, offsets)
+        b = jnp.asarray(np.random.default_rng(501).standard_normal(n))
+        x_bar = jnp.asarray(np.random.default_rng(502).standard_normal(n))
+
+        def f(K_data_: JaxArray, b_: JaxArray) -> JaxArray:
+            return jax_block_gmres(
+                K_data_, sparsity, b_, bs, coupling="lower",
+                rtol=1e-12, max_iters=4, restart=n,
+            )
+
+        _, vjp_fn = jax.vjp(f, K_data, b)
+        gK, gb = vjp_fn(x_bar)
+
+        def J(K_data_: JaxArray, b_: JaxArray) -> JaxArray:
+            return jnp.dot(x_bar, f(K_data_, b_))
+
+        eps = 1e-6
+        gK_fd = np.zeros_like(np.asarray(K_data))
+        for i in range(K_data.shape[0]):
+            ei = jnp.zeros_like(K_data).at[i].set(eps)
+            gK_fd[i] = (J(K_data + ei, b) - J(K_data - ei, b)) / (2 * eps)
+        gb_fd = np.zeros_like(np.asarray(b))
+        for i in range(b.shape[0]):
+            ei = jnp.zeros_like(b).at[i].set(eps)
+            gb_fd[i] = (J(K_data, b + ei) - J(K_data, b - ei)) / (2 * eps)
+
+        np.testing.assert_allclose(np.asarray(gK), gK_fd, rtol=1e-5, atol=1e-7)
+        np.testing.assert_allclose(np.asarray(gb), gb_fd, rtol=1e-5, atol=1e-7)
+
+
+class TestJaxBlockGmresHVP(unittest.TestCase):
+    """Hessian-vector product via forward-over-reverse (non-symmetric)."""
+
+    def test_hvp_K(self) -> None:
+        K, offsets = _random_block_matrix((4, 2), symmetric=False, seed=600)
+        n = K.shape[0]
+        K_data, sparsity, bs = _dense_to_block_cache(K, offsets)
+        b = jnp.asarray(np.random.default_rng(601).standard_normal(n))
+        v = jnp.asarray(
+            np.random.default_rng(602).standard_normal(K_data.shape[0]),
+        )
+
+        def J(K_data_: JaxArray) -> JaxArray:
+            x = jax_block_gmres(
+                K_data_, sparsity, b, bs, coupling="lower",
+                rtol=1e-12, max_iters=4, restart=n,
+            )
+            return 0.5 * jnp.sum(x ** 2)
+
+        gradJ = jax.grad(J)
+        _, hvp_for = jax.jvp(gradJ, (K_data,), (v,))
+        eps = 1e-4
+        hvp_fd = (gradJ(K_data + eps * v) - gradJ(K_data - eps * v)) / (2 * eps)
+        np.testing.assert_allclose(np.asarray(hvp_for), np.asarray(hvp_fd),
+                                   rtol=1e-3, atol=1e-5)
 
 
 if __name__ == "__main__":
