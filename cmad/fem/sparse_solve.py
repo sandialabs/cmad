@@ -590,16 +590,16 @@ def _block_precon_apply(
       (i,j) @ z_j)``, fields in increasing order.
     - ``"upper"``: the same in decreasing order over ``j > i``.
 
-    ``diagonal_block`` must be ``"raw"`` -- the assembled block ``(i, i)``.
+    ``diagonal_block`` must be ``"assembled"`` -- the assembled block ``(i, i)``.
     ``inner`` must be ``"jacobi"`` -- divide by that block's diagonal.
 
     ``transpose=True`` runs the sweep on the transpose operator for the
     adjoint solve.
     """
-    if diagonal_block != "raw":
+    if diagonal_block != "assembled":
         raise NotImplementedError(
             f"diagonal_block={diagonal_block!r} not implemented; "
-            f"only 'raw' is available"
+            f"only 'assembled' is available"
         )
     if inner != "jacobi":
         raise NotImplementedError(
@@ -642,7 +642,7 @@ def _block_precon_apply(
 def jax_block_gmres(
         K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
         block_sparsity: BlockSparsity, *,
-        coupling: str = "lower", diagonal_block: str = "raw",
+        coupling: str = "lower", diagonal_block: str = "assembled",
         inner: str = "jacobi",
         rtol: float = 1e-10, max_iters: int | None = None,
         restart: int = 20,
@@ -694,6 +694,174 @@ def jax_block_gmres(
             restart=restart,
         )
         return x
+
+    return lax.custom_linear_solve(
+        matvec, b, solve, transpose_solve=transpose_solve, symmetric=False,
+    )
+
+
+def _scipy_block_precon(
+        unique_data_np: np.ndarray, bs: BlockSparsity,
+        near_null_by_field: list[np.ndarray | None] | None, *,
+        coupling: str, diagonal_block: str,
+        pyamg_kwargs: dict | None, transpose: bool,
+) -> scipy.sparse.linalg.LinearOperator:
+    """One block-preconditioner sweep as a scipy operator, AMG per block.
+
+    Host-side counterpart of :func:`_block_precon_apply`, for the callback
+    solver. Builds each field block as a scipy CSR from the deduped global
+    data, sets up one pyamg V-cycle per diagonal block as its approximate
+    inverse, and returns a :class:`scipy.sparse.linalg.LinearOperator` that
+    applies the block Jacobi / Gauss-Seidel sweep selected by ``coupling``.
+
+    ``diagonal_block="assembled"`` uses the assembled diagonal block ``(i, i)``;
+    ``"schur"`` uses an approximate Schur complement of it,
+    ``(i,i) - sum_{j!=i} (i,j) diag((j,j))^{-1} (j,i)`` (a sparse triple product
+    that approximates the other blocks' inverses by their diagonals), before the
+    AMG setup. ``near_null_by_field`` supplies each
+    field's near null space to pyamg. ``transpose=True`` builds the operator
+    for ``K^T`` (each block transposed).
+    """
+    num_fields = bs.num_fields
+    offs = bs.field_offsets
+    n = offs[-1]
+    sizes = [offs[i + 1] - offs[i] for i in range(num_fields)]
+    pair_index = {pair: k for k, pair in enumerate(bs.pairs)}
+
+    def stored_csr(a: int, c: int) -> scipy.sparse.csr_matrix | None:
+        if (a, c) not in pair_index:
+            return None
+        k = pair_index[(a, c)]
+        return scipy.sparse.csr_matrix(
+            (unique_data_np[np.asarray(bs.global_data_indices[k])],
+             (np.asarray(bs.local_rows[k]), np.asarray(bs.local_cols[k]))),
+            shape=(sizes[a], sizes[c]),
+        )
+
+    # Operator blocks of K (or K^T): ops[(i, j)].
+    ops: dict[tuple[int, int], scipy.sparse.csr_matrix | None] = {}
+    for i in range(num_fields):
+        for j in range(num_fields):
+            block = stored_csr(j, i) if transpose else stored_csr(i, j)
+            ops[(i, j)] = (
+                block.T.tocsr() if (transpose and block is not None) else block
+            )
+
+    amg_apply = []
+    for i in range(num_fields):
+        diag_op = ops[(i, i)]
+        assert diag_op is not None  # every field has a diagonal block
+        diag_block = diag_op.tocsr()
+        if diagonal_block == "schur":
+            for j in range(num_fields):
+                if j == i:
+                    continue
+                op_ij = ops[(i, j)]
+                op_ji = ops[(j, i)]
+                op_jj = ops[(j, j)]
+                if op_ij is None or op_ji is None or op_jj is None:
+                    continue
+                inv_diag = scipy.sparse.diags(1.0 / op_jj.diagonal())
+                diag_block = diag_block - op_ij @ inv_diag @ op_ji
+        kwargs = dict(pyamg_kwargs or {})
+        near_null = (
+            near_null_by_field[i] if near_null_by_field is not None else None
+        )
+        if near_null is not None and near_null.shape[1] > 0:
+            kwargs.setdefault("B", near_null)
+        ml = pyamg.smoothed_aggregation_solver(diag_block.tocsr(), **kwargs)
+        amg_apply.append(ml.aspreconditioner())
+
+    order = (
+        range(num_fields) if coupling != "upper"
+        else range(num_fields - 1, -1, -1)
+    )
+
+    def apply(r: np.ndarray) -> np.ndarray:
+        z = [np.zeros(sizes[i]) for i in range(num_fields)]
+        for i in order:
+            rhs = np.array(r[offs[i]:offs[i + 1]])
+            neighbors = (
+                range(i) if coupling == "lower"
+                else range(i + 1, num_fields) if coupling == "upper"
+                else range(0)
+            )
+            for j in neighbors:
+                op_ij = ops[(i, j)]
+                if op_ij is not None:
+                    rhs = rhs - op_ij @ z[j]
+            z[i] = amg_apply[i](rhs)
+        return np.concatenate(z)
+
+    return scipy.sparse.linalg.LinearOperator((n, n), matvec=apply)
+
+
+def scipy_block_gmres(
+        K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
+        block_sparsity: BlockSparsity,
+        near_null_by_field: list[np.ndarray | None] | None = None, *,
+        coupling: str = "lower", diagonal_block: str = "schur",
+        rtol: float = 1e-10, max_iters: int | None = None,
+        restart: int = 20, pyamg_kwargs: dict | None = None,
+) -> JaxArray:
+    """Solve ``K x = b`` with GMRES and a block preconditioner, using AMG.
+
+    The callback counterpart of :func:`jax_block_gmres`: the outer GMRES and
+    the block preconditioner run inside one :func:`jax.pure_callback` (scipy
+    + pyamg), with one algebraic-multigrid V-cycle as the approximate inverse
+    of each diagonal block (:func:`_scipy_block_precon`). ``diagonal_block``
+    and ``coupling`` select the preconditioner; ``near_null_by_field`` gives
+    each field's near null space to pyamg.
+
+    AD via :func:`jax.lax.custom_linear_solve` with the same global matvec the
+    other solvers use, so the scipy preconditioner stays inside the solve
+    callbacks and never enters the derivative rules. The adjoint solve runs
+    GMRES on ``K^T`` with the transpose of the block sweep.
+    """
+    unique_data, matvec = _bcsr_operator(K_data, sparsity)
+    n = sparsity.n
+    leaves, treedef = jax.tree_util.tree_flatten(block_sparsity)
+    maxiter = max_iters if max_iters is not None else n
+
+    def make_callback(transpose: bool) -> Callable[..., np.ndarray]:
+        def callback(
+                unique_data_np: np.ndarray, col_np: np.ndarray,
+                indptr_np: np.ndarray, b_np: np.ndarray,
+                *leaves_np: np.ndarray,
+        ) -> np.ndarray:
+            K_csr = _build_scipy_csr(unique_data_np, col_np, indptr_np, n)
+            if transpose:
+                K_csr = K_csr.T.tocsr()
+            bs_np = jax.tree_util.tree_unflatten(treedef, list(leaves_np))
+            precon = _scipy_block_precon(
+                np.reshape(unique_data_np, -1), bs_np, near_null_by_field,
+                coupling=coupling, diagonal_block=diagonal_block,
+                pyamg_kwargs=pyamg_kwargs, transpose=transpose,
+            )
+            x, _info = scipy.sparse.linalg.gmres(
+                K_csr, np.reshape(b_np, -1), M=precon, rtol=rtol,
+                maxiter=maxiter, restart=restart,
+            )
+            return np.asarray(x).reshape(b_np.shape)
+        return callback
+
+    def solve(_unused_matvec: Callable[[JaxArray], JaxArray],
+              rhs: JaxArray) -> JaxArray:
+        return jax.pure_callback(
+            make_callback(False),
+            jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
+            unique_data, sparsity.col_indices, sparsity.indptr, rhs, *leaves,
+            vmap_method="sequential",
+        )
+
+    def transpose_solve(_unused_vecmat: Callable[[JaxArray], JaxArray],
+                        rhs: JaxArray) -> JaxArray:
+        return jax.pure_callback(
+            make_callback(True),
+            jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
+            unique_data, sparsity.col_indices, sparsity.indptr, rhs, *leaves,
+            vmap_method="sequential",
+        )
 
     return lax.custom_linear_solve(
         matvec, b, solve, transpose_solve=transpose_solve, symmetric=False,
@@ -1101,3 +1269,26 @@ def build_block_sparsity(
         local_rows=tuple(local_rows),
         local_cols=tuple(local_cols),
     )
+
+
+def _near_null_by_field(
+        near_null_space: NDArray[np.floating] | None,
+        block_offsets: NDArray[np.intp],
+) -> list[np.ndarray | None] | None:
+    """Split the global near null space into one array per field.
+
+    Slices the rows of ``near_null_space`` by field (``block_offsets`` gives
+    the field ranges) and drops the all-zero columns, so each field keeps
+    only its own modes. Returns one array per field (``None`` for a field
+    with no modes), or ``None`` when there is no near null space.
+    """
+    if near_null_space is None:
+        return None
+    modes = np.asarray(near_null_space)
+    offsets = np.asarray(block_offsets, dtype=np.intp)
+    by_field: list[np.ndarray | None] = []
+    for i in range(offsets.shape[0] - 1):
+        block = modes[int(offsets[i]):int(offsets[i + 1]), :]
+        keep = np.any(block != 0.0, axis=0)
+        by_field.append(block[:, keep] if keep.any() else None)
+    return by_field

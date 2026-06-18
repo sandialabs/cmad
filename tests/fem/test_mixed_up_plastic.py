@@ -77,9 +77,22 @@ def _build_mixed_fe(model: Model) -> FEProblem:
     )
 
 
+_BLOCK_SOLVER_SETTINGS = {
+    "type": "gmres",
+    "preconditioner": {
+        "type": "block", "inner": "amg",
+        "diagonal_block": "schur", "coupling": "lower",
+    },
+    "rtol": 1.0e-10, "max iters": 20, "restart": 120,
+}
+
+
 class TestMixedUpPlastic(unittest.TestCase):
 
-    def _run(self, model_cls: Callable[..., Model]) -> None:
+    def _run(
+            self, model_cls: Callable[..., Model],
+            linear_solver_settings: dict | None = None,
+    ) -> None:
         problem = J2AnalyticalProblem()
         stress_mask = np.zeros((3, 3))
         stress_mask[0, 0] = 1.0
@@ -103,6 +116,7 @@ class TestMixedUpPlastic(unittest.TestCase):
             U_solved, xi_solved = fe_newton_solve(
                 fe_problem, params, U_prev=U_solved, t=t,
                 xi_prev_by_block=xi_prev,
+                linear_solver_settings=linear_solver_settings,
             )
             state.append(U_solved, xi_solved, t)
             xi_prev = xi_solved
@@ -125,6 +139,12 @@ class TestMixedUpPlastic(unittest.TestCase):
 
     def test_small_rate_elastic_plastic(self) -> None:
         self._run(SmallRateElasticPlastic)
+
+    def test_small_elastic_plastic_block_solver(self) -> None:
+        self._run(SmallElasticPlastic, _BLOCK_SOLVER_SETTINGS)
+
+    def test_small_rate_elastic_plastic_block_solver(self) -> None:
+        self._run(SmallRateElasticPlastic, _BLOCK_SOLVER_SETTINGS)
 
 
 if __name__ == "__main__":

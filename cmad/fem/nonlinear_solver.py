@@ -16,10 +16,12 @@ from cmad.fem.sparse_solve import (
     _bcsr_operator,
     _embedded_bc_enforce,
     _embedded_residual,
+    _near_null_by_field,
     jax_block_gmres,
     jax_cg,
     jax_gmres,
     scipy_amg_cg,
+    scipy_block_gmres,
     scipy_lu,
 )
 from cmad.typing import JaxArray, Params, Scalar
@@ -86,7 +88,8 @@ def _solve_linear(
     """Dispatch on ``settings['type']`` to direct / CG / GMRES, with the
     iterative arms picking a preconditioner from
     ``settings['preconditioner']``: Jacobi or pyamg for CG, Jacobi or a
-    block preconditioner (:func:`jax_block_gmres`) for GMRES.
+    block preconditioner for GMRES (:func:`jax_block_gmres` with a Jacobi
+    inner solve, :func:`scipy_block_gmres` with an AMG inner solve).
 
     :attr:`FEProblem.near_null_space` is auto-merged into pyamg
     ``kwargs`` as ``B`` when present and the caller hasn't already set
@@ -138,14 +141,33 @@ def _solve_linear(
                     "block preconditioner requires a problem with more "
                     "than one residual block"
                 )
-            return jax_block_gmres(
-                K, sparsity, rhs, block_sparsity,
-                coupling=precon_spec.get("coupling", "lower"),
-                diagonal_block=precon_spec.get("diagonal_block", "raw"),
-                inner=precon_spec.get("inner", "jacobi"),
-                rtol=linear_solver_settings["rtol"],
-                max_iters=linear_solver_settings["max iters"],
-                restart=linear_solver_settings["restart"],
+            coupling = precon_spec.get("coupling", "lower")
+            diagonal_block = precon_spec.get("diagonal_block", "assembled")
+            inner = precon_spec.get("inner", "jacobi")
+            if inner == "jacobi":
+                return jax_block_gmres(
+                    K, sparsity, rhs, block_sparsity,
+                    coupling=coupling, diagonal_block=diagonal_block,
+                    inner=inner,
+                    rtol=linear_solver_settings["rtol"],
+                    max_iters=linear_solver_settings["max iters"],
+                    restart=linear_solver_settings["restart"],
+                )
+            if inner == "amg":
+                near_null = _near_null_by_field(
+                    fe_problem.near_null_space,
+                    fe_problem.dof_map.block_offsets,
+                )
+                return scipy_block_gmres(
+                    K, sparsity, rhs, block_sparsity, near_null,
+                    coupling=coupling, diagonal_block=diagonal_block,
+                    rtol=linear_solver_settings["rtol"],
+                    max_iters=linear_solver_settings["max iters"],
+                    restart=linear_solver_settings["restart"],
+                )
+            raise ValueError(
+                f"unknown inner solve {inner!r} for the block "
+                f"preconditioner; expected 'jacobi' or 'amg'"
             )
         if precon == "pyamg":
             raise NotImplementedError(
@@ -363,9 +385,10 @@ def fe_newton_solve(
     when ``type='direct'``). ``preconditioner`` is itself a dict with
     a required ``type`` (``'jacobi'``, ``'pyamg'``, or ``'block'``). pyamg
     takes an optional freeform ``kwargs`` dict forwarded to
-    :func:`pyamg.smoothed_aggregation_solver`; block takes a ``coupling``
-    (``'diagonal'`` / ``'lower'`` / ``'upper'``). Omitted keys fall back
-    to :data:`_DEFAULT_LINEAR_SOLVER_SETTINGS`.
+    :func:`pyamg.smoothed_aggregation_solver`; block takes ``coupling``
+    (``'diagonal'`` / ``'lower'`` / ``'upper'``), ``diagonal_block``
+    (``'assembled'`` / ``'schur'``), and ``inner`` (``'jacobi'`` / ``'amg'``).
+    Omitted keys fall back to :data:`_DEFAULT_LINEAR_SOLVER_SETTINGS`.
 
     Returns ``(U_star, xi_star)``. Outputs are JAX arrays.
     """

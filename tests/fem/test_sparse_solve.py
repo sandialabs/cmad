@@ -17,11 +17,13 @@ from cmad.fem.sparse_solve import (
     BlockSparsity,
     EmbeddedSparsity,
     _embedded_bc_enforce,
+    _near_null_by_field,
     build_block_sparsity,
     jax_block_gmres,
     jax_cg,
     jax_gmres,
     scipy_amg_cg,
+    scipy_block_gmres,
     scipy_lu,
 )
 from cmad.typing import JaxArray
@@ -585,6 +587,88 @@ class TestJaxBlockGmresHVP(unittest.TestCase):
         hvp_fd = (gradJ(K_data + eps * v) - gradJ(K_data - eps * v)) / (2 * eps)
         np.testing.assert_allclose(np.asarray(hvp_for), np.asarray(hvp_fd),
                                    rtol=1e-3, atol=1e-5)
+
+
+class TestScipyBlockGmresForward(unittest.TestCase):
+    """Forward solve for ``scipy_block_gmres`` (AMG inner) vs a dense solve.
+
+    Covers the assembled and schur diagonal blocks on a non-symmetric block
+    matrix, with pyamg's default near null space (``near_null_by_field`` None).
+    """
+
+    def test_matches_dense(self) -> None:
+        K, offsets = _random_block_matrix((8, 4), symmetric=False, seed=700)
+        n = K.shape[0]
+        K_data, sparsity, bs = _dense_to_block_cache(K, offsets)
+        b = jnp.asarray(np.random.default_rng(701).standard_normal(n))
+        x_ref = np.linalg.solve(K, np.asarray(b))
+        for diagonal_block in ("assembled", "schur"):
+            with self.subTest(diagonal_block=diagonal_block):
+                x = scipy_block_gmres(
+                    K_data, sparsity, b, bs, None,
+                    coupling="lower", diagonal_block=diagonal_block,
+                    rtol=1e-12, restart=n,
+                )
+                np.testing.assert_allclose(
+                    np.asarray(x), x_ref, rtol=1e-7, atol=1e-9,
+                )
+
+
+class TestScipyBlockGmresVJP(unittest.TestCase):
+    """Reverse-mode VJP for ``scipy_block_gmres`` vs FD.
+
+    Exercises the AMG transpose path (the block sweep on the transpose
+    operator) the adjoint gradient relies on.
+    """
+
+    def test_vjp_K_and_b(self) -> None:
+        K, offsets = _random_block_matrix((4, 2), symmetric=False, seed=710)
+        n = K.shape[0]
+        K_data, sparsity, bs = _dense_to_block_cache(K, offsets)
+        b = jnp.asarray(np.random.default_rng(711).standard_normal(n))
+        x_bar = jnp.asarray(np.random.default_rng(712).standard_normal(n))
+
+        def f(K_data_: JaxArray, b_: JaxArray) -> JaxArray:
+            return scipy_block_gmres(
+                K_data_, sparsity, b_, bs, None,
+                coupling="lower", diagonal_block="schur",
+                rtol=1e-12, restart=n,
+            )
+
+        _, vjp_fn = jax.vjp(f, K_data, b)
+        gK, gb = vjp_fn(x_bar)
+
+        def J(K_data_: JaxArray, b_: JaxArray) -> JaxArray:
+            return jnp.dot(x_bar, f(K_data_, b_))
+
+        eps = 1e-6
+        gK_fd = np.zeros_like(np.asarray(K_data))
+        for i in range(K_data.shape[0]):
+            ei = jnp.zeros_like(K_data).at[i].set(eps)
+            gK_fd[i] = (J(K_data + ei, b) - J(K_data - ei, b)) / (2 * eps)
+        gb_fd = np.zeros_like(np.asarray(b))
+        for i in range(b.shape[0]):
+            ei = jnp.zeros_like(b).at[i].set(eps)
+            gb_fd[i] = (J(K_data, b + ei) - J(K_data, b - ei)) / (2 * eps)
+
+        np.testing.assert_allclose(np.asarray(gK), gK_fd, rtol=1e-5, atol=1e-7)
+        np.testing.assert_allclose(np.asarray(gb), gb_fd, rtol=1e-5, atol=1e-7)
+
+
+class TestNearNullByField(unittest.TestCase):
+    """``_near_null_by_field`` splits the global modes per field."""
+
+    def test_block_structured_modes(self) -> None:
+        offsets = np.array([0, 6, 9], dtype=np.intp)
+        modes = np.zeros((9, 3))
+        modes[:6, 0] = 1.0
+        modes[:6, 1] = np.arange(6)
+        modes[6:, 2] = 1.0
+        by_field = _near_null_by_field(modes, offsets)
+        assert by_field is not None
+        self.assertEqual(by_field[0].shape, (6, 2))
+        self.assertEqual(by_field[1].shape, (3, 1))
+        self.assertIsNone(_near_null_by_field(None, offsets))
 
 
 if __name__ == "__main__":
