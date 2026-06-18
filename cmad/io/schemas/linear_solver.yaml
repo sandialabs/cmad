@@ -35,3 +35,9 @@ properties:
           coupling:
             type: string
             enum: [diagonal, lower, upper]
+          diagonal_block:
+            type: string
+            enum: [assembled, schur]
+          inner:
+            type: string
+            enum: [jacobi, amg]

@@ -502,7 +502,10 @@ class TestMixed(unittest.TestCase):
         deck = self._mixed_deck()
         deck["linear solver"] = {
             "type": "gmres",
-            "preconditioner": {"type": "block", "coupling": "lower"},
+            "preconditioner": {
+                "type": "block", "coupling": "lower",
+                "diagonal_block": "schur", "inner": "amg",
+            },
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             bundle = _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
