@@ -324,12 +324,18 @@ def build_fe_problem_from_deck(
     gr = gr_cls.from_deck(gr_section, ndims=ndims)
 
     is_mixed = bool(gr_section.get("mixed", False))
-    if is_mixed and resolved["linear solver"]["type"] != "direct":
-        raise ValueError(
-            "residuals.global residual: mixed requires linear solver "
-            f"type 'direct' (the saddle-point tangent is indefinite); "
-            f"got '{resolved['linear solver']['type']}'",
-        )
+    if is_mixed:
+        ls_section = resolved["linear solver"]
+        ls_type = ls_section["type"]
+        precon_type = ls_section.get("preconditioner", {}).get("type")
+        if ls_type != "direct" and not (
+            ls_type == "gmres" and precon_type == "block"
+        ):
+            raise ValueError(
+                "residuals.global residual: mixed requires linear solver "
+                "type 'direct', or 'gmres' with a 'block' preconditioner "
+                f"(the mixed tangent is indefinite); got '{ls_type}'",
+            )
 
     def_type = DefType[gr_section["def_type"].upper()]
     local_section = resolved["residuals"]["local residual"]

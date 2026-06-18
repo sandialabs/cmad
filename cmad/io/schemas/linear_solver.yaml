@@ -19,11 +19,19 @@ properties:
   preconditioner:
     type: object
     required: [type]
-    additionalProperties: false
-    properties:
-      type:
-        type: string
-        enum: [jacobi, pyamg]
-      kwargs:
-        type: object
-        additionalProperties: true
+    oneOf:
+      - additionalProperties: false
+        properties:
+          type: {const: jacobi}
+      - additionalProperties: false
+        properties:
+          type: {const: pyamg}
+          kwargs:
+            type: object
+            additionalProperties: true
+      - additionalProperties: false
+        properties:
+          type: {const: block}
+          coupling:
+            type: string
+            enum: [diagonal, lower, upper]

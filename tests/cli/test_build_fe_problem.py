@@ -461,8 +461,9 @@ class TestBuildCoordinateSideSets(unittest.TestCase):
 
 
 class TestMixed(unittest.TestCase):
-    """``mixed: true`` builds a 2-block (u, p) problem, and rejects a
-    solver that is not direct or a quadrature degree that is too low."""
+    """``mixed: true`` builds a 2-block (u, p) problem; it accepts the
+    direct solver or GMRES with a block preconditioner, and rejects other
+    iterative solvers or a quadrature degree that is too low."""
 
     def _mixed_deck(self) -> dict[str, Any]:
         deck = _minimal_fe_deck()
@@ -482,14 +483,31 @@ class TestMixed(unittest.TestCase):
             ["u", "p"],
         )
 
-    def test_mixed_requires_direct_solver(self) -> None:
+    def test_mixed_rejects_iterative_without_block(self) -> None:
+        bad_solvers = (
+            {"type": "cg"},
+            {"type": "gmres", "preconditioner": {"type": "jacobi"}},
+        )
+        for linear_solver in bad_solvers:
+            deck = self._mixed_deck()
+            deck["linear solver"] = linear_solver
+            with (
+                self.subTest(linear_solver=linear_solver),
+                tempfile.TemporaryDirectory() as tmpdir,
+                self.assertRaisesRegex(ValueError, "direct"),
+            ):
+                _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
+
+    def test_mixed_accepts_block_gmres(self) -> None:
         deck = self._mixed_deck()
-        deck["linear solver"] = {"type": "cg"}
-        with (
-            tempfile.TemporaryDirectory() as tmpdir,
-            self.assertRaisesRegex(ValueError, "direct"),
-        ):
-            _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
+        deck["linear solver"] = {
+            "type": "gmres",
+            "preconditioner": {"type": "block", "coupling": "lower"},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
+        self.assertTrue(bundle.fe_problem.gr.mixed)
+        self.assertIsNotNone(bundle.fe_problem.block_sparsity)
 
     def test_mixed_rejects_low_volume_quadrature(self) -> None:
         deck = self._mixed_deck()
