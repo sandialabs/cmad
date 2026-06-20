@@ -128,17 +128,21 @@ def resolve_output(
 ) -> tuple[Path, str, str]:
     """Resolve ``out_dir``, ``prefix``, and ``format`` from a validated deck.
 
-    The path is taken relative to the current working directory when not
-    absolute, then created. ``format`` defaults to ``npy`` here (it is
-    filled into the deck only for MP); callers that don't emit array
-    outputs can discard it.
+    The output block is optional: when it is absent the directory defaults
+    to the current working directory and the prefix to ``""``, so the
+    subcommands that always emit their results (objective, gradient,
+    hessian, calibrate) work without one. A given path is taken relative to
+    the current working directory when not absolute, then created.
+    ``format`` defaults to ``npy`` (filled into the deck only for MP;
+    callers that don't emit array outputs can discard it).
     """
-    out_dir = Path(resolved["output"]["path"])
+    output = resolved.get("output", {})
+    out_dir = Path(output.get("path", "."))
     out_dir.mkdir(parents=True, exist_ok=True)
     return (
         out_dir,
-        resolved["output"]["prefix"],
-        resolved["output"].get("format", "npy"),
+        output.get("prefix", ""),
+        output.get("format", "npy"),
     )
 
 

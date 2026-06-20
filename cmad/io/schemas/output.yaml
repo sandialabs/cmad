@@ -9,6 +9,7 @@ properties:
     enum: [npy, text]
     default: npy
   exodus filename: {type: string}
+  write exodus: {type: boolean, default: true}
   global residual:
     type: array
     items: {type: string}

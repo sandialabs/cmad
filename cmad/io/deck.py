@@ -184,14 +184,17 @@ def apply_deck_defaults(deck: dict[str, Any]) -> dict[str, Any]:
         for k, v in _LINEAR_SOLVER_DEFAULTS.items():
             ls_in.setdefault(k, v)
 
-    output_in = resolved.setdefault("output", {})
-    output_in.setdefault("prefix", "")
-    # `format` selects npy vs text for the array dumps (cauchy / xi /
-    # grad / hess). FE primal writes an Exodus trajectory, so format is
-    # filled only for the MP arm; FE array writers (gradient / hessian)
-    # fall back to npy at resolve_output.
-    if problem_type == "material_point":
-        output_in.setdefault("format", "npy")
+    # The output block is optional; only fill its defaults when the user
+    # gave one. Leaving it absent is meaningful (no output requested), and
+    # the consumers (resolve_output, the primal subcommands) detect that.
+    if "output" in resolved:
+        output_in = resolved["output"]
+        output_in.setdefault("prefix", "")
+        # `format` (npy vs text) selects how the array dumps are written.
+        # It is filled only for the MP arm; the FE array writers fall back
+        # to npy via resolve_output.
+        if problem_type == "material_point":
+            output_in.setdefault("format", "npy")
 
     if "optimizer" in resolved:
         optimizer_in = resolved["optimizer"]

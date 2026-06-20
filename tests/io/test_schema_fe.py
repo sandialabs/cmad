@@ -77,6 +77,25 @@ class TestFEDeckSchema(unittest.TestCase):
         resolved = apply_deck_defaults(deck)
         validate_deck(resolved, "primal")
 
+    def test_fe_deck_validates_without_output(self) -> None:
+        deck = _minimal_fe_deck()
+        del deck["output"]
+        resolved = apply_deck_defaults(deck)
+        self.assertNotIn("output", resolved)
+        validate_deck(resolved, "primal")
+
+    def test_fe_deck_validates_with_write_exodus_false(self) -> None:
+        deck = _minimal_fe_deck()
+        deck["output"]["write exodus"] = False
+        validate_deck(apply_deck_defaults(deck), "primal")
+
+    def test_mp_deck_validates_without_output(self) -> None:
+        deck = _minimal_mp_deck()
+        del deck["output"]
+        resolved = apply_deck_defaults(deck)
+        self.assertNotIn("output", resolved)
+        validate_deck(resolved, "primal")
+
     def test_missing_required_section_errors(self) -> None:
         deck = _minimal_fe_deck()
         del deck["discretization"]

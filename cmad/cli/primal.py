@@ -68,19 +68,17 @@ def _run_primal_mp(deck_path: Path) -> int:
         graph.model, graph.F, num_steps, newton_kwargs,
     )
 
-    out_dir, prefix, fmt = resolve_output(graph.resolved)
-    write_cauchy(out_dir, prefix, cauchy, fmt)
-    write_xi(out_dir, prefix, xi_trajectory, fmt)
-    write_solver_log(out_dir, prefix, solver_log)
-    write_resolved_deck(out_dir, prefix, graph.resolved)
+    if "output" in graph.resolved:
+        out_dir, prefix, fmt = resolve_output(graph.resolved)
+        write_cauchy(out_dir, prefix, cauchy, fmt)
+        write_xi(out_dir, prefix, xi_trajectory, fmt)
+        write_solver_log(out_dir, prefix, solver_log)
+        write_resolved_deck(out_dir, prefix, graph.resolved)
     return 0
 
 
 def _run_primal_fe(deck_path: Path) -> int:
     bundle = build_fe_problem_from_deck(deck_path, "primal")
-    output_plan = resolve_fe_output_plan(
-        bundle.resolved["output"], bundle.fe_problem,
-    )
     gr_section = bundle.resolved["residuals"]["global residual"]
     nonlinear_solver_settings = {
         "max iters": int(gr_section["nonlinear max iters"]),
@@ -104,15 +102,22 @@ def _run_primal_fe(deck_path: Path) -> int:
         qoi=None if write_qoi is not None else qoi,
     )
 
+    if "output" not in bundle.resolved:
+        return 0
+
     out_dir, prefix, _fmt = resolve_output(bundle.resolved)
     output_section = bundle.resolved["output"]
-    if "exodus filename" not in output_section:
-        name = bundle.resolved["problem"].get("name") or deck_path.stem
-        output_section["exodus filename"] = f"{name}.exo"
-    write_fe_exodus(
-        out_dir, prefix, bundle.fe_problem, fe_state,
-        output_plan, output_section["exodus filename"],
-    )
+    if output_section.get("write exodus", True):
+        output_plan = resolve_fe_output_plan(
+            output_section, bundle.fe_problem,
+        )
+        if "exodus filename" not in output_section:
+            name = bundle.resolved["problem"].get("name") or deck_path.stem
+            output_section["exodus filename"] = f"{name}.exo"
+        write_fe_exodus(
+            out_dir, prefix, bundle.fe_problem, fe_state,
+            output_plan, output_section["exodus filename"],
+        )
     write_resolved_deck(out_dir, prefix, bundle.resolved)
     if write_qoi is not None:
         write_qoi.write_primal_outputs(bundle.fe_problem, fe_state)
