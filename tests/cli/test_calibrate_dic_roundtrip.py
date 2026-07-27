@@ -73,7 +73,7 @@ def _base_deck(mesh_path: Path, out_path: Path, elastic: dict[str, Any],
         },
         "residuals": {
             "global residual": {
-                "type": "small_disp_equilibrium",
+                "type": "mechanics",
                 "def_type": "full_3d",
             },
             "local residual": {
