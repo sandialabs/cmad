@@ -9,3 +9,5 @@ properties:
     type: string
   weight:
     type: number
+  sideset:
+    type: string
