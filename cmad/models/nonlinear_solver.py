@@ -36,7 +36,7 @@ def newton_solve(
 
         if ii == 0:
             C_norm_0 = C_norm
-            C_norm_rel = 1.
+            C_norm_rel: np.floating | float = 1.
         else:
             C_norm_rel = C_norm / C_norm_0
 

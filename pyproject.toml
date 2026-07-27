@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "cmad"
 version = "1.0.0"
 description = "Constitutive Models via Automatic Differentiation"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.12,<3.14"
 readme = "README.md"
 authors = [
     {name = "Tom Seidl", email = "dtseidl@sandia.gov"}

@@ -107,7 +107,7 @@ class MPAdjointObjective(MPObjective):
 
         # adjoint pass
         num_dofs = model.num_dofs
-        history_vec = np.zeros((num_dofs, 1))
+        history_vec: NDArray[np.floating] = np.zeros((num_dofs, 1))
 
         for step in range(num_steps, 0, -1):
 
@@ -233,7 +233,7 @@ class MPDirectAdjointObjective(MPObjective):
 
         # adjoint pass
         num_dofs = model.num_dofs
-        history_vec = np.zeros((num_dofs, 1))
+        history_vec: NDArray[np.floating] = np.zeros((num_dofs, 1))
         phi_at_step = [np.zeros(num_dofs)] * (num_steps + 1)
 
         for step in range(num_steps, 0, -1):
