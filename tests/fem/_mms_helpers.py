@@ -26,6 +26,7 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 import sympy
+from jax import jacfwd
 from jax.tree_util import tree_map
 from numpy.typing import NDArray
 from sympy import Matrix, eye, lambdify
@@ -36,6 +37,8 @@ from cmad.fem.fe_problem import FEProblem, FEState
 from cmad.fem.interpolants import hex_linear, tet_linear
 from cmad.fem.nonlinear_solver import fe_newton_solve
 from cmad.fem.quadrature import hex_quadrature, tet_quadrature
+from cmad.models.elastic_stress import compressible_neohookean_cauchy_stress
+from cmad.models.kinematics import cofactor
 from cmad.parameters.parameters import Parameters
 from cmad.typing import JaxArray, Params
 
@@ -114,6 +117,62 @@ def build_mms_callables(
         return np.asarray(grad_u_callable(*args))
 
     return body_force_fn, u_exact, grad_u_exact, sigma_sym
+
+
+def build_finite_mms_callables(
+        u_sym: sympy.Matrix,
+        coord_syms: Sequence[Any],
+        kappa: float,
+        mu: float,
+) -> tuple[
+    Callable[
+        [NDArray[np.floating] | JaxArray, float | JaxArray],
+        NDArray[np.floating] | JaxArray,
+    ],
+    Callable[[NDArray[np.floating]], NDArray[np.floating]],
+    Callable[[NDArray[np.floating]], NDArray[np.floating]],
+]:
+    """Finite deformation counterpart of :func:`build_mms_callables`.
+
+    Body force ``b = -Div_X(P)`` for the first Piola-Kirchhoff stress
+    ``P = sigma @ cofactor(F)`` with sigma from
+    ``compressible_neohookean_cauchy_stress`` at ``F = I + grad u``. P and
+    its divergence come from JAX autodiff of the exact solution, so the
+    source matches the model's constitutive exactly (no symbolic inverse).
+    Returns ``(body_force_fn, u_exact, grad_u_exact)``.
+    """
+    n = len(coord_syms)
+    coord_args = tuple(coord_syms)
+    grad_u_sym = u_sym.jacobian(list(coord_syms))
+    u_jax = lambdify(coord_args, u_sym, modules="jax")
+    u_callable = lambdify(coord_args, u_sym, modules="numpy")
+    grad_u_callable = lambdify(coord_args, grad_u_sym, modules="numpy")
+    params: Params = {"elastic": {"kappa": kappa, "mu": mu}}
+
+    def u_of_X(X: JaxArray) -> JaxArray:
+        return jnp.asarray(u_jax(*[X[i] for i in range(n)])).reshape(n)
+
+    def pk1_of_X(X: JaxArray) -> JaxArray:
+        F = jnp.eye(n) + jacfwd(u_of_X)(X)
+        sigma = compressible_neohookean_cauchy_stress(F, params)
+        return sigma @ cofactor(F)
+
+    def body_force_fn(
+            coords: NDArray[np.floating] | JaxArray,
+            _t: float | JaxArray,
+    ) -> NDArray[np.floating] | JaxArray:
+        dP = jacfwd(pk1_of_X)(jnp.asarray(coords))
+        return -jnp.einsum("iJJ->i", dP)
+
+    def u_exact(coords: NDArray[np.floating]) -> NDArray[np.floating]:
+        args = tuple(coords[i] for i in range(n))
+        return np.asarray(u_callable(*args)).reshape(-1)
+
+    def grad_u_exact(coords: NDArray[np.floating]) -> NDArray[np.floating]:
+        args = tuple(coords[i] for i in range(n))
+        return np.asarray(grad_u_callable(*args))
+
+    return body_force_fn, u_exact, grad_u_exact
 
 
 def l2_h1_errors(

@@ -1,4 +1,4 @@
-"""3D quasi-static small-deformation equilibrium global residual."""
+"""3D quasi-static mechanics equilibrium global residual."""
 from typing import Any
 
 import jax.numpy as jnp
@@ -11,6 +11,7 @@ from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.registry import register_global_residual
 from cmad.models.deformation_types import DefType, def_type_ndims
+from cmad.models.kinematics import cofactor
 from cmad.models.model import Model
 from cmad.models.var_types import VarType
 from cmad.typing import GREvaluators
@@ -18,7 +19,7 @@ from cmad.typing import GREvaluators
 
 @register_global_residual("mechanics")
 class Mechanics(GlobalResidual):
-    """3D quasi-static small-deformation equilibrium.
+    """3D quasi-static mechanics equilibrium.
 
     Two formulations, selected at construction:
 
@@ -27,6 +28,9 @@ class Mechanics(GlobalResidual):
       dv``, with sigma sourced per the ``mode`` arg from
       ``model.cauchy_closed_form(params, U_ip, U_ip_prev)`` (CLOSED_FORM)
       or ``model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)`` (COUPLED).
+      A finite deformation model (``is_finite_deformation``) instead
+      assembles the first Piola-Kirchhoff stress ``P = sigma @
+      cofactor(F)`` as ``grad_N @ P.T`` over the reference volume.
 
     - **mixed** (displacement-pressure, stabilized equal order): two
       blocks, ``u`` (VECTOR, "equilibrium") and ``p`` (SCALAR,
@@ -114,7 +118,12 @@ class Mechanics(GlobalResidual):
                 sigma = model.cauchy_closed_form(params, U_ip, U_ip_prev)
             else:
                 sigma = model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)
-            R_internal = (shapes_ip[0].grad_N @ sigma) * w * dv
+            if model.is_finite_deformation:
+                F = jnp.eye(self._ndims) + U_ip.grad_fields["u"]
+                P = sigma @ cofactor(F)
+                R_internal = (shapes_ip[0].grad_N @ P.T) * w * dv
+            else:
+                R_internal = (shapes_ip[0].grad_N @ sigma) * w * dv
             return [R_internal]
 
         super().__init__(residual_fn)

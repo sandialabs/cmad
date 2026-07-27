@@ -11,6 +11,7 @@ from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.elastic_stress import (
     conventional_elastic_stress_fun,
     isotropic_linear_elastic_cauchy_stress,
+    stress_fun_is_finite,
     two_mu_scale_factor,
 )
 from cmad.models.global_fields import GlobalFieldsAtPoint
@@ -50,6 +51,7 @@ class Elastic(Model):
         self.dtype = float
         if is_complex:
             self.dtype = complex
+        self.is_finite_deformation = stress_fun_is_finite(elastic_stress_fun)
 
         self._def_type = def_type
         ndims = def_type_ndims(def_type)
@@ -124,12 +126,11 @@ class Elastic(Model):
             parameters: Parameters,
             def_type: int,
     ) -> "Elastic":
+        elastic_stress = model_section.get("elastic_stress", "isotropic_linear")
         return cls(
             parameters=parameters,
             def_type=def_type,
-            elastic_stress_fun=conventional_elastic_stress_fun(
-                model_section.get("elastic_stress", "isotropic_linear"),
-            ),
+            elastic_stress_fun=conventional_elastic_stress_fun(elastic_stress),
         )
 
     def derived_output_field_names(self) -> list[str]:

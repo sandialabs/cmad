@@ -38,6 +38,10 @@ class Model(ABC):
     # ---- class configuration (subclasses may override) ----
     supports_closed_form_cauchy: ClassVar[bool] = False
     supports_mixed: ClassVar[bool] = False
+    # Read by the mechanics global residual to map Cauchy to PK1
+    # (sigma @ cof(F)) when finite. An instance attribute, not a ClassVar:
+    # a modular model can be configured for either regime.
+    is_finite_deformation: bool = False
 
     # ---- attributes the subclass must set before super().__init__() ----
     parameters: Parameters

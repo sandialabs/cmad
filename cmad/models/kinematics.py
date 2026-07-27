@@ -63,3 +63,8 @@ def compute_invariants(A: JaxArray) -> tuple[JaxArray, JaxArray, JaxArray]:
 def off_axis_idx(uniaxial_stress_idx: int) -> JaxArray:
     all_idx = jnp.arange(3)
     return jnp.sort(jnp.setdiff1d(all_idx, uniaxial_stress_idx, size=2))
+
+
+def cofactor(F: JaxArray) -> JaxArray:
+    """Cofactor matrix ``cof(F) = det(F) * F^{-T}``."""
+    return jnp.linalg.det(F) * jnp.linalg.inv(F).T
