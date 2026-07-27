@@ -349,13 +349,11 @@ class GlobalResidual(ABC):
     ) -> GREvaluators:
         residual_fn = self._residual_fn
 
-        # `make_newton_solve` conflates init guess and held-in-
-        # residual x_prev (uses xi_prev as both); this matches
-        # xi_init = xi_prev path continuity for plasticity.
         local_newton = make_newton_solve(
             model._residual,
             **local_newton_settings,
             print_local_convergence=print_local_convergence,
+            initial_guess_fn=model.initial_guess_fn,
         )
 
         # Public-closure argnums:

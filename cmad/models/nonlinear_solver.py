@@ -7,7 +7,7 @@ from jax import custom_jvp, debug, jacfwd, jvp
 from jax.flatten_util import ravel_pytree
 from jax.lax import cond, while_loop
 
-from cmad.typing import JaxArray, PyTree, SupportsNewton
+from cmad.typing import JaxArray, PyTree, StateList, SupportsNewton
 from cmad.util.line_search import DEFAULT_LINE_SEARCH_SETTINGS, line_search
 
 
@@ -92,6 +92,7 @@ def make_newton_solve(
         rel_tol: float = 1e-14,
         print_local_convergence: bool = False,
         line_search_settings: dict[str, Any] | None = None,
+        initial_guess_fn: Callable[..., StateList] | None = None,
 ) -> Callable[..., PyTree]:
 
     ls_settings = {
@@ -108,7 +109,13 @@ def make_newton_solve(
                 residual(unravel(x_flat), x_prev, *other_fixed_args)
             )[0]
 
-        C0 = residual_flat(flat_x_prev)
+        if initial_guess_fn is None:
+            flat_init = flat_x_prev
+        else:
+            flat_init = ravel_pytree(
+                initial_guess_fn(x_prev, *other_fixed_args))[0]
+
+        C0 = residual_flat(flat_init)
         C_norm_0 = jnp.linalg.norm(C0)
 
 
@@ -151,7 +158,7 @@ def make_newton_solve(
 
 
         flat_x = while_loop(cond_fun, body_fun,
-            (0, False, flat_x_prev, C0))[2]
+            (0, False, flat_init, C0))[2]
         return unravel(flat_x)
 
 

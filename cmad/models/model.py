@@ -38,6 +38,7 @@ class Model(ABC):
     # ---- class configuration (subclasses may override) ----
     supports_closed_form_cauchy: ClassVar[bool] = False
     supports_mixed: ClassVar[bool] = False
+    initial_guess_fn: Callable[..., StateList] | None = None
 
     # ---- attributes the subclass must set before super().__init__() ----
     parameters: Parameters

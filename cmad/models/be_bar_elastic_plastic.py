@@ -56,6 +56,34 @@ def relative_be_bar(
     return rF_bar @ be_bar_prev @ rF_bar.T
 
 
+def elastic_predictor(
+        xi_prev: StateList, params: dict[str, Any],
+        U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+        step_time: StepTime,
+        def_type: int,
+) -> StateList:
+    """Elastic predictor state ``[dev(be_bar_trial), tr(be_bar_trial)/3,
+    alpha_prev]``.
+
+    The closed form root of the elastic branch (plastic flow frozen, the
+    elastic ``be_bar`` advanced by the relative deformation), reused to build
+    the elastic branch residual and as the local Newton's initial guess.
+
+    ``step_time`` is unused; this model has no rate dependence. It is in the
+    signature because ``make_newton_solve`` calls the initial guess with the
+    residual's trailing arguments.
+    """
+    F = gather_F(xi_prev, U, def_type, local_var_idx=0)
+    F_prev = gather_F(xi_prev, U_prev, def_type, local_var_idx=0)
+    be_bar_trial = relative_be_bar(xi_prev[0], xi_prev[1], F, F_prev)
+    dev_be_bar_trial = be_bar_trial - jnp.trace(be_bar_trial) / 3. * jnp.eye(3)
+    return [
+        get_vector_from_sym_tensor(dev_be_bar_trial, 3),
+        jnp.atleast_1d(jnp.trace(be_bar_trial) / 3.),
+        xi_prev[2],
+    ]
+
+
 def compute_yield_fun_and_normal(
         zeta: StateBlock, alpha: StateBlock, params: dict[str, Any],
         hardening: Callable[..., JaxArray], is_complex: bool,
@@ -157,6 +185,8 @@ class BeBarElasticPlastic(MechanicsModel):
 
         cauchy = partial(self._cauchy_fn, def_type=def_type)
 
+        self.initial_guess_fn = partial(elastic_predictor, def_type=def_type)
+
         super().__init__(residual, cauchy)
 
     @classmethod
@@ -187,19 +217,16 @@ class BeBarElasticPlastic(MechanicsModel):
         alpha_prev = get_scalar(xi_prev[2])
 
         eye = jnp.eye(3)
-        F = gather_F(xi, U, def_type, local_var_idx=0)
-        F_prev = gather_F(xi_prev, U_prev, def_type, local_var_idx=0)
-        be_bar_trial = relative_be_bar(xi_prev[0], xi_prev[1], F, F_prev)
-        dev_be_bar_trial = be_bar_trial - jnp.trace(be_bar_trial) / 3. * eye
+        xi_elastic = elastic_predictor(
+            xi_prev, params, U, U_prev, step_time, def_type)
+        dev_be_bar_trial = get_sym_tensor_from_vector(xi_elastic[0], 3)
 
         yield_fun, yield_normal = compute_yield_fun_and_normal(
             xi[0], alpha, params, hardening, is_complex)
         delta_gamma = alpha - alpha_prev
 
-        # elastic trial state
-        C_zeta_elastic = get_vector_from_sym_tensor(zeta - dev_be_bar_trial, 3)
-        C_Ie_elastic = Ie - jnp.trace(be_bar_trial) / 3.
-        C_elastic = jnp.r_[C_zeta_elastic, C_Ie_elastic, delta_gamma]
+        C_elastic = jnp.concatenate(
+            [xi[i] - xi_elastic[i] for i in range(3)])
 
         # plastic return map
         C_zeta_plastic = get_vector_from_sym_tensor(
