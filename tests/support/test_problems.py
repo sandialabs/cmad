@@ -160,3 +160,35 @@ class J2AnalyticalProblem:
                                    num_steps)
 
         return stress, strain, alpha
+
+
+def finite_uniaxial_j2_voce(E, nu, Y, S, D, alpha):
+    """Continuous finite uniaxial J2 + Voce reference at hardening alpha.
+
+    A bar in uniaxial stress (lateral Kirchhoff zero), neohookean elastic,
+    isochoric plastic flow. Parameterized by the hardening variable alpha
+    (the path parameter, as in compute_plastic_fields): the deviatoric
+    Kirchhoff stress sits on the yield surface, the volumetric relation
+    fixes J, and the plastic stretch is the continuous exponential map.
+    Returns ``(lambda_axial, lambda_lateral, cauchy_axial)``. The discrete
+    be_bar model converges to this as the step size shrinks.
+    """
+    mu = E / (2. * (1. + nu))
+    kappa = E / (3. * (1. - 2. * nu))
+    flow_stress = Y + S * (1. - np.exp(-D * alpha))
+    b = flow_stress / mu
+
+    # be_bar = diag(Ie + 2b/3, Ie - b/3, Ie - b/3) with det(be_bar) = 1
+    # gives Ie^3 - (b^2/3) Ie + (2 b^3/27 - 1) = 0
+    roots = np.roots([1., 0., -b**2 / 3., 2. * b**3 / 27. - 1.])
+    Ie = float(np.max(roots[np.abs(roots.imag) < 1e-10].real))
+    be_bar_axial = Ie + 2. * b / 3.
+    be_bar_lateral = Ie - b / 3.
+
+    J = np.sqrt(1. + 2. * flow_stress / (3. * kappa))
+    lambda_axial = J**(1. / 3.) * np.sqrt(be_bar_axial) * np.exp(alpha)
+    lambda_lateral = \
+        J**(1. / 3.) * np.sqrt(be_bar_lateral) * np.exp(-alpha / 2.)
+    cauchy_axial = flow_stress / J
+
+    return lambda_axial, lambda_lateral, cauchy_axial

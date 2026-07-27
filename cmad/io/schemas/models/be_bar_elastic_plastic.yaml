@@ -1,0 +1,9 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+required: [name, def_type]
+additionalProperties: false
+properties:
+  name:
+    const: be_bar_elastic_plastic
+  def_type:
+    enum: [full_3d]
