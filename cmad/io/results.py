@@ -138,13 +138,7 @@ def to_exodus_storage(
     """
     if var_type != VarType.SYM_TENSOR:
         return values
-    n_comp = values.shape[-1]
-    if n_comp not in _SYM_INTERNAL_TO_EXODUS:
-        raise ValueError(
-            f"SYM_TENSOR component count {n_comp} not in "
-            f"{sorted(_SYM_INTERNAL_TO_EXODUS)}"
-        )
-    perm = list(_SYM_INTERNAL_TO_EXODUS[n_comp])
+    perm = list(_SYM_INTERNAL_TO_EXODUS[values.shape[-1]])
     if isinstance(values, np.ndarray):
         return values[..., perm]
     return jnp.asarray(values)[..., jnp.asarray(perm)]

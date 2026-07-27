@@ -16,12 +16,13 @@ import numpy as np
 from jax.tree_util import tree_map
 
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
+from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEState, build_fe_problem
-from cmad.fem.finite_element import Q1_HEX
-from cmad.fem.mesh import StructuredHexMesh
+from cmad.fem.finite_element import Q1_HEX, Q1_QUAD
+from cmad.fem.mesh import StructuredHexMesh, StructuredQuadMesh
 from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
-from cmad.io.exodus import read_results
+from cmad.io.exodus import read_mesh, read_results
 from cmad.io.results import FieldSpec
 from cmad.io.writers import resolve_fe_output_plan, write_fe_exodus
 from cmad.models.deformation_types import DefType
@@ -207,6 +208,21 @@ def _build_elastic_problem():
     )
 
 
+def _build_elastic_problem_2d():
+    mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+    layout = GlobalFieldLayout(name="u", finite_element=Q1_QUAD)
+    dof_map = build_dof_map(
+        mesh, [layout], [], components_by_field={"u": 2},
+    )
+    gr = Mechanics(ndims=2)
+    model = Elastic(_elastic_parameters(), def_type=DefType.PLANE_STRAIN)
+    return build_fe_problem(
+        mesh=mesh, dof_map=dof_map, gr=gr,
+        models_by_block={"all": model},
+        modes_by_block={"all": GlobalResidualMode.CLOSED_FORM},
+    )
+
+
 class TestWriteFeExodusRoundTrip(unittest.TestCase):
     def test_default_output_zero_state_round_trip(self):
         fe_problem = _build_elastic_problem()
@@ -243,6 +259,38 @@ class TestWriteFeExodusRoundTrip(unittest.TestCase):
             )
             self.assertTrue(
                 np.allclose(results.element["all"]["cauchy"], 0.0),
+            )
+
+    def test_2d_cauchy_in_plane_round_trip(self):
+        # 2D: u has 2 components; cauchy is stored 3x3 but written as its
+        # in-plane block (xx, xy, yy), so it reads back with 3 components.
+        fe_problem = _build_elastic_problem_2d()
+        fe_state = FEState.from_problem(fe_problem, t_init=0.0)
+        output_plan = resolve_fe_output_plan({}, fe_problem)
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_fe_exodus(
+                out_dir=out_dir, prefix="", fe_problem=fe_problem,
+                fe_state=fe_state, output_plan=output_plan,
+                exodus_filename="primal.exo",
+            )
+            results = read_results(
+                out_dir / "primal.exo",
+                nodal_field_specs=[_U_FS],
+                element_field_specs={"all": [_CAUCHY_FS]},
+            )
+            n_nodes = fe_problem.mesh.nodes.shape[0]
+            n_elems = len(fe_problem.mesh.element_blocks["all"])
+            self.assertEqual(results.nodal["u"].shape, (1, n_nodes, 2))
+            self.assertEqual(
+                results.element["all"]["cauchy"].shape,
+                (1, n_elems, 3),
+            )
+            # The 2D mesh skeleton reads back with 2D coordinates.
+            mesh_back = read_mesh(out_dir / "primal.exo")
+            self.assertEqual(mesh_back.nodes.shape, (n_nodes, 2))
+            self.assertEqual(
+                mesh_back.element_family, ElementFamily.QUAD_LINEAR,
             )
 
 

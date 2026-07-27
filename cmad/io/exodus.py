@@ -15,8 +15,9 @@ Read-side schema mapping
   to ``f"block_{id}"`` when ``eb_names`` is missing or its slot is empty.
 - **Element type**: per-block ``connect{i}.elem_type`` string attribute,
   case-insensitive. Accepted: ``HEX`` / ``HEX8`` -> ``HEX_LINEAR``;
-  ``TETRA`` / ``TETRA4`` -> ``TET_LINEAR``. All blocks must share one
-  family (cmad ``Mesh`` is single-family).
+  ``TETRA`` / ``TETRA4`` -> ``TET_LINEAR``; ``QUAD`` / ``QUAD4`` ->
+  ``QUAD_LINEAR``; ``TRI`` / ``TRI3`` -> ``TRI_LINEAR``. All blocks must
+  share one family (cmad ``Mesh`` is single-family).
 - **Node sets**: ``node_ns{i}`` (1-based) + ``ns_prop1`` + optional
   ``ns_names``. Names default to ``f"nodeset_{id}"``.
 - **Side sets**: ``elem_ss{i}`` + ``side_ss{i}`` (both 1-based) +
@@ -62,11 +63,17 @@ _ELEM_TYPE_TO_FAMILY: dict[str, ElementFamily] = {
     "HEX8": ElementFamily.HEX_LINEAR,
     "TETRA": ElementFamily.TET_LINEAR,
     "TETRA4": ElementFamily.TET_LINEAR,
+    "QUAD": ElementFamily.QUAD_LINEAR,
+    "QUAD4": ElementFamily.QUAD_LINEAR,
+    "TRI": ElementFamily.TRI_LINEAR,
+    "TRI3": ElementFamily.TRI_LINEAR,
 }
 
 _FAMILY_TO_ELEM_TYPE: dict[ElementFamily, str] = {
     ElementFamily.HEX_LINEAR: "HEX8",
     ElementFamily.TET_LINEAR: "TETRA4",
+    ElementFamily.QUAD_LINEAR: "QUAD4",
+    ElementFamily.TRI_LINEAR: "TRI3",
 }
 
 
@@ -84,23 +91,25 @@ def _decode_names(name_var: netCDF4.Variable) -> list[str]:
 
 
 def _read_coords(ds: netCDF4.Dataset) -> NDArray[np.float64]:
-    """Read nodal coordinates as ``(N_nodes, 3)``.
+    """Read nodal coordinates as ``(N_nodes, num_dim)``.
 
     Accepts combined ``coord`` (shape ``(num_dim, num_nodes)``) or
-    separate ``coordx`` / ``coordy`` / ``coordz``. Raises if neither.
+    separate ``coordx`` / ``coordy`` / (``coordz`` when 3D). Raises if
+    neither.
     """
     if "coord" in ds.variables:
         coord = np.asarray(ds["coord"][:])
-        if coord.ndim != 2 or coord.shape[0] != 3:
+        if coord.ndim != 2 or coord.shape[0] not in (2, 3):
             raise ExodusFormatError(
-                f"'coord' must have shape (3, num_nodes); got {coord.shape}"
+                f"'coord' must have shape (2 or 3, num_nodes); "
+                f"got {coord.shape}"
             )
         return coord.T.astype(np.float64, copy=False)
     if "coordx" in ds.variables:
-        cx = np.asarray(ds["coordx"][:])
-        cy = np.asarray(ds["coordy"][:])
-        cz = np.asarray(ds["coordz"][:])
-        return np.column_stack([cx, cy, cz]).astype(np.float64, copy=False)
+        cols = [np.asarray(ds["coordx"][:]), np.asarray(ds["coordy"][:])]
+        if "coordz" in ds.variables:
+            cols.append(np.asarray(ds["coordz"][:]))
+        return np.column_stack(cols).astype(np.float64, copy=False)
     raise ExodusFormatError(
         "missing nodal coordinates: expected 'coord' or "
         "'coordx'/'coordy'/'coordz'"
@@ -257,9 +266,9 @@ def read_mesh(path: str | Path) -> Mesh:
         if "num_dim" not in ds.dimensions:
             raise ExodusFormatError("missing dimension 'num_dim'")
         num_dim = len(ds.dimensions["num_dim"])
-        if num_dim != 3:
+        if num_dim not in (2, 3):
             raise ExodusFormatError(
-                f"cmad supports 3D meshes only; got num_dim={num_dim}"
+                f"cmad supports 2D or 3D meshes; got num_dim={num_dim}"
             )
 
         n_blocks = (
@@ -528,7 +537,7 @@ def _write_metadata(ds: netCDF4.Dataset, title: str) -> None:
 
 
 def _write_dimensions(ds: netCDF4.Dataset, mesh: Mesh) -> None:
-    ds.createDimension("num_dim", 3)
+    ds.createDimension("num_dim", mesh.nodes.shape[1])
     ds.createDimension("num_nodes", mesh.nodes.shape[0])
     ds.createDimension("num_elem", mesh.connectivity.shape[0])
     ds.createDimension("num_el_blk", len(mesh.element_blocks))
@@ -548,7 +557,7 @@ def _write_coordinates(ds: netCDF4.Dataset, mesh: Mesh) -> None:
     coor_names = ds.createVariable(
         "coor_names", "S1", ("num_dim", "len_string")
     )
-    coor_names[:] = _encode_names(["x", "y", "z"])
+    coor_names[:] = _encode_names(["x", "y", "z"][: mesh.nodes.shape[1]])
     # Empty time_whole: Paraview / VTK expect this to exist even when no
     # time steps have been written yet.
     ds.createVariable("time_whole", "f8", ("time_step",))
@@ -853,7 +862,8 @@ class ExodusWriter:
     assigned sequentially starting at 1 in
     ``mesh.element_blocks`` / ``node_sets`` / ``side_sets`` insertion
     order. Element type strings emitted: ``HEX8`` for HEX_LINEAR,
-    ``TETRA4`` for TET_LINEAR.
+    ``TETRA4`` for TET_LINEAR, ``QUAD4`` for QUAD_LINEAR, ``TRI3`` for
+    TRI_LINEAR.
 
     ``nodal_field_specs`` and ``element_field_specs`` declare the
     result-variable schema at construction (Exodus's variable-name
