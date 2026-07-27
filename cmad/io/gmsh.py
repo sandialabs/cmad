@@ -7,14 +7,19 @@ Python API. Parallel to :func:`cmad.io.exodus.read_mesh`; a deck's
 
 What the reader maps:
 
-- **Nodes**: ``gmsh.model.mesh.getNodes`` coordinates as ``(N, 3)``. gmsh node
-  tags (any positive integers) remap to 0-based contiguous indices.
-- **Elements**: 3D elements only, one family per mesh (raises on mixed). gmsh
-  element type 4 (4-node tetrahedron) is ``ElementFamily.TET_LINEAR``; type 5
-  (8-node hexahedron) is ``HEX_LINEAR``.
-- **Element blocks**: each 3D physical group becomes one block (name from the
-  group name, id from the group tag into ``element_block_ids``). With no 3D
-  physical groups, a single ``"all"`` block holds every element.
+- **Nodes**: ``gmsh.model.mesh.getNodes`` coordinates. gmsh returns three
+  coordinates per node; a 2D mesh (which lies in a plane of constant z) keeps
+  the x and y columns, a 3D mesh all three. gmsh node tags (any positive
+  integers) remap to 0-based contiguous indices.
+- **Elements**: the top element dimension present (3 if the mesh has volume
+  elements, else 2), one family per mesh (raises on mixed). gmsh element type
+  2 (3-node triangle) is ``ElementFamily.TRI_LINEAR``; type 3 (4-node
+  quadrilateral) is ``QUAD_LINEAR``; type 4 (4-node tetrahedron) is
+  ``TET_LINEAR``; type 5 (8-node hexahedron) is ``HEX_LINEAR``.
+- **Element blocks**: each physical group of the mesh dimension becomes one
+  block (name from the group name, id from the group tag into
+  ``element_block_ids``). With no such physical groups, a single ``"all"``
+  block holds every element.
 
 Boundary conditions attach through the bounding box side sets that
 :func:`cmad.fem.mesh.coordinate_side_sets` builds at deck-load (the deck's
@@ -33,6 +38,8 @@ from cmad.fem.element_family import ElementFamily
 from cmad.fem.mesh import Mesh
 
 _GMSH_TYPE_TO_FAMILY: dict[int, ElementFamily] = {
+    2: ElementFamily.TRI_LINEAR,
+    3: ElementFamily.QUAD_LINEAR,
     4: ElementFamily.TET_LINEAR,
     5: ElementFamily.HEX_LINEAR,
 }
@@ -46,9 +53,9 @@ def read_gmsh_mesh(path: str | Path) -> Mesh:
     """Read a gmsh ``.msh`` file into a :class:`Mesh` (module docstring for the
     node / element / block mapping).
 
-    Raises :class:`GmshFormatError` for no nodes, no 3D elements, mixed or
-    unknown element families, or physical groups that do not partition the
-    elements.
+    Raises :class:`GmshFormatError` for no nodes, no 2D or 3D elements, mixed
+    or unknown element families, a 2D mesh that varies in z, or physical
+    groups that do not partition the elements.
     """
     path = Path(path)
     if not path.is_file():
@@ -60,10 +67,11 @@ def read_gmsh_mesh(path: str | Path) -> Mesh:
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.open(str(path))
-        nodes, index_by_tag = _read_nodes()
-        connectivity, family, elem_tags = _read_volume_elements(index_by_tag)
+        dim = _mesh_dimension()
+        nodes, index_by_tag = _read_nodes(dim)
+        connectivity, family, elem_tags = _read_elements(dim, index_by_tag)
         element_blocks, element_block_ids = _read_blocks(
-            connectivity.shape[0], elem_tags,
+            dim, connectivity.shape[0], elem_tags,
         )
     finally:
         if started:
@@ -80,6 +88,19 @@ def read_gmsh_mesh(path: str | Path) -> Mesh:
     )
 
 
+def _mesh_dimension() -> int:
+    """Top element dimension present, 3 (volume) preferred over 2 (surface).
+
+    A 3D mesh may also carry 2D boundary elements, so dimension 3 is checked
+    first. Raises if neither dimension has elements.
+    """
+    for dim in (3, 2):
+        elem_types, _tags, _nodes = gmsh.model.mesh.getElements(dim)
+        if len(elem_types) > 0:
+            return dim
+    raise GmshFormatError("gmsh mesh has no 2D or 3D elements")
+
+
 def _index_by_tag(tags: NDArray[np.int64], n: int) -> NDArray[np.intp]:
     """Array indexed by tag giving each tag's 0-based position (-1 if absent),
     so a tag array remaps to positions by fancy indexing.
@@ -89,21 +110,41 @@ def _index_by_tag(tags: NDArray[np.int64], n: int) -> NDArray[np.intp]:
     return table
 
 
-def _read_nodes() -> tuple[NDArray[np.float64], NDArray[np.intp]]:
+def _read_nodes(dim: int) -> tuple[NDArray[np.float64], NDArray[np.intp]]:
     node_tags, coords, _ = gmsh.model.mesh.getNodes()
     node_tags = np.asarray(node_tags, dtype=np.int64)
     if node_tags.shape[0] == 0:
         raise GmshFormatError("gmsh mesh has no nodes")
     nodes = np.asarray(coords, dtype=np.float64).reshape(-1, 3)
+    if dim == 2:
+        nodes = _drop_z_for_planar_mesh(nodes)
     return nodes, _index_by_tag(node_tags, node_tags.shape[0])
 
 
-def _read_volume_elements(
-        index_by_tag: NDArray[np.intp],
+def _drop_z_for_planar_mesh(
+        nodes: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """Return the x and y columns of a 2D mesh's ``(N, 3)`` gmsh coordinates.
+
+    A 2D cmad mesh lies in a plane of constant z, but gmsh still stores three
+    coordinates per node. Raises if z varies (a surface mesh read as 2D),
+    measured relative to the xy extent.
+    """
+    z_extent = float(nodes[:, 2].max() - nodes[:, 2].min())
+    xy = nodes[:, :2]
+    xy_extent = float(np.max(xy.max(axis=0) - xy.min(axis=0)))
+    if z_extent > 1e-9 * max(xy_extent, 1.0):
+        raise GmshFormatError(
+            f"2D gmsh mesh varies in z (z extent {z_extent:.3e} vs xy extent "
+            f"{xy_extent:.3e}); cmad 2D meshes lie in a plane of constant z"
+        )
+    return xy
+
+
+def _read_elements(
+        dim: int, index_by_tag: NDArray[np.intp],
 ) -> tuple[NDArray[np.intp], ElementFamily, NDArray[np.int64]]:
-    elem_types, elem_tags, node_tags = gmsh.model.mesh.getElements(3)
-    if len(elem_types) == 0:
-        raise GmshFormatError("gmsh mesh has no 3D elements")
+    elem_types, elem_tags, node_tags = gmsh.model.mesh.getElements(dim)
     if len(elem_types) > 1:
         raise GmshFormatError(
             "all elements must share one element family; got gmsh element "
@@ -113,7 +154,8 @@ def _read_volume_elements(
     if gmsh_type not in _GMSH_TYPE_TO_FAMILY:
         raise GmshFormatError(
             f"unsupported gmsh element type {gmsh_type}; supported types are "
-            f"{sorted(_GMSH_TYPE_TO_FAMILY)} (4-node tet, 8-node hex)"
+            f"{sorted(_GMSH_TYPE_TO_FAMILY)} (3-node tri, 4-node quad, 4-node "
+            f"tet, 8-node hex)"
         )
     family = _GMSH_TYPE_TO_FAMILY[gmsh_type]
 
@@ -126,9 +168,9 @@ def _read_volume_elements(
 
 
 def _read_blocks(
-        n_elems: int, elem_tags: NDArray[np.int64],
+        dim: int, n_elems: int, elem_tags: NDArray[np.int64],
 ) -> tuple[dict[str, NDArray[np.intp]], dict[str, int]]:
-    groups = gmsh.model.getPhysicalGroups(3)
+    groups = gmsh.model.getPhysicalGroups(dim)
     if not groups:
         return {"all": np.arange(n_elems, dtype=np.intp)}, {}
 
@@ -136,12 +178,12 @@ def _read_blocks(
     blocks: dict[str, NDArray[np.intp]] = {}
     block_ids: dict[str, int] = {}
     assigned = np.zeros(n_elems, dtype=bool)
-    for dim, tag in sorted(groups, key=lambda g: g[1]):
-        name = gmsh.model.getPhysicalName(dim, tag) or f"block_{tag}"
+    for group_dim, tag in sorted(groups, key=lambda g: g[1]):
+        name = gmsh.model.getPhysicalName(group_dim, tag) or f"block_{tag}"
         group_tags: list[NDArray[np.int64]] = []
-        for entity in gmsh.model.getEntitiesForPhysicalGroup(dim, tag):
+        for entity in gmsh.model.getEntitiesForPhysicalGroup(group_dim, tag):
             _types, ent_tags, _nodes = gmsh.model.mesh.getElements(
-                dim, int(entity),
+                group_dim, int(entity),
             )
             group_tags.extend(np.asarray(a, dtype=np.int64) for a in ent_tags)
         rows = (
@@ -159,7 +201,7 @@ def _read_blocks(
 
     if not assigned.all():
         raise GmshFormatError(
-            f"{int((~assigned).sum())} elements are in no 3D physical group; "
-            "every element must belong to exactly one physical volume"
+            f"{int((~assigned).sum())} elements are in no {dim}D physical "
+            "group; every element must belong to exactly one physical group"
         )
     return blocks, block_ids

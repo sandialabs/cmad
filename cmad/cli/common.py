@@ -24,7 +24,7 @@ from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.driver import StateInit, build_fe_quasistatic_trajectory
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem, FEState, build_fe_problem
-from cmad.fem.finite_element import P1_TET, Q1_HEX, FiniteElement
+from cmad.fem.finite_element import P1_TET, P1_TRI, Q1_HEX, Q1_QUAD, FiniteElement
 from cmad.fem.kernel_arrays import FEKernelArrays
 from cmad.fem.mesh import coordinate_side_sets
 from cmad.fem.quadrature import (
@@ -270,13 +270,17 @@ def build_fe_J_of_params_flat(
 _DEFAULT_FE_PER_FAMILY: dict[ElementFamily, FiniteElement] = {
     ElementFamily.HEX_LINEAR: Q1_HEX,
     ElementFamily.TET_LINEAR: P1_TET,
+    ElementFamily.QUAD_LINEAR: Q1_QUAD,
+    ElementFamily.TRI_LINEAR: P1_TRI,
 }
 
 _FE_BY_NAME: dict[str, FiniteElement] = {
     "Q1": Q1_HEX,
     "Q1_HEX": Q1_HEX,
+    "Q1_QUAD": Q1_QUAD,
     "P1": P1_TET,
     "P1_TET": P1_TET,
+    "P1_TRI": P1_TRI,
 }
 
 _BC_COORD_NAMES: tuple[str, ...] = ("x", "y", "z", "t")
@@ -444,9 +448,9 @@ def _build_field_layouts(
 
     Per-var FE choice comes from ``discretization.finite elements``
     (deck-side discretization decision); omitted var_names fall back to
-    family-matched linear Lagrange (Q1_HEX / P1_TET). Stray override
-    keys that don't match any GR var_name raise — silent typos in the
-    deck would otherwise apply nothing.
+    family-matched linear Lagrange (Q1_HEX / P1_TET in 3D, Q1_QUAD /
+    P1_TRI in 2D). Stray override keys that don't match any GR var_name
+    raise — silent typos in the deck would otherwise apply nothing.
     """
     if family not in _DEFAULT_FE_PER_FAMILY:
         raise ValueError(

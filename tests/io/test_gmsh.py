@@ -62,6 +62,47 @@ def _write_hex_box(path: Path, *, n: int = 3) -> None:
         gmsh.finalize()
 
 
+def _write_quad_square(path: Path, *, n: int = 3) -> None:
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("quadsquare")
+        gmsh.model.occ.addRectangle(0.0, 0.0, 0.0, 1.0, 1.0)
+        gmsh.model.occ.synchronize()
+        for curve in gmsh.model.getEntities(1):
+            gmsh.model.mesh.setTransfiniteCurve(curve[1], n + 1)
+        for surf in gmsh.model.getEntities(2):
+            gmsh.model.mesh.setTransfiniteSurface(surf[1])
+            gmsh.model.mesh.setRecombine(2, surf[1])
+        surfs = [s[1] for s in gmsh.model.getEntities(2)]
+        gmsh.model.addPhysicalGroup(2, surfs, name="solid")
+        gmsh.model.mesh.generate(2)
+        gmsh.write(str(path))
+    finally:
+        gmsh.finalize()
+
+
+def _write_tri_square(
+        path: Path, *, size: float = 0.5, physical: bool = True,
+) -> None:
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("trisquare")
+        gmsh.model.occ.addRectangle(0.0, 0.0, 0.0, 1.0, 1.0)
+        gmsh.model.occ.synchronize()
+        if physical:
+            surfs = [s[1] for s in gmsh.model.getEntities(2)]
+            gmsh.model.addPhysicalGroup(2, surfs, name="solid")
+        else:
+            gmsh.option.setNumber("Mesh.SaveAll", 1)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", size)
+        gmsh.model.mesh.generate(2)
+        gmsh.write(str(path))
+    finally:
+        gmsh.finalize()
+
+
 class TestReadGmshMesh(unittest.TestCase):
     def test_tet_box(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -89,6 +130,30 @@ class TestReadGmshMesh(unittest.TestCase):
         self.assertEqual(mesh.element_family, ElementFamily.HEX_LINEAR)
         self.assertEqual(mesh.connectivity.shape[1], 8)
         self.assertEqual(mesh.connectivity.shape[0], 27)
+
+    def test_quad_square(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "quad.msh"
+            _write_quad_square(path, n=3)
+            mesh = read_gmsh_mesh(path)
+        self.assertEqual(mesh.element_family, ElementFamily.QUAD_LINEAR)
+        self.assertEqual(mesh.nodes.shape[1], 2)
+        self.assertEqual(mesh.connectivity.shape[1], 4)
+        self.assertEqual(mesh.connectivity.shape[0], 9)
+        self.assertEqual(list(mesh.element_blocks), ["solid"])
+        self.assertEqual(mesh.element_block_ids["solid"], 1)
+        np.testing.assert_allclose(mesh.nodes.min(axis=0), 0.0, atol=1e-12)
+        np.testing.assert_allclose(mesh.nodes.max(axis=0), 1.0, atol=1e-12)
+
+    def test_tri_square(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "tri.msh"
+            _write_tri_square(path, size=0.5)
+            mesh = read_gmsh_mesh(path)
+        self.assertEqual(mesh.element_family, ElementFamily.TRI_LINEAR)
+        self.assertEqual(mesh.nodes.shape[1], 2)
+        self.assertEqual(mesh.connectivity.shape[1], 3)
+        self.assertEqual(list(mesh.element_blocks), ["solid"])
 
     def test_no_physical_group_yields_all_block(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -134,6 +199,21 @@ class TestGmshBoundingBoxSidesets(unittest.TestCase):
             self.assertEqual(pairs.shape[1], 2)
             self.assertGreater(pairs.shape[0], 0)
 
+    def test_four_bounding_box_sides_2d(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "quad.msh"
+            _write_quad_square(path, n=3)
+            mesh = read_gmsh_mesh(path)
+        sides = coordinate_side_sets(mesh)
+        expected = {
+            f"{axis}{end}_sides"
+            for axis in ("x", "y") for end in ("min", "max")
+        }
+        self.assertEqual(set(sides), expected)
+        for pairs in sides.values():
+            self.assertEqual(pairs.shape[1], 2)
+            self.assertGreater(pairs.shape[0], 0)
+
 
 class TestGmshPrimalEndToEnd(unittest.TestCase):
     """``cmad primal`` on a gmsh ``.msh`` through the suffix dispatch.
@@ -171,6 +251,48 @@ class TestGmshPrimalEndToEnd(unittest.TestCase):
                         "sym_x": ["equilibrium", 0, "xmin_sides", "0.0"],
                         "sym_y": ["equilibrium", 1, "ymin_sides", "0.0"],
                         "sym_z": ["equilibrium", 2, "zmin_sides", "0.0"],
+                        "load_x": ["equilibrium", 0, "xmax_sides", "0.05 * t"],
+                    },
+                },
+                "output": {
+                    "path": str(tmp / "out"),
+                    "exodus filename": "primal.exo",
+                    "global residual": ["u"],
+                    "local residual": {"all": ["cauchy"]},
+                },
+            }
+            deck_path = tmp / "deck.yaml"
+            deck_path.write_text(yaml.safe_dump(deck, sort_keys=False))
+            self.assertEqual(cmad_main(["primal", str(deck_path)]), 0)
+            self.assertTrue((tmp / "out" / "primal.exo").exists())
+
+    def test_elastic_primal_on_gmsh_square(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            _write_tri_square(tmp / "square.msh", size=0.3, physical=False)
+            deck = {
+                "problem": {"type": "fe"},
+                "discretization": {
+                    "mesh file": str(tmp / "square.msh"),
+                    "build coordinate sidesets": True,
+                    "num steps": 2,
+                    "step size": 0.5,
+                },
+                "residuals": {
+                    "global residual": {
+                        "type": "mechanics", "def_type": "plane_strain",
+                    },
+                    "local residual": {
+                        "type": "elastic",
+                        "materials": {
+                            "all": {"elastic": {"kappa": 100.0, "mu": 50.0}},
+                        },
+                    },
+                },
+                "dirichlet bcs": {
+                    "expression": {
+                        "sym_x": ["equilibrium", 0, "xmin_sides", "0.0"],
+                        "sym_y": ["equilibrium", 1, "ymin_sides", "0.0"],
                         "load_x": ["equilibrium", 0, "xmax_sides", "0.05 * t"],
                     },
                 },
