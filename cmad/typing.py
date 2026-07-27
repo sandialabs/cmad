@@ -15,7 +15,7 @@ from numpy.typing import NDArray
 if TYPE_CHECKING:
     from cmad.fem.shapes import ShapeFunctionsAtIP
     from cmad.global_residuals.modes import GlobalResidualMode
-    from cmad.models.global_fields import GlobalFieldsAtPoint
+    from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
     from cmad.models.model import Model
 
 Scalar: TypeAlias = float | JaxArray
@@ -78,9 +78,12 @@ StateList: TypeAlias = list[StateBlock]
 
 ResidualFn: TypeAlias = Callable[
     [StateList, StateList, Params,
-     "GlobalFieldsAtPoint", "GlobalFieldsAtPoint"], JaxArray,
+     "GlobalFieldsAtPoint", "GlobalFieldsAtPoint", "StepTime"], JaxArray,
 ]
-"""Signature of the per-block residual function passed to Model.__init__."""
+"""Signature of the per-block residual function passed to Model.__init__.
+
+``StepTime`` is the trailing nondiff argument (argnum 5); the Model's
+derivatives target argnums 0-4 only, so it is never differentiated."""
 
 CauchyFn: TypeAlias = Callable[
     [StateList, StateList, Params,
@@ -101,7 +104,7 @@ ResidualFnGR: TypeAlias = Callable[
      "Model", "GlobalResidualMode",
      Sequence["ShapeFunctionsAtIP"],
      Scalar, Scalar, Scalar,
-     int],
+     int, "StepTime"],
     Sequence[JaxArray],
 ]
 """Signature of the per-element-IP residual function passed to

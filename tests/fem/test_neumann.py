@@ -36,6 +36,7 @@ from cmad.fem.quadrature import quad_quadrature, tri_quadrature
 from cmad.global_residuals.mechanics import Mechanics
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
+from cmad.models.global_fields import StepTime
 from cmad.parameters.parameters import Parameters
 
 _SIDE_QUAD = {
@@ -380,7 +381,7 @@ class TestNeumannBCThreading(unittest.TestCase):
         params_by_block = params_by_block_from_models(fe_problem)
         _, R, _ = assemble_global(
             fe_problem, fe_problem.kernel_arrays, params_by_block,
-            U_zero, U_zero, t=0.0,
+            U_zero, U_zero, step_time=StepTime(1.0, 0.0),
         )
         local_zmax = np.array([4, 5, 6, 7])
         global_zmax = fe_problem.mesh.connectivity[0, local_zmax]

@@ -14,7 +14,7 @@ from cmad.models.elastic_stress import (
     isotropic_linear_elastic_stress,
     two_mu_scale_factor,
 )
-from cmad.models.global_fields import GlobalFieldsAtPoint
+from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F, off_axis_idx
 from cmad.models.mechanics_model import MechanicsModel
@@ -239,6 +239,7 @@ class SmallElasticPlastic(MechanicsModel):
     def _residual_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+            step_time: StepTime,
             def_type: int,
             elastic_stress: Callable[..., JaxArray],
             effective_stress: Callable[..., JaxArray],

@@ -23,7 +23,7 @@ from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.effective_stress import J2_effective_stress
 from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.elastic_stress import two_mu_scale_factor
-from cmad.models.global_fields import GlobalFieldsAtPoint
+from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F
 from cmad.models.mechanics_model import MechanicsModel
@@ -175,6 +175,7 @@ class BeBarElasticPlastic(MechanicsModel):
     def _residual_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+            step_time: StepTime,
             def_type: int,
             hardening: Callable[..., JaxArray],
             yield_tol: float, is_complex: bool,

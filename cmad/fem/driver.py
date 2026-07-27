@@ -35,6 +35,7 @@ from cmad.fem.nonlinear_solver import (
     _fe_newton_solve_ad,
     _freeze,
 )
+from cmad.models.global_fields import StepTime
 from cmad.qois.fe_qoi import FEQoI, StepContribution
 from cmad.typing import JaxArray, Params
 
@@ -118,9 +119,10 @@ def build_fe_quasistatic_trajectory(
                     step=step_idx + 1,
                     t=t,
                 )
+            step_time = StepTime(t, t_prev)
             U_solved, xi_solved = _fe_newton_solve_ad(
                 fe_problem, fe_arrays, params_by_block,
-                U_prev, xi_prev, t, nls_frozen, lss_frozen,
+                U_prev, xi_prev, step_time, nls_frozen, lss_frozen,
             )
             # xi_solved only carries keys for element blocks whose
             # model has time-evolving state; the rest echo forward.

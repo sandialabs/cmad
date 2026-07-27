@@ -14,7 +14,7 @@ from cmad.models.elastic_stress import (
     stress_fun_is_finite,
     two_mu_scale_factor,
 )
-from cmad.models.global_fields import GlobalFieldsAtPoint
+from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.kinematics import gather_F
 from cmad.models.mechanics_model import MechanicsModel
 from cmad.models.var_types import (
@@ -142,6 +142,7 @@ class Elastic(MechanicsModel):
     def _residual_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+            step_time: StepTime,
             def_type: int, elastic_stress: Callable[..., JaxArray],
     ) -> JaxArray:
 

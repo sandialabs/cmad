@@ -33,6 +33,7 @@ from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
+from cmad.models.global_fields import StepTime
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
 from cmad.typing import PyTreeDict
@@ -128,7 +129,7 @@ class TestAssembleElementBlockCoupledShape(unittest.TestCase):
         params_by_block = params_by_block_from_models(fe_problem)
         R_block, vals, xi_solved = assemble_element_block(
             fe_problem, fe_problem.kernel_arrays, params_by_block, "all",
-            U, U, t=0.0, xi_prev_per_block=xi_prev,
+            U, U, step_time=StepTime(1.0, 0.0), xi_prev_per_block=xi_prev,
         )
         assert xi_solved is not None
         self.assertEqual(xi_solved.shape, (1, 8, 6))
@@ -148,7 +149,7 @@ class TestAssembleElementBlockCoupledShape(unittest.TestCase):
         params_by_block = params_by_block_from_models(fe_problem)
         _, _, xi_solved = assemble_element_block(
             fe_problem, fe_problem.kernel_arrays, params_by_block, "all",
-            U, U, t=0.0,
+            U, U, step_time=StepTime(1.0, 0.0),
         )
         self.assertIsNone(xi_solved)
 
@@ -181,7 +182,7 @@ class TestAssembleGlobalCoupledClosedFormEquivalence(unittest.TestCase):
         params_coupled = params_by_block_from_models(fe_coupled)
         K_closed, R_closed, xi_closed = assemble_global(
             fe_closed, fe_closed.kernel_arrays, params_closed, U, U,
-            t=0.0,
+            step_time=StepTime(1.0, 0.0),
         )
         n_elems = mesh.connectivity.shape[0]
         xi_prev_by_block: dict[str, NDArray[np.floating]] = {
@@ -189,7 +190,7 @@ class TestAssembleGlobalCoupledClosedFormEquivalence(unittest.TestCase):
         }
         K_coupled, R_coupled, xi_coupled = assemble_global(
             fe_coupled, fe_coupled.kernel_arrays, params_coupled, U, U,
-            t=0.0, xi_prev_by_block=xi_prev_by_block,
+            step_time=StepTime(1.0, 0.0), xi_prev_by_block=xi_prev_by_block,
         )
 
         np.testing.assert_allclose(
@@ -232,7 +233,7 @@ class TestAssembleGlobalCoupledMixedMode(unittest.TestCase):
         params_by_block = params_by_block_from_models(fe_problem)
         _, _, xi_solved = assemble_global(
             fe_problem, fe_problem.kernel_arrays, params_by_block, U, U,
-            t=0.0, xi_prev_by_block=xi_prev_by_block,
+            step_time=StepTime(1.0, 0.0), xi_prev_by_block=xi_prev_by_block,
         )
         self.assertEqual(set(xi_solved.keys()), {"right"})
         self.assertEqual(xi_solved["right"].shape, (1, 8, 6))
@@ -257,7 +258,7 @@ class TestAssembleGlobalCoupledMissingXiPrev(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             assemble_global(
                 fe_problem, fe_problem.kernel_arrays, params_by_block,
-                U, U, t=0.0,
+                U, U, step_time=StepTime(1.0, 0.0),
             )
         self.assertIn("'all'", str(ctx.exception))
 
@@ -274,7 +275,7 @@ class TestAssembleGlobalCoupledMissingXiPrev(unittest.TestCase):
         with self.assertRaises(ValueError):
             assemble_global(
                 fe_problem, fe_problem.kernel_arrays, params_by_block,
-                U, U, t=0.0, xi_prev_by_block={},
+                U, U, step_time=StepTime(1.0, 0.0), xi_prev_by_block={},
             )
 
     def test_missing_key_in_mixed_mode(self) -> None:
@@ -295,7 +296,7 @@ class TestAssembleGlobalCoupledMissingXiPrev(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             assemble_global(
                 fe_problem, fe_problem.kernel_arrays, params_by_block,
-                U, U, t=0.0, xi_prev_by_block={},
+                U, U, step_time=StepTime(1.0, 0.0), xi_prev_by_block={},
             )
         self.assertIn("'right'", str(ctx.exception))
 

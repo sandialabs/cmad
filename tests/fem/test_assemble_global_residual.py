@@ -24,6 +24,7 @@ from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
+from cmad.models.global_fields import StepTime
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
 from cmad.typing import JaxArray, PyTreeDict, Scalar
@@ -104,11 +105,11 @@ class TestCoupledResidualMatchesAssembleGlobal(unittest.TestCase):
 
         params = params_by_block_from_models(fe)
         _, R, _ = assemble_global(
-            fe, fe.kernel_arrays, params, U, U, t=0.3,
+            fe, fe.kernel_arrays, params, U, U, step_time=StepTime(1.0, 0.0),
             xi_prev_by_block=xi_prev_by_block,
         )
         R_only = assemble_global_residual(
-            fe, fe.kernel_arrays, params, U, U, t=0.3,
+            fe, fe.kernel_arrays, params, U, U, step_time=StepTime(1.0, 0.0),
             xi_prev_by_block=xi_prev_by_block,
         )
         np.testing.assert_allclose(

@@ -33,6 +33,7 @@ from cmad.global_residuals import (
 )
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
+from cmad.models.global_fields import StepTime
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.var_types import VarType
 from cmad.parameters.parameters import Parameters
@@ -121,7 +122,8 @@ class _ToyEquilibrium(GlobalResidual):
         self.var_names[0] = "u"
 
         def residual_fn(xi, xi_prev, params, U, U_prev,
-                        model, mode, shapes_ip, w, dv, h, ip_set):
+                        model, mode, shapes_ip, w, dv, h, ip_set,
+                        step_time):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(
                 U_prev, shapes_ip)
@@ -161,7 +163,7 @@ def _kernel_common_kwargs(quad):
         "geom_shared": block_cache.shared,
         "forcing_fns_by_block_idx": {},
         "residual_block_shapes": [(8, 3)],
-        "t": 0.0,
+        "step_time": StepTime(1.0, 0.0),
     }
 
 
@@ -260,7 +262,7 @@ class TestPerElementCoupledLocalEquilibrium(unittest.TestCase):
             xi_prev_blocks = unravel_xi(xi_prev_per_ip[ip_idx])
             residual = model._residual(
                 xi_blocks, xi_prev_blocks,
-                params, U_ip, U_ip_prev,
+                params, U_ip, U_ip_prev, StepTime(1.0, 0.0),
             )
             self.assertLess(
                 float(jnp.linalg.norm(residual)), 1e-10)

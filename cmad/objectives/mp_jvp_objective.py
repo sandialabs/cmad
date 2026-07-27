@@ -6,7 +6,7 @@ from jax import hessian, jit, value_and_grad
 from jax.lax import fori_loop
 from numpy.typing import NDArray
 
-from cmad.models.global_fields import mp_U_from_F
+from cmad.models.global_fields import StepTime, mp_U_from_F
 from cmad.qois.qoi import QoI
 from cmad.typing import JaxArray, StateList
 
@@ -59,12 +59,13 @@ class MPJVPObjective:
         )
 
         num_steps = F.shape[-1] - 1
+        step_time = StepTime(1.0, 0.0)
 
         def body_fun(step, carry):
             J, xi, xi_prev, params, F, data, weight = carry
             U = mp_U_from_F(F[:, :, step])
             U_prev = mp_U_from_F(F[:, :, step - 1])
-            xi = update_fun(xi_prev, params, U, U_prev)
+            xi = update_fun(xi_prev, params, U, U_prev, step_time)
 
             carry = (qoi._qoi(xi, xi_prev, params, U, U_prev,
                 data[:, :, step], weight) + J,

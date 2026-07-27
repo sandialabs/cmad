@@ -15,8 +15,9 @@ from cmad.fem.assembly import (
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.qoi_data import load_reaction_data
 from cmad.io.registry import register_qoi
+from cmad.models.global_fields import StepTime
 from cmad.qois.fe_qoi import FEQoI, StepContribution
-from cmad.typing import JaxArray, Params, Scalar
+from cmad.typing import JaxArray, Params
 
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem, FEState
@@ -139,10 +140,11 @@ class FELoadMatch(FEQoI):
                 t_prev: JaxArray,
         ) -> JaxArray:
             del xi
-            dt = t - t_prev
+            step_time = StepTime(t, t_prev)
+            dt = step_time.dt
             step = jnp.argmin(jnp.abs(t_schedule - t))
             reaction = self._reaction_at(
-                params_by_block, fe_arrays, U, U_prev, t, xi_prev,
+                params_by_block, fe_arrays, U, U_prev, step_time, xi_prev,
             )
             mismatch = jnp.sum((reaction - data[step]) ** 2)
             return norm_factor * dt * mismatch
@@ -171,7 +173,8 @@ class FELoadMatch(FEQoI):
             xi_prev = {b: jnp.asarray(fe_state.xi_at(kp, b)) for b in coupled}
             reaction = self._reaction_at(
                 params, fe_arrays, U, U_prev,
-                float(fe_state.t_history[k]), xi_prev,
+                StepTime(float(fe_state.t_history[k]),
+                         float(fe_state.t_history[kp])), xi_prev,
             )
             series[k] = np.asarray(reaction)
         np.savetxt(self._output_file, series, delimiter=",")
@@ -182,14 +185,14 @@ class FELoadMatch(FEQoI):
             fe_arrays: FEKernelArrays,
             U: JaxArray,
             U_prev: JaxArray,
-            t: Scalar,
+            step_time: StepTime,
             xi_prev: Mapping[str, JaxArray],
     ) -> JaxArray:
         """Net reaction per requested component at one state: the residual
         summed over each component's sideset dofs."""
         R = assemble_global_residual(
             self._fe_problem, fe_arrays, params_by_block,
-            U, U_prev, t, xi_prev,
+            U, U_prev, step_time, xi_prev,
         )
         return jnp.stack(
             [jnp.sum(R[eq_c]) for eq_c in self._eq_per_component],

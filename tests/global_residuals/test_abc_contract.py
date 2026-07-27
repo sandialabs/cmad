@@ -20,9 +20,12 @@ from cmad.global_residuals import (
 )
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
+from cmad.models.global_fields import StepTime
 from cmad.models.var_types import VarType
 from cmad.parameters.parameters import Parameters
 from cmad.typing import PyTreeDict
+
+_STEP_TIME = StepTime(1.0, 0.0)
 
 
 def _tet_barycenter_shapes() -> ShapeFunctionsAtIP:
@@ -68,7 +71,8 @@ class _ToyEquilibrium(GlobalResidual):
         self.var_names[0] = "u"
 
         def residual_fn(xi, xi_prev, params, U, U_prev,
-                        model, mode, shapes_ip, w, dv, h, ip_set):
+                        model, mode, shapes_ip, w, dv, h, ip_set,
+                        step_time):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(U_prev, shapes_ip)
             if mode == GlobalResidualMode.CLOSED_FORM:
@@ -130,7 +134,7 @@ class TestGlobalResidualABC(unittest.TestCase):
             _test_inputs(model))
 
         _, dR_dU = evaluators["R_and_dR_dU"](
-            params, U, U_prev, shapes_ip, w, dv, h, ip_set)
+            params, U, U_prev, shapes_ip, w, dv, h, ip_set, _STEP_TIME)
         ad_arr = np.asarray(dR_dU[0][0])          # (4, 3, 4, 3)
 
         eps = 1e-6
@@ -141,10 +145,10 @@ class TestGlobalResidualABC(unittest.TestCase):
                 U_minus = [U[0].at[b, k].add(-eps)]
                 R_plus = evaluators["R"](
                     params, U_plus, U_prev,
-                    shapes_ip, w, dv, h, ip_set)
+                    shapes_ip, w, dv, h, ip_set, _STEP_TIME)
                 R_minus = evaluators["R"](
                     params, U_minus, U_prev,
-                    shapes_ip, w, dv, h, ip_set)
+                    shapes_ip, w, dv, h, ip_set, _STEP_TIME)
                 fd_arr[:, :, b, k] = (R_plus[0] - R_minus[0]) / (2 * eps)
 
         self.assertTrue(jnp.allclose(
@@ -159,7 +163,7 @@ class TestGlobalResidualABC(unittest.TestCase):
             _test_inputs(model))
 
         R0_blocks, dR_dU = evaluators["R_and_dR_dU"](
-            params, U, U_prev, shapes_ip, w, dv, h, ip_set)
+            params, U, U_prev, shapes_ip, w, dv, h, ip_set, _STEP_TIME)
         R0 = R0_blocks[0]
         K_full = dR_dU[0][0]
         # Free DOFs: node 3. K_ff: (3, 3). R_f: (3,).
@@ -169,7 +173,7 @@ class TestGlobalResidualABC(unittest.TestCase):
 
         U_new = [U[0].at[3].add(dU_f)]
         R1_blocks = evaluators["R"](
-            params, U_new, U_prev, shapes_ip, w, dv, h, ip_set)
+            params, U_new, U_prev, shapes_ip, w, dv, h, ip_set, _STEP_TIME)
         self.assertLess(float(jnp.linalg.norm(R1_blocks[0][3, :])), 1e-10)
 
 if __name__ == "__main__":

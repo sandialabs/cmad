@@ -19,6 +19,7 @@ from cmad.fem.precompute import (
 )
 from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.global_residuals.modes import GlobalResidualMode
+from cmad.models.global_fields import StepTime
 from cmad.typing import (
     JaxArray,
     Params,
@@ -227,7 +228,7 @@ def per_element_R_and_K(
             JaxArray | NDArray[np.floating],
         ]],
         residual_block_shapes: Sequence[tuple[int, int]],
-        t: Scalar,
+        step_time: StepTime,
 ) -> tuple[list[JaxArray], list[list[JaxArray]]]:
     """Per-element ``(R_blocks, dR_dU_blocks)`` at all IPs of one element.
 
@@ -300,13 +301,13 @@ def per_element_R_and_K(
         R_ip, dR_dU_ip = R_and_dR_dU_evaluator(
             params, U_elem, U_prev_elem,
             field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip,
-            geom_per_elem.element_size, 0,
+            geom_per_elem.element_size, 0, step_time,
         )
         body_force_ip_per_block = {
             block_idx: jnp.einsum(
                 "a,k->ak",
                 field_shapes_phys_per_block[block_idx].N,
-                jnp.asarray(forcing_fn(coords_ip, t)),
+                jnp.asarray(forcing_fn(coords_ip, step_time.t)),
             ) * quad_w_ip * iso_jac_det_ip
             for block_idx, forcing_fn in forcing_fns_by_block_idx.items()
         }
@@ -349,7 +350,7 @@ def per_element_R(
             JaxArray | NDArray[np.floating],
         ]],
         residual_block_shapes: Sequence[tuple[int, int]],
-        t: Scalar,
+        step_time: StepTime,
 ) -> list[JaxArray]:
     """Per-element ``R_blocks`` for a CLOSED_FORM block (residual only).
 
@@ -381,13 +382,13 @@ def per_element_R(
         R_ip = list(R_evaluator(
             params, U_elem, U_prev_elem,
             field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip,
-            geom_per_elem.element_size, 0,
+            geom_per_elem.element_size, 0, step_time,
         ))
         for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
             f_ext = jnp.einsum(
                 "a,k->ak",
                 field_shapes_phys_per_block[block_idx].N,
-                jnp.asarray(forcing_fn(coords_ip, t)),
+                jnp.asarray(forcing_fn(coords_ip, step_time.t)),
             ) * quad_w_ip * iso_jac_det_ip
             R_ip[block_idx] = R_ip[block_idx] - f_ext
         return R_ip
@@ -427,7 +428,7 @@ def per_element_R_and_K_coupled(
             JaxArray | NDArray[np.floating],
         ]],
         residual_block_shapes: Sequence[tuple[int, int]],
-        t: Scalar,
+        step_time: StepTime,
 ) -> tuple[list[JaxArray], list[list[JaxArray]], JaxArray]:
     """Per-element ``(R_blocks, dR_dU_blocks, xi_solved_per_ip)`` for COUPLED.
 
@@ -490,7 +491,7 @@ def per_element_R_and_K_coupled(
             params, U_elem, U_prev_elem, xi_prev_blocks,
             field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip,
             geom_per_elem.element_size, 0,
-            ip_idx,
+            step_time, ip_idx,
         )
         # Discard the unravel callable; xi treedef is fixed by
         # the ``unravel_xi`` closure already.
@@ -499,7 +500,7 @@ def per_element_R_and_K_coupled(
             block_idx: jnp.einsum(
                 "a,k->ak",
                 field_shapes_phys_per_block[block_idx].N,
-                jnp.asarray(forcing_fn(coords_ip, t)),
+                jnp.asarray(forcing_fn(coords_ip, step_time.t)),
             ) * quad_w_ip * iso_jac_det_ip
             for block_idx, forcing_fn in forcing_fns_by_block_idx.items()
         }
@@ -549,7 +550,7 @@ def per_element_R_coupled(
             JaxArray | NDArray[np.floating],
         ]],
         residual_block_shapes: Sequence[tuple[int, int]],
-        t: Scalar,
+        step_time: StepTime,
 ) -> list[JaxArray]:
     """Per-element ``R_blocks`` for a COUPLED block (residual only).
 
@@ -580,13 +581,13 @@ def per_element_R_coupled(
         R_ip = list(R_coupled_evaluator(
             params, U_elem, U_prev_elem, xi_prev_blocks,
             field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip,
-            geom_per_elem.element_size, 0,
+            geom_per_elem.element_size, 0, step_time,
         ))
         for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
             f_ext = jnp.einsum(
                 "a,k->ak",
                 field_shapes_phys_per_block[block_idx].N,
-                jnp.asarray(forcing_fn(coords_ip, t)),
+                jnp.asarray(forcing_fn(coords_ip, step_time.t)),
             ) * quad_w_ip * iso_jac_det_ip
             R_ip[block_idx] = R_ip[block_idx] - f_ext
         return R_ip
@@ -620,7 +621,7 @@ def assemble_element_block(
         block_name: str,
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
-        t: Scalar,
+        step_time: StepTime,
         xi_prev_per_block: NDArray[np.floating] | JaxArray | None = None,
 ) -> tuple[JaxArray, JaxArray, JaxArray | None]:
     """Assemble one element block's R contribution + COO data.
@@ -687,7 +688,7 @@ def assemble_element_block(
                 geom, geom_cache.shared,
                 evaluators["R_and_dR_dU_and_xi"],
                 unravel_xi,
-                forcing_fns_by_block_idx, block_shapes, t,
+                forcing_fns_by_block_idx, block_shapes, step_time,
             ),
             in_axes=(0, 0, 0, 0),
             axis_name="elem",
@@ -701,7 +702,7 @@ def assemble_element_block(
                 U, Up, params,
                 geom, geom_cache.shared,
                 evaluators["R_and_dR_dU"],
-                forcing_fns_by_block_idx, block_shapes, t,
+                forcing_fns_by_block_idx, block_shapes, step_time,
             ),
             in_axes=(0, 0, 0),
             axis_name="elem",
@@ -739,7 +740,7 @@ def assemble_element_block_residual(
         block_name: str,
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
-        t: Scalar,
+        step_time: StepTime,
         xi_prev_per_block: NDArray[np.floating] | JaxArray | None = None,
 ) -> JaxArray:
     """Assemble one element block's global ``R`` contribution (no tangent).
@@ -780,7 +781,7 @@ def assemble_element_block_residual(
                 geom, geom_cache.shared,
                 evaluators["R"],
                 unravel_xi,
-                forcing_fns_by_block_idx, block_shapes, t,
+                forcing_fns_by_block_idx, block_shapes, step_time,
             ),
             in_axes=(0, 0, 0, 0),
             axis_name="elem",
@@ -794,7 +795,7 @@ def assemble_element_block_residual(
                 U, Up, params,
                 geom, geom_cache.shared,
                 evaluators["R"],
-                forcing_fns_by_block_idx, block_shapes, t,
+                forcing_fns_by_block_idx, block_shapes, step_time,
             ),
             in_axes=(0, 0, 0),
             axis_name="elem",
@@ -819,7 +820,7 @@ def assemble_global(
         params_by_block: Mapping[str, Params],
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
-        t: Scalar,
+        step_time: StepTime,
         xi_prev_by_block: Mapping[str, NDArray[np.floating] | JaxArray]
         | None = None,
 ) -> tuple[BCOO, JaxArray, dict[str, JaxArray]]:
@@ -888,7 +889,7 @@ def assemble_global(
     for block_name in fe_problem.evaluators_by_block:
         R_block, vals, xi_solved = assemble_element_block(
             fe_problem, fe_arrays, params_by_block, block_name,
-            U_global, U_prev_global, t,
+            U_global, U_prev_global, step_time,
             xi_prev_per_block=xi_prev.get(block_name),
         )
         R_global = R_global + R_block
@@ -900,7 +901,7 @@ def assemble_global(
         fe_problem.dof_map,
         fe_arrays.neumann_side_arrays,
         fe_problem.resolved_neumann_bcs,
-        t,
+        step_time.t,
     )
 
     vals = jnp.concatenate(vals_all)
@@ -923,7 +924,7 @@ def assemble_global_residual(
         params_by_block: Mapping[str, Params],
         U_global: NDArray[np.floating] | JaxArray,
         U_prev_global: NDArray[np.floating] | JaxArray,
-        t: Scalar,
+        step_time: StepTime,
         xi_prev_by_block: Mapping[str, NDArray[np.floating] | JaxArray]
         | None = None,
 ) -> JaxArray:
@@ -955,7 +956,7 @@ def assemble_global_residual(
     for block_name in fe_problem.evaluators_by_block:
         R_global = R_global + assemble_element_block_residual(
             fe_problem, fe_arrays, params_by_block, block_name,
-            U_global, U_prev_global, t,
+            U_global, U_prev_global, step_time,
             xi_prev_per_block=xi_prev.get(block_name),
         )
 
@@ -963,7 +964,7 @@ def assemble_global_residual(
         fe_problem.dof_map,
         fe_arrays.neumann_side_arrays,
         fe_problem.resolved_neumann_bcs,
-        t,
+        step_time.t,
     )
     return R_global
 

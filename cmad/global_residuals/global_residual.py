@@ -227,9 +227,11 @@ class GlobalResidual(ABC):
         U_ip_prev)`` for COUPLED). Returns a mode-specific dict of
         jit'd public evaluators keyed by string names:
 
-        - CLOSED_FORM (2 keys, both 8-arg sig
-          ``(params, U, U_prev, shapes_ip, w, dv, h, ip_set)`` —
-          U-only because ``cauchy_closed_form`` never consults xi):
+        - CLOSED_FORM (2 keys, both 9-arg sig
+          ``(params, U, U_prev, shapes_ip, w, dv, h, ip_set,
+          step_time)`` — U-only because ``cauchy_closed_form`` never
+          consults xi; ``step_time`` reaches the residual for any
+          time-dependent global term):
           ``"R"`` (residual only, for linesearch trial points and
           other cheap residual probes) and ``"R_and_dR_dU"`` (fused
           ``(R_blocks, dR_dU_blocks)`` with XLA CSE between R and
@@ -242,10 +244,11 @@ class GlobalResidual(ABC):
           ``(num_basis_fns_r, num_eqs_r, num_basis_fns_s,
           num_eqs_s)``.
 
-        - COUPLED (2 keys, both 9-arg sig
+        - COUPLED (2 keys, both 10-arg sig
           ``(params, U, U_prev, xi_prev, shapes_ip, w, dv, h,
-          ip_set)``; xi internally solved from ``xi_prev`` via
-          ``make_newton_solve`` wrapping ``model._residual``):
+          ip_set, step_time)``; xi internally solved from ``xi_prev``
+          via ``make_newton_solve`` wrapping ``model._residual``, which
+          receives ``step_time`` as its trailing argument):
           ``"R"`` returning ``R_blocks`` (R-only — the per-IP
           Newton runs and the converged xi is discarded; intended
           for global-FE linesearch trial points and other R-norm
@@ -313,23 +316,23 @@ class GlobalResidual(ABC):
 
         # Public-closure argnums: params=0, U=1, U_prev=2,
         # shapes_ip=3, w=4, dv=5, h=6, ip_set=7.
-        def r_at_ip(params, U, U_prev, shapes_ip, w, dv, h, ip_set):
+        def r_at_ip(params, U, U_prev, shapes_ip, w, dv, h, ip_set, step_time):
             return residual_fn(
                 xi_zeros, xi_zeros, params, U, U_prev,
                 model, GlobalResidualMode.CLOSED_FORM,
-                shapes_ip, w, dv, h, ip_set,
+                shapes_ip, w, dv, h, ip_set, step_time,
             )
 
         dR_dU_at_ip = jacfwd(r_at_ip, argnums=1)
 
         def r_and_dR_dU_at_ip(
-                params, U, U_prev, shapes_ip, w, dv, h, ip_set,
+                params, U, U_prev, shapes_ip, w, dv, h, ip_set, step_time,
         ):
             R = r_at_ip(
-                params, U, U_prev, shapes_ip, w, dv, h, ip_set,
+                params, U, U_prev, shapes_ip, w, dv, h, ip_set, step_time,
             )
             dR_dU = dR_dU_at_ip(
-                params, U, U_prev, shapes_ip, w, dv, h, ip_set,
+                params, U, U_prev, shapes_ip, w, dv, h, ip_set, step_time,
             )
             return R, dR_dU
 
@@ -359,21 +362,22 @@ class GlobalResidual(ABC):
         #   params=0, U=1, U_prev=2, xi_prev=3,
         #   shapes_ip=4, w=5, dv=6, h=7, ip_set=8.
         def coupled_r_total(params, U, U_prev, xi_prev,
-                            shapes_ip, w, dv, h, ip_set):
+                            shapes_ip, w, dv, h, ip_set, step_time):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(
                 U_prev, shapes_ip)
-            xi = local_newton(xi_prev, params, U_ip, U_ip_prev)
+            xi = local_newton(xi_prev, params, U_ip, U_ip_prev, step_time)
             return residual_fn(
                 xi, xi_prev, params, U, U_prev,
                 model, GlobalResidualMode.COUPLED,
-                shapes_ip, w, dv, h, ip_set,
+                shapes_ip, w, dv, h, ip_set, step_time,
             )
 
         dR_dU_total = jacfwd(coupled_r_total, argnums=1)
 
         def r_and_dR_dU_and_xi_at_ip(params, U, U_prev, xi_prev,
-                                     shapes_ip, w, dv, h, ip_set, ip_idx=0):
+                                     shapes_ip, w, dv, h, ip_set, step_time,
+                                     ip_idx=0):
             if print_local_convergence:
                 debug.print(
                     "[LOCAL elem={e} ip={i}]",
@@ -382,15 +386,15 @@ class GlobalResidual(ABC):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(
                 U_prev, shapes_ip)
-            xi = local_newton(xi_prev, params, U_ip, U_ip_prev)
+            xi = local_newton(xi_prev, params, U_ip, U_ip_prev, step_time)
             R = residual_fn(
                 xi, xi_prev, params, U, U_prev,
                 model, GlobalResidualMode.COUPLED,
-                shapes_ip, w, dv, h, ip_set,
+                shapes_ip, w, dv, h, ip_set, step_time,
             )
             dR_dU = dR_dU_total(
                 params, U, U_prev, xi_prev,
-                shapes_ip, w, dv, h, ip_set,
+                shapes_ip, w, dv, h, ip_set, step_time,
             )
             return R, dR_dU, xi
 

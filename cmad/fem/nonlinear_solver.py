@@ -24,7 +24,8 @@ from cmad.fem.sparse_solve import (
     scipy_block_gmres,
     scipy_lu,
 )
-from cmad.typing import JaxArray, Params, Scalar
+from cmad.models.global_fields import StepTime
+from cmad.typing import JaxArray, Params
 from cmad.util.line_search import DEFAULT_LINE_SEARCH_SETTINGS, line_search
 
 _DEFAULT_NONLINEAR_SOLVER_SETTINGS: dict[str, Any] = {
@@ -191,7 +192,7 @@ def _fe_newton_primal(
         params_by_block: Mapping[str, Params],
         U_prev: JaxArray,
         xi_prev_by_block: Mapping[str, JaxArray],
-        t: Scalar,
+        step_time: StepTime,
         nonlinear_solver_settings: dict[str, Any],
         linear_solver_settings: dict[str, Any],
 ) -> tuple[JaxArray, dict[str, JaxArray]]:
@@ -222,7 +223,7 @@ def _fe_newton_primal(
     sparsity = fe_arrays.embedded_sparsity
     presc_idx = fe_arrays.prescribed_indices
     presc_vals = jnp.asarray(
-        dof_map.evaluate_prescribed_values(fe_arrays.dbc_arrays, t),
+        dof_map.evaluate_prescribed_values(fe_arrays.dbc_arrays, step_time.t),
     )
 
     U_init = U_prev
@@ -230,7 +231,7 @@ def _fe_newton_primal(
     def _assemble_enforced(U):
         K_bcoo, R_assembled, xi = assemble_global(
             fe_problem, fe_arrays, params_by_block,
-            U, U_prev, t,
+            U, U_prev, step_time,
             xi_prev_by_block=xi_prev_by_block,
         )
         K, K_ii_presc = _embedded_bc_enforce(K_bcoo, presc_idx)
@@ -300,6 +301,7 @@ def fe_newton_solve(
         xi_prev_by_block: Mapping[str, NDArray[np.floating] | JaxArray]
         | None = None,
         t: float = 0.0,
+        t_prev: float | None = None,
         nonlinear_solver_settings: dict[str, Any] | None = None,
         linear_solver_settings: dict[str, Any] | None = None,
 ) -> tuple[JaxArray, dict[str, JaxArray]]:
@@ -407,9 +409,10 @@ def fe_newton_solve(
         {k: jnp.asarray(v) for k, v in xi_prev_by_block.items()}
         if xi_prev_by_block is not None else {}
     )
+    step_time = StepTime(t, t if t_prev is None else t_prev)
     return _fe_newton_solve_ad(
         fe_problem, fe_problem.kernel_arrays, params_by_block,
-        U_prev_jax, xi_prev_jax, t, _freeze(nls), _freeze(lss),
+        U_prev_jax, xi_prev_jax, step_time, _freeze(nls), _freeze(lss),
     )
 
 
@@ -420,7 +423,7 @@ def _fe_newton_solve_ad(
         params_by_block: Mapping[str, Params],
         U_prev: JaxArray,
         xi_prev_by_block: dict[str, JaxArray],
-        t: Scalar,
+        step_time: StepTime,
         nonlinear_solver_settings_frozen: tuple[tuple[str, Any], ...],
         linear_solver_settings_frozen: tuple[tuple[str, Any], ...],
 ) -> tuple[JaxArray, dict[str, JaxArray]]:
@@ -429,12 +432,12 @@ def _fe_newton_solve_ad(
     Splitting the public ``fe_newton_solve`` from this inner form
     keeps the boundary ``np.ndarray → jnp.ndarray`` conversion
     outside the ``custom_jvp``-tracked function body, so the diff
-    args are uniformly typed for the JVP rule. ``t`` stays in the
-    diff set: when the driver runs inside a :func:`jax.lax.scan`
-    over the time schedule, the per-step ``t`` is a tracer (one
-    slice of the scan's traced input), and ``nondiff_argnums``
-    requires hashable Python values. The JVP rule threads a
-    ``t_dot`` tangent that no current consumer populates. The two
+    args are uniformly typed for the JVP rule. ``step_time`` stays in
+    the diff set: when the driver runs inside a :func:`jax.lax.scan`
+    over the time schedule, its ``t`` / ``t_prev`` are tracers (slices
+    of the scan's traced input), and ``nondiff_argnums`` requires
+    hashable Python values. The JVP rule accepts a ``step_time``
+    tangent that no current consumer populates. The two
     settings dicts are passed as :func:`_freeze`'d tuples so they
     are hashable for ``custom_jvp``'s nondiff-arg cache.
     """
@@ -442,7 +445,7 @@ def _fe_newton_solve_ad(
     lss = _thaw(linear_solver_settings_frozen)
     U_star, xi_star = _fe_newton_primal(
         fe_problem, fe_arrays, params_by_block, U_prev, xi_prev_by_block,
-        t, nls, lss,
+        step_time, nls, lss,
     )
     return U_star, xi_star
 
@@ -456,7 +459,7 @@ def _fe_newton_solve_ad_jvp(
 ):
     """IFT linear-sensitivity JVP for :func:`_fe_newton_solve_ad`.
 
-    For ``r(U, p) = 0`` with ``p = (params, U_prev, xi_prev, t)``,
+    For ``r(U, p) = 0`` with ``p = (params, U_prev, xi_prev, step_time)``,
     ``U_star_dot = -K^{-1} · (∂r/∂p · p_dot)`` with ``K = ∂r/∂U`` at
     ``U_star``. ``∂r/∂p · p_dot`` is computed by
     ``jax.jvp(r, p, p_dot)`` at fixed ``U_star``; ``K`` is the
@@ -466,36 +469,38 @@ def _fe_newton_solve_ad_jvp(
     ``xi_star_dot`` follows from chain rule: the assembly's xi
     output is differentiated jointly w.r.t. ``U_star`` (with tangent
     ``U_star_dot``) and w.r.t. ``p`` (with tangent ``p_dot``).
-    ``t_dot`` is threaded as ceremony — no current consumer
-    populates a non-zero ``t_dot`` — but ``t`` itself stays in the
-    primals tuple because under :func:`jax.lax.scan` it is a
-    tracer and cannot ride in ``nondiff_argnums``.
+    The ``step_time`` tangent is present only as ceremony — no current
+    consumer populates a non-zero one — but ``step_time`` itself stays
+    in the primals tuple because under :func:`jax.lax.scan` it is
+    traced (its ``t`` is a scanned input slice and its ``t_prev`` a
+    carried value) and cannot ride in ``nondiff_argnums``.
     """
-    fe_arrays, params_by_block, U_prev, xi_prev_by_block, t = primals
+    fe_arrays, params_by_block, U_prev, xi_prev_by_block, step_time = primals
     p_dot = tangents[1:]  # tangents[0]: fe_arrays tangent, unused
 
     lss = _thaw(linear_solver_settings_frozen)
 
     U_star, xi_star = _fe_newton_solve_ad(
         fe_problem, fe_arrays, params_by_block, U_prev, xi_prev_by_block,
-        t, nonlinear_solver_settings_frozen,
+        step_time, nonlinear_solver_settings_frozen,
         linear_solver_settings_frozen,
     )
 
     presc_idx = fe_arrays.prescribed_indices
 
     # Trailing-underscore params (params_ <-> params_by_block, Up_ <->
-    # U_prev, xp_ <-> xi_prev_by_block, t_ <-> t) are this helper's explicit
-    # jvp-differentiated inputs; U_star is captured, held fixed by the IFT.
-    def r_of_p(params_, Up_, xp_, t_):
+    # U_prev, xp_ <-> xi_prev_by_block, step_time_ <-> step_time) are this
+    # helper's explicit jvp-differentiated inputs; U_star is captured,
+    # held fixed by the IFT.
+    def r_of_p(params_, Up_, xp_, step_time_):
         pv = jnp.asarray(
             fe_problem.dof_map.evaluate_prescribed_values(
-                fe_arrays.dbc_arrays, t_,
+                fe_arrays.dbc_arrays, step_time_.t,
             ),
         )
         K_bcoo_local, R_local, _ = assemble_global(
             fe_problem, fe_arrays, params_,
-            U_star, Up_, t_,
+            U_star, Up_, step_time_,
             xi_prev_by_block=xp_,
         )
         _, K_ii_presc_local = _embedded_bc_enforce(
@@ -508,13 +513,13 @@ def _fe_newton_solve_ad_jvp(
 
     _, Rp_dot = jax.jvp(
         r_of_p,
-        (params_by_block, U_prev, xi_prev_by_block, t),
+        (params_by_block, U_prev, xi_prev_by_block, step_time),
         p_dot,
     )
 
     K_bcoo, _, _ = assemble_global(
         fe_problem, fe_arrays, params_by_block,
-        U_star, U_prev, t,
+        U_star, U_prev, step_time,
         xi_prev_by_block=xi_prev_by_block,
     )
     K, _ = _embedded_bc_enforce(K_bcoo, presc_idx)
@@ -523,17 +528,17 @@ def _fe_newton_solve_ad_jvp(
         K, fe_problem, fe_arrays, -Rp_dot, lss,
     )
 
-    def xi_of_U_p(U_, params_, Up_, xp_, t_):
+    def xi_of_U_p(U_, params_, Up_, xp_, step_time_):
         _, _, xi_local = assemble_global(
             fe_problem, fe_arrays, params_,
-            U_, Up_, t_,
+            U_, Up_, step_time_,
             xi_prev_by_block=xp_,
         )
         return xi_local
 
     _, xi_star_dot = jax.jvp(
         xi_of_U_p,
-        (U_star, params_by_block, U_prev, xi_prev_by_block, t),
+        (U_star, params_by_block, U_prev, xi_prev_by_block, step_time),
         (U_star_dot, *p_dot),
     )
 

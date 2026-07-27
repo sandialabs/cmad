@@ -37,6 +37,7 @@ from cmad.fem.mesh import Mesh
 from cmad.fem.quadrature import tet_quadrature, tri_quadrature
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
+from cmad.models.global_fields import StepTime
 from cmad.models.model import Model
 from cmad.models.var_types import VarType
 from cmad.typing import GREvaluators, JaxArray, ResidualFnGR
@@ -84,7 +85,7 @@ class _MockModel:
 
 
 def _mock_R_and_dR_dU(
-        params, U, U_prev, shapes_ip, w, dv, h, ip_set,
+        params, U, U_prev, shapes_ip, w, dv, h, ip_set, step_time,
 ):
     R_u = jnp.ones((4, 3)) * _R_U_PER_IP
     R_p = jnp.ones((4, 1)) * _R_P_PER_IP
@@ -157,7 +158,7 @@ class TestAssemblyMultiBlock(unittest.TestCase):
     def test_R_block_scatter_lands_in_correct_field_eqs(self) -> None:
         R_block, _, _ = assemble_element_block(
             self.fe_problem, self.fe_problem.kernel_arrays, {"all": {}},
-            "all", self.U, self.U_prev, t=0.0,
+            "all", self.U, self.U_prev, step_time=StepTime(1.0, 0.0),
         )
         R = np.asarray(R_block)
         self.assertEqual(R.shape, (self.n_dofs_u + self.n_dofs_p,))
@@ -168,7 +169,7 @@ class TestAssemblyMultiBlock(unittest.TestCase):
         fe_arrays = self.fe_problem.kernel_arrays
         _, vals_jax, _ = assemble_element_block(
             self.fe_problem, fe_arrays, {"all": {}}, "all",
-            self.U, self.U_prev, t=0.0,
+            self.U, self.U_prev, step_time=StepTime(1.0, 0.0),
         )
         vals = np.asarray(vals_jax)
         # vals is the with-duplicates per-element-block COO data;

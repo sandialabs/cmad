@@ -8,7 +8,7 @@ from jax.tree_util import tree_flatten
 from numpy.typing import NDArray
 
 from cmad.models.deriv_types import DerivType
-from cmad.models.global_fields import GlobalFieldsAtPoint
+from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.var_types import VarType
 from cmad.parameters.parameters import Parameters
 from cmad.typing import (
@@ -62,6 +62,9 @@ class Model(ABC):
     # ---- attributes set by self.gather_global() / self.gather_xi() ----
     _U: GlobalFieldsAtPoint
     _U_prev: GlobalFieldsAtPoint
+
+    # ---- set by self.gather_time(); defaulted in __init__ ----
+    _step_time: StepTime
 
     # ---- attributes set by Model.__init__() ----
     # _residual and cauchy are documented in the class docstring; their
@@ -158,6 +161,7 @@ class Model(ABC):
         )
 
         self._deriv_mode = DerivType.DNONE
+        self._step_time = StepTime(1.0, 0.0)
 
         self.parameters.model_active_params_jacobian = \
             jit(self.parameters.model_active_params_jacobian,
@@ -170,21 +174,22 @@ class Model(ABC):
         Evaluate the residual (C) or its jacobian (Jac).
         """
 
-        variables = self.variables()
+        residual_args = (*self.variables(), self._step_time)
         deriv_mode = self._deriv_mode
 
         if deriv_mode == DerivType.DNONE:
-            self._C = np.asarray(self._residual(*variables), dtype=self.dtype)
+            self._C = np.asarray(
+                self._residual(*residual_args), dtype=self.dtype)
             self._Jac = None
         elif deriv_mode == DerivType.DPARAMS:
-            Jac = self._jacobian[deriv_mode](*variables)
+            Jac = self._jacobian[deriv_mode](*residual_args)
             self._Jac = np.asarray(
                 self.parameters.model_active_params_jacobian(
                     Jac, self.num_dofs), dtype=np.float64)
         else:
             jac_pytree = cast(
                 list[JaxArray],
-                self._jacobian[deriv_mode](*variables),
+                self._jacobian[deriv_mode](*residual_args),
             )
             self._Jac = np.hstack(jac_pytree)
 
@@ -247,12 +252,12 @@ class Model(ABC):
         Evaluate the Hessians of the residual
         """
 
-        variables = self.variables()
+        residual_args = (*self.variables(), self._step_time)
 
-        hessian_states = self._hessian_states(*variables)
-        hessian_params_params = self._hessian_params_params(*variables)
-        hessian_xi_params = self._hessian_xi_params(*variables)
-        hessian_xi_prev_params = self._hessian_xi_prev_params(*variables)
+        hessian_states = self._hessian_states(*residual_args)
+        hessian_params_params = self._hessian_params_params(*residual_args)
+        hessian_xi_params = self._hessian_xi_params(*residual_args)
+        hessian_xi_prev_params = self._hessian_xi_prev_params(*residual_args)
 
         self.d2C_dxi2 = self.unpack_state_hessian(hessian_states,
             DerivType.DXI, DerivType.DXI)
@@ -320,9 +325,10 @@ class Model(ABC):
             params: Params,
             U: GlobalFieldsAtPoint,
             U_prev: GlobalFieldsAtPoint,
+            step_time: StepTime,
     ) -> PyTree:
         return self._jacobian[DerivType.DXI](
-            xi, xi_prev, params, U, U_prev,
+            xi, xi_prev, params, U, U_prev, step_time,
         )
 
     def dC_dxi_prev(
@@ -332,9 +338,10 @@ class Model(ABC):
             params: Params,
             U: GlobalFieldsAtPoint,
             U_prev: GlobalFieldsAtPoint,
+            step_time: StepTime,
     ) -> PyTree:
         return self._jacobian[DerivType.DXI_PREV](
-            xi, xi_prev, params, U, U_prev,
+            xi, xi_prev, params, U, U_prev, step_time,
         )
 
     def dC_dp(
@@ -344,9 +351,10 @@ class Model(ABC):
             params: Params,
             U: GlobalFieldsAtPoint,
             U_prev: GlobalFieldsAtPoint,
+            step_time: StepTime,
     ) -> PyTree:
         return self._jacobian[DerivType.DPARAMS](
-            xi, xi_prev, params, U, U_prev,
+            xi, xi_prev, params, U, U_prev, step_time,
         )
 
     def dC_dU(
@@ -356,9 +364,10 @@ class Model(ABC):
             params: Params,
             U: GlobalFieldsAtPoint,
             U_prev: GlobalFieldsAtPoint,
+            step_time: StepTime,
     ) -> PyTree:
         return self._jacobian[DerivType.DU](
-            xi, xi_prev, params, U, U_prev,
+            xi, xi_prev, params, U, U_prev, step_time,
         )
 
     def dC_dU_prev(
@@ -368,9 +377,10 @@ class Model(ABC):
             params: Params,
             U: GlobalFieldsAtPoint,
             U_prev: GlobalFieldsAtPoint,
+            step_time: StepTime,
     ) -> PyTree:
         return self._jacobian[DerivType.DU_PREV](
-            xi, xi_prev, params, U, U_prev,
+            xi, xi_prev, params, U, U_prev, step_time,
         )
 
     def variables(
@@ -441,6 +451,9 @@ class Model(ABC):
     ) -> None:
         self._U = U
         self._U_prev = U_prev
+
+    def gather_time(self, step_time: StepTime) -> None:
+        self._step_time = step_time
 
     def gather_xi(
             self, xi: Sequence[StateBlock], xi_prev: Sequence[StateBlock],
