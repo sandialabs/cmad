@@ -1,0 +1,19 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+required: [name, dic_file, sideset]
+additionalProperties: false
+properties:
+  name:
+    const: fe_dic_match
+  dic_file:
+    type: string
+  sideset:
+    type: string
+  field:
+    type: string
+  poly_order:
+    type: integer
+  support_multiplier:
+    type: number
+  weight:
+    type: number

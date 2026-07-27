@@ -676,3 +676,71 @@ def build_dbc_arrays(dof_map: GlobalDofMap) -> DBCArrays:
         )
         for rbc in dof_map.resolved_bcs
     )
+
+
+def dof_physical_coords(
+        mesh: Mesh,
+        dof_map: GlobalDofMap,
+        field_name: str,
+        sideset: str | None = None,
+) -> tuple[NDArray[np.floating], NDArray[np.intp]]:
+    """Reference coords and global equation numbers of a field's basis
+    coefficients, optionally restricted to a sideset.
+
+    Returns ``(coords, eq)``: ``coords`` is the ``(n, dim)`` reference
+    coordinates of the field's basis coefficients; ``eq`` is
+    ``(n, num_components)``, where ``eq[i, c]`` is the global equation
+    number of component ``c`` at coefficient ``i``. With ``sideset``, only
+    the coefficients resident on that sideset are returned. The field must
+    place its DOFs on vertices only, one per vertex (P1 / Q1).
+    """
+    name_to_idx = {fl.name: i for i, fl in enumerate(dof_map.field_layouts)}
+    if field_name not in name_to_idx:
+        raise ValueError(
+            f"field '{field_name}' has no GlobalFieldLayout (known: "
+            f"{sorted(name_to_idx)})"
+        )
+    field_idx = name_to_idx[field_name]
+    layout = dof_map.field_layouts[field_idx]
+    fe = layout.finite_element
+    num_components = int(dof_map.num_dofs_per_basis_fn[field_idx])
+    block_offset = int(dof_map.block_offsets[field_idx])
+
+    non_vertex = sorted(
+        et.name
+        for et, count in fe.dofs_per_entity.items()
+        if et != EntityType.VERTEX and count > 0
+    )
+    if non_vertex or fe.dofs_per_entity.get(EntityType.VERTEX, 0) != 1:
+        raise NotImplementedError(
+            f"dof_physical_coords needs VERTEX-only DOFs with 1 per vertex; "
+            f"field '{field_name}' (FE '{fe.name}') does not qualify"
+        )
+
+    if sideset is None:
+        basis_fns = np.arange(
+            _num_basis_fns_in_mesh(layout, mesh), dtype=np.intp,
+        )
+    else:
+        if sideset not in mesh.side_sets:
+            raise KeyError(
+                f"sideset '{sideset}' not in mesh.side_sets (known: "
+                f"{sorted(mesh.side_sets)})"
+            )
+        per_pair = [
+            mesh.connectivity[
+                int(elem_id), fe.side_basis_fns(int(local_side_id)),
+            ].astype(np.intp)
+            for elem_id, local_side_id in mesh.side_sets[sideset]
+        ]
+        basis_fns = (
+            np.unique(np.concatenate(per_pair)).astype(np.intp)
+            if per_pair else np.empty(0, dtype=np.intp)
+        )
+
+    coords = mesh.nodes[basis_fns].astype(np.float64)
+    comps = np.arange(num_components, dtype=np.intp)
+    eq = (
+        block_offset + basis_fns[:, None] * num_components + comps[None, :]
+    ).astype(np.intp)
+    return coords, eq

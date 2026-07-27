@@ -8,10 +8,13 @@ import jax.numpy as jnp
 
 from cmad.fem.assembly import _gather_element_U
 from cmad.fem.precompute import compute_ip_quadrature_weights
-from cmad.fem.surface_integration import build_surface_integration_groups
 from cmad.io.qoi_data import load_displacement_data
 from cmad.io.registry import register_qoi
 from cmad.qois.fe_qoi import FEQoI, StepContribution
+from cmad.qois.surface_match import (
+    surface_groups_and_norm,
+    surface_l2_step_closure,
+)
 from cmad.typing import JaxArray, Params
 
 if TYPE_CHECKING:
@@ -73,8 +76,6 @@ class FEDisplacementMatch(FEQoI):
                 f"(num_total_dofs == num_nodes * ndims)"
             )
 
-        T = float(t_schedule[-1]) - float(t_schedule[0])
-
         self._fe_problem = fe_problem
         self._r_disp = r_disp
         self._field_idx_disp = fe_problem.field_idx_per_block[r_disp]
@@ -85,18 +86,14 @@ class FEDisplacementMatch(FEQoI):
             ip_weights = compute_ip_quadrature_weights(
                 fe_problem.geometry_cache,
             )
-            measure = float(sum(arr.sum() for arr in ip_weights.values()))
+            volume = float(sum(arr.sum() for arr in ip_weights.values()))
+            span = float(t_schedule[-1]) - float(t_schedule[0])
             self._surface_groups = None
+            self._norm_factor = float(weight) / (span * volume)
         else:
-            self._surface_groups = build_surface_integration_groups(
-                fe_problem.mesh, fe_problem.dof_map, "u", sideset,
-                fe_problem.side_quadrature,
+            self._surface_groups, self._norm_factor = surface_groups_and_norm(
+                fe_problem, sideset, "u", weight, t_schedule,
             )
-            measure = float(sum(
-                float(jnp.sum(g.dA * g.side_w[None, :]))
-                for g in self._surface_groups
-            ))
-        self._norm_factor = float(weight) / (T * measure)
 
     @classmethod
     def from_deck(
@@ -119,7 +116,10 @@ class FEDisplacementMatch(FEQoI):
     ) -> StepContribution:
         del params_by_block  # params enter only through the solved state U
         if self._surface_groups is not None:
-            return self._surface_step_closure()
+            return surface_l2_step_closure(
+                self._surface_groups, self._data_flat, self._t_schedule,
+                self._norm_factor,
+            )
         fe_problem = self._fe_problem
         r_disp = self._r_disp
         field_idx_disp = self._field_idx_disp
@@ -166,37 +166,6 @@ class FEDisplacementMatch(FEQoI):
                 diff_sq = jnp.sum(diff_at_ip * diff_at_ip, axis=-1)
                 block_integral = jnp.sum(diff_sq * weighted_iso_jac_det)
                 total_integral = total_integral + block_integral
-            return norm_factor * dt * total_integral
-
-        return _closure
-
-    def _surface_step_closure(self) -> StepContribution:
-        groups = self._surface_groups
-        assert groups is not None
-        data_flat = self._data_flat
-        t_schedule = self._t_schedule
-        norm_factor = self._norm_factor
-
-        def _closure(
-                U: JaxArray,
-                U_prev: JaxArray,
-                xi: Mapping[str, JaxArray],
-                xi_prev: Mapping[str, JaxArray],
-                t: JaxArray,
-                t_prev: JaxArray,
-        ) -> JaxArray:
-            del U_prev, xi, xi_prev
-            dt = t - t_prev
-            step = jnp.argmin(jnp.abs(t_schedule - t))
-            U_data = data_flat[step]
-            total_integral = jnp.zeros(())
-            for g in groups:
-                diff = U[g.eq] - U_data[g.eq]
-                diff_at_ip = jnp.einsum("pa,eac->epc", g.N_side, diff)
-                diff_sq = jnp.sum(diff_at_ip * diff_at_ip, axis=-1)
-                total_integral = total_integral + jnp.sum(
-                    diff_sq * g.dA * g.side_w[None, :]
-                )
             return norm_factor * dt * total_integral
 
         return _closure
