@@ -45,7 +45,9 @@ class Mechanics(GlobalResidual):
       when bound CLOSED_FORM (elastic) and from ``dev_cauchy`` /
       ``hydro_cauchy`` (reading the converged local state) when bound
       COUPLED (plastic). Mixed needs a model with ``supports_mixed`` and
-      is restricted to ``ndims == 3`` for now.
+      is restricted to ``ndims == 3`` for now. A finite deformation model
+      maps the momentum stress to PK1 (``sigma @ cofactor(F)``) and scales
+      the stabilization by ``(cof_F.T @ cof_F) / det F``.
 
     The body-force contribution ``f_ext = N · b · w · dv`` is applied by
     the assembly layer (not inside residual_fn) so this GR stays
@@ -101,16 +103,27 @@ class Mechanics(GlobalResidual):
                         xi, xi_prev, params, U_ip, U_ip_prev)
                 p = U_ip.fields["p"][0]
                 sigma = dev - p * jnp.eye(self._ndims)
-                R_u = (shapes_ip[0].grad_N @ sigma) * w * dv
 
                 psf = model.pressure_scale_factor(params)
                 mu = model.shear_scale_factor(params)
                 tau = self._stabilization_multiplier * 0.5 * h ** 2 / mu
                 N_p = shapes_ip[1].N
                 grad_p = U_ip.grad_fields["p"][0]
+
+                if model.is_finite_deformation:
+                    F = jnp.eye(self._ndims) + U_ip.grad_fields["u"]
+                    cof_F = cofactor(F)
+                    P = sigma @ cof_F
+                    R_u = (shapes_ip[0].grad_N @ P.T) * w * dv
+                    stab = tau * (cof_F.T @ cof_F) / jnp.linalg.det(F)
+                    stab_term = shapes_ip[1].grad_N @ (stab @ grad_p)
+                else:
+                    R_u = (shapes_ip[0].grad_N @ sigma) * w * dv
+                    stab_term = tau * (shapes_ip[1].grad_N @ grad_p)
+
                 R_p = (
                     -(p + hydro) / psf * N_p
-                    - tau * (shapes_ip[1].grad_N @ grad_p)
+                    - stab_term
                 ) * w * dv
                 return [R_u, R_p[:, None]]
 
