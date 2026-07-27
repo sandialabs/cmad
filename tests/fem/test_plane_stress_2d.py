@@ -7,8 +7,9 @@ local COUPLED unknown, never in the momentum balance), and Q1 captures
 the constant strain field exactly, so this checks the 2D plane stress
 path against the analytic stress with no residual or model change.
 
-cauchy flattens as (xx, xy, xz, yy, yz, zz): sigma_xx, sigma_yy, and
-sigma_zz are indices 0, 3, and 5.
+The 2D cauchy is the in-plane block (xx, xy, yy) -- sigma_xx and
+sigma_yy at indices 0 and 2. sigma_zz (zero here, enforced by the local
+solve) is out of plane and not in the in-plane output.
 """
 import unittest
 
@@ -94,8 +95,7 @@ class TestPlaneStressUniaxial2D(unittest.TestCase):
         np.testing.assert_allclose(
             cauchy[..., 0], E * _EPS_XX, rtol=1e-6,
         )
-        self.assertLess(float(np.max(np.abs(cauchy[..., 3]))), 1e-6)
-        self.assertLess(float(np.max(np.abs(cauchy[..., 5]))), 1e-6)
+        self.assertLess(float(np.max(np.abs(cauchy[..., 2]))), 1e-6)
 
 
 if __name__ == "__main__":

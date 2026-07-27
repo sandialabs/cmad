@@ -89,10 +89,10 @@ class TestNeumannEdgeTraction2D(unittest.TestCase):
 
     def _check_uniaxial(self, mesh: Mesh) -> None:
         cauchy = _solve_cauchy(mesh)
-        # cauchy 6-vector order (xx, xy, xz, yy, yz, zz).
+        # 2D cauchy is the in-plane block (xx, xy, yy).
         np.testing.assert_allclose(cauchy[..., 0], _P, rtol=1e-6)
         self.assertLess(float(np.max(np.abs(cauchy[..., 1]))), 1e-6 * _P)
-        self.assertLess(float(np.max(np.abs(cauchy[..., 3]))), 1e-6 * _P)
+        self.assertLess(float(np.max(np.abs(cauchy[..., 2]))), 1e-6 * _P)
 
     def test_quad(self) -> None:
         mesh = StructuredQuadMesh(lengths=(1.0, 1.0), divisions=(2, 2))

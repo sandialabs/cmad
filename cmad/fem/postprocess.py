@@ -28,7 +28,11 @@ from cmad.global_residuals.interpolation import (
     interpolate_global_fields_at_ip,
 )
 from cmad.global_residuals.modes import GlobalResidualMode
-from cmad.models.var_types import VarType, get_vector_from_sym_tensor
+from cmad.models.var_types import (
+    VarType,
+    get_num_eqs,
+    get_vector_from_sym_tensor,
+)
 from cmad.typing import JaxArray
 
 
@@ -40,8 +44,11 @@ def evaluate_cauchy_at_ips(
 ) -> NDArray[np.floating]:
     """Cauchy stress at every (elem, IP) of a block.
 
-    Returns ``(n_elems, n_ip, 6)`` in cmad-internal sym-tensor vec
-    order ``[xx, xy, xz, yy, yz, zz]``.
+    Returns ``(n_elems, n_ip, n_comp)`` in cmad sym-tensor vec order,
+    where ``n_comp = get_num_eqs(SYM_TENSOR, ndims)`` is the in-plane
+    component count: 6 (full 3x3) in 3D, 3 (``[xx, xy, yy]``) in 2D. The
+    stress is computed as a full 3x3 then reduced to its in-plane block,
+    so a 2D problem writes a genuine 2D sym tensor.
 
     Mode-dispatched on ``fe_problem.modes_by_block[block_name]``:
 
@@ -77,6 +84,8 @@ def evaluate_cauchy_at_ips(
     var_names = fe_problem.gr.var_names
     num_blocks = len(fe_problem.block_shapes)
     is_mixed = getattr(fe_problem.gr, "mixed", False)
+    ndims = fe_problem.mesh.nodes.shape[1]
+    n_comp = get_num_eqs(VarType.SYM_TENSOR, ndims)
 
     geom_cache = fe_problem.geometry_cache[block_name]
     geom_per_elem = geom_cache.per_elem
@@ -94,7 +103,7 @@ def evaluate_cauchy_at_ips(
         cauchy_fn = model.cauchy_closed_form
 
         def cauchy_per_elem_closed_form(U_e, U_prev_e, gpe):
-            cauchy_per_ip = jnp.zeros((nips, 6))
+            cauchy_per_ip = jnp.zeros((nips, n_comp))
             for ip_idx in range(nips):
                 shapes_ip = [
                     ShapeFunctionsAtIP(
@@ -119,7 +128,7 @@ def evaluate_cauchy_at_ips(
                 else:
                     sigma = cauchy_fn(params, U_ip, U_prev_ip)
                 cauchy_per_ip = cauchy_per_ip.at[ip_idx].set(
-                    get_vector_from_sym_tensor(sigma, 3),
+                    get_vector_from_sym_tensor(sigma[:ndims, :ndims], ndims),
                 )
             return cauchy_per_ip
 
@@ -139,7 +148,7 @@ def evaluate_cauchy_at_ips(
         def cauchy_per_elem_coupled(
                 U_e, U_prev_e, gpe, xi_per_ip, xi_prev_per_ip,
         ):
-            cauchy_per_ip = jnp.zeros((nips, 6))
+            cauchy_per_ip = jnp.zeros((nips, n_comp))
             for ip_idx in range(nips):
                 shapes_ip = [
                     ShapeFunctionsAtIP(
@@ -168,7 +177,7 @@ def evaluate_cauchy_at_ips(
                         xi_blocks, xi_prev_blocks, params, U_ip, U_prev_ip,
                     )
                 cauchy_per_ip = cauchy_per_ip.at[ip_idx].set(
-                    get_vector_from_sym_tensor(sigma, 3),
+                    get_vector_from_sym_tensor(sigma[:ndims, :ndims], ndims),
                 )
             return cauchy_per_ip
 
