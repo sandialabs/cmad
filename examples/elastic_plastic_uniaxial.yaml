@@ -24,7 +24,7 @@ discretization:
 
 residuals:
   global residual:
-    type: small_disp_equilibrium
+    type: mechanics
     def_type: full_3d
     nonlinear max iters: 10
     nonlinear absolute tol: 1.0e-12

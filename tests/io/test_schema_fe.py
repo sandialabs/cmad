@@ -22,7 +22,7 @@ def _minimal_fe_deck() -> dict[str, Any]:
             "step size": 0.1,
         },
         "residuals": {
-            "global residual": {"type": "small_disp_equilibrium", "def_type": "full_3d"},
+            "global residual": {"type": "mechanics", "def_type": "full_3d"},
             "local residual": {
                 "type": "elastic",
                 "materials": {

@@ -3,7 +3,7 @@
 When the deck omits ``output.{global residual, local residual}`` the
 writer falls back to each source's full advertised set: the GR's
 ``primary_output_fields()`` (nodal) + each block model's state +
-derived fields (element). For ``SmallDispEquilibrium`` + ``Elastic``
+derived fields (element). For ``Mechanics`` + ``Elastic``
 (CLOSED_FORM, no solved state) that is ``u`` (nodal) + ``cauchy``
 (per-block element).
 """
@@ -39,7 +39,7 @@ def _make_fe_primal_deck_no_output_specs(
             "step size": 0.2,
         },
         "residuals": {
-            "global residual": {"type": "small_disp_equilibrium", "def_type": "full_3d"},
+            "global residual": {"type": "mechanics", "def_type": "full_3d"},
             "local residual": {
                 "type": "elastic",
                 "materials": {
@@ -80,7 +80,7 @@ class TestPrimalFeDefaultOutput(unittest.TestCase):
                 cmad_main(["primal", str(deck_path)]), 0,
             )
 
-            # Default surface for SmallDispEquilibrium + Elastic:
+            # Default surface for Mechanics + Elastic:
             #   nodal=[u (vector)],
             #   element=[cauchy (sym_tensor)].
             # Successful read against these specs proves the fallback

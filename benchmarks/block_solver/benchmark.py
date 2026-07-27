@@ -77,7 +77,7 @@ def mixed_notch_deck(mesh_path: Path, num_steps: int) -> dict:
         "linear solver": {"type": "direct"},
         "residuals": {
             "global residual": {
-                "type": "small_disp_equilibrium",
+                "type": "mechanics",
                 "def_type": "full_3d",
                 "mixed": True,
                 "stabilization multiplier": 1.0,

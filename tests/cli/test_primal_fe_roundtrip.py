@@ -50,7 +50,7 @@ def _make_fe_primal_deck_elastic(
             "step size": 0.2,
         },
         "residuals": {
-            "global residual": {"type": "small_disp_equilibrium", "def_type": "full_3d"},
+            "global residual": {"type": "mechanics", "def_type": "full_3d"},
             "local residual": {
                 "type": "elastic",
                 "materials": {
@@ -82,7 +82,7 @@ def _make_fe_primal_deck_coupled(
             "step size": 0.2,
         },
         "residuals": {
-            "global residual": {"type": "small_disp_equilibrium", "def_type": "full_3d"},
+            "global residual": {"type": "mechanics", "def_type": "full_3d"},
             "local residual": {
                 "type": "small_elastic_plastic",
                 "materials": {

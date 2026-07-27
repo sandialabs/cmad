@@ -17,7 +17,7 @@ from cmad.fem.finite_element import P1_TET, Q1_HEX
 from cmad.fem.mesh import Mesh, StructuredHexMesh, hex_to_tet_split
 from cmad.fem.precompute import precompute_block_geometry
 from cmad.fem.quadrature import hex_quadrature, tet_quadrature
-from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
+from cmad.global_residuals.mechanics import Mechanics
 from cmad.io.results import (
     FieldSpec,
     component_names,
@@ -58,7 +58,7 @@ def _build_tiny_fe_problem(mesh):
     dof_map = build_dof_map(
         mesh, [layout], [], components_by_field={"u": 3},
     )
-    gr = SmallDispEquilibrium(ndims=3)
+    gr = Mechanics(ndims=3)
     elastic = Elastic(
         _make_elastic_parameters(), def_type=DefType.FULL_3D,
     )

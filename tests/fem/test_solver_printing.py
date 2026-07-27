@@ -16,8 +16,8 @@ from cmad.fem.driver import fe_quasistatic_drive
 from cmad.fem.fe_problem import FEProblem, build_fe_problem
 from cmad.fem.finite_element import Q1_HEX
 from cmad.fem.mesh import StructuredHexMesh
+from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
-from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
 from cmad.models.model import Model
 from tests.fem.test_fe_quasistatic_drive import (
     _make_elastic_model,
@@ -42,7 +42,7 @@ def _build_problem(
     return build_fe_problem(
         mesh=mesh,
         dof_map=dof_map,
-        gr=SmallDispEquilibrium(ndims=3),
+        gr=Mechanics(ndims=3),
         models_by_block={"all": model},
         modes_by_block={"all": mode},
         print_local_convergence=print_local_convergence,

@@ -16,8 +16,8 @@ from cmad.fem.fe_problem import FEState, build_fe_problem
 from cmad.fem.finite_element import Q1_HEX
 from cmad.fem.mesh import StructuredHexMesh
 from cmad.fem.postprocess import evaluate_cauchy_at_ips
+from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
-from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
 from cmad.io.results import ip_average_to_element
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
@@ -41,7 +41,7 @@ def _build_elastic_problem(mode: GlobalResidualMode):
     dof_map = build_dof_map(
         mesh, [layout], [], components_by_field={"u": 3},
     )
-    gr = SmallDispEquilibrium(ndims=3)
+    gr = Mechanics(ndims=3)
     model = Elastic(_elastic_parameters(), def_type=DefType.FULL_3D)
     return build_fe_problem(
         mesh=mesh, dof_map=dof_map, gr=gr,
@@ -56,7 +56,7 @@ def _build_plastic_problem():
     dof_map = build_dof_map(
         mesh, [layout], [], components_by_field={"u": 3},
     )
-    gr = SmallDispEquilibrium(ndims=3)
+    gr = Mechanics(ndims=3)
     model = SmallRateElasticPlastic(
         J2AnalyticalProblem().J2_parameters,
         def_type=DefType.FULL_3D,
@@ -77,7 +77,7 @@ def _build_mixed_problem():
     dof_map = build_dof_map(
         mesh, layouts, [], components_by_field={"u": 3, "p": 1},
     )
-    gr = SmallDispEquilibrium(ndims=3, mixed=True)
+    gr = Mechanics(ndims=3, mixed=True)
     model = Elastic(_elastic_parameters(), def_type=DefType.FULL_3D)
     return build_fe_problem(
         mesh=mesh, dof_map=dof_map, gr=gr,

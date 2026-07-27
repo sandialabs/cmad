@@ -1,4 +1,4 @@
-"""Constant-strain patch test for the mixed (u-p) SmallDispEquilibrium.
+"""Constant-strain patch test for the mixed (u-p) Mechanics.
 
 A linear displacement ``u = A·x`` with zero body force is an exact
 equilibrium solution: the strain (and stress) is uniform, so
@@ -20,7 +20,7 @@ from cmad.fem.fe_problem import FEProblem, FEState, build_fe_problem
 from cmad.fem.finite_element import Q1_HEX
 from cmad.fem.mesh import StructuredHexMesh
 from cmad.fem.nonlinear_solver import fe_newton_solve
-from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
+from cmad.global_residuals.mechanics import Mechanics
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
 from cmad.typing import JaxArray
@@ -54,7 +54,7 @@ def _build_patch_problem() -> tuple[FEProblem, GlobalDofMap, FEState, dict]:
         mesh, [layout_u, layout_p], [bc],
         components_by_field={"u": 3, "p": 1},
     )
-    gr = SmallDispEquilibrium(ndims=3, mixed=True)
+    gr = Mechanics(ndims=3, mixed=True)
     elastic = Elastic(
         make_elastic_parameters(_KAPPA, _MU), def_type=DefType.FULL_3D,
     )

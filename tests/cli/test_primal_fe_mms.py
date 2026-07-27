@@ -84,7 +84,7 @@ def _make_mms_deck(
             "step size": 1.0,
         },
         "residuals": {
-            "global residual": {"type": "small_disp_equilibrium", "def_type": "full_3d"},
+            "global residual": {"type": "mechanics", "def_type": "full_3d"},
             "local residual": {
                 "type": "elastic",
                 "materials": {
@@ -148,7 +148,7 @@ class TestPrimalFeMmsCube3D(unittest.TestCase):
                 FieldSpec("u", VarType.VECTOR),
             ],
         )
-        # SmallDispEquilibrium: single field block, ndofs=3, block_offset=0.
+        # Mechanics: single field block, ndofs=3, block_offset=0.
         # Node-major dof-fastest reshape matches the dof_map's eq layout
         # since the CLI builder reads the mesh in Exodus node order.
         U_solved = np.asarray(

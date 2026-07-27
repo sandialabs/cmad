@@ -1,4 +1,4 @@
-"""Surface-flux MMS convergence regression for SmallDispEquilibrium.
+"""Surface-flux MMS convergence regression for Mechanics.
 
 Same manufactured ``u`` and body force as
 :mod:`tests.fem.test_mms_cube_3d`, but replaces the homogeneous
@@ -41,7 +41,7 @@ from cmad.fem.mesh import (
     StructuredHexMesh,
     hex_to_tet_split,
 )
-from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
+from cmad.global_residuals.mechanics import Mechanics
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
 from cmad.typing import JaxArray
@@ -132,7 +132,7 @@ def _build_fe_problem(
     dof_map = build_dof_map(
         mesh, [layout], [dbc], components_by_field={"u": 3},
     )
-    gr = SmallDispEquilibrium(ndims=3)
+    gr = Mechanics(ndims=3)
     elastic = Elastic(
         make_elastic_parameters(_KAPPA, _MU), def_type=DefType.FULL_3D,
     )

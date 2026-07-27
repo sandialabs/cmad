@@ -51,7 +51,7 @@ def _make_deck(
         },
         "residuals": {
             "global residual": {
-                "type": "small_disp_equilibrium",
+                "type": "mechanics",
                 "def_type": "full_3d",
             },
             "local residual": {

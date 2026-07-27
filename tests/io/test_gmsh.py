@@ -157,7 +157,7 @@ class TestGmshPrimalEndToEnd(unittest.TestCase):
                 },
                 "residuals": {
                     "global residual": {
-                        "type": "small_disp_equilibrium", "def_type": "full_3d",
+                        "type": "mechanics", "def_type": "full_3d",
                     },
                     "local residual": {
                         "type": "elastic",

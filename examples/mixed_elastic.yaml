@@ -22,7 +22,7 @@ discretization:
 
 residuals:
   global residual:
-    type: small_disp_equilibrium
+    type: mechanics
     def_type: full_3d
     mixed: true
     stabilization multiplier: 1.0

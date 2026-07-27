@@ -20,8 +20,8 @@ from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.fe_problem import FEProblem, build_fe_problem
 from cmad.fem.finite_element import Q1_HEX
 from cmad.fem.mesh import Mesh, StructuredHexMesh
+from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
-from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
 from cmad.models.model import Model
@@ -55,7 +55,7 @@ def _build_fe_problem(
         modes_by_block: dict[str, GlobalResidualMode],
         forcing: dict[int, Any],
 ) -> FEProblem:
-    """SmallDispEquilibrium Elastic FULL_3D problem; homogeneous DBC on all
+    """Mechanics Elastic FULL_3D problem; homogeneous DBC on all
     six faces, with ``forcing`` keyed by residual-block index."""
     layout = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
     bc = DirichletBC(
@@ -71,7 +71,7 @@ def _build_fe_problem(
     dof_map = build_dof_map(
         mesh, [layout], [bc], components_by_field={"u": 3},
     )
-    gr = SmallDispEquilibrium(ndims=3)
+    gr = Mechanics(ndims=3)
     models_by_block: dict[str, Model] = {
         b: _make_elastic_model() for b in mesh.element_blocks
     }

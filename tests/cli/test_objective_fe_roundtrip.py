@@ -44,7 +44,7 @@ def _make_fe_objective_deck(
             "step size": 0.2,
         },
         "residuals": {
-            "global residual": {"type": "small_disp_equilibrium", "def_type": "full_3d"},
+            "global residual": {"type": "mechanics", "def_type": "full_3d"},
             "local residual": {
                 "type": "elastic",
                 "materials": {

@@ -33,7 +33,7 @@ from cmad.fem.neumann import (
     resolve_neumann_bcs,
 )
 from cmad.fem.quadrature import quad_quadrature, tri_quadrature
-from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
+from cmad.global_residuals.mechanics import Mechanics
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
 from cmad.parameters.parameters import Parameters
@@ -331,7 +331,7 @@ def _build_unit_hex_fe_problem(
     dof_map = build_dof_map(
         mesh, [layout], [], components_by_field={"u": 3},
     )
-    gr = SmallDispEquilibrium(ndims=3)
+    gr = Mechanics(ndims=3)
     elastic = Elastic(_make_elastic_parameters(), def_type=DefType.FULL_3D)
     return build_fe_problem(
         mesh=mesh,

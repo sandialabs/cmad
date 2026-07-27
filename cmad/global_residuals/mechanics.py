@@ -16,8 +16,8 @@ from cmad.models.var_types import VarType
 from cmad.typing import GREvaluators
 
 
-@register_global_residual("small_disp_equilibrium")
-class SmallDispEquilibrium(GlobalResidual):
+@register_global_residual("mechanics")
+class Mechanics(GlobalResidual):
     """3D quasi-static small-deformation equilibrium.
 
     Two formulations, selected at construction:
@@ -200,7 +200,7 @@ class SmallDispEquilibrium(GlobalResidual):
             cls,
             gr_section: dict[str, Any],
             ndims: int,
-    ) -> "SmallDispEquilibrium":
+    ) -> "Mechanics":
         """Construct from the resolved ``residuals.global residual`` section.
 
         Requires ``def_type`` and cross-checks the spatial dimension it
@@ -213,7 +213,7 @@ class SmallDispEquilibrium(GlobalResidual):
         def_type_name = gr_section.get("def_type")
         if def_type_name is None:
             raise ValueError(
-                "residuals.global residual: small_disp_equilibrium "
+                "residuals.global residual: mechanics "
                 "requires 'def_type'",
             )
         def_type = DefType[def_type_name.upper()]

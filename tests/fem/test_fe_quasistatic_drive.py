@@ -34,8 +34,8 @@ from cmad.fem.fe_problem import FEProblem, build_fe_problem
 from cmad.fem.finite_element import Q1_HEX
 from cmad.fem.mesh import Mesh, StructuredHexMesh
 from cmad.fem.nonlinear_solver import fe_newton_solve
+from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
-from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
 from cmad.models.model import Model
@@ -109,7 +109,7 @@ def _build_uniaxial_fe_problem(
         mesh, [layout], _uniaxial_dbcs(slope),
         components_by_field={"u": 3},
     )
-    gr = SmallDispEquilibrium(ndims=3)
+    gr = Mechanics(ndims=3)
     return build_fe_problem(
         mesh=mesh,
         dof_map=dof_map,

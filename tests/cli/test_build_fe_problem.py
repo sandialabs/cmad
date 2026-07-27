@@ -23,8 +23,8 @@ from cmad.fem.fe_problem import (
 )
 from cmad.fem.finite_element import Q1_HEX
 from cmad.fem.mesh import Mesh, StructuredHexMesh, hex_to_tet_split
+from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
-from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
 
 
 def _minimal_fe_deck(mesh_filename: str = "cube.exo") -> dict[str, Any]:
@@ -37,7 +37,7 @@ def _minimal_fe_deck(mesh_filename: str = "cube.exo") -> dict[str, Any]:
             "step size": 0.1,
         },
         "residuals": {
-            "global residual": {"type": "small_disp_equilibrium", "def_type": "full_3d"},
+            "global residual": {"type": "mechanics", "def_type": "full_3d"},
             "local residual": {
                 "type": "elastic",
                 "materials": {
@@ -104,7 +104,7 @@ class TestMinimalBuild(unittest.TestCase):
                 _minimal_fe_deck(), _hex_cube_mesh(), Path(tmpdir),
             )
         self.assertIsInstance(bundle, FEProblemBundle)
-        self.assertIsInstance(bundle.fe_problem.gr, SmallDispEquilibrium)
+        self.assertIsInstance(bundle.fe_problem.gr, Mechanics)
         self.assertEqual(bundle.t_schedule.shape, (6,))
         self.assertGreater(bundle.fe_problem.dof_map.num_total_dofs, 0)
 

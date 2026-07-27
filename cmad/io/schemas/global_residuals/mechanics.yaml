@@ -4,4 +4,4 @@ required: [type]
 additionalProperties: false
 properties:
   type:
-    const: small_disp_equilibrium
+    const: mechanics

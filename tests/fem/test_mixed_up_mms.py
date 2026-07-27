@@ -1,4 +1,4 @@
-"""Convergence (MMS) check for the mixed (u-p) SmallDispEquilibrium.
+"""Convergence (MMS) check for the mixed (u-p) Mechanics.
 
 The manufactured displacement is divergence-free, so the exact pressure
 is zero and the grad(p) stabilization stays consistent: no manufactured
@@ -19,7 +19,7 @@ from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.fe_problem import FEProblem, build_fe_problem
 from cmad.fem.finite_element import Q1_HEX
 from cmad.fem.mesh import Mesh, StructuredHexMesh
-from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
+from cmad.global_residuals.mechanics import Mechanics
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
 from tests.fem._mms_helpers import (
@@ -63,7 +63,7 @@ def _build_mixed(
     return build_fe_problem(
         mesh=mesh,
         dof_map=dof_map,
-        gr=SmallDispEquilibrium(ndims=3, mixed=True),
+        gr=Mechanics(ndims=3, mixed=True),
         models_by_block={"all": elastic},
         forcing_fns_by_block_idx={0: body_force_fn},
     )

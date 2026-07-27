@@ -1,4 +1,4 @@
-"""Uniaxial tension check for the mixed (u-p) plastic SmallDispEquilibrium.
+"""Uniaxial tension check for the mixed (u-p) plastic Mechanics.
 
 A cube in uniaxial tension reproduces the J2 + Voce analytic axial stress, with
 vanishing lateral stress and pressure p = -sigma_axial / 3, for both small
@@ -19,8 +19,8 @@ from cmad.fem.finite_element import Q1_HEX
 from cmad.fem.mesh import StructuredHexMesh
 from cmad.fem.nonlinear_solver import fe_newton_solve
 from cmad.fem.postprocess import evaluate_cauchy_at_ips
+from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
-from cmad.global_residuals.small_disp_equilibrium import SmallDispEquilibrium
 from cmad.models.deformation_types import DefType
 from cmad.models.model import Model
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
@@ -69,7 +69,7 @@ def _build_mixed_fe(model: Model) -> FEProblem:
         mesh, layouts, _uniaxial_dbcs(),
         components_by_field={"u": 3, "p": 1},
     )
-    gr = SmallDispEquilibrium(ndims=3, mixed=True)
+    gr = Mechanics(ndims=3, mixed=True)
     return build_fe_problem(
         mesh=mesh, dof_map=dof_map, gr=gr,
         models_by_block={"all": model},
