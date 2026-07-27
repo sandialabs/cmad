@@ -1,8 +1,9 @@
 import jax.numpy as jnp
+from jax.scipy.linalg import polar
 
 from cmad.models.deformation_types import DefType
 from cmad.models.global_fields import GlobalFieldsAtPoint
-from cmad.typing import JaxArray, StateList
+from cmad.typing import JaxArray, Scalar, StateList
 
 
 def gather_F(
@@ -66,3 +67,28 @@ def off_axis_idx(uniaxial_stress_idx: int) -> JaxArray:
 def cofactor(F: JaxArray) -> JaxArray:
     """Cofactor matrix ``cof(F) = det(F) * F^{-T}``."""
     return jnp.linalg.det(F) * jnp.linalg.inv(F).T
+
+
+def polar_rotation(F: JaxArray) -> JaxArray:
+    """Rotation ``R`` from the right polar decomposition ``F = R U``.
+
+    ``U`` is the symmetric positive definite right stretch. Uses the QDWH
+    iteration (QR + matmul, no singular vectors), which stays
+    differentiable at repeated singular values.
+    """
+    return polar(F, side="right", method="qdwh")[0]
+
+
+def unrotated_rate_of_deformation(
+        F: JaxArray, F_prev: JaxArray, dt: Scalar,
+) -> JaxArray:
+    """Unrotated rate of deformation ``D = Rᵀ sym(Ḟ F⁻¹) R``.
+
+    The velocity gradient ``Ḟ F⁻¹`` is taken as the backward difference
+    ``(F - F_prev) F⁻¹ / dt``; ``D`` is the symmetric part pulled back to
+    the unrotated frame by ``R = polar_rotation(F)``.
+    """
+    R = polar_rotation(F)
+    L = (F - F_prev) @ jnp.linalg.inv(F) / dt
+    D = 0.5 * (L + L.T)
+    return R.T @ D @ R
