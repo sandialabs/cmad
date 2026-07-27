@@ -1,6 +1,4 @@
 import jax.numpy as jnp
-import numpy as np
-from numpy.typing import NDArray
 
 from cmad.models.deformation_types import DefType
 from cmad.models.global_fields import GlobalFieldsAtPoint
@@ -10,7 +8,7 @@ from cmad.typing import JaxArray, StateList
 def gather_F(
         xi: StateList, U: GlobalFieldsAtPoint, def_type: int,
         local_var_idx: int, uniaxial_stress_idx: int = 0,
-) -> JaxArray | NDArray[np.floating]:
+) -> JaxArray:
 
     grad_u = U.grad_fields["u"]
 

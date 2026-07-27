@@ -5,7 +5,10 @@ Cauchy-Green ``be_bar`` is carried (split into its deviator ``zeta`` and a
 hydrostatic part ``Ie``), advanced by the relative deformation gradient,
 and returned to the yield surface. The yield is von Mises (J2) on the
 deviatoric Kirchhoff stress, which is what the be_bar formulation
-supports; the hardening is modular. FULL_3D only.
+supports; the hardening is modular. Runs in FULL_3D or 2D plane strain;
+for plane strain the relative deformation gradient embeds ``F_33 = 1``,
+so the 3D return map carries the out of plane ``be_bar`` with no extra
+local unknown.
 """
 from collections.abc import Callable
 from functools import partial
@@ -22,6 +25,7 @@ from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.elastic_stress import two_mu_scale_factor
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
+from cmad.models.kinematics import gather_F
 from cmad.models.model import Model
 from cmad.models.paths import cond_residual
 from cmad.models.var_types import (
@@ -100,9 +104,9 @@ class BeBarElasticPlastic(Model):
             is_complex: bool = False,
     ) -> None:
 
-        if def_type != DefType.FULL_3D:
+        if def_type not in (DefType.FULL_3D, DefType.PLANE_STRAIN):
             raise NotImplementedError(
-                "be_bar_elastic_plastic supports FULL_3D only",
+                "be_bar_elastic_plastic supports FULL_3D and PLANE_STRAIN",
             )
         if hardening_funs is None:
             hardening_funs = get_hardening_funs()
@@ -146,11 +150,14 @@ class BeBarElasticPlastic(Model):
 
         residual = partial(
             self._residual_fn,
+            def_type=def_type,
             hardening=partial(
                 combined_hardening_fun, hardening_funs=hardening_funs),
             yield_tol=yield_tol, is_complex=is_complex)
 
-        super().__init__(residual, self._cauchy_fn)
+        cauchy = partial(self._cauchy_fn, def_type=def_type)
+
+        super().__init__(residual, cauchy)
 
     @classmethod
     def from_deck(
@@ -168,6 +175,7 @@ class BeBarElasticPlastic(Model):
     def _residual_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+            def_type: int,
             hardening: Callable[..., JaxArray],
             yield_tol: float, is_complex: bool,
     ) -> JaxArray:
@@ -178,8 +186,8 @@ class BeBarElasticPlastic(Model):
         alpha_prev = get_scalar(xi_prev[2])
 
         eye = jnp.eye(3)
-        F = eye + U.grad_fields["u"]
-        F_prev = eye + U_prev.grad_fields["u"]
+        F = gather_F(xi, U, def_type, local_var_idx=0)
+        F_prev = gather_F(xi_prev, U_prev, def_type, local_var_idx=0)
         be_bar_trial = relative_be_bar(xi_prev[0], xi_prev[1], F, F_prev)
         dev_be_bar_trial = be_bar_trial - jnp.trace(be_bar_trial) / 3. * eye
 
@@ -204,10 +212,11 @@ class BeBarElasticPlastic(Model):
     def _cauchy_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+            def_type: int,
     ) -> JaxArray:
         elastic = ElasticConstants.from_params(params["elastic"])
         eye = jnp.eye(3)
-        F = eye + U.grad_fields["u"]
+        F = gather_F(xi, U, def_type, local_var_idx=0)
         J = jnp.linalg.det(F)
         zeta = get_sym_tensor_from_vector(xi[0], 3)
         dev_cauchy = elastic.mu * zeta / J
@@ -220,18 +229,18 @@ class BeBarElasticPlastic(Model):
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
     ) -> JaxArray:
         mu = ElasticConstants.from_params(params["elastic"]).mu
-        F = jnp.eye(3) + U.grad_fields["u"]
+        F = gather_F(xi, U, self._def_type, local_var_idx=0)
         J = jnp.linalg.det(F)
         zeta = get_sym_tensor_from_vector(xi[0], 3)
         return mu * zeta / J
 
-    @staticmethod
     def hydro_cauchy(
+            self,
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
     ) -> Scalar:
         kappa = ElasticConstants.from_params(params["elastic"]).kappa
-        F = jnp.eye(3) + U.grad_fields["u"]
+        F = gather_F(xi, U, self._def_type, local_var_idx=0)
         J = jnp.linalg.det(F)
         return 0.5 * kappa * (J - 1. / J)
 
