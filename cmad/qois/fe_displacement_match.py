@@ -20,6 +20,7 @@ from cmad.typing import JaxArray, Params
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem
     from cmad.fem.kernel_arrays import FEKernelArrays
+    from cmad.models.global_fields import StepTime
 
 
 @register_qoi("fe_displacement_match")
@@ -143,12 +144,11 @@ class FEDisplacementMatch(FEQoI):
                 U_prev: JaxArray,
                 xi: Mapping[str, JaxArray],
                 xi_prev: Mapping[str, JaxArray],
-                t: JaxArray,
-                t_prev: JaxArray,
+                step_time: StepTime,
         ) -> JaxArray:
             del U_prev, xi, xi_prev
-            dt = t - t_prev
-            step = jnp.argmin(jnp.abs(t_schedule - t))
+            dt = step_time.dt
+            step = jnp.argmin(jnp.abs(t_schedule - step_time.t))
             U_data = data_flat[step]
             total_integral = jnp.zeros(())
             for (block_name, N_disp,

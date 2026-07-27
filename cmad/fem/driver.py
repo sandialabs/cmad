@@ -129,7 +129,7 @@ def build_fe_quasistatic_trajectory(
             xi = {**xi_prev, **xi_solved}
             if qoi_step_contribution is not None:
                 J = J + qoi_step_contribution(
-                    U_solved, U_prev, xi, xi_prev, t, t_prev,
+                    U_solved, U_prev, xi, xi_prev, step_time,
                 )
             return (U_solved, xi, t, J), (U_solved, xi)
 

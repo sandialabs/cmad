@@ -22,6 +22,7 @@ from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
+from cmad.models.global_fields import StepTime
 from cmad.parameters.parameters import Parameters
 from cmad.qois.fe_displacement_match import FEDisplacementMatch
 
@@ -70,7 +71,7 @@ class TestSurfaceMatch(unittest.TestCase):
         )
         return float(closure(
             jnp.asarray(U), jnp.zeros(self.n_dofs), {}, {},
-            jnp.asarray(1.0), jnp.asarray(0.0),
+            StepTime(jnp.asarray(1.0), jnp.asarray(0.0)),
         ))
 
     def test_surface_integral_matches_analytical(self) -> None:

@@ -28,6 +28,7 @@ from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.registry import resolve_qoi
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
+from cmad.models.global_fields import StepTime
 from cmad.parameters.parameters import Parameters
 from cmad.qois.fe_displacement_l2 import FEDisplacementL2
 from tests.fem.test_fe_quasistatic_drive import _build_uniaxial_fe_problem
@@ -100,7 +101,7 @@ class TestClosureAnalytical(unittest.TestCase):
         U_zero = jnp.zeros(n_dofs)
         J = float(self.closure(
             U_zero, U_zero, {}, {},
-            jnp.asarray(1.0), jnp.asarray(0.0),
+            StepTime(jnp.asarray(1.0), jnp.asarray(0.0)),
         ))
         self.assertEqual(J, 0.0)
 
@@ -122,7 +123,7 @@ class TestClosureAnalytical(unittest.TestCase):
         expected_J = (u_xmax ** 2 + u_ymax ** 2 + u_zmax ** 2) / 3.0
         J = float(self.closure(
             U, U_prev, {}, {},
-            jnp.asarray(1.0), jnp.asarray(0.0),
+            StepTime(jnp.asarray(1.0), jnp.asarray(0.0)),
         ))
         self.assertAlmostEqual(J, expected_J, places=12)
 
@@ -136,11 +137,11 @@ class TestClosureAnalytical(unittest.TestCase):
         U_prev = jnp.zeros_like(U)
         J_dt_half = float(self.closure(
             U, U_prev, {}, {},
-            jnp.asarray(0.5), jnp.asarray(0.0),
+            StepTime(jnp.asarray(0.5), jnp.asarray(0.0)),
         ))
         J_dt_full = float(self.closure(
             U, U_prev, {}, {},
-            jnp.asarray(1.0), jnp.asarray(0.0),
+            StepTime(jnp.asarray(1.0), jnp.asarray(0.0)),
         ))
         self.assertAlmostEqual(J_dt_full, 2.0 * J_dt_half, places=12)
 
@@ -188,7 +189,8 @@ class TestQoIThroughDriver(unittest.TestCase):
             }
             t = jnp.asarray(state.t_history[n])
             t_prev = jnp.asarray(state.t_history[n - 1])
-            J_manual += float(closure(U, U_prev, xi, xi_prev, t, t_prev))
+            J_manual += float(
+                closure(U, U_prev, xi, xi_prev, StepTime(t, t_prev)))
 
         self.assertAlmostEqual(float(J_driver), J_manual, places=10)
         self.assertGreater(float(J_driver), 0.0)

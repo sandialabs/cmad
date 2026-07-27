@@ -136,13 +136,11 @@ class FELoadMatch(FEQoI):
                 U_prev: JaxArray,
                 xi: Mapping[str, JaxArray],
                 xi_prev: Mapping[str, JaxArray],
-                t: JaxArray,
-                t_prev: JaxArray,
+                step_time: StepTime,
         ) -> JaxArray:
             del xi
-            step_time = StepTime(t, t_prev)
             dt = step_time.dt
-            step = jnp.argmin(jnp.abs(t_schedule - t))
+            step = jnp.argmin(jnp.abs(t_schedule - step_time.t))
             reaction = self._reaction_at(
                 params_by_block, fe_arrays, U, U_prev, step_time, xi_prev,
             )

@@ -11,6 +11,7 @@ from cmad.typing import JaxArray, Params
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem, FEState
     from cmad.fem.kernel_arrays import FEKernelArrays
+    from cmad.models.global_fields import StepTime
 
 
 StepContribution: TypeAlias = Callable[
@@ -19,14 +20,13 @@ StepContribution: TypeAlias = Callable[
         JaxArray,
         Mapping[str, JaxArray],
         Mapping[str, JaxArray],
-        JaxArray,
-        JaxArray,
+        "StepTime",
     ],
     JaxArray,
 ]
 """Per-step QoI increment.
 
-Signature ``(U, U_prev, xi, xi_prev, t, t_prev) -> J_n`` where
+Signature ``(U, U_prev, xi, xi_prev, step_time) -> J_n`` where
 ``J_n`` is the scalar increment whose sum over the time loop is the
 full QoI value.
 
@@ -39,8 +39,9 @@ full QoI value.
   ``{block_name: array of shape (n_elems, n_ips, total_xi_dofs)}``
   (empty for CLOSED_FORM-only problems, since CLOSED_FORM blocks
   carry no time-varying state).
-- ``t``, ``t_prev``: scalar times of the current and previous
-  steps.
+- ``step_time``: the current and previous step times as a
+  :class:`~cmad.models.global_fields.StepTime`; ``step_time.dt`` is
+  the increment.
 
 Time-varying state only — params do not appear on this interface;
 they are captured by the factory :meth:`FEQoI.step_contribution`
@@ -88,7 +89,7 @@ class FEQoI(QoIBase, ABC):
         read their geometry and index arrays from it. The returned
         closure has the time-varying-state-only signature
         :data:`StepContribution`; the driver calls it once per step
-        with ``(U, U_prev, xi, xi_prev, t, t_prev)`` and accumulates
+        with ``(U, U_prev, xi, xi_prev, step_time)`` and accumulates
         the returned scalar into ``J``.
         """
         ...

@@ -23,6 +23,7 @@ from cmad.typing import JaxArray
 
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem
+    from cmad.models.global_fields import StepTime
 
 
 def surface_groups_and_norm(
@@ -64,12 +65,11 @@ def surface_l2_step_closure(
             U_prev: JaxArray,
             xi: Mapping[str, JaxArray],
             xi_prev: Mapping[str, JaxArray],
-            t: JaxArray,
-            t_prev: JaxArray,
+            step_time: StepTime,
     ) -> JaxArray:
         del U_prev, xi, xi_prev
-        dt = t - t_prev
-        step = jnp.argmin(jnp.abs(t_schedule - t))
+        dt = step_time.dt
+        step = jnp.argmin(jnp.abs(t_schedule - step_time.t))
         U_data = data_flat[step]
         total = jnp.zeros(())
         for g in groups:

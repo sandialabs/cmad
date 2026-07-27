@@ -24,6 +24,7 @@ from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.point_cloud import PointCloud, write_point_cloud
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
+from cmad.models.global_fields import StepTime
 from cmad.parameters.parameters import Parameters
 from cmad.qois.fe_dic_match import FEDicMatch
 from cmad.qois.fe_displacement_match import FEDisplacementMatch
@@ -93,7 +94,7 @@ class TestFEDicMatch(unittest.TestCase):
         closure = qoi.step_contribution(self.params, self.fe.kernel_arrays)
         return float(closure(
             jnp.asarray(U), jnp.zeros(self.n_dofs), {}, {},
-            jnp.asarray(1.0), jnp.asarray(0.0),
+            StepTime(jnp.asarray(1.0), jnp.asarray(0.0)),
         ))
 
     def _dic_J(self, cloud, U) -> float:

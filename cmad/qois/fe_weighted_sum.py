@@ -13,6 +13,7 @@ from cmad.typing import JaxArray, Params
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem
     from cmad.fem.kernel_arrays import FEKernelArrays
+    from cmad.models.global_fields import StepTime
 
 
 @register_qoi("fe_weighted_sum")
@@ -65,13 +66,12 @@ class FEWeightedSum(FEQoI):
                 U_prev: JaxArray,
                 xi: Mapping[str, JaxArray],
                 xi_prev: Mapping[str, JaxArray],
-                t: JaxArray,
-                t_prev: JaxArray,
+                step_time: StepTime,
         ) -> JaxArray:
             total = jnp.zeros(())
             for closure in closures:
                 total = total + closure(
-                    U, U_prev, xi, xi_prev, t, t_prev,
+                    U, U_prev, xi, xi_prev, step_time,
                 )
             return total
 
