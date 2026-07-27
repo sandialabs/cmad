@@ -17,7 +17,7 @@ from cmad.models.elastic_stress import (
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F, off_axis_idx
-from cmad.models.model import Model
+from cmad.models.mechanics_model import MechanicsModel
 from cmad.models.paths import cond_residual
 from cmad.models.var_types import (
     VarType,
@@ -101,7 +101,7 @@ def compute_yield_fun_and_normal(
 
 
 @register_model("small_rate_elastic_plastic")
-class SmallRateElasticPlastic(Model):
+class SmallRateElasticPlastic(MechanicsModel):
     """
     Small strain rate form elastic-plastic model:
     Elastic: Modular linear elasticity
@@ -174,6 +174,7 @@ class SmallRateElasticPlastic(Model):
             self._var_types[2] = VarType.SCALAR
             self._num_eqs[2] = get_num_eqs(VarType.SCALAR, ndims)
             init_oop_stretch = np.ones(self._num_eqs[2])
+            self._oop_stretch_idx = 2
 
             self._init_xi += [init_oop_stretch]
 

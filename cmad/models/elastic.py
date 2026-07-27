@@ -16,7 +16,7 @@ from cmad.models.elastic_stress import (
 )
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.kinematics import gather_F
-from cmad.models.model import Model
+from cmad.models.mechanics_model import MechanicsModel
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -28,7 +28,7 @@ from cmad.typing import JaxArray, Scalar, StateList
 
 
 @register_model("elastic")
-class Elastic(Model):
+class Elastic(MechanicsModel):
     """
     General elastic model
     """
@@ -83,6 +83,7 @@ class Elastic(Model):
             self._var_types[1] = VarType.SCALAR
             self._num_eqs[1] = get_num_eqs(VarType.SCALAR, ndims)
             init_oop_stretch = np.ones(self._num_eqs[1])
+            self._oop_stretch_idx = 1
 
             self._init_xi += [init_oop_stretch]
 

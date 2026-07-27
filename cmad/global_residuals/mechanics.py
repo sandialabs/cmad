@@ -118,8 +118,8 @@ class Mechanics(GlobalResidual):
                 grad_p = U_ip.grad_fields["p"][0]
 
                 if model.is_finite_deformation:
-                    F = jnp.eye(self._ndims) + U_ip.grad_fields["u"]
-                    cof_F = cofactor(F)
+                    F = model.deformation_gradient(xi, U_ip)
+                    cof_F = cofactor(F)[:self._ndims, :self._ndims]
                     P = sigma @ cof_F
                     R_u = (shapes_ip[0].grad_N @ P.T) * w * dv
                     stab = tau * (cof_F.T @ cof_F) / jnp.linalg.det(F)
@@ -139,8 +139,9 @@ class Mechanics(GlobalResidual):
             else:
                 sigma = model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)
             if model.is_finite_deformation:
-                F = jnp.eye(self._ndims) + U_ip.grad_fields["u"]
-                P = sigma[:self._ndims, :self._ndims] @ cofactor(F)
+                F = model.deformation_gradient(xi, U_ip)
+                cof_F = cofactor(F)[:self._ndims, :self._ndims]
+                P = sigma[:self._ndims, :self._ndims] @ cof_F
                 R_internal = (shapes_ip[0].grad_N @ P.T) * w * dv
             else:
                 R_internal = (

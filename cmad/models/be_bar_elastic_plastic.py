@@ -26,7 +26,7 @@ from cmad.models.elastic_stress import two_mu_scale_factor
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F
-from cmad.models.model import Model
+from cmad.models.mechanics_model import MechanicsModel
 from cmad.models.paths import cond_residual
 from cmad.models.var_types import (
     VarType,
@@ -82,7 +82,7 @@ def compute_yield_fun_and_normal(
 
 
 @register_model("be_bar_elastic_plastic")
-class BeBarElasticPlastic(Model):
+class BeBarElasticPlastic(MechanicsModel):
     """Finite deformation elastic-plastic model via the be_bar return map.
 
     Elastic: neohookean. Plastic: J2 yield on the Kirchhoff stress +

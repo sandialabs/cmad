@@ -26,7 +26,7 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 import sympy
-from jax import jacfwd
+from jax import grad, jacfwd
 from jax.tree_util import tree_map
 from numpy.typing import NDArray
 from sympy import Matrix, eye, lambdify
@@ -292,6 +292,92 @@ def build_plane_strain_finite_mms_callables(
         ])
         sigma = compressible_neohookean_cauchy_stress(F, params)   # (3, 3)
         return sigma[:2, :2] @ cofactor(F_2D)
+
+    def body_force_fn(
+            coords: NDArray[np.floating] | JaxArray,
+            _t: float | JaxArray,
+    ) -> NDArray[np.floating] | JaxArray:
+        dP = jacfwd(pk1_in_plane_of_X)(jnp.asarray(coords))   # (2, 2, 2)
+        return -jnp.einsum("iJJ->i", dP)
+
+    def u_exact(coords: NDArray[np.floating]) -> NDArray[np.floating]:
+        args = tuple(coords[i] for i in range(n))
+        return np.asarray(u_callable(*args)).reshape(-1)
+
+    def grad_u_exact(coords: NDArray[np.floating]) -> NDArray[np.floating]:
+        args = tuple(coords[i] for i in range(n))
+        return np.asarray(grad_u_callable(*args))
+
+    return body_force_fn, u_exact, grad_u_exact
+
+
+# Newton iterations for the plane stress out-of-plane stretch solve in
+# build_plane_stress_finite_mms_callables; unrolled, so the manufactured
+# source stays differentiable for its divergence.
+_PLANE_STRESS_NEWTON_ITERS = 20
+
+
+def build_plane_stress_finite_mms_callables(
+        u_sym: sympy.Matrix,
+        coord_syms: Sequence[Any],
+        kappa: float,
+        mu: float,
+) -> tuple[
+    Callable[
+        [NDArray[np.floating] | JaxArray, float | JaxArray],
+        NDArray[np.floating] | JaxArray,
+    ],
+    Callable[[NDArray[np.floating]], NDArray[np.floating]],
+    Callable[[NDArray[np.floating]], NDArray[np.floating]],
+]:
+    """Finite deformation plane stress MMS source matching the GR.
+
+    Like :func:`build_plane_strain_finite_mms_callables`, except the out
+    of plane stretch is not fixed at 1: at each point it is solved so the
+    out of plane Cauchy stress vanishes (``sigma_33 = 0``, the plane
+    stress condition), the same thing the model's local solve does. The
+    body force is ``b = -Div_X(P)`` for ``P = sigma[:2, :2] @
+    cofactor(F)[:2, :2]`` with sigma the compressible neohookean stress
+    at the resulting 3x3 F (carrying that ``F_33``) -- which is what the
+    GR assembles once it sources the 3x3 F from the model. The out of
+    plane solve is an unrolled Newton so the source stays differentiable
+    for the divergence. Returns ``(body_force_fn, u_exact,
+    grad_u_exact)``; ``coord_syms`` has length 2.
+    """
+    n = len(coord_syms)
+    coord_args = tuple(coord_syms)
+    grad_u_sym = u_sym.jacobian(list(coord_syms))
+    u_jax = lambdify(coord_args, u_sym, modules="jax")
+    u_callable = lambdify(coord_args, u_sym, modules="numpy")
+    grad_u_callable = lambdify(coord_args, grad_u_sym, modules="numpy")
+    params: Params = {"elastic": {"kappa": kappa, "mu": mu}}
+
+    def u_of_X(X: JaxArray) -> JaxArray:
+        return jnp.asarray(u_jax(*[X[i] for i in range(n)])).reshape(n)
+
+    def embed_F(F_2D: JaxArray, lam_z: JaxArray) -> JaxArray:
+        return jnp.block([
+            [F_2D, jnp.zeros((2, 1))],
+            [jnp.zeros((1, 2)), lam_z.reshape(1, 1)],
+        ])
+
+    def sigma_zz(F_2D: JaxArray, lam_z: JaxArray) -> JaxArray:
+        F = embed_F(F_2D, lam_z)
+        return compressible_neohookean_cauchy_stress(F, params)[2, 2]
+
+    d_sigma_zz = grad(sigma_zz, argnums=1)
+
+    def out_of_plane_stretch(F_2D: JaxArray) -> JaxArray:
+        lam_z = jnp.array(1.0)
+        for _ in range(_PLANE_STRESS_NEWTON_ITERS):
+            lam_z = lam_z - sigma_zz(F_2D, lam_z) / d_sigma_zz(F_2D, lam_z)
+        return lam_z
+
+    def pk1_in_plane_of_X(X: JaxArray) -> JaxArray:
+        F_2D = jnp.eye(2) + jacfwd(u_of_X)(X)
+        F = embed_F(F_2D, out_of_plane_stretch(F_2D))
+        sigma = compressible_neohookean_cauchy_stress(F, params)   # (3, 3)
+        return sigma[:2, :2] @ cofactor(F)[:2, :2]
 
     def body_force_fn(
             coords: NDArray[np.floating] | JaxArray,
