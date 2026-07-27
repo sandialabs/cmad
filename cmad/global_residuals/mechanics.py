@@ -140,7 +140,7 @@ class Mechanics(GlobalResidual):
                 sigma = model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)
             if model.is_finite_deformation:
                 F = jnp.eye(self._ndims) + U_ip.grad_fields["u"]
-                P = sigma @ cofactor(F)
+                P = sigma[:self._ndims, :self._ndims] @ cofactor(F)
                 R_internal = (shapes_ip[0].grad_N @ P.T) * w * dv
             else:
                 R_internal = (

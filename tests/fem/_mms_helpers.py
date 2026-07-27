@@ -250,6 +250,67 @@ def build_plane_strain_mms_callables(
     return body_force_fn, u_exact, grad_u_exact
 
 
+def build_plane_strain_finite_mms_callables(
+        u_sym: sympy.Matrix,
+        coord_syms: Sequence[Any],
+        kappa: float,
+        mu: float,
+) -> tuple[
+    Callable[
+        [NDArray[np.floating] | JaxArray, float | JaxArray],
+        NDArray[np.floating] | JaxArray,
+    ],
+    Callable[[NDArray[np.floating]], NDArray[np.floating]],
+    Callable[[NDArray[np.floating]], NDArray[np.floating]],
+]:
+    """Finite deformation plane strain MMS source matching the GR.
+
+    Body force ``b = -Div_X(P)`` for the in-plane first Piola-Kirchhoff
+    stress ``P = sigma[:2, :2] @ cofactor(F_2D)``, with sigma the
+    compressible neohookean Cauchy stress at the plane strain deformation
+    gradient (the 2D F embedded with F_33 = 1). That is exactly what the
+    GR assembles for a finite plane strain problem, so the source matches
+    the model exactly. Returns ``(body_force_fn, u_exact, grad_u_exact)``;
+    ``coord_syms`` has length 2.
+    """
+    n = len(coord_syms)
+    coord_args = tuple(coord_syms)
+    grad_u_sym = u_sym.jacobian(list(coord_syms))
+    u_jax = lambdify(coord_args, u_sym, modules="jax")
+    u_callable = lambdify(coord_args, u_sym, modules="numpy")
+    grad_u_callable = lambdify(coord_args, grad_u_sym, modules="numpy")
+    params: Params = {"elastic": {"kappa": kappa, "mu": mu}}
+
+    def u_of_X(X: JaxArray) -> JaxArray:
+        return jnp.asarray(u_jax(*[X[i] for i in range(n)])).reshape(n)
+
+    def pk1_in_plane_of_X(X: JaxArray) -> JaxArray:
+        F_2D = jnp.eye(2) + jacfwd(u_of_X)(X)
+        F = jnp.block([
+            [F_2D, jnp.zeros((2, 1))],
+            [jnp.zeros((1, 2)), jnp.ones((1, 1))],
+        ])
+        sigma = compressible_neohookean_cauchy_stress(F, params)   # (3, 3)
+        return sigma[:2, :2] @ cofactor(F_2D)
+
+    def body_force_fn(
+            coords: NDArray[np.floating] | JaxArray,
+            _t: float | JaxArray,
+    ) -> NDArray[np.floating] | JaxArray:
+        dP = jacfwd(pk1_in_plane_of_X)(jnp.asarray(coords))   # (2, 2, 2)
+        return -jnp.einsum("iJJ->i", dP)
+
+    def u_exact(coords: NDArray[np.floating]) -> NDArray[np.floating]:
+        args = tuple(coords[i] for i in range(n))
+        return np.asarray(u_callable(*args)).reshape(-1)
+
+    def grad_u_exact(coords: NDArray[np.floating]) -> NDArray[np.floating]:
+        args = tuple(coords[i] for i in range(n))
+        return np.asarray(grad_u_callable(*args))
+
+    return body_force_fn, u_exact, grad_u_exact
+
+
 def l2_h1_errors(
         fe_problem: FEProblem,
         U_solved: NDArray[np.floating] | JaxArray,
