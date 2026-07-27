@@ -315,7 +315,7 @@ class GlobalResidual(ABC):
         xi_zeros = [jnp.zeros_like(b) for b in model._init_xi]
 
         # Public-closure argnums: params=0, U=1, U_prev=2,
-        # shapes_ip=3, w=4, dv=5, h=6, ip_set=7.
+        # shapes_ip=3, w=4, dv=5, h=6, ip_set=7, step_time=8.
         def r_at_ip(params, U, U_prev, shapes_ip, w, dv, h, ip_set, step_time):
             return residual_fn(
                 xi_zeros, xi_zeros, params, U, U_prev,
@@ -358,7 +358,7 @@ class GlobalResidual(ABC):
 
         # Public-closure argnums:
         #   params=0, U=1, U_prev=2, xi_prev=3,
-        #   shapes_ip=4, w=5, dv=6, h=7, ip_set=8.
+        #   shapes_ip=4, w=5, dv=6, h=7, ip_set=8, step_time=9.
         def coupled_r_total(params, U, U_prev, xi_prev,
                             shapes_ip, w, dv, h, ip_set, step_time):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)

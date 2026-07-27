@@ -1,0 +1,286 @@
+<style>
+  :root {
+    --bg: #e9edf1; --panel: #ffffff; --panel-2: #f4f7f9; --ink: #16202a;
+    --muted: #5c6b79; --faint: #8a97a4; --line: #ccd6df;
+    --accent: #0e8f9c; --accent-strong: #0a6f7a; --excluded: #c07f5a;
+    --mesh-fine: #97a3b0; --mesh-coarse: #5a63a6;
+    --good: #1f9d63; --good-bg: rgba(31,157,99,0.12);
+    --warn: #c0791f; --warn-bg: rgba(192,121,31,0.14);
+    --face-fill: #f2f6f8;
+    --shadow: 0 1px 2px rgba(20,32,44,0.06), 0 8px 24px rgba(20,32,44,0.06);
+    --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1218; --panel: #141c24; --panel-2: #10171e; --ink: #e5edf4;
+      --muted: #91a0ae; --faint: #5f6f7d; --line: #26313c;
+      --accent: #29c2d1; --accent-strong: #4fd6e3; --excluded: #c58a63;
+      --mesh-fine: #6f7d8b; --mesh-coarse: #8992d6;
+      --good: #35c07d; --good-bg: rgba(53,192,125,0.15);
+      --warn: #d69a3f; --warn-bg: rgba(214,154,63,0.16);
+      --face-fill: #101820;
+      --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 10px 30px rgba(0,0,0,0.35);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #e9edf1; --panel: #ffffff; --panel-2: #f4f7f9; --ink: #16202a;
+    --muted: #5c6b79; --faint: #8a97a4; --line: #ccd6df; --accent: #0e8f9c;
+    --accent-strong: #0a6f7a; --excluded: #c07f5a; --mesh-fine: #97a3b0;
+    --mesh-coarse: #5a63a6; --good: #1f9d63; --good-bg: rgba(31,157,99,0.12);
+    --warn: #c0791f; --warn-bg: rgba(192,121,31,0.14); --face-fill: #f2f6f8;
+    --shadow: 0 1px 2px rgba(20,32,44,0.06), 0 8px 24px rgba(20,32,44,0.06);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1218; --panel: #141c24; --panel-2: #10171e; --ink: #e5edf4;
+    --muted: #91a0ae; --faint: #5f6f7d; --line: #26313c; --accent: #29c2d1;
+    --accent-strong: #4fd6e3; --excluded: #c58a63; --mesh-fine: #6f7d8b;
+    --mesh-coarse: #8992d6; --good: #35c07d; --good-bg: rgba(53,192,125,0.15);
+    --warn: #d69a3f; --warn-bg: rgba(214,154,63,0.16); --face-fill: #101820;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 10px 30px rgba(0,0,0,0.35);
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 28px 22px 48px; }
+
+  header { margin-bottom: 20px; }
+  .eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent-strong); margin: 0 0 8px; }
+  h1 { font-size: clamp(21px, 3vw, 27px); font-weight: 640; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+  .sub { color: var(--muted); margin: 7px 0 0; max-width: 66ch; font-size: 14.5px; }
+
+  .layout { display: grid; grid-template-columns: minmax(0,1.4fr) minmax(288px,1fr); gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+  .diagram { padding: 14px; }
+
+  .toggles { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 2px 12px; }
+  .toggle { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; padding: 6px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); cursor: pointer; transition: none; }
+  .toggle .sw { width: 11px; height: 11px; border-radius: 3px; background: currentColor; opacity: 0.28; }
+  .toggle[aria-pressed="true"] { color: var(--ink); border-color: currentColor; }
+  .toggle[aria-pressed="true"] .sw { opacity: 1; }
+  .toggle.pts[aria-pressed="true"] { color: var(--accent-strong); }
+  .toggle.fine[aria-pressed="true"] { color: var(--mesh-fine); }
+  .toggle.coarse[aria-pressed="true"] { color: var(--mesh-coarse); }
+  .toggle.pts .sw { border-radius: 50%; }
+  .toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  svg { width: 100%; height: auto; display: block; }
+
+  .panel { padding: 18px 18px 20px; display: flex; flex-direction: column; gap: 20px; }
+  .panel h2 { font-family: var(--mono); font-size: 11px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat { background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; }
+  .stat .k { font-family: var(--mono); font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+  .stat .v { font-family: var(--mono); font-size: 19px; font-variant-numeric: tabular-nums; margin-top: 3px; font-weight: 550; }
+  .stat .v small { font-size: 12px; color: var(--muted); font-weight: 500; }
+  .stat.wide { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; }
+
+  .pill { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11px; padding: 2px 9px; border-radius: 999px; font-weight: 600; letter-spacing: 0.02em; }
+  .pill.good { color: var(--good); background: var(--good-bg); }
+  .pill.warn { color: var(--warn); background: var(--warn-bg); }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+  .controls { display: flex; flex-direction: column; gap: 14px; }
+  .grouplabel { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--faint); margin: 4px 0 -2px; }
+  .ctl { display: flex; flex-direction: column; gap: 5px; }
+  .ctl .row { display: flex; justify-content: space-between; align-items: baseline; }
+  .ctl label { font-size: 13px; color: var(--ink); font-weight: 500; }
+  .ctl .val { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; color: var(--accent-strong); }
+  .ctl .hint { font-size: 11.5px; color: var(--faint); }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; border-radius: 3px; background: var(--line); outline: none; margin: 3px 0 0; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 2px solid var(--panel); box-shadow: 0 0 0 1px var(--accent); cursor: pointer; }
+  input[type=range]::-moz-range-thumb { width: 15px; height: 15px; border-radius: 50%; background: var(--accent); border: 2px solid var(--panel); cursor: pointer; }
+  input[type=range].fine::-webkit-slider-thumb { background: var(--mesh-fine); box-shadow: 0 0 0 1px var(--mesh-fine); }
+  input[type=range].coarse::-webkit-slider-thumb { background: var(--mesh-coarse); box-shadow: 0 0 0 1px var(--mesh-coarse); }
+  input[type=range]:focus-visible { box-shadow: 0 0 0 3px var(--good-bg); }
+
+  .foot { margin-top: 20px; color: var(--faint); font-size: 12px; max-width: 82ch; }
+  .foot code { font-family: var(--mono); color: var(--muted); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">DIC sampling &amp; meshes · synthetic calibration example</p>
+    <h1>Measurement cloud over the fine and coarse notched-plate meshes</h1>
+    <p class="sub">The DIC grid is sampled from the fine truth mesh and matched on the coarse inversion mesh; fine-vs-coarse dodges the inverse crime. Toggle the layers, tune the sizes, then lock the defaults.</p>
+  </header>
+
+  <div class="layout">
+    <div class="card diagram">
+      <div class="toggles">
+        <button class="toggle pts" data-key="pts" aria-pressed="true"><span class="sw"></span>DIC points</button>
+        <button class="toggle fine" data-key="fine" aria-pressed="false"><span class="sw"></span>Fine mesh (truth)</button>
+        <button class="toggle coarse" data-key="coarse" aria-pressed="true"><span class="sw"></span>Coarse mesh (inversion)</button>
+      </div>
+      <div id="svghost"></div>
+    </div>
+
+    <div class="card panel">
+      <div>
+        <h2>Readout</h2>
+        <div class="stats">
+          <div class="stat"><div class="k">Captured points</div><div class="v" id="r-count">–</div></div>
+          <div class="stat"><div class="k">Grid pitch</div><div class="v" id="r-pitch">–</div></div>
+          <div class="stat"><div class="k">Fine face tris</div><div class="v" id="r-fine">–</div></div>
+          <div class="stat"><div class="k">Coarse face tris</div><div class="v" id="r-coarse">–</div></div>
+          <div class="stat wide"><div><div class="k">Pitch vs coarse element</div><div class="v" id="r-ratio">–</div></div><div id="r-ratio-pill"></div></div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="grouplabel">Sampling</div>
+        <div class="ctl">
+          <div class="row"><label for="c-pitch">Grid pitch</label><span class="val" id="v-pitch"></span></div>
+          <input type="range" id="c-pitch" min="0.02" max="0.10" step="0.005" value="0.02">
+          <span class="hint">measurement spacing, in units of plate width</span>
+        </div>
+        <div class="ctl">
+          <div class="row"><label for="c-margin">Edge margin</label><span class="val" id="v-margin"></span></div>
+          <input type="range" id="c-margin" min="0" max="0.20" step="0.01" value="0.02">
+          <span class="hint">dropped border ring — edge decorrelation</span>
+        </div>
+        <div class="ctl">
+          <div class="row"><label for="c-notch">Notch radius</label><span class="val" id="v-notch"></span></div>
+          <input type="range" id="c-notch" min="0.10" max="0.35" step="0.01" value="0.20">
+          <span class="hint">corner quarter-cylinder (notch_mesh.py default)</span>
+        </div>
+        <div class="ctl">
+          <div class="row"><label for="c-nmargin">Free-edge band</label><span class="val" id="v-nmargin"></span></div>
+          <input type="range" id="c-nmargin" min="0" max="0.10" step="0.005" value="0.02">
+          <span class="hint">extra drop ring around the notch boundary</span>
+        </div>
+
+        <div class="grouplabel">Mesh element size (h)</div>
+        <div class="ctl">
+          <div class="row"><label for="c-fine">Fine mesh (truth)</label><span class="val" id="v-fine"></span></div>
+          <input type="range" class="fine" id="c-fine" min="0.025" max="0.08" step="0.005" value="0.04">
+          <span class="hint">sampled once for the synthetic data</span>
+        </div>
+        <div class="ctl">
+          <div class="row"><label for="c-coarse">Coarse mesh (inversion)</label><span class="val" id="v-coarse"></span></div>
+          <input type="range" class="coarse" id="c-coarse" min="0.04" max="0.25" step="0.01" value="0.05">
+          <span class="hint">re-solved every optimizer step; want pitch ≤ h/3</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="foot">
+    Face is the <code>zmax</code> side of the <code>(1, 1, 0.1)</code> plate (unit square). Meshes are drawn as structured triangulations at the chosen element size to judge resolution and notch coverage; the real mesh is unstructured tets at the same <code>h</code> (via <code>notch_mesh.py</code>). Load ramps on the top edge (reaction = synthetic load cell); captured points become the DIC <code>displacement</code> cloud. Stereo DIC is assumed, so all three components are recorded.
+  </p>
+</div>
+
+<script>
+(function () {
+  const X0 = 60, Y0 = 34, S = 372;
+  const fx = x => X0 + x * S;
+  const fy = y => Y0 + (1 - y) * S;
+  const P = (x, y) => `${fx(x).toFixed(1)} ${fy(y).toFixed(1)}`;
+
+  const sliders = ["pitch","margin","notch","nmargin","fine","coarse"];
+  const el = {};
+  sliders.forEach(k => el[k] = document.getElementById("c-" + k));
+  const show = { pts: true, fine: false, coarse: true };
+  const btns = Array.from(document.querySelectorAll(".toggle"));
+
+  function meshPath(h, r) {
+    const n = Math.max(1, Math.round(1 / h)), s = 1 / n;
+    let d = "", cnt = 0;
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      const x0 = i * s, y0 = j * s, x1 = (i + 1) * s, y1 = (j + 1) * s;
+      if (Math.hypot((x0 + x1) / 2, (y0 + y1) / 2) < r) continue;   // drop notch cells
+      if ((i + j) % 2 === 0)
+        d += `M ${P(x0,y0)} L ${P(x1,y0)} L ${P(x1,y1)} Z M ${P(x0,y0)} L ${P(x1,y1)} L ${P(x0,y1)} Z `;
+      else
+        d += `M ${P(x1,y0)} L ${P(x0,y1)} L ${P(x0,y0)} Z M ${P(x1,y0)} L ${P(x1,y1)} L ${P(x0,y1)} Z `;
+      cnt += 2;
+    }
+    return { d, cnt };
+  }
+
+  function quad(rad, fill, op) {
+    const R = (rad * S).toFixed(1);
+    return `<path d="M ${P(0,0)} L ${P(rad,0)} A ${R} ${R} 0 0 0 ${P(0,rad)} Z" fill="${fill}" opacity="${op}"/>`;
+  }
+
+  function build() {
+    const pitch = +el.pitch.value, margin = +el.margin.value, r = +el.notch.value,
+          nm = +el.nmargin.value, hf = +el.fine.value, hc = +el.coarse.value;
+
+    let inPts = [], outPts = [], inFace = 0;
+    const n = Math.round(1 / pitch);
+    for (let i = 0; i <= n; i++) for (let j = 0; j <= n; j++) {
+      const x = Math.min(1, i * pitch), y = Math.min(1, j * pitch);
+      inFace++;
+      const inMargin = x < margin - 1e-9 || x > 1 - margin + 1e-9 || y < margin - 1e-9 || y > 1 - margin + 1e-9;
+      const inNotch = Math.hypot(x, y) < r + nm - 1e-9;
+      (inMargin || inNotch ? outPts : inPts).push([x, y]);
+    }
+
+    const fine = meshPath(hf, r), coarse = meshPath(hc, r);
+    const p = [];
+    p.push(`<svg viewBox="0 0 460 452" role="img" aria-label="DIC grid over the fine and coarse meshes">`);
+    p.push(`<rect x="${fx(0)}" y="${fy(1)}" width="${S}" height="${S}" fill="var(--face-fill)" stroke="var(--ink)" stroke-width="1.6"/>`);
+
+    if (margin > 0) {
+      const iw = (1 - 2 * margin) * S;
+      p.push(`<path fill-rule="evenodd" fill="var(--excluded)" opacity="0.26" d="M ${fx(0)} ${fy(1)} h ${S} v ${S} h ${-S} Z M ${fx(margin)} ${fy(1-margin)} h ${iw} v ${iw} h ${-iw} Z"/>`);
+    }
+
+    if (show.fine) p.push(`<path d="${fine.d}" fill="none" stroke="var(--mesh-fine)" stroke-width="0.4" opacity="0.6"/>`);
+    if (show.coarse) p.push(`<path d="${coarse.d}" fill="none" stroke="var(--mesh-coarse)" stroke-width="1" opacity="0.9"/>`);
+
+    if (nm > 0) p.push(quad(r + nm, "var(--excluded)", "0.24"));
+    p.push(quad(r, "var(--face-fill)", "1"));       // opaque mask over mesh stair
+    p.push(quad(r, "var(--excluded)", "0.6"));
+    p.push(`<path d="M ${P(r,0)} A ${(r*S).toFixed(1)} ${(r*S).toFixed(1)} 0 0 0 ${P(0,r)}" fill="none" stroke="var(--ink)" stroke-width="1.2" opacity="0.75"/>`);
+
+    if (show.pts) {
+      p.push(`<g fill="var(--faint)" opacity="0.45">`);
+      outPts.forEach(q => p.push(`<circle cx="${fx(q[0]).toFixed(1)}" cy="${fy(q[1]).toFixed(1)}" r="1.4"/>`));
+      p.push(`</g><g fill="var(--accent)">`);
+      inPts.forEach(q => p.push(`<circle cx="${fx(q[0]).toFixed(1)}" cy="${fy(q[1]).toFixed(1)}" r="2.4"/>`));
+      p.push(`</g>`);
+    }
+
+    p.push(`<line x1="${fx(0)}" y1="${fy(1)}" x2="${fx(1)}" y2="${fy(1)}" stroke="var(--accent-strong)" stroke-width="3"/>`);
+    p.push(`<g stroke="var(--accent-strong)" stroke-width="1.4" fill="none">`);
+    for (let i = 1; i <= 5; i++) { const xx = fx(i / 6), yt = fy(1) - 16;
+      p.push(`<line x1="${xx}" y1="${fy(1)-2}" x2="${xx}" y2="${yt}"/><path d="M ${xx-3} ${yt+4} L ${xx} ${yt} L ${xx+3} ${yt+4}"/>`); }
+    p.push(`</g>`);
+    const lab = (x, y, t) => `<text x="${x}" y="${y}" fill="var(--muted)" font-family="var(--mono)" font-size="11" letter-spacing="0.05em" text-anchor="middle">${t}</text>`;
+    p.push(lab((fx(0)+fx(1))/2, fy(1) - 22, "LOAD  ·  reaction = load cell"));
+    p.push(lab(fx(0.5), fy(0) + 26, "DIC face  ·  z = t"));
+    p.push(`</svg>`);
+    document.getElementById("svghost").innerHTML = p.join("");
+
+    const ratio = hc / pitch;
+    document.getElementById("r-count").textContent = inPts.length;
+    document.getElementById("r-pitch").innerHTML = pitch.toFixed(3) + ' <small>w</small>';
+    document.getElementById("r-fine").textContent = fine.cnt.toLocaleString();
+    document.getElementById("r-coarse").textContent = coarse.cnt.toLocaleString();
+    document.getElementById("r-ratio").textContent = ratio.toFixed(1) + "×";
+    document.getElementById("r-ratio-pill").innerHTML = ratio >= 3
+      ? '<span class="pill good"><span class="dot"></span>well posed</span>'
+      : '<span class="pill warn"><span class="dot"></span>sparse for remap</span>';
+
+    document.getElementById("v-pitch").textContent = pitch.toFixed(3);
+    document.getElementById("v-margin").textContent = margin.toFixed(2);
+    document.getElementById("v-notch").textContent = r.toFixed(2);
+    document.getElementById("v-nmargin").textContent = nm.toFixed(3);
+    document.getElementById("v-fine").textContent = hf.toFixed(3);
+    document.getElementById("v-coarse").textContent = hc.toFixed(2);
+  }
+
+  sliders.forEach(k => el[k].addEventListener("input", build));
+  btns.forEach(b => b.addEventListener("click", () => {
+    const k = b.dataset.key; show[k] = !show[k];
+    b.setAttribute("aria-pressed", String(show[k])); build();
+  }));
+  build();
+})();
+</script>

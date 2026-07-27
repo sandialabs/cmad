@@ -22,9 +22,11 @@ residuals:
   global residual:
     type: mechanics
     def_type: full_3d
-    nonlinear max iters: 15
+    nonlinear max iters: 100
     nonlinear absolute tol: 1.0e-8
     nonlinear relative tol: 1.0e-8
+    line search:
+      max evals: 10
   local residual:
     type: small_elastic_plastic
     nonlinear max iters: 500
