@@ -57,7 +57,7 @@ class Elastic(Model):
         ndims = def_type_ndims(def_type)
         self._ndims = ndims
 
-        if def_type == DefType.FULL_3D:
+        if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRAIN:
             num_residuals = 1
 
         elif def_type == DefType.PLANE_STRESS \
@@ -111,8 +111,9 @@ class Elastic(Model):
 
         cauchy = partial(self._cauchy_fn, def_type=def_type)
 
-        if def_type == DefType.FULL_3D:
+        if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRAIN:
             cauchy_closed_form = partial(self._cauchy_closed_form_fn,
+                                         def_type=def_type,
                                          elastic_stress=elastic_stress_fun)
             super().__init__(residual, cauchy,
                              cauchy_closed_form_fun=cauchy_closed_form)
@@ -156,7 +157,7 @@ class Elastic(Model):
             get_vector_from_sym_tensor(C_elastic_cauchy_tensor, 3) \
             / scale_factor
 
-        if def_type == DefType.FULL_3D:
+        if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRAIN:
             C_elastic = C_elastic_cauchy
 
         elif def_type == DefType.PLANE_STRESS or \
@@ -189,10 +190,20 @@ class Elastic(Model):
     def _cauchy_closed_form_fn(
             params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+            def_type: int,
             elastic_stress: Callable[..., JaxArray],
     ) -> JaxArray:
 
-        F = jnp.eye(3) + U.grad_fields["u"]
+        grad_u = U.grad_fields["u"]
+        if def_type == DefType.PLANE_STRAIN:
+            # 2D grad_u embedded with the out of plane stretch fixed to 1
+            # (zero out of plane strain). elastic_stress returns the full
+            # 3x3 stress; the GR contracts its leading 2x2 block.
+            F_2D = jnp.eye(2) + grad_u
+            F = jnp.r_[jnp.c_[F_2D, jnp.zeros((2, 1))],
+                       jnp.c_[jnp.zeros((1, 2)), 1.0]]
+        else:
+            F = jnp.eye(3) + grad_u
         return elastic_stress(F, params)
 
     @staticmethod
@@ -202,7 +213,9 @@ class Elastic(Model):
     ) -> JaxArray:
         grad_u = U.grad_fields["u"]
         eps = 0.5 * (grad_u + grad_u.T)
-        dev_eps = eps - jnp.trace(eps) / 3. * jnp.eye(3)
+        # eye(ndims): in 2D this is the plane strain block of the 3D strain
+        # deviator (eps_33 = 0, so the trace is the in plane trace).
+        dev_eps = eps - jnp.trace(eps) / 3. * jnp.eye(grad_u.shape[0])
         return 2. * ElasticConstants.from_params(params["elastic"]).mu * dev_eps
 
     @staticmethod

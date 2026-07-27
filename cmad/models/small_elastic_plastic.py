@@ -130,7 +130,7 @@ class SmallElasticPlastic(Model):
         ndims = def_type_ndims(def_type)
         self._ndims = ndims
 
-        if def_type == DefType.FULL_3D:
+        if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRAIN:
             num_residuals = 2
 
         elif def_type == DefType.PLANE_STRESS \
@@ -273,7 +273,7 @@ class SmallElasticPlastic(Model):
         C_plastic_alpha = yield_fun
         C_plastic = jnp.r_[C_plastic_pstrain, C_plastic_alpha]
 
-        if def_type == DefType.FULL_3D:
+        if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRAIN:
             C_elastic = jnp.r_[C_elastic_pstrain, C_elastic_alpha]
             C_plastic = jnp.r_[C_plastic_pstrain, C_plastic_alpha]
 

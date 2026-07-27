@@ -1,4 +1,4 @@
-"""3D quasi-static mechanics equilibrium global residual."""
+"""Quasi-static mechanics equilibrium global residual."""
 from typing import Any
 
 import jax.numpy as jnp
@@ -19,7 +19,7 @@ from cmad.typing import GREvaluators
 
 @register_global_residual("mechanics")
 class Mechanics(GlobalResidual):
-    """3D quasi-static mechanics equilibrium.
+    """Quasi-static mechanics equilibrium.
 
     Two formulations, selected at construction:
 
@@ -28,9 +28,11 @@ class Mechanics(GlobalResidual):
       dv``, with sigma sourced per the ``mode`` arg from
       ``model.cauchy_closed_form(params, U_ip, U_ip_prev)`` (CLOSED_FORM)
       or ``model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)`` (COUPLED).
-      A finite deformation model (``is_finite_deformation``) instead
-      assembles the first Piola-Kirchhoff stress ``P = sigma @
-      cofactor(F)`` as ``grad_N @ P.T`` over the reference volume.
+      The model returns a 3x3 stress; for a 2D (plane strain) problem the
+      residual contracts its leading ``ndims x ndims`` block. A finite
+      deformation model (``is_finite_deformation``) instead assembles the
+      first Piola-Kirchhoff stress ``P = sigma @ cofactor(F)`` as
+      ``grad_N @ P.T`` over the reference volume.
 
     - **mixed** (displacement-pressure, stabilized equal order): two
       blocks, ``u`` (VECTOR, "equilibrium") and ``p`` (SCALAR,
@@ -45,7 +47,9 @@ class Mechanics(GlobalResidual):
       when bound CLOSED_FORM (elastic) and from ``dev_cauchy`` /
       ``hydro_cauchy`` (reading the converged local state) when bound
       COUPLED (plastic). Mixed needs a model with ``supports_mixed`` and
-      is restricted to ``ndims == 3`` for now. A finite deformation model
+      runs in 3D or, for small strain, 2D plane strain, where the
+      momentum stress uses the leading 2x2 deviatoric block. A finite
+      deformation model
       maps the momentum stress to PK1 (``sigma @ cofactor(F)``) and scales
       the stabilization by ``(cof_F.T @ cof_F) / det F``.
 
@@ -66,9 +70,9 @@ class Mechanics(GlobalResidual):
         self._mixed = mixed
         self._stabilization_multiplier = stabilization_multiplier
 
-        if mixed and ndims != 3:
+        if mixed and ndims not in (2, 3):
             raise NotImplementedError(
-                f"mixed formulation currently supports ndims=3 only; "
+                f"mixed formulation supports ndims 2 (plane strain) or 3; "
                 f"got ndims={ndims}",
             )
 
@@ -102,7 +106,10 @@ class Mechanics(GlobalResidual):
                     hydro = model.hydro_cauchy(
                         xi, xi_prev, params, U_ip, U_ip_prev)
                 p = U_ip.fields["p"][0]
-                sigma = dev - p * jnp.eye(self._ndims)
+                sigma = (
+                    dev[:self._ndims, :self._ndims]
+                    - p * jnp.eye(self._ndims)
+                )
 
                 psf = model.pressure_scale_factor(params)
                 mu = model.shear_scale_factor(params)
@@ -136,7 +143,9 @@ class Mechanics(GlobalResidual):
                 P = sigma @ cofactor(F)
                 R_internal = (shapes_ip[0].grad_N @ P.T) * w * dv
             else:
-                R_internal = (shapes_ip[0].grad_N @ sigma) * w * dv
+                R_internal = (
+                    shapes_ip[0].grad_N @ sigma[:self._ndims, :self._ndims]
+                ) * w * dv
             return [R_internal]
 
         super().__init__(residual_fn)
@@ -168,32 +177,42 @@ class Mechanics(GlobalResidual):
         )
 
     def near_null_space(self, mesh: Mesh) -> NDArray[np.floating]:
-        """Near-null-space modes at the mesh nodes.
+        """Near null space modes at the mesh nodes.
 
-        Displacement formulation: the 6 rigid-body modes of 3D
-        elasticity (3 translations + 3 rotations ``e_k × r`` per node)
-        via :func:`pyamg.util.utils.coord_to_rbm`, in interleaved-by-node
-        DOF order (matching :meth:`cmad.fem.dof.GlobalDofMap.eq_index`'s
-        ``basis_fn * ndofs + dof`` layout). Shape ``(3 * n_nodes, 6)``.
+        Displacement modes are the rigid body modes of linear elasticity,
+        interleaved by node (matching
+        :meth:`cmad.fem.dof.GlobalDofMap.eq_index`'s ``basis_fn * ndofs +
+        dof`` layout): ``n_rbm`` is 6 in 3D (3 translations + 3 rotations
+        ``e_k x r``, via :func:`pyamg.util.utils.coord_to_rbm`) and 3 in
+        2D (2 translations + 1 rotation about z). The mixed formulation
+        appends one column, the constant pressure mode on the ``p`` block
+        (the pressure gradient term vanishes for a constant pressure).
 
-        Mixed formulation: a block-diagonal near-null-space over the
-        block-major ``(u, p)`` dofs -- the 6 rigid-body modes on the
-        ``u`` block (zero on ``p``) plus the constant mode on the ``p``
-        block (zero on ``u``), since the pressure-gradient term
-        annihilates a constant pressure. Shape ``(4 * n_nodes, 7)``.
+        Shape ``(ndims * n_nodes, n_rbm)`` for displacement, or
+        ``((ndims + 1) * n_nodes, n_rbm + 1)`` for mixed.
         """
-        from pyamg.util.utils import coord_to_rbm
         coords = np.asarray(mesh.nodes, dtype=np.float64)
         n = coords.shape[0]
-        u_modes = coord_to_rbm(
-            n, 3, coords[:, 0], coords[:, 1], coords[:, 2],
-        )
+        if self._ndims == 2:
+            x, y = coords[:, 0], coords[:, 1]
+            u_modes = np.zeros((2 * n, 3))
+            u_modes[0::2, 0] = 1.0          # translation x
+            u_modes[1::2, 1] = 1.0          # translation y
+            u_modes[0::2, 2] = -y           # rotation about z
+            u_modes[1::2, 2] = x
+        else:
+            from pyamg.util.utils import coord_to_rbm
+            u_modes = coord_to_rbm(
+                n, 3, coords[:, 0], coords[:, 1], coords[:, 2],
+            )
         if not self._mixed:
             return u_modes
-        n_u = u_modes.shape[0]
-        modes = np.zeros((n_u + n, 7))
-        modes[:n_u, :6] = u_modes
-        modes[n_u:, 6] = 1.0
+        # Append the constant pressure mode: the n_rbm displacement modes
+        # (zero on the p block) plus one column that is 1 on the p block.
+        n_u, n_rbm = u_modes.shape
+        modes = np.zeros((n_u + n, n_rbm + 1))
+        modes[:n_u, :n_rbm] = u_modes
+        modes[n_u:, n_rbm] = 1.0
         return modes
 
     def evaluate_nodal_field(

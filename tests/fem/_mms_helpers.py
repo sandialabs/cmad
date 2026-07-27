@@ -4,7 +4,7 @@ Problem-agnostic utilities shared across MMS regression tests:
 
 - :func:`make_elastic_parameters` builds a
   :class:`cmad.parameters.parameters.Parameters` for the isotropic
-  small-strain :class:`cmad.models.elastic.Elastic` model from a
+  small strain :class:`cmad.models.elastic.Elastic` model from a
   ``(kappa, mu)`` pair.
 - :func:`build_mms_callables` lambdifies a sympy ``u_sym`` plus the
   matching ``b = -div(sigma(u_sym))`` and exposes the symbolic
@@ -34,10 +34,23 @@ from sympy import Matrix, eye, lambdify
 from cmad.fem.assembly import params_by_block_from_models
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem, FEState
-from cmad.fem.interpolants import hex_linear, tet_linear
+from cmad.fem.interpolants import (
+    hex_linear,
+    quad_linear,
+    tet_linear,
+    tri_linear,
+)
 from cmad.fem.nonlinear_solver import fe_newton_solve
-from cmad.fem.quadrature import hex_quadrature, tet_quadrature
-from cmad.models.elastic_stress import compressible_neohookean_cauchy_stress
+from cmad.fem.quadrature import (
+    hex_quadrature,
+    quad_quadrature,
+    tet_quadrature,
+    tri_quadrature,
+)
+from cmad.models.elastic_stress import (
+    compressible_neohookean_cauchy_stress,
+    isotropic_linear_elastic_cauchy_stress,
+)
 from cmad.models.kinematics import cofactor
 from cmad.parameters.parameters import Parameters
 from cmad.typing import JaxArray, Params
@@ -175,6 +188,68 @@ def build_finite_mms_callables(
     return body_force_fn, u_exact, grad_u_exact
 
 
+def build_plane_strain_mms_callables(
+        u_sym: sympy.Matrix,
+        coord_syms: Sequence[Any],
+        kappa: float,
+        mu: float,
+) -> tuple[
+    Callable[
+        [NDArray[np.floating] | JaxArray, float | JaxArray],
+        NDArray[np.floating] | JaxArray,
+    ],
+    Callable[[NDArray[np.floating]], NDArray[np.floating]],
+    Callable[[NDArray[np.floating]], NDArray[np.floating]],
+]:
+    """Plane strain MMS source matching ``Elastic(PLANE_STRAIN)``.
+
+    The body force is ``b = -div(sigma)``, where sigma is the 2x2 block
+    of the isotropic linear elastic stress at ``F = I + grad u`` with the
+    out of plane stretch set to 1 -- the same block the GR contracts.
+    Built by autodiff of ``u_sym`` so it matches the model exactly.
+    Returns ``(body_force_fn, u_exact, grad_u_exact)``; ``coord_syms``
+    has length 2.
+    """
+    n = len(coord_syms)
+    coord_args = tuple(coord_syms)
+    grad_u_sym = u_sym.jacobian(list(coord_syms))
+    u_jax = lambdify(coord_args, u_sym, modules="jax")
+    u_callable = lambdify(coord_args, u_sym, modules="numpy")
+    grad_u_callable = lambdify(coord_args, grad_u_sym, modules="numpy")
+    params: Params = {"elastic": {"kappa": kappa, "mu": mu}}
+
+    def u_of_X(X: JaxArray) -> JaxArray:
+        return jnp.asarray(u_jax(*[X[i] for i in range(n)])).reshape(n)
+
+    def sigma_in_plane_of_X(X: JaxArray) -> JaxArray:
+        grad_u = jacfwd(u_of_X)(X)                       # (2, 2)
+        F_2D = jnp.eye(2) + grad_u
+        F = jnp.block([
+            [F_2D, jnp.zeros((2, 1))],
+            [jnp.zeros((1, 2)), jnp.ones((1, 1))],
+        ])
+        sigma = isotropic_linear_elastic_cauchy_stress(F, params)   # (3, 3)
+        return sigma[:2, :2]
+
+    def body_force_fn(
+            coords: NDArray[np.floating] | JaxArray,
+            _t: float | JaxArray,
+    ) -> NDArray[np.floating] | JaxArray:
+        # b_i = -d(sigma_ij)/dx_j.
+        dsigma = jacfwd(sigma_in_plane_of_X)(jnp.asarray(coords))   # (2,2,2)
+        return -jnp.einsum("ijj->i", dsigma)
+
+    def u_exact(coords: NDArray[np.floating]) -> NDArray[np.floating]:
+        args = tuple(coords[i] for i in range(n))
+        return np.asarray(u_callable(*args)).reshape(-1)
+
+    def grad_u_exact(coords: NDArray[np.floating]) -> NDArray[np.floating]:
+        args = tuple(coords[i] for i in range(n))
+        return np.asarray(grad_u_callable(*args))
+
+    return body_force_fn, u_exact, grad_u_exact
+
+
 def l2_h1_errors(
         fe_problem: FEProblem,
         U_solved: NDArray[np.floating] | JaxArray,
@@ -193,17 +268,24 @@ def l2_h1_errors(
     mesh = fe_problem.mesh
     dof_map = fe_problem.dof_map
     fam = mesh.element_family
+    ndims = mesh.nodes.shape[1]
     if fam == ElementFamily.HEX_LINEAR:
         norm_quad = hex_quadrature(degree=4)
         interpolant = hex_linear
-    else:
+    elif fam == ElementFamily.TET_LINEAR:
         norm_quad = tet_quadrature(degree=4)
         interpolant = tet_linear
+    elif fam == ElementFamily.QUAD_LINEAR:
+        norm_quad = quad_quadrature(degree=4)
+        interpolant = quad_linear
+    else:
+        norm_quad = tri_quadrature(degree=4)
+        interpolant = tri_linear
 
     nips = norm_quad.xi.shape[0]
     nnodes = mesh.connectivity.shape[1]
     N_ref = np.empty((nips, nnodes), dtype=np.float64)
-    grad_N_ref = np.empty((nips, nnodes, 3), dtype=np.float64)
+    grad_N_ref = np.empty((nips, nnodes, ndims), dtype=np.float64)
     for ip in range(nips):
         sh = interpolant(jnp.asarray(norm_quad.xi[ip]))
         N_ref[ip] = np.asarray(sh.N)
