@@ -21,17 +21,18 @@ for the 3D families, but have separate semantic roles:
   sides are faces (entries alias the face tables above); for 2D
   families sides are edges (entries alias the edge tables above).
 - :data:`_REF_SIDE_LIFT_PER_ELEMENT` — per-(family, local_side_id)
-  ref-side → ref-volume affine lift, consumed by per-side
+  ref side → ref volume affine lift, consumed by per-side
   integral evaluators. Each entry is an ``(origin, tangents)`` pair
-  such that a side quadrature point ``(s, t)`` lifts to the ref-
-  volume coord ``ξ = origin + tangents @ [s, t]``. Tangent columns
-  are oriented so right-hand-rule
-  ``cross(tangents[:, 0], tangents[:, 1])`` points outward, inheriting the
-  CCW-from-outside vertex ordering of
-  :data:`_LOCAL_FACES_PER_ELEMENT`. Hex face params live in
-  ``[-1, 1]^2`` (matching :func:`cmad.fem.quadrature.quad_quadrature`);
+  such that a side quadrature point lifts to the ref volume coord
+  ``ξ = origin + tangents @ s``. 3D faces have two tangent columns,
+  oriented so right-hand-rule ``cross(tangents[:, 0], tangents[:, 1])``
+  points outward (CCW-from-outside vertex ordering of
+  :data:`_LOCAL_FACES_PER_ELEMENT`); hex face params live in
+  ``[-1, 1]^2`` (matching :func:`cmad.fem.quadrature.quad_quadrature`),
   tet face params in the unit triangle (matching
-  :func:`cmad.fem.quadrature.tri_quadrature`).
+  :func:`cmad.fem.quadrature.tri_quadrature`). 2D edges have one tangent
+  column over ``[0, 1]`` (matching
+  :func:`cmad.fem.quadrature.line_quadrature`).
 
 Hex local-face numbering (Exodus 0-based)::
 
@@ -157,6 +158,27 @@ _TET_REFERENCE_NODES: NDArray[np.floating] = np.array(
 )
 
 
+_QUAD_REFERENCE_NODES: NDArray[np.floating] = np.array(
+    [
+        [-1.0, -1.0],   # 0
+        [+1.0, -1.0],   # 1
+        [+1.0, +1.0],   # 2
+        [-1.0, +1.0],   # 3
+    ],
+    dtype=np.float64,
+)
+
+
+_TRI_REFERENCE_NODES: NDArray[np.floating] = np.array(
+    [
+        [0.0, 0.0],   # 0
+        [1.0, 0.0],   # 1
+        [0.0, 1.0],   # 2
+    ],
+    dtype=np.float64,
+)
+
+
 def _quad_face_lift(
         face_node_ids: NDArray[np.intp],
         ref_nodes: NDArray[np.floating],
@@ -205,14 +227,34 @@ def _tri_face_lift(
     return origin, tangents
 
 
-# Per-family ref-side lift tables. Each entry is a list of
+def _edge_lift(
+        edge_node_ids: NDArray[np.intp],
+        ref_nodes: NDArray[np.floating],
+) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    """Build ``(origin, tangents)`` for an edge on ``[0, 1]``.
+
+    The edge is the side of a 2D family. Linear interpolation
+    ``ξ(s) = (1 - s) v0 + s v1 = v0 + s (v1 - v0)`` over ``s ∈ [0, 1]``
+    gives ``ξ = origin + tangents @ [s]`` with ``origin = v0`` and the
+    single tangent column ``v1 - v0``. ``origin`` has shape ``(2,)`` and
+    ``tangents`` shape ``(2, 1)``; the per-side length element is
+    ``|tangents[:, 0]|`` through the isoparametric Jacobian (no cross
+    product, unlike the 3D face lifts).
+    """
+    v = ref_nodes[edge_node_ids]   # (2, 2)
+    origin = v[0]
+    tangents = (v[1] - v[0])[:, None]
+    return origin, tangents
+
+
+# Per-family ref side lift tables. Each entry is a list of
 # ``(origin, tangents)`` pairs ordered to match
-# :data:`_LOCAL_SIDES_PER_ELEMENT`. ``origin`` has shape ``(3,)``;
-# ``tangents`` has shape ``(3, 2)``. The lift maps a side IP coord
-# ``(s, t)`` to a ref-volume coord ``ξ = origin + tangents @ [s, t]``;
-# for the 3D families the entries are face lifts with ``(s, t)`` over
-# ``[-1, 1]^2`` for hex faces and over the unit triangle for tet
-# faces.
+# :data:`_LOCAL_SIDES_PER_ELEMENT`. ``origin`` has shape ``(d,)`` and
+# ``tangents`` shape ``(d, d-1)`` for a family of dimension ``d``: 3D
+# face lifts have two tangent columns (``(s, t)`` over ``[-1, 1]^2`` for
+# hex faces, the unit triangle for tet faces), 2D edge lifts have one
+# (``s`` over ``[0, 1]``). The lift maps a side IP coord to the ref
+# volume coord ``ξ = origin + tangents @ s``.
 _REF_SIDE_LIFT_PER_ELEMENT: dict[
     ElementFamily,
     list[tuple[NDArray[np.floating], NDArray[np.floating]]],
@@ -225,6 +267,14 @@ _REF_SIDE_LIFT_PER_ELEMENT: dict[
         _tri_face_lift(_TET_FACE_NODES[i], _TET_REFERENCE_NODES)
         for i in range(_TET_FACE_NODES.shape[0])
     ],
+    ElementFamily.QUAD_LINEAR: [
+        _edge_lift(_QUAD_EDGE_NODES[i], _QUAD_REFERENCE_NODES)
+        for i in range(_QUAD_EDGE_NODES.shape[0])
+    ],
+    ElementFamily.TRI_LINEAR: [
+        _edge_lift(_TRI_EDGE_NODES[i], _TRI_REFERENCE_NODES)
+        for i in range(_TRI_EDGE_NODES.shape[0])
+    ],
 }
 
 
@@ -234,22 +284,24 @@ def ref_side_lift(
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
     """Return ``(origin, tangents)`` for one (family, local_side_id) lift.
 
-    The lift maps a side quadrature point ``(s, t)`` to a ref-volume
-    coord ``ξ = origin + tangents @ [s, t]``; ``origin`` has shape
-    ``(3,)`` and ``tangents`` has shape ``(3, 2)``. For
-    :data:`~cmad.fem.element_family.ElementFamily.HEX_LINEAR`,
-    ``(s, t)`` ranges over ``[-1, 1]^2`` (matching
-    :func:`cmad.fem.quadrature.quad_quadrature`); for
-    :data:`~cmad.fem.element_family.ElementFamily.TET_LINEAR`,
-    ``(s, t)`` ranges over the unit triangle (matching
-    :func:`cmad.fem.quadrature.tri_quadrature`).
+    The lift maps a side quadrature point to a ref volume coord
+    ``ξ = origin + tangents @ s``. For a family of dimension ``d``,
+    ``origin`` has shape ``(d,)`` and ``tangents`` shape ``(d, d-1)``:
+    two tangent columns for 3D faces
+    (:data:`~cmad.fem.element_family.ElementFamily.HEX_LINEAR` over
+    ``[-1, 1]^2``,
+    :data:`~cmad.fem.element_family.ElementFamily.TET_LINEAR` over the
+    unit triangle), one for 2D edges
+    (:data:`~cmad.fem.element_family.ElementFamily.QUAD_LINEAR` /
+    :data:`~cmad.fem.element_family.ElementFamily.TRI_LINEAR` over
+    ``[0, 1]``), matching the paired side quadrature rule.
 
-    The right-hand-rule cross product of the tangent columns points
-    outward by construction; the CCW-from-outside vertex ordering of
-    :data:`_LOCAL_FACES_PER_ELEMENT` is the source of the
-    orientation. Side integrators consume ``|cross(t_s, t_t)|`` for the
-    per-side area element (length element in 2D) and the normalized
-    cross product as the outward unit normal.
+    For 3D faces the right-hand-rule cross product of the two tangent
+    columns points outward (from the CCW-from-outside vertex ordering of
+    :data:`_LOCAL_FACES_PER_ELEMENT`); side integrators consume
+    ``|cross(t_s, t_t)|`` as the area element and the normalized cross
+    product as the outward unit normal. For 2D edges the length element
+    is ``|tangents[:, 0]|`` through the isoparametric Jacobian.
 
     Raises ``KeyError`` if ``family`` has no lift table; ``IndexError``
     if ``local_side_id`` is out of range.

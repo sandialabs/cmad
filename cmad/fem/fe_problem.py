@@ -19,6 +19,7 @@ from cmad.fem.precompute import (
 from cmad.fem.quadrature import (
     QuadratureRule,
     hex_quadrature,
+    line_quadrature,
     quad_quadrature,
     tet_quadrature,
     tri_quadrature,
@@ -42,6 +43,8 @@ _DEFAULT_ASSEMBLY_QUADRATURE: dict[ElementFamily, QuadratureRule] = {
 _DEFAULT_SIDE_QUADRATURE: dict[ElementFamily, QuadratureRule] = {
     ElementFamily.HEX_LINEAR: quad_quadrature(degree=2),
     ElementFamily.TET_LINEAR: tri_quadrature(degree=2),
+    ElementFamily.QUAD_LINEAR: line_quadrature(degree=2),
+    ElementFamily.TRI_LINEAR: line_quadrature(degree=2),
 }
 
 

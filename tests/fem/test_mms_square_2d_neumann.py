@@ -1,31 +1,25 @@
-"""Manufactured solution convergence regression for 2D plane strain.
+"""Edge traction MMS convergence for 2D plane strain Neumann BCs.
 
-Verifies that :func:`cmad.fem.nonlinear_solver.fe_newton_solve` over a
-structured quad mesh (and its ``quad_to_tri_split``) converges at the
-linear element rates against a smooth plane strain manufactured
-solution: L2 rate ``>= 1.9`` and H1 rate ``>= 0.9`` on each
-consecutive-N ratio.
-
-The manufactured displacement vanishes on the unit square boundary,
-giving homogeneous Dirichlet on the union of all four side sets. The
-body force is the plane strain source from
-:func:`tests.fem._mms_helpers.build_plane_strain_mms_callables`, which
-matches :class:`cmad.models.elastic.Elastic` (``def_type=PLANE_STRAIN``)
-through the mechanics GR's leading 2x2 stress block.
-
-Quad sweep ``N in {4, 8, 16}`` establishes the rate; tri sweep
-``N in {4, 8}`` via ``quad_to_tri_split`` confirms it. Only the
-square-specific FE problem build (clamped on all four sides) stays
-here; the rest reuses :mod:`tests.fem._mms_helpers`.
+The 2D analog of :mod:`tests.fem.test_mms_cube_3d_neumann`: the plane
+strain manufactured solution of :mod:`tests.fem.test_mms_square_2d`, but
+the +x and +y edges carry analytic Neumann tractions ``t̄ = sigma . n``
+(from the manufactured stress) instead of the homogeneous Dirichlet
+clamp. The -x and -y edges keep homogeneous Dirichlet, consistent with
+``u_exact = 0`` on the whole unit square boundary. Two NBCs on separate
+sidesets exercise superposition across the two NBCs and both edge lifts
+in one solve. L2 rate ``>= 1.9`` and H1 rate ``>= 0.9`` on quad and (via
+``quad_to_tri_split``) tri.
 """
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 from sympy import Matrix, pi, sin, symbols
 
-from cmad.fem.bcs import DirichletBC
+from cmad.fem.bcs import DirichletBC, NeumannBC
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem, build_fe_problem
@@ -44,13 +38,39 @@ from tests.fem._mms_helpers import (
 _KAPPA = 100.0
 _MU = 50.0
 
+_ForcingFn = Callable[
+    [NDArray[np.floating] | JaxArray, float | JaxArray],
+    NDArray[np.floating] | JaxArray,
+]
+
+
+def _build_traction_callable(
+        sigma_fn: Callable[[JaxArray], JaxArray],
+        n_hat: Sequence[float],
+) -> _ForcingFn:
+    """Wrap ``sigma_fn(X) . n_hat`` into the NeumannBC callable contract.
+
+    ``sigma_fn`` is the single point in-plane stress from
+    :func:`build_plane_strain_mms_callables`; vmap lifts ``sigma . n``
+    across the leading point axis so the side evaluator can call it at
+    any side IP count.
+    """
+    n_vec = jnp.asarray(n_hat)
+
+    def traction_fn(
+            coords: NDArray[np.floating] | JaxArray,
+            _t: float | JaxArray,
+    ) -> NDArray[np.floating] | JaxArray:
+        return jax.vmap(lambda c: sigma_fn(c) @ n_vec)(jnp.asarray(coords))
+
+    return traction_fn
+
 
 def _build_fe_problem(
         mesh: Mesh,
-        body_force_fn: Callable[
-            [NDArray[np.floating] | JaxArray, float],
-            NDArray[np.floating] | JaxArray,
-        ],
+        body_force_fn: _ForcingFn,
+        traction_xmax_fn: _ForcingFn,
+        traction_ymax_fn: _ForcingFn,
 ) -> FEProblem:
     if mesh.element_family == ElementFamily.QUAD_LINEAR:
         fe = Q1_QUAD
@@ -59,16 +79,20 @@ def _build_fe_problem(
     else:
         raise ValueError(f"unsupported element family {mesh.element_family}")
     layout = GlobalFieldLayout(name="u", finite_element=fe)
-    bc = DirichletBC(
-        sideset_names=[
-            "xmin_sides", "xmax_sides", "ymin_sides", "ymax_sides",
-        ],
+    dbc = DirichletBC(
+        sideset_names=["xmin_sides", "ymin_sides"],
         field_name="u",
         dofs=(0, 1),
         values=None,
     )
+    nbc_xmax = NeumannBC(
+        sideset_names=["xmax_sides"], field_name="u", values=traction_xmax_fn,
+    )
+    nbc_ymax = NeumannBC(
+        sideset_names=["ymax_sides"], field_name="u", values=traction_ymax_fn,
+    )
     dof_map = build_dof_map(
-        mesh, [layout], [bc], components_by_field={"u": 2},
+        mesh, [layout], [dbc], components_by_field={"u": 2},
     )
     gr = Mechanics(ndims=2)
     elastic = Elastic(
@@ -80,15 +104,15 @@ def _build_fe_problem(
         gr=gr,
         models_by_block={"all": elastic},
         forcing_fns_by_block_idx={0: body_force_fn},
+        neumann_bcs=(nbc_xmax, nbc_ymax),
     )
 
 
-class TestMmsSquare2D(unittest.TestCase):
+class TestMmsSquare2DNeumann(unittest.TestCase):
 
-    body_force_fn: Callable[
-        [NDArray[np.floating] | JaxArray, float],
-        NDArray[np.floating] | JaxArray,
-    ]
+    body_force_fn: _ForcingFn
+    traction_xmax_fn: _ForcingFn
+    traction_ymax_fn: _ForcingFn
     u_exact: Callable[[NDArray[np.floating]], NDArray[np.floating]]
     grad_u_exact: Callable[[NDArray[np.floating]], NDArray[np.floating]]
 
@@ -101,11 +125,18 @@ class TestMmsSquare2D(unittest.TestCase):
             cls.body_force_fn,
             cls.u_exact,
             cls.grad_u_exact,
-            _,
+            sigma_fn,
         ) = build_plane_strain_mms_callables(u_sym, (x, y), _KAPPA, _MU)
+        cls.traction_xmax_fn = _build_traction_callable(sigma_fn, [1.0, 0.0])
+        cls.traction_ymax_fn = _build_traction_callable(sigma_fn, [0.0, 1.0])
 
     def _solve_and_measure(self, mesh: Mesh) -> tuple[float, float]:
-        fe_problem = _build_fe_problem(mesh, type(self).body_force_fn)
+        fe_problem = _build_fe_problem(
+            mesh,
+            type(self).body_force_fn,
+            type(self).traction_xmax_fn,
+            type(self).traction_ymax_fn,
+        )
         return solve_and_measure(
             fe_problem, type(self).u_exact, type(self).grad_u_exact,
         )

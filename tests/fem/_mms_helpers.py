@@ -200,6 +200,7 @@ def build_plane_strain_mms_callables(
     ],
     Callable[[NDArray[np.floating]], NDArray[np.floating]],
     Callable[[NDArray[np.floating]], NDArray[np.floating]],
+    Callable[[JaxArray], JaxArray],
 ]:
     """Plane strain MMS source matching ``Elastic(PLANE_STRAIN)``.
 
@@ -207,8 +208,9 @@ def build_plane_strain_mms_callables(
     of the isotropic linear elastic stress at ``F = I + grad u`` with the
     out of plane stretch set to 1 -- the same block the GR contracts.
     Built by autodiff of ``u_sym`` so it matches the model exactly.
-    Returns ``(body_force_fn, u_exact, grad_u_exact)``; ``coord_syms``
-    has length 2.
+    Returns ``(body_force_fn, u_exact, grad_u_exact, sigma_fn)``, where
+    ``sigma_fn(X)`` is that 2x2 stress at a single point (used to build
+    Neumann tractions ``sigma . n``); ``coord_syms`` has length 2.
     """
     n = len(coord_syms)
     coord_args = tuple(coord_syms)
@@ -247,7 +249,7 @@ def build_plane_strain_mms_callables(
         args = tuple(coords[i] for i in range(n))
         return np.asarray(grad_u_callable(*args))
 
-    return body_force_fn, u_exact, grad_u_exact
+    return body_force_fn, u_exact, grad_u_exact, sigma_in_plane_of_X
 
 
 def build_plane_strain_finite_mms_callables(

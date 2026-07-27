@@ -118,6 +118,29 @@ def quad_quadrature(degree: int) -> QuadratureRule:
     return QuadratureRule(xi=xi_mesh, w=w_mesh)
 
 
+def line_quadrature(degree: int) -> QuadratureRule:
+    """Gauss-Legendre rule on the reference line [0, 1].
+
+    Exact for polynomials up to ``degree``; chooses
+    ``n = ceil((degree + 1) / 2)`` points, with weights summing to 1
+    (the interval length). The reference side element for the edges of
+    the 2D families (quad / tri), so ``xi`` has shape ``(n, 1)``. The
+    [-1, 1] Gauss points are mapped to [0, 1] with the matching 1/2
+    weight scaling.
+
+    Raises :class:`ValueError` if ``degree < 1``.
+    """
+    if degree < 1:
+        raise ValueError(
+            f"line_quadrature requires degree >= 1; got degree={degree}"
+        )
+    n = int(np.ceil((degree + 1) / 2))
+    xi_1d, w_1d = gauss_legendre_1d(n)
+    xi = ((xi_1d + 1.0) / 2.0).reshape(-1, 1)
+    w = w_1d / 2.0
+    return QuadratureRule(xi=xi, w=w)
+
+
 # ---- Keast tet tables (degrees 1..6) ---------------------------------------
 #
 # Transcribed verbatim from add_fem's

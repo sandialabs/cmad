@@ -113,8 +113,9 @@ class NeumannSidePerElem:
     ``num_basis_fns`` field basis fns per element, ``num_components``
     field components):
 
-    - ``dA``: ``(n_side_elems, n_ip)`` — surface measure
-      ``norm(cross(surface_jac[:, 0], surface_jac[:, 1]))`` per IP.
+    - ``dA``: ``(n_side_elems, n_ip)`` — per-IP side measure: the area
+      element ``norm(cross(t0, t1))`` for a 3D face (two tangents), the
+      length element ``norm(t0)`` for a 2D edge (one tangent).
     - ``coords_ip``: ``(n_side_elems, n_ip, ndims)`` — physical-frame
       side-IP coordinates.
     - ``eq_flat``: ``(n_side_elems, num_basis_fns * num_components)`` —
@@ -331,10 +332,10 @@ def build_neumann_side_arrays(
     pipeline and the per-group contents. Returns an empty tuple when
     there are no Neumann BCs.
 
-    ``dA`` is the unsigned cross-product norm (the surface area
-    element); the lift's outward orientation is preserved in
-    ``(origin, tangents)`` for follower-load extensions that consume the
-    signed normal.
+    ``dA`` is the unsigned side measure (area element from the tangent
+    cross product for a 3D face, tangent length for a 2D edge); the
+    lift's orientation is preserved in ``(origin, tangents)`` for
+    follower-load extensions that consume the signed normal.
     """
     if not resolved_neumann_bcs:
         return ()
@@ -388,10 +389,15 @@ def build_neumann_side_arrays(
                 "eai,paj->epij", X_block, geom_shapes.grad_N,
             )
             surface_jac = jnp.einsum("epij,jm->epim", iso_jac, tangents)
-            dA = jnp.linalg.norm(
-                jnp.cross(surface_jac[..., 0], surface_jac[..., 1]),
-                axis=-1,
-            )
+            if tangents.shape[1] == 2:
+                # 3D face: area element from the two tangent columns
+                dA = jnp.linalg.norm(
+                    jnp.cross(surface_jac[..., 0], surface_jac[..., 1]),
+                    axis=-1,
+                )
+            else:
+                # 2D edge: length of the single physical tangent column
+                dA = jnp.linalg.norm(surface_jac[..., 0], axis=-1)
             coords_ip = jnp.einsum("pa,eai->epi", geom_shapes.N, X_block)
 
             eq_3d = (
