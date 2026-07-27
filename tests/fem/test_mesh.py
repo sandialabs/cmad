@@ -9,14 +9,24 @@ import unittest
 import numpy as np
 
 from cmad.fem.element_family import ElementFamily
-from cmad.fem.finite_element import P1_TET, Q1_HEX, EntityType, FiniteElement
+from cmad.fem.finite_element import (
+    P1_TET,
+    P1_TRI,
+    Q1_HEX,
+    Q1_QUAD,
+    EntityType,
+    FiniteElement,
+)
 from cmad.fem.interpolants import hex_linear
 from cmad.fem.mesh import (
     Mesh,
     StructuredHexMesh,
+    StructuredQuadMesh,
     coordinate_side_sets,
     hex_to_tet_split,
+    quad_to_tri_split,
 )
+from cmad.fem.topology import _TRI_EDGE_NODES
 
 
 def _build_unit_tet_mesh() -> Mesh:
@@ -73,6 +83,18 @@ class TestMesh(unittest.TestCase):
                 element_blocks={"left": np.array([0], dtype=np.intp)},
                 node_sets=mesh.node_sets,
                 side_sets=mesh.side_sets,
+            )
+
+    def test_post_init_rejects_3d_nodes_for_quad_family(self):
+        # QUAD_LINEAR expects 2-coordinate nodes; (N, 3) should raise.
+        with self.assertRaisesRegex(ValueError, r"shape \(N_nodes, 2\)"):
+            Mesh(
+                nodes=np.zeros((4, 3)),
+                connectivity=np.array([[0, 1, 2, 3]], dtype=np.intp),
+                element_family=ElementFamily.QUAD_LINEAR,
+                element_blocks={"all": np.zeros(1, dtype=np.intp)},
+                node_sets={},
+                side_sets={},
             )
 
 
@@ -397,6 +419,193 @@ class TestCoordinateSideSets(unittest.TestCase):
         self.assertEqual(_as_pair_set(built["xmin_sides"]), {(0, 2)})
         self.assertEqual(_as_pair_set(built["ymin_sides"]), {(0, 0)})
         self.assertEqual(_as_pair_set(built["zmin_sides"]), {(0, 3)})
+
+
+class TestStructuredQuadMesh(unittest.TestCase):
+
+    def test_node_count(self):
+        mesh = StructuredQuadMesh((1.0, 1.0), (2, 3))
+        self.assertEqual(mesh.nodes.shape, (3 * 4, 2))
+
+    def test_element_count(self):
+        mesh = StructuredQuadMesh((1.0, 1.0), (2, 3))
+        self.assertEqual(mesh.connectivity.shape, (2 * 3, 4))
+
+    def test_quad_node_ordering(self):
+        # First quad of a 2x2 mesh on the unit square spans (0..0.5)^2.
+        mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        first_quad_coords = mesh.nodes[mesh.connectivity[0]]
+        expected = np.array([
+            [0.0, 0.0],   # 0: (-,-)
+            [0.5, 0.0],   # 1: (+,-)
+            [0.5, 0.5],   # 2: (+,+)
+            [0.0, 0.5],   # 3: (-,+)
+        ])
+        np.testing.assert_allclose(first_quad_coords, expected)
+
+    def test_origin_offset(self):
+        mesh_at_origin = StructuredQuadMesh((1.0, 1.0), (1, 1))
+        mesh_shifted = StructuredQuadMesh(
+            (1.0, 1.0), (1, 1), origin=(2.0, 3.0)
+        )
+        np.testing.assert_allclose(
+            mesh_shifted.nodes - mesh_at_origin.nodes,
+            np.broadcast_to([2.0, 3.0], (4, 2)),
+        )
+
+    def test_element_blocks_default_all(self):
+        mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        self.assertEqual(set(mesh.element_blocks.keys()), {"all"})
+        np.testing.assert_array_equal(
+            mesh.element_blocks["all"], np.arange(4, dtype=np.intp)
+        )
+
+    def test_node_sets_four_named_correctly(self):
+        mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        expected_keys = {
+            "xmin_nodes", "xmax_nodes", "ymin_nodes", "ymax_nodes",
+        }
+        self.assertEqual(set(mesh.node_sets.keys()), expected_keys)
+        # 2x2 square: each side has 3 nodes.
+        for name in expected_keys:
+            self.assertEqual(mesh.node_sets[name].shape[0], 3)
+
+    def test_side_sets_four_named_correctly(self):
+        mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        expected_keys = {
+            "xmin_sides", "xmax_sides", "ymin_sides", "ymax_sides",
+        }
+        self.assertEqual(set(mesh.side_sets.keys()), expected_keys)
+        # 2x2 square: each side has 2 boundary edges.
+        for name in expected_keys:
+            self.assertEqual(mesh.side_sets[name].shape, (2, 2))
+
+    def test_side_set_local_edge_ids_match_exodus(self):
+        # Quad edge order: 0=-y, 1=+x, 2=+y, 3=-x.
+        mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        edge_id_for = {
+            "xmin_sides": 3, "xmax_sides": 1,
+            "ymin_sides": 0, "ymax_sides": 2,
+        }
+        for name, expected_edge_id in edge_id_for.items():
+            edge_ids = mesh.side_sets[name][:, 1]
+            np.testing.assert_array_equal(
+                edge_ids, np.full(edge_ids.shape, expected_edge_id)
+            )
+
+    def test_geometric_default_is_q1_quad(self):
+        mesh = StructuredQuadMesh((1.0, 1.0), (1, 1))
+        self.assertIs(mesh.geometric_finite_element, Q1_QUAD)
+
+
+class TestQuadToTriSplit(unittest.TestCase):
+
+    def test_element_count_two_times_quad(self):
+        quad_mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        tri_mesh = quad_to_tri_split(quad_mesh)
+        self.assertEqual(
+            tri_mesh.connectivity.shape,
+            (2 * quad_mesh.connectivity.shape[0], 3),
+        )
+
+    def test_positive_area_on_every_tri(self):
+        quad_mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        tri_mesh = quad_to_tri_split(quad_mesh)
+        coords = tri_mesh.nodes[tri_mesh.connectivity]   # (n_tri, 3, 2)
+        a = coords[:, 1, :] - coords[:, 0, :]
+        b = coords[:, 2, :] - coords[:, 0, :]
+        # Signed area = (1/2)(a_x b_y - a_y b_x); positive for CCW order.
+        cross = a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+        self.assertTrue(np.all(cross > 0))
+
+    def test_node_sets_carry_over_unchanged(self):
+        quad_mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        tri_mesh = quad_to_tri_split(quad_mesh)
+        self.assertEqual(
+            set(tri_mesh.node_sets.keys()),
+            set(quad_mesh.node_sets.keys()),
+        )
+        for name in quad_mesh.node_sets:
+            np.testing.assert_array_equal(
+                tri_mesh.node_sets[name], quad_mesh.node_sets[name]
+            )
+
+    def test_side_sets_preserve_size(self):
+        # Each quad edge lies on exactly one descendant tri, so the side
+        # set row count is unchanged (unlike hex_to_tet_split's doubling).
+        quad_mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        tri_mesh = quad_to_tri_split(quad_mesh)
+        for name in quad_mesh.side_sets:
+            self.assertEqual(
+                tri_mesh.side_sets[name].shape[0],
+                quad_mesh.side_sets[name].shape[0],
+            )
+
+    def test_side_set_edges_lie_on_named_boundary(self):
+        # The remapped xmin side edges must still sit on x = 0.
+        quad_mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        tri_mesh = quad_to_tri_split(quad_mesh)
+        for elem_id, edge_id in tri_mesh.side_sets["xmin_sides"]:
+            edge_global = tri_mesh.connectivity[elem_id, _TRI_EDGE_NODES[edge_id]]
+            np.testing.assert_allclose(tri_mesh.nodes[edge_global, 0], 0.0)
+
+    def test_element_blocks_remap_to_two_per_quad(self):
+        quad_mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        tri_mesh = quad_to_tri_split(quad_mesh)
+        # "all" block: 4 quads -> 8 tris covering [0, 8).
+        np.testing.assert_array_equal(
+            np.sort(tri_mesh.element_blocks["all"]),
+            np.arange(8, dtype=np.intp),
+        )
+
+    def test_element_family_flips_to_tri_linear(self):
+        quad_mesh = StructuredQuadMesh((1.0, 1.0), (1, 1))
+        tri_mesh = quad_to_tri_split(quad_mesh)
+        self.assertEqual(tri_mesh.element_family, ElementFamily.TRI_LINEAR)
+
+    def test_geometric_default_is_p1_tri(self):
+        quad_mesh = StructuredQuadMesh((1.0, 1.0), (1, 1))
+        tri_mesh = quad_to_tri_split(quad_mesh)
+        self.assertIs(tri_mesh.geometric_finite_element, P1_TRI)
+
+    def test_rejects_non_quad_input(self):
+        quad_mesh = StructuredQuadMesh((1.0, 1.0), (1, 1))
+        tri_mesh = quad_to_tri_split(quad_mesh)
+        with self.assertRaisesRegex(ValueError, "QUAD_LINEAR"):
+            quad_to_tri_split(tri_mesh)
+
+
+class TestQuad2DEnumeration(unittest.TestCase):
+
+    def test_single_quad_has_4_edges(self):
+        mesh = StructuredQuadMesh((1.0, 1.0), (1, 1))
+        self.assertEqual(mesh.edges.shape, (4, 2))
+        self.assertEqual(mesh.element_edges.shape, (1, 4))
+
+    def test_2x2_quad_has_12_unique_edges(self):
+        # Structured (nx,ny)=(2,2): nx*(ny+1) + (nx+1)*ny = 6 + 6 = 12.
+        mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        self.assertEqual(mesh.edges.shape, (12, 2))
+        self.assertEqual(mesh.element_edges.shape, (4, 4))
+
+    def test_quad_mesh_has_no_faces(self):
+        # 2D families enumerate no faces; faces / element_faces stay empty.
+        mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        self.assertEqual(mesh.faces.shape, (0, 0))
+        self.assertEqual(mesh.element_faces.shape, (0, 0))
+        self.assertEqual(mesh.entity_count(EntityType.FACE), 0)
+
+    def test_2x2_quad_entity_counts(self):
+        mesh = StructuredQuadMesh((1.0, 1.0), (2, 2))
+        self.assertEqual(mesh.entity_count(EntityType.VERTEX), 9)
+        self.assertEqual(mesh.entity_count(EntityType.EDGE), 12)
+        self.assertEqual(mesh.entity_count(EntityType.FACE), 0)
+        self.assertEqual(mesh.entity_count(EntityType.CELL), 4)
+
+    def test_tri_split_has_no_faces(self):
+        mesh = quad_to_tri_split(StructuredQuadMesh((1.0, 1.0), (2, 2)))
+        self.assertEqual(mesh.faces.shape, (0, 0))
+        self.assertEqual(mesh.entity_count(EntityType.FACE), 0)
 
 
 if __name__ == "__main__":

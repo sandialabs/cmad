@@ -1,11 +1,13 @@
-"""3D mesh data structure with element-block / node-set / side-set support.
+"""Mesh data structure with element block / nodeset / sideset support.
 
-Field naming follows Exodus convention so Exodus IO is a thin
-translation layer rather than a remap. The structured-hex builder emits a
-default ``"all"`` element block plus six built-in node sets and six
-built-in side sets named ``{x,y,z}{min,max}_{nodes,sides}``. Node sets
-serve as Dirichlet BC attach handles; side sets serve Neumann BCs and
-Exodus mesh round-trip.
+Handles 2D (quad, tri) and 3D (hex, tet) element families. Field naming
+follows Exodus convention so Exodus IO is a thin translation layer rather
+than a remap. The structured hex builder emits a default ``"all"``
+element block plus six built-in node sets and six built-in side sets
+named ``{x,y,z}{min,max}_{nodes,sides}``; the structured quad builder is
+the 2D analog with four of each over ``{x,y}{min,max}``. Node sets serve
+as Dirichlet BC attach handles; side sets serve Neumann BCs and Exodus
+mesh interchange.
 
 Hex local-face numbering (Exodus 0-based)::
 
@@ -28,7 +30,16 @@ Hex node ordering matches :func:`cmad.fem.interpolants.hex_linear`::
 
 The ``hex_to_tet_split`` helper uses the canonical 6-tet-per-hex diagonal
 split along the body diagonal joining hex nodes 0 and 6 (Howell 1992
-pattern). All 6 tets have positive volume on a positively-oriented hex.
+pattern). All 6 tets have positive volume on a positively oriented hex.
+
+Quad node ordering matches :func:`cmad.fem.interpolants.quad_linear`::
+
+    0: (-,-)   1: (+,-)   2: (+,+)   3: (-,+)
+
+with local edges numbered as in :mod:`cmad.fem.topology` (0: -y, 1: +x,
+2: +y, 3: -x). The ``quad_to_tri_split`` helper splits each quad into 2
+triangles along the diagonal joining nodes 0 and 2; both have positive
+area on a positively oriented quad.
 """
 from dataclasses import dataclass, field
 
@@ -38,20 +49,31 @@ from numpy.typing import NDArray
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.finite_element import (
     P1_TET,
+    P1_TRI,
     Q1_HEX,
+    Q1_QUAD,
     EntityType,
     FiniteElement,
 )
-from cmad.fem.topology import _LOCAL_FACES_PER_ELEMENT
+from cmad.fem.topology import (
+    _LOCAL_FACES_PER_ELEMENT,
+    _LOCAL_SIDES_PER_ELEMENT,
+    _QUAD_EDGE_NODES,
+    _TRI_EDGE_NODES,
+)
 
 _NODES_PER_ELEMENT: dict[ElementFamily, int] = {
     ElementFamily.HEX_LINEAR: 8,
     ElementFamily.TET_LINEAR: 4,
+    ElementFamily.QUAD_LINEAR: 4,
+    ElementFamily.TRI_LINEAR: 3,
 }
 
-_FACES_PER_ELEMENT: dict[ElementFamily, int] = {
-    ElementFamily.HEX_LINEAR: 6,
-    ElementFamily.TET_LINEAR: 4,
+_SPATIAL_DIM_PER_ELEMENT: dict[ElementFamily, int] = {
+    ElementFamily.HEX_LINEAR: 3,
+    ElementFamily.TET_LINEAR: 3,
+    ElementFamily.QUAD_LINEAR: 2,
+    ElementFamily.TRI_LINEAR: 2,
 }
 
 
@@ -79,14 +101,20 @@ _TET_LOCAL_EDGES: NDArray[np.intp] = np.array(
 )
 
 
+# In 2D the element sides are its edges, so the quad/tri edge tables are
+# the same arrays the topology module exposes as their local sides.
 _LOCAL_EDGES_PER_ELEMENT: dict[ElementFamily, NDArray[np.intp]] = {
     ElementFamily.HEX_LINEAR: _HEX_LOCAL_EDGES,
     ElementFamily.TET_LINEAR: _TET_LOCAL_EDGES,
+    ElementFamily.QUAD_LINEAR: _QUAD_EDGE_NODES,
+    ElementFamily.TRI_LINEAR: _TRI_EDGE_NODES,
 }
 
 _GEOMETRIC_FINITE_ELEMENT_PER_ELEMENT: dict[ElementFamily, FiniteElement] = {
     ElementFamily.HEX_LINEAR: Q1_HEX,
     ElementFamily.TET_LINEAR: P1_TET,
+    ElementFamily.QUAD_LINEAR: Q1_QUAD,
+    ElementFamily.TRI_LINEAR: P1_TRI,
 }
 
 
@@ -120,6 +148,35 @@ _HEX_FACE_TO_TET_FACES: NDArray[np.intp] = np.array(
         [[0, 1], [5, 1]],   # hex face 3 (+x) -> tet 0 face 1, tet 5 face 1
         [[1, 1], [2, 1]],   # hex face 4 (+y) -> tet 1 face 1, tet 2 face 1
         [[2, 3], [3, 3]],   # hex face 5 (-x) -> tet 2 face 3, tet 3 face 3
+    ],
+    dtype=np.intp,
+)
+
+
+# Quad-to-tri split: each quad's 4 corners produce 2 triangles sharing
+# the diagonal from corner 0 (-,-) to corner 2 (+,+). Each row lists the
+# 3 quad-local node indices that form one tri, in tri_linear ordering.
+# Both rows produce positive-area tris on a positively oriented quad.
+_QUAD_TO_TRI_LOCAL: NDArray[np.intp] = np.array(
+    [
+        [0, 1, 2],
+        [0, 2, 3],
+    ],
+    dtype=np.intp,
+)
+
+
+# Quad edge to tri edge correspondence for the diagonal split encoded in
+# ``_QUAD_TO_TRI_LOCAL``. For each quad edge id (0..3), the
+# (tri_local_idx, tri_edge_id) pair it maps to. Each quad edge lies on
+# exactly one descendant tri (the split diagonal is interior), so this is
+# a 1:1 map, unlike the face split in ``hex_to_tet_split``. Shape (4, 2).
+_QUAD_EDGE_TO_TRI_EDGES: NDArray[np.intp] = np.array(
+    [
+        [0, 0],   # quad edge 0 (-y, nodes 0-1) -> tri 0 edge 0
+        [0, 1],   # quad edge 1 (+x, nodes 1-2) -> tri 0 edge 1
+        [1, 1],   # quad edge 2 (+y, nodes 2-3) -> tri 1 edge 1
+        [1, 2],   # quad edge 3 (-x, nodes 3-0) -> tri 1 edge 2
     ],
     dtype=np.intp,
 )
@@ -182,15 +239,16 @@ def _enumerate_faces(
 
 @dataclass(frozen=True)
 class Mesh:
-    """3D mesh with element_blocks, node_sets, and side_sets.
+    """Mesh with element_blocks, node_sets, and side_sets.
 
-    ``nodes`` has shape ``(N_nodes, 3)`` — geometric node coordinates.
-    For linear hex / linear tet bases, every mesh node is also a
-    geometric vertex.
+    ``nodes`` has shape ``(N_nodes, spatial_dim)`` — geometric node
+    coordinates; ``spatial_dim`` is 3 for hex / tet and 2 for quad /
+    tri. For the linear bases here every mesh node is also a geometric
+    vertex.
 
     ``connectivity`` has shape ``(N_elems, nodes_per_elem)``;
     ``nodes_per_elem`` is fixed by ``element_family`` (8 for HEX_LINEAR,
-    4 for TET_LINEAR).
+    4 for TET_LINEAR, 4 for QUAD_LINEAR, 3 for TRI_LINEAR).
 
     ``element_blocks`` is the multi-material dispatch handle: a name-keyed
     dict of element-index arrays. Single-material decks use the implicit
@@ -202,8 +260,9 @@ class Mesh:
     sets). Used as Dirichlet BC attach handles.
 
     ``side_sets`` is a name-keyed dict of ``(n_in_set, 2)`` arrays of
-    ``(elem_id, local_face_id)`` pairs (Exodus side sets). Used as
-    Neumann BC attach handles and for Exodus mesh round-trip.
+    ``(elem_id, local_side_id)`` pairs (Exodus side sets); a side is a
+    face for 3D families and an edge for 2D families. Used as Neumann BC
+    attach handles and for Exodus mesh interchange.
 
     ``element_block_ids``, ``node_set_ids``, ``side_set_ids`` (default
     empty) are parallel name-keyed dicts of integer IDs preserved for
@@ -231,7 +290,8 @@ class Mesh:
     ``(N_elems, n_edges_per_elem)`` — per-element global edge indices
     in canonical local-edge order. ``faces`` and ``element_faces``
     have analogous shapes for the face enumeration; ``n_face_vertices``
-    is fixed by ``element_family`` (4 for hex, 3 for tet).
+    is fixed by ``element_family`` (4 for hex, 3 for tet). 2D families
+    (quad, tri) have no faces, so both stay empty.
 
     Frozen dataclass; no mutation API. Validation and derived-table
     computation run in ``__post_init__``.
@@ -265,9 +325,11 @@ class Mesh:
     )
 
     def __post_init__(self) -> None:
-        if self.nodes.ndim != 2 or self.nodes.shape[1] != 3:
+        spatial_dim = _SPATIAL_DIM_PER_ELEMENT[self.element_family]
+        if self.nodes.ndim != 2 or self.nodes.shape[1] != spatial_dim:
             raise ValueError(
-                f"nodes must have shape (N_nodes, 3); got {self.nodes.shape}"
+                f"nodes must have shape (N_nodes, {spatial_dim}) for "
+                f"{self.element_family.name}; got {self.nodes.shape}"
             )
         if self.connectivity.ndim != 2:
             raise ValueError(
@@ -333,8 +395,9 @@ class Mesh:
                     f"[0, {n_nodes})"
                 )
 
-        # side_sets: (elem_id, local_face_id) pairs in range
-        n_faces = _FACES_PER_ELEMENT[self.element_family]
+        # side_sets: (elem_id, local_side_id) pairs in range. A side is a
+        # face for 3D families and an edge for 2D families.
+        n_sides = _LOCAL_SIDES_PER_ELEMENT[self.element_family].shape[0]
         for name, pairs in self.side_sets.items():
             if pairs.ndim != 2 or pairs.shape[1] != 2:
                 raise ValueError(
@@ -343,7 +406,7 @@ class Mesh:
                 )
             if pairs.shape[0] > 0:
                 elem_ids = pairs[:, 0]
-                face_ids = pairs[:, 1]
+                side_ids = pairs[:, 1]
                 if (
                     int(elem_ids.min()) < 0
                     or int(elem_ids.max()) >= n_elems
@@ -353,12 +416,12 @@ class Mesh:
                         f"[0, {n_elems})"
                     )
                 if (
-                    int(face_ids.min()) < 0
-                    or int(face_ids.max()) >= n_faces
+                    int(side_ids.min()) < 0
+                    or int(side_ids.max()) >= n_sides
                 ):
                     raise ValueError(
-                        f"side_sets['{name}'] local_face_ids out of range "
-                        f"[0, {n_faces}) for {self.element_family.name}"
+                        f"side_sets['{name}'] local_side_ids out of range "
+                        f"[0, {n_sides}) for {self.element_family.name}"
                     )
 
         # Optional Exodus-interchange IDs: empty by default. When non-empty,
@@ -392,14 +455,18 @@ class Mesh:
             self.connectivity,
             _LOCAL_EDGES_PER_ELEMENT[self.element_family],
         )
-        faces, element_faces = _enumerate_faces(
-            self.connectivity,
-            _LOCAL_FACES_PER_ELEMENT[self.element_family],
-        )
         object.__setattr__(self, "edges", edges)
         object.__setattr__(self, "element_edges", element_edges)
-        object.__setattr__(self, "faces", faces)
-        object.__setattr__(self, "element_faces", element_faces)
+
+        # 2D families have no face sub-entities; their faces /
+        # element_faces stay at the empty defaults.
+        if self.element_family in _LOCAL_FACES_PER_ELEMENT:
+            faces, element_faces = _enumerate_faces(
+                self.connectivity,
+                _LOCAL_FACES_PER_ELEMENT[self.element_family],
+            )
+            object.__setattr__(self, "faces", faces)
+            object.__setattr__(self, "element_faces", element_faces)
 
         if self.geometric_finite_element is None:
             object.__setattr__(
@@ -514,6 +581,90 @@ def StructuredHexMesh(
     )
 
 
+def StructuredQuadMesh(
+    lengths: tuple[float, float],
+    divisions: tuple[int, int],
+    origin: tuple[float, float] = (0.0, 0.0),
+) -> Mesh:
+    """Build a structured quad mesh on a Cartesian rectangle.
+
+    Generates a regular grid of ``(nx+1) * (ny+1)`` nodes and ``nx * ny``
+    linear quad elements on the rectangle ``[origin, origin + lengths]``.
+    Element nodes are emitted in the quad_linear node ordering (CCW from
+    (-,-)). Element index ``e = i * ny + j`` with ``(i, j)`` the per-axis
+    element-cell index.
+
+    Populates a default ``"all"`` element block, four built-in node sets
+    (``{x,y}{min,max}_nodes``) and four built-in side sets
+    (``{x,y}{min,max}_sides``), the 2D analog of
+    :func:`StructuredHexMesh`.
+
+    Raises :class:`ValueError` if any division is < 1.
+    """
+    Lx, Ly = lengths
+    nx, ny = divisions
+    if nx < 1 or ny < 1:
+        raise ValueError(
+            f"divisions must all be >= 1; got ({nx}, {ny})"
+        )
+    ox, oy = origin
+
+    xs = np.linspace(ox, ox + Lx, nx + 1)
+    ys = np.linspace(oy, oy + Ly, ny + 1)
+    X, Y = np.meshgrid(xs, ys, indexing="ij")
+    nodes = np.stack([X, Y], axis=-1).reshape(-1, 2)
+
+    n_elems = nx * ny
+    vid_grid = np.arange(
+        (nx + 1) * (ny + 1), dtype=np.intp
+    ).reshape(nx + 1, ny + 1)
+
+    EI, EJ = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
+    connectivity = np.stack(
+        [
+            vid_grid[EI, EJ],           # 0: (-,-)
+            vid_grid[EI + 1, EJ],       # 1: (+,-)
+            vid_grid[EI + 1, EJ + 1],   # 2: (+,+)
+            vid_grid[EI, EJ + 1],       # 3: (-,+)
+        ],
+        axis=-1,
+    ).reshape(-1, 4)
+
+    element_blocks = {"all": np.arange(n_elems, dtype=np.intp)}
+
+    node_sets = {
+        "xmin_nodes": vid_grid[0, :].ravel(),
+        "xmax_nodes": vid_grid[-1, :].ravel(),
+        "ymin_nodes": vid_grid[:, 0].ravel(),
+        "ymax_nodes": vid_grid[:, -1].ravel(),
+    }
+
+    elem_idx_grid = np.arange(n_elems, dtype=np.intp).reshape(nx, ny)
+
+    def _side_set(
+            elems: NDArray[np.intp], edge_id: int,
+    ) -> NDArray[np.intp]:
+        return np.column_stack(
+            [elems, np.full(elems.shape, edge_id, dtype=np.intp)]
+        )
+
+    side_sets = {
+        "xmin_sides": _side_set(elem_idx_grid[0, :].ravel(), 3),
+        "xmax_sides": _side_set(elem_idx_grid[-1, :].ravel(), 1),
+        "ymin_sides": _side_set(elem_idx_grid[:, 0].ravel(), 0),
+        "ymax_sides": _side_set(elem_idx_grid[:, -1].ravel(), 2),
+    }
+
+    return Mesh(
+        nodes=nodes,
+        connectivity=connectivity,
+        element_family=ElementFamily.QUAD_LINEAR,
+        element_blocks=element_blocks,
+        node_sets=node_sets,
+        side_sets=side_sets,
+    )
+
+
 def hex_to_tet_split(mesh: Mesh) -> Mesh:
     """Split each hex into 6 tetrahedra along a body diagonal.
 
@@ -576,6 +727,71 @@ def hex_to_tet_split(mesh: Mesh) -> Mesh:
         element_blocks=element_blocks_tet,
         node_sets=node_sets_tet,
         side_sets=side_sets_tet,
+        element_block_ids=dict(mesh.element_block_ids),
+        node_set_ids=dict(mesh.node_set_ids),
+        side_set_ids=dict(mesh.side_set_ids),
+    )
+
+
+def quad_to_tri_split(mesh: Mesh) -> Mesh:
+    """Split each quad into 2 triangles along a diagonal.
+
+    Each quad with corners 0..3 in quad_linear ordering splits into 2
+    tris sharing the diagonal from corner 0 (-,-) to corner 2 (+,+). Tri
+    node ordering matches :func:`cmad.fem.interpolants.tri_linear`. Both
+    tris have positive area on a positively oriented quad.
+
+    Element block membership maps each quad's entry to its 2 descendant
+    tris at indices ``[2 * quad_id, 2 * quad_id + 1]``. Node sets carry
+    over unchanged. Side sets remap through the quad edge to tri edge
+    correspondence (each quad edge lies on exactly one descendant tri).
+    Exodus-interchange IDs (``element_block_ids``, ``node_set_ids``,
+    ``side_set_ids``) carry through verbatim because set names are
+    unchanged.
+
+    Raises :class:`ValueError` if the input mesh is not QUAD_LINEAR.
+    """
+    if mesh.element_family != ElementFamily.QUAD_LINEAR:
+        raise ValueError(
+            "quad_to_tri_split requires QUAD_LINEAR mesh; got "
+            f"{mesh.element_family.name}"
+        )
+
+    # connectivity_tri[2*e + t, c] = mesh.connectivity[e, _QUAD_TO_TRI_LOCAL[t, c]]
+    connectivity_tri = mesh.connectivity[:, _QUAD_TO_TRI_LOCAL].reshape(-1, 3)
+
+    element_blocks_tri: dict[str, NDArray[np.intp]] = {}
+    for name, quad_indices in mesh.element_blocks.items():
+        tri_indices = (
+            quad_indices[:, None] * 2
+            + np.arange(2, dtype=np.intp)[None, :]
+        ).ravel()
+        element_blocks_tri[name] = tri_indices
+
+    node_sets_tri = {k: v.copy() for k, v in mesh.node_sets.items()}
+
+    side_sets_tri: dict[str, NDArray[np.intp]] = {}
+    for name, quad_sides in mesh.side_sets.items():
+        if quad_sides.shape[0] == 0:
+            side_sets_tri[name] = np.empty((0, 2), dtype=np.intp)
+            continue
+        quad_ids = quad_sides[:, 0]
+        quad_edge_ids = quad_sides[:, 1]
+        # _QUAD_EDGE_TO_TRI_EDGES[edge_id] -> (tri_local_idx, tri_edge_id)
+        tri_pairs = _QUAD_EDGE_TO_TRI_EDGES[quad_edge_ids]   # (n, 2)
+        tri_local_idx = tri_pairs[:, 0]
+        tri_edge_id = tri_pairs[:, 1]
+        tri_ids = quad_ids * 2 + tri_local_idx
+        tri_sides = np.stack([tri_ids, tri_edge_id], axis=-1)
+        side_sets_tri[name] = tri_sides
+
+    return Mesh(
+        nodes=mesh.nodes.copy(),
+        connectivity=connectivity_tri,
+        element_family=ElementFamily.TRI_LINEAR,
+        element_blocks=element_blocks_tri,
+        node_sets=node_sets_tri,
+        side_sets=side_sets_tri,
         element_block_ids=dict(mesh.element_block_ids),
         node_set_ids=dict(mesh.node_set_ids),
         side_set_ids=dict(mesh.side_set_ids),

@@ -35,6 +35,8 @@ if TYPE_CHECKING:
 _DEFAULT_ASSEMBLY_QUADRATURE: dict[ElementFamily, QuadratureRule] = {
     ElementFamily.HEX_LINEAR: hex_quadrature(degree=2),
     ElementFamily.TET_LINEAR: tet_quadrature(degree=1),
+    ElementFamily.QUAD_LINEAR: quad_quadrature(degree=2),
+    ElementFamily.TRI_LINEAR: tri_quadrature(degree=1),
 }
 
 _DEFAULT_SIDE_QUADRATURE: dict[ElementFamily, QuadratureRule] = {
@@ -364,9 +366,9 @@ def build_fe_problem(
     in ``models_by_block`` and ``modes_by_block`` (when supplied); the
     builder raises ``ValueError`` on mismatch. ``modes_by_block``
     defaults to all-``CLOSED_FORM``. ``assembly_quadrature``
-    defaults to a per-family table with degree-2 hex Gauss-Legendre
-    and 1-pt tet rules. ``side_quadrature`` defaults to degree-2
-    quad / tri rules for hex / tet face integration consumed by
+    defaults to a per-family table: degree-2 Gauss-Legendre on hex and
+    quad, 1-point on tet and tri. ``side_quadrature`` defaults to
+    degree-2 quad / tri rules for hex / tet face integration consumed by
     :mod:`cmad.fem.neumann`.
 
     Each (block, model, mode) triple is bound via
