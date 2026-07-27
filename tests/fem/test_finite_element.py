@@ -1,9 +1,10 @@
 """Unit tests for `cmad.fem.finite_element`.
 
-Covers FiniteElement.num_dofs_per_element across P1 (shipped) and a
-synthetic P2 / Q2 / DG0; constructor validation rejects negative DOF
-counts and non-EntityType keys; the shipped P1_TET and Q1_HEX module
-constants pair with the expected element families and interpolants.
+Covers FiniteElement.num_dofs_per_element across the module's P1 / Q1
+elements and a synthetic P2 / Q2 / DG0; constructor validation rejects
+negative DOF counts and non-EntityType keys; the module constants
+P1_TET / Q1_HEX / Q1_QUAD / P1_TRI pair with the expected element
+families and interpolants.
 """
 import unittest
 from typing import cast
@@ -13,11 +14,18 @@ import numpy as np
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.finite_element import (
     P1_TET,
+    P1_TRI,
     Q1_HEX,
+    Q1_QUAD,
     EntityType,
     FiniteElement,
 )
-from cmad.fem.interpolants import hex_linear, tet_linear
+from cmad.fem.interpolants import (
+    hex_linear,
+    quad_linear,
+    tet_linear,
+    tri_linear,
+)
 
 
 class TestFiniteElementDofCount(unittest.TestCase):
@@ -27,6 +35,12 @@ class TestFiniteElementDofCount(unittest.TestCase):
 
     def test_q1_hex_has_8_dofs(self):
         self.assertEqual(Q1_HEX.num_dofs_per_element, 8)
+
+    def test_q1_quad_has_4_dofs(self):
+        self.assertEqual(Q1_QUAD.num_dofs_per_element, 4)
+
+    def test_p1_tri_has_3_dofs(self):
+        self.assertEqual(P1_TRI.num_dofs_per_element, 3)
 
     def test_synthetic_p2_tet_has_10_dofs(self):
         # P2 tet: 1 DOF per vertex (4) + 1 DOF per edge (6) = 10.
@@ -100,7 +114,7 @@ class TestFiniteElementValidation(unittest.TestCase):
             )
 
 
-class TestShippedConstants(unittest.TestCase):
+class TestModuleConstants(unittest.TestCase):
 
     def test_p1_tet_pairs_with_tet_linear(self):
         self.assertIs(P1_TET.interpolant_fn, tet_linear)
@@ -109,6 +123,14 @@ class TestShippedConstants(unittest.TestCase):
     def test_q1_hex_pairs_with_hex_linear(self):
         self.assertIs(Q1_HEX.interpolant_fn, hex_linear)
         self.assertEqual(Q1_HEX.element_family, ElementFamily.HEX_LINEAR)
+
+    def test_q1_quad_pairs_with_quad_linear(self):
+        self.assertIs(Q1_QUAD.interpolant_fn, quad_linear)
+        self.assertEqual(Q1_QUAD.element_family, ElementFamily.QUAD_LINEAR)
+
+    def test_p1_tri_pairs_with_tri_linear(self):
+        self.assertIs(P1_TRI.interpolant_fn, tri_linear)
+        self.assertEqual(P1_TRI.element_family, ElementFamily.TRI_LINEAR)
 
 
 class TestSideBasisFns(unittest.TestCase):

@@ -9,7 +9,7 @@ imports from other ``cmad.fem`` modules — so consumers (``mesh``,
 ``finite_element``, ``neumann``) can import freely without cycles.
 
 Three distinct dispatches share the same underlying face-vertex arrays
-for our current 3D families, but have separate semantic roles:
+for the 3D families, but have separate semantic roles:
 
 - :data:`_LOCAL_FACES_PER_ELEMENT` — per-3D-family local-face vertex
   slots, consumed by mesh face enumeration. Genuinely 3D-only;
@@ -18,9 +18,8 @@ for our current 3D families, but have separate semantic roles:
 - :data:`_LOCAL_SIDES_PER_ELEMENT` — per-family local-side vertex
   slots, consumed by sideset-keyed BC and per-side surface-integral
   resolvers. Side = (d-1)-dim boundary entity; for 3D families
-  sides are faces (entries alias the face tables above); for future
-  2D families sides will be edges (entries will point to edge-vertex
-  tables).
+  sides are faces (entries alias the face tables above); for 2D
+  families sides are edges (entries alias the edge tables above).
 - :data:`_REF_SIDE_LIFT_PER_ELEMENT` — per-(family, local_side_id)
   ref-side → ref-volume affine lift, consumed by per-side
   integral evaluators. Each entry is an ``(origin, tangents)`` pair
@@ -45,6 +44,16 @@ Tet local-face numbering (Exodus 0-based, with tet nodes (origin, +x,
     1: slant face     (nodes 1, 2, 3)   outward normal (+x+y+z)
     2: -x face        (nodes 0, 3, 2)
     3: -z face        (nodes 0, 2, 1)
+
+Quad local-edge numbering (Exodus 0-based, nodes 0:(-,-), 1:(+,-),
+2:(+,+), 3:(-,+))::
+
+    0: -y edge   1: +x edge   2: +y edge   3: -x edge
+
+Tri local-edge numbering (Exodus 0-based, nodes 0:(0,0), 1:(1,0),
+2:(0,1))::
+
+    0: (0, 1)   1: (1, 2)   2: (2, 0)
 """
 import numpy as np
 from numpy.typing import NDArray
@@ -88,13 +97,32 @@ _LOCAL_FACES_PER_ELEMENT: dict[ElementFamily, NDArray[np.intp]] = {
 }
 
 
+# Quad local-edge table. Each row lists the two quad-local node indices
+# of one edge in Exodus edge order on nodes 0:(-,-) 1:(+,-) 2:(+,+)
+# 3:(-,+): edge 0 (-y), 1 (+x), 2 (+y), 3 (-x). In 2D the sides are the
+# edges, so this serves as both the side table below and the mesh
+# edge-enumeration table in :mod:`cmad.fem.mesh`.
+_QUAD_EDGE_NODES: NDArray[np.intp] = np.array(
+    [[0, 1], [1, 2], [2, 3], [3, 0]],
+    dtype=np.intp,
+)
+
+
+# Tri local-edge table on nodes 0:(0,0) 1:(1,0) 2:(0,1).
+_TRI_EDGE_NODES: NDArray[np.intp] = np.array(
+    [[0, 1], [1, 2], [2, 0]],
+    dtype=np.intp,
+)
+
+
 # Per-family local side → vertex slots table. Side = (d-1)-dim boundary
-# entity. For 3D families sides are faces (entries alias the face tables
-# above). For future 2D families sides will be edges; entries will point
-# to edge-vertex tables.
+# entity: faces for 3D families (entries alias the face tables above),
+# edges for 2D families (entries alias the edge tables above).
 _LOCAL_SIDES_PER_ELEMENT: dict[ElementFamily, NDArray[np.intp]] = {
     ElementFamily.HEX_LINEAR: _HEX_FACE_NODES,
     ElementFamily.TET_LINEAR: _TET_FACE_NODES,
+    ElementFamily.QUAD_LINEAR: _QUAD_EDGE_NODES,
+    ElementFamily.TRI_LINEAR: _TRI_EDGE_NODES,
 }
 
 

@@ -7,13 +7,20 @@ from enum import IntEnum
 
 
 class ElementFamily(IntEnum):
-    """Element family tag; fixes nodes_per_element and faces_per_element.
+    """Geometric element family tag.
 
-    HEX_LINEAR pairs with :func:`cmad.fem.interpolants.hex_linear` and
-    :func:`cmad.fem.quadrature.hex_quadrature`. TET_LINEAR pairs with
-    :func:`cmad.fem.interpolants.tet_linear` and
-    :func:`cmad.fem.quadrature.tet_quadrature`.
+    Each member fixes the reference-element topology and pairs with a
+    reference interpolant in :mod:`cmad.fem.interpolants` and a
+    quadrature rule in :mod:`cmad.fem.quadrature`:
+
+    - HEX_LINEAR / TET_LINEAR -- 3D; ``hex_linear`` / ``tet_linear``
+      with ``hex_quadrature`` / ``tet_quadrature``. Sides are faces.
+    - QUAD_LINEAR / TRI_LINEAR -- 2D; ``quad_linear`` / ``tri_linear``
+      with ``quad_quadrature`` / ``tri_quadrature``. The cell is the 2D
+      entity; sides are edges (2D families have no face sub-entities).
     """
 
     HEX_LINEAR = 0
     TET_LINEAR = 1
+    QUAD_LINEAR = 2
+    TRI_LINEAR = 3

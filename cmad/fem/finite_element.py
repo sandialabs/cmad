@@ -22,7 +22,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 from cmad.fem.element_family import ElementFamily
-from cmad.fem.interpolants import hex_linear, tet_linear
+from cmad.fem.interpolants import (
+    hex_linear,
+    quad_linear,
+    tet_linear,
+    tri_linear,
+)
 from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.fem.topology import _LOCAL_SIDES_PER_ELEMENT
 from cmad.typing import JaxArray
@@ -55,6 +60,18 @@ _ENTITY_COUNTS_PER_ELEMENT: dict[ElementFamily, dict[EntityType, int]] = {
         EntityType.VERTEX: 4,
         EntityType.EDGE: 6,
         EntityType.FACE: 4,
+        EntityType.CELL: 1,
+    },
+    ElementFamily.QUAD_LINEAR: {
+        EntityType.VERTEX: 4,
+        EntityType.EDGE: 4,
+        EntityType.FACE: 0,
+        EntityType.CELL: 1,
+    },
+    ElementFamily.TRI_LINEAR: {
+        EntityType.VERTEX: 3,
+        EntityType.EDGE: 3,
+        EntityType.FACE: 0,
         EntityType.CELL: 1,
     },
 }
@@ -194,4 +211,20 @@ Q1_HEX = FiniteElement(
     element_family=ElementFamily.HEX_LINEAR,
     dofs_per_entity={EntityType.VERTEX: 1},
     interpolant_fn=hex_linear,
+)
+
+
+Q1_QUAD = FiniteElement(
+    name="Q1_QUAD",
+    element_family=ElementFamily.QUAD_LINEAR,
+    dofs_per_entity={EntityType.VERTEX: 1},
+    interpolant_fn=quad_linear,
+)
+
+
+P1_TRI = FiniteElement(
+    name="P1_TRI",
+    element_family=ElementFamily.TRI_LINEAR,
+    dofs_per_entity={EntityType.VERTEX: 1},
+    interpolant_fn=tri_linear,
 )
