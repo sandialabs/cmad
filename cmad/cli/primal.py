@@ -21,6 +21,7 @@ from cmad.cli.common import (
 )
 from cmad.fem.driver import fe_quasistatic_drive
 from cmad.io.deck import load_deck, unwrap_top_level
+from cmad.io.point_cloud import read_point_cloud, write_point_cloud
 from cmad.io.writers import (
     resolve_fe_output_plan,
     write_cauchy,
@@ -33,6 +34,7 @@ from cmad.io.writers import (
 from cmad.models.global_fields import mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
 from cmad.qois.qoi import QoI
+from cmad.remap.locate import sample_fe_displacement_cloud
 from cmad.typing import SupportsPrimalLoop
 
 
@@ -45,7 +47,9 @@ def run_primal(deck_path: Path) -> int:
     Exodus II trajectory. Both branches write ``deck.resolved.yaml``.
     The FE branch additionally writes ``J.json`` when the deck supplies
     an optional ``qoi`` section, threaded through
-    :func:`cmad.fem.driver.fe_quasistatic_drive`.
+    :func:`cmad.fem.driver.fe_quasistatic_drive`, and a synthetic DIC point
+    cloud when the ``output`` section requests one (the solved displacement
+    sampled at measurement points on a sideset).
     """
     deck = unwrap_top_level(load_deck(deck_path))
     problem_type = deck["problem"]["type"]
@@ -118,6 +122,14 @@ def _run_primal_fe(deck_path: Path) -> int:
             out_dir, prefix, bundle.fe_problem, fe_state,
             output_plan, output_section["exodus filename"],
         )
+    if "dic cloud" in output_section:
+        dic_section = output_section["dic cloud"]
+        point_coords = read_point_cloud(dic_section["points file"]).coords
+        cloud = sample_fe_displacement_cloud(
+            bundle.fe_problem, fe_state, point_coords,
+            dic_section["sideset"],
+        )
+        write_point_cloud(out_dir / dic_section["output file"], cloud)
     write_resolved_deck(out_dir, prefix, bundle.resolved)
     if write_qoi is not None:
         write_qoi.write_primal_outputs(bundle.fe_problem, fe_state)

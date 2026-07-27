@@ -10,6 +10,14 @@ properties:
     default: npy
   exodus filename: {type: string}
   write exodus: {type: boolean, default: true}
+  dic cloud:
+    type: object
+    additionalProperties: false
+    required: [points file, sideset, output file]
+    properties:
+      points file: {type: string}
+      sideset: {type: string}
+      output file: {type: string}
   global residual:
     type: array
     items: {type: string}
