@@ -99,6 +99,7 @@ def make_newton_solve(
         **DEFAULT_LINE_SEARCH_SETTINGS,
         **(line_search_settings or {}),
     }
+    ls_max_evals = ls_settings["max evals"]
 
     @custom_jvp
     def newton_solve(x_prev, *other_fixed_args):
@@ -129,14 +130,19 @@ def make_newton_solve(
             jac = jacfwd(residual_flat)(x)
             delta_x = jnp.linalg.solve(jac, C)
 
-            def eval_fn(alpha):
-                C_trial = residual_flat(x - alpha * delta_x)
-                return 0.5 * (C_trial @ C_trial), None, C_trial
+            if ls_max_evals > 0:
+                def eval_fn(alpha):
+                    C_trial = residual_flat(x - alpha * delta_x)
+                    return 0.5 * (C_trial @ C_trial), None, C_trial
 
-            alpha, C_next = line_search(
-                eval_fn, 0.5 * (C @ C), -(C @ C), ls_settings, C,
-            )
-            return ii + 1, False, x - alpha * delta_x, C_next
+                alpha, C_next = line_search(
+                    eval_fn, 0.5 * (C @ C), -(C @ C), ls_settings, C,
+                )
+                x_next = x - alpha * delta_x
+            else:
+                x_next = x - delta_x
+                C_next = residual_flat(x_next)
+            return ii + 1, False, x_next, C_next
 
 
         def cond_fun(carry):
