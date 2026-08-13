@@ -18,7 +18,7 @@ from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F, off_axis_idx
 from cmad.models.mechanics_model import MechanicsModel
-from cmad.models.paths import cond_residual
+from cmad.models.paths import cond_residual, yield_threshold
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -64,15 +64,15 @@ def compute_elastic_strain(
     return material_total_strain - plastic_strain
 
 
-def compute_yield_fun_and_normal(
-        xi: StateList, xi_prev: StateList, params: dict[str, Any],
-        U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+def compute_yield_fun(
+        xi: StateList, params: dict[str, Any],
+        U: GlobalFieldsAtPoint,
         def_type: int,
         elastic_stress: Callable[..., JaxArray],
         effective_stress: Callable[..., JaxArray],
         hardening: Callable[..., JaxArray],
-        uniaxial_stress_idx: int, is_complex: bool,
-) -> tuple[JaxArray, JaxArray, JaxArray]:
+        uniaxial_stress_idx: int,
+) -> tuple[JaxArray, JaxArray]:
 
     plastic_params = params["plastic"]
     Y = plastic_params["flow stress"]["initial yield"]["Y"]
@@ -86,8 +86,24 @@ def compute_yield_fun_and_normal(
     alpha = get_scalar(xi[1])
     sigma_flow = Y + hardening(alpha, hardening_params)
 
-    yield_fun = (phi - sigma_flow) / two_mu_scale_factor(params)
-    yield_normal = grad(effective_stress, holomorphic=is_complex)(cauchy, plastic_params)
+    return cauchy, (phi - sigma_flow) / two_mu_scale_factor(params)
+
+
+def compute_yield_fun_and_normal(
+        xi: StateList, xi_prev: StateList, params: dict[str, Any],
+        U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+        def_type: int,
+        elastic_stress: Callable[..., JaxArray],
+        effective_stress: Callable[..., JaxArray],
+        hardening: Callable[..., JaxArray],
+        uniaxial_stress_idx: int, is_complex: bool,
+) -> tuple[JaxArray, JaxArray, JaxArray]:
+
+    cauchy, yield_fun = compute_yield_fun(
+        xi, params, U, def_type, elastic_stress, effective_stress,
+        hardening, uniaxial_stress_idx)
+    yield_normal = grad(effective_stress, holomorphic=is_complex)(
+        cauchy, params["plastic"])
 
     return cauchy, yield_fun, yield_normal
 
@@ -113,7 +129,7 @@ class SmallElasticPlastic(MechanicsModel):
                 ..., JaxArray] = isotropic_linear_elastic_stress,
             effective_stress_fun: Callable[..., JaxArray] | None = None,
             hardening_funs: dict | None = None,
-            yield_tol: float = 1e-14,
+            yield_tol: float = 1e-12,
             uniaxial_stress_idx: int = 0,
             is_complex: bool = False,
     ) -> None:
@@ -260,6 +276,14 @@ class SmallElasticPlastic(MechanicsModel):
             elastic_stress, effective_stress, hardening,
             uniaxial_stress_idx, is_complex)
 
+        # the elastic predictor freezes the plastic strain and the hardening
+        # at the previous step; the stretch blocks stay current because
+        # compute_elastic_strain reads them
+        xi_elastic = [xi_prev[0], xi_prev[1], *xi[2:]]
+        _cauchy, trial_yield_fun = compute_yield_fun(
+            xi_elastic, params, U, def_type,
+            elastic_stress, effective_stress, hardening, uniaxial_stress_idx)
+
         # elastic residual
         C_elastic_pstrain_tensor = pstrain - pstrain_prev
         C_elastic_pstrain = \
@@ -301,7 +325,8 @@ class SmallElasticPlastic(MechanicsModel):
             C_elastic = jnp.r_[C_elastic_pstrain, C_elastic_alpha, C_stretch]
             C_plastic = jnp.r_[C_plastic_pstrain, C_plastic_alpha, C_stretch]
 
-        return cond_residual(yield_fun, C_elastic, C_plastic, yield_tol)
+        return cond_residual(trial_yield_fun, C_elastic, C_plastic,
+                             yield_threshold(yield_tol, params))
 
     def _check_params(self, parameters: Parameters) -> None:
         raise NotImplementedError

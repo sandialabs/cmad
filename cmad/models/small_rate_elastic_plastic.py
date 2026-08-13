@@ -18,7 +18,7 @@ from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F, off_axis_idx
 from cmad.models.mechanics_model import MechanicsModel
-from cmad.models.paths import cond_residual
+from cmad.models.paths import cond_residual, yield_threshold
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -111,12 +111,11 @@ def initial_guess(
         elastic_stress)
 
 
-def compute_yield_fun_and_normal(
+def compute_yield_fun(
         xi: StateList, params: dict[str, Any], def_type: int,
         effective_stress: Callable[..., JaxArray],
         hardening: Callable[..., JaxArray],
-        is_complex: bool,
-) -> tuple[JaxArray, JaxArray]:
+) -> JaxArray:
 
     def_type_ndims(def_type)
 
@@ -130,10 +129,22 @@ def compute_yield_fun_and_normal(
     alpha = get_scalar(xi[1])
     sigma_flow = Y + hardening(alpha, hardening_params)
 
-    yield_fun = (phi - sigma_flow) / two_mu_scale_factor(params)
-    yield_normal = grad(effective_stress, holomorphic=is_complex)(cauchy, plastic_params)
+    return (phi - sigma_flow) / two_mu_scale_factor(params)
 
-    return yield_fun, yield_normal
+
+def compute_yield_fun_and_normal(
+        xi: StateList, params: dict[str, Any], def_type: int,
+        effective_stress: Callable[..., JaxArray],
+        hardening: Callable[..., JaxArray],
+        is_complex: bool,
+) -> tuple[JaxArray, JaxArray]:
+
+    cauchy = get_sym_tensor_from_vector(xi[0], 3)
+    yield_normal = grad(effective_stress, holomorphic=is_complex)(
+        cauchy, params["plastic"])
+
+    return compute_yield_fun(
+        xi, params, def_type, effective_stress, hardening), yield_normal
 
 
 @register_model("small_rate_elastic_plastic")
@@ -156,7 +167,7 @@ class SmallRateElasticPlastic(MechanicsModel):
                 ..., JaxArray] = isotropic_linear_elastic_stress,
             effective_stress_fun: Callable[..., JaxArray] | None = None,
             hardening_funs: dict | None = None,
-            yield_tol: float = 1e-14,
+            yield_tol: float = 1e-12,
             uniaxial_stress_idx: int = 0,
             is_complex: bool = False,
     ) -> None:
@@ -326,6 +337,12 @@ class SmallRateElasticPlastic(MechanicsModel):
         yield_fun, yield_normal = \
             compute_yield_fun_and_normal(xi, params, def_type,
                                          effective_stress, hardening, is_complex)
+        xi_elastic = elastic_predictor(
+            xi, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
+            elastic_stress)
+        trial_yield_fun = \
+            compute_yield_fun(xi_elastic, params, def_type,
+                              effective_stress, hardening)
         delta_plastic_strain = delta_gamma * yield_normal
         delta_cauchy = trial_delta_cauchy \
             - elastic_stress(delta_plastic_strain, params)
@@ -386,7 +403,8 @@ class SmallRateElasticPlastic(MechanicsModel):
                 C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha,
                                    C_plastic_stretch, C_plastic_delta_strain]
 
-        return cond_residual(yield_fun, C_elastic, C_plastic, yield_tol)
+        return cond_residual(trial_yield_fun, C_elastic, C_plastic,
+                             yield_threshold(yield_tol, params))
 
     def _check_params(self, parameters: Parameters) -> None:
         raise NotImplementedError
