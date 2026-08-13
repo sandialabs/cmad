@@ -10,7 +10,7 @@ shape: deck → mesh → GR → per-block Models → DBCs / NBCs / forcing →
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -19,14 +19,22 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 
-from cmad.fem.bcs import DirichletBC, NeumannBC
-from cmad.fem.dof import GlobalFieldLayout, build_dof_map
+from cmad.fem.bcs import (
+    DirichletBC,
+    NeumannBC,
+    make_nodal_field_values,
+)
+from cmad.fem.dof import (
+    GlobalFieldLayout,
+    build_dof_map,
+    sideset_basis_fns,
+)
 from cmad.fem.driver import StateInit, build_fe_quasistatic_trajectory
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.fe_problem import FEProblem, FEState, build_fe_problem
 from cmad.fem.finite_element import P1_TET, P1_TRI, Q1_HEX, Q1_QUAD, FiniteElement
 from cmad.fem.kernel_arrays import FEKernelArrays
-from cmad.fem.mesh import coordinate_side_sets
+from cmad.fem.mesh import Mesh, coordinate_side_sets
 from cmad.fem.quadrature import (
     QuadratureRule,
     hex_quadrature,
@@ -41,7 +49,7 @@ from cmad.io.deformation import load_history
 from cmad.io.expressions import parse_scalar_expression
 from cmad.io.mesh_io import read_mesh_file
 from cmad.io.params_builder import build_parameters
-from cmad.io.qoi_data import load_qoi_data
+from cmad.io.qoi_data import load_displacement_data, load_qoi_data
 from cmad.io.registry import (
     resolve_global_residual,
     resolve_model,
@@ -365,8 +373,10 @@ def build_fe_problem_from_deck(
         for r in range(gr.num_residuals)
     }
 
+    t_schedule = _load_t_schedule(resolved["discretization"])
     dirichlet_bcs = _build_dirichlet_bcs(
-        resolved.get("dirichlet bcs"), gr,
+        resolved.get("dirichlet bcs"), gr, mesh, field_layouts,
+        t_schedule,
     )
     dof_map = build_dof_map(
         mesh, field_layouts, dirichlet_bcs, components_by_field,
@@ -416,8 +426,6 @@ def build_fe_problem_from_deck(
         ),
         local_newton_settings=local_newton_settings,
     )
-
-    t_schedule = _load_t_schedule(resolved["discretization"])
 
     qoi: FEQoI | None = None
     if "qoi" in resolved:
@@ -582,7 +590,11 @@ def _resolve_resid_idx(
 
 
 def _build_dirichlet_bcs(
-        dbc_section: dict[str, Any] | None, gr: GlobalResidual,
+        dbc_section: dict[str, Any] | None,
+        gr: GlobalResidual,
+        mesh: Mesh,
+        field_layouts: Sequence[GlobalFieldLayout],
+        t_schedule: NDArray[np.float64],
 ) -> list[DirichletBC]:
     if not dbc_section:
         return []
@@ -591,12 +603,7 @@ def _build_dirichlet_bcs(
         resid_name, eq, sideset, value_expr = entry
         where = f"dirichlet bcs.expression.{entry_name}"
         r = _resolve_resid_idx(resid_name, gr, where)
-        num_eqs = int(gr._num_eqs[r])
-        if not (0 <= int(eq) < num_eqs):
-            raise ValueError(
-                f"{where}: eq {eq} out of range for residual "
-                f"'{resid_name}' (num_eqs={num_eqs})",
-            )
+        _check_bc_eq(eq, r, resid_name, gr, where)
         scalar_fn = parse_scalar_expression(value_expr, _BC_COORD_NAMES)
         bcs.append(DirichletBC(
             sideset_names=[str(sideset)],
@@ -604,7 +611,84 @@ def _build_dirichlet_bcs(
             dofs=[int(eq)],
             values=_make_dbc_value_callable(scalar_fn),
         ))
+
+    fe_by_field = {fl.name: fl.finite_element for fl in field_layouts}
+    # Several components usually name the same file; read each one once.
+    by_path: dict[str, NDArray[np.float64]] = {}
+    for entry_name, entry in dbc_section.get("field", {}).items():
+        resid_name, eq, sideset, data_file = entry
+        where = f"dirichlet bcs.field.{entry_name}"
+        r = _resolve_resid_idx(resid_name, gr, where)
+        _check_bc_eq(eq, r, resid_name, gr, where)
+        field_name = str(gr.var_names[r])
+        if str(sideset) not in mesh.side_sets:
+            raise KeyError(
+                f"{where}: unknown sideset '{sideset}'; known sidesets: "
+                f"{sorted(mesh.side_sets)}",
+            )
+        if str(data_file) not in by_path:
+            by_path[str(data_file)] = np.asarray(
+                load_displacement_data({"data_file": str(data_file)}),
+                dtype=np.float64,
+            )
+        data = by_path[str(data_file)]
+        _check_field_bc_data(data, t_schedule, mesh, eq, str(data_file), where)
+        node_ids = sideset_basis_fns(
+            mesh, fe_by_field[field_name], [str(sideset)],
+        )
+        bcs.append(DirichletBC(
+            sideset_names=[str(sideset)],
+            field_name=field_name,
+            dofs=[int(eq)],
+            values=make_nodal_field_values(
+                data[:, node_ids, int(eq):int(eq) + 1], t_schedule,
+            ),
+        ))
     return bcs
+
+
+def _check_bc_eq(
+        eq: int, r: int, resid_name: str, gr: GlobalResidual, where: str,
+) -> None:
+    num_eqs = int(gr._num_eqs[r])
+    if not (0 <= int(eq) < num_eqs):
+        raise ValueError(
+            f"{where}: eq {eq} out of range for residual "
+            f"'{resid_name}' (num_eqs={num_eqs})",
+        )
+
+
+def _check_field_bc_data(
+        data: NDArray[np.float64],
+        t_schedule: NDArray[np.float64],
+        mesh: Mesh,
+        eq: int,
+        data_file: str,
+        where: str,
+) -> None:
+    """Reject nodal field data that cannot line up with mesh and schedule."""
+    if data.ndim != 3:
+        raise ValueError(
+            f"{where}: '{data_file}' has shape {data.shape}; expected "
+            f"(num_frames, num_nodes, num_components)",
+        )
+    if data.shape[0] != t_schedule.shape[0]:
+        raise ValueError(
+            f"{where}: '{data_file}' has {data.shape[0]} frames but the "
+            f"time schedule has {t_schedule.shape[0]} entries; one frame "
+            f"per entry is required, the first being the reference state",
+        )
+    num_nodes = int(mesh.nodes.shape[0])
+    if data.shape[1] != num_nodes:
+        raise ValueError(
+            f"{where}: '{data_file}' covers {data.shape[1]} nodes but the "
+            f"mesh has {num_nodes}",
+        )
+    if int(eq) >= data.shape[2]:
+        raise ValueError(
+            f"{where}: eq {eq} exceeds the {data.shape[2]} components in "
+            f"'{data_file}'",
+        )
 
 
 def _build_neumann_bcs(

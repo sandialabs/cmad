@@ -60,6 +60,7 @@ NeumannBC value sources:
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 
@@ -179,3 +180,65 @@ class NeumannBC:
             return
         if len(self.values) == 0:
             raise ValueError("NeumannBC.values must be non-empty")
+
+
+def make_nodal_field_values(
+        values_by_step: NDArray[np.floating] | JaxArray,
+        data_times: Sequence[float] | NDArray[np.floating],
+) -> Callable[
+    [NDArray[np.floating] | JaxArray, Scalar],
+    JaxArray,
+]:
+    """Build a :class:`DirichletBC` value callable over measured nodal data.
+
+    ``values_by_step`` is ``(num_frames, N_set, num_dofs)``, already laid
+    out to match the BC: its second axis follows
+    :func:`cmad.fem.dof.sideset_basis_fns` for the BC's sidesets and its
+    third axis follows the BC's ``dofs``. Because the layout is fixed
+    when this is built, the returned callable ignores the boundary
+    coordinates it is passed.
+
+    ``data_times`` is the strictly increasing times the frames were
+    measured at. Values are linearly interpolated in ``t`` between the
+    bracketing frames, so the data times need not coincide with the
+    solve's steps; a ``t`` landing on a frame time reproduces that frame
+    exactly. Outside the measured range the nearest frame is held
+    constant. Interpolating rather than selecting keeps the callable
+    valid when ``t`` is a tracer inside the time loop.
+    """
+    data = jnp.asarray(values_by_step, dtype=jnp.float64)
+    times = jnp.asarray(data_times, dtype=jnp.float64)
+    if data.ndim != 3:
+        raise ValueError(
+            f"values_by_step must be (num_frames, N_set, num_dofs); got "
+            f"shape {data.shape}"
+        )
+    if data.shape[0] != times.shape[0]:
+        raise ValueError(
+            f"values_by_step has {data.shape[0]} frames but data_times has "
+            f"{times.shape[0]}"
+        )
+    gaps = np.diff(np.asarray(data_times, dtype=np.float64))
+    if gaps.size and not np.all(gaps > 0.0):
+        raise ValueError(
+            "data_times must be strictly increasing; found a non-positive "
+            f"step of {gaps.min():.6g}"
+        )
+
+    num_frames = data.shape[0]
+    last = num_frames - 2
+
+    def values(
+            coords: NDArray[np.floating] | JaxArray, t: Scalar,
+    ) -> JaxArray:
+        del coords  # the layout is fixed at build time
+        if num_frames == 1:
+            return data[0]  # a single frame holds for the whole history
+        lo = jnp.clip(jnp.searchsorted(times, t, side="right") - 1, 0, last)
+        span = times[lo + 1] - times[lo]
+        weight = jnp.clip((t - times[lo]) / span, 0.0, 1.0)
+        before = jnp.take(data, lo, axis=0)
+        after = jnp.take(data, lo + 1, axis=0)
+        return before + weight * (after - before)
+
+    return values

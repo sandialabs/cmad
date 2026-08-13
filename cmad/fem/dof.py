@@ -60,6 +60,7 @@ precomputed by :func:`build_dbc_arrays`; each resolved BC caches its
 deduplicated coordinate slice at construction so that precompute is
 mesh-handle-free.
 """
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -413,6 +414,36 @@ def _num_basis_fns_in_mesh(
     )
 
 
+def sideset_basis_fns(
+        mesh: Mesh,
+        finite_element: FiniteElement,
+        sideset_names: Sequence[str],
+) -> NDArray[np.intp]:
+    """Global basis fns of ``finite_element`` resident on the named sidesets.
+
+    Walks every ``(elem_id, local_side_id)`` pair across the sidesets,
+    resolves each through
+    :meth:`cmad.fem.finite_element.FiniteElement.side_basis_fns` and
+    ``mesh.connectivity``, and deduplicates. The result is sorted
+    ascending, which is what makes the ordering canonical: anything that
+    needs per-vertex boundary data laid out to match a
+    :class:`cmad.fem.bcs.DirichletBC` builds it against this same order.
+
+    Returns an empty array when the sidesets carry no sides.
+    """
+    per_pair: list[NDArray[np.intp]] = []
+    for sideset_name in sideset_names:
+        pairs = mesh.side_sets[sideset_name]
+        for elem_id, local_side_id in pairs:
+            local_basis_fns = finite_element.side_basis_fns(int(local_side_id))
+            per_pair.append(
+                mesh.connectivity[int(elem_id), local_basis_fns].astype(np.intp)
+            )
+    if not per_pair:
+        return np.empty(0, dtype=np.intp)
+    return np.unique(np.concatenate(per_pair)).astype(np.intp)
+
+
 def build_dof_map(
     mesh: Mesh,
     field_layouts: list[GlobalFieldLayout],
@@ -565,24 +596,7 @@ def build_dof_map(
                 "> 1; sideset BCs only handle 1 DOF per vertex."
             )
 
-        # Walk every (elem, local_side_id) pair across all listed
-        # sidesets; gather global basis-fns via the side resolver and
-        # mesh.connectivity; deduplicate intra-BC.
-        per_pair_basis_fns: list[NDArray[np.intp]] = []
-        for sideset_name in bc.sideset_names:
-            pairs = mesh.side_sets[sideset_name]
-            for elem_id, local_side_id in pairs:
-                local_basis_fns = fe.side_basis_fns(int(local_side_id))
-                global_basis_fns = mesh.connectivity[
-                    int(elem_id), local_basis_fns,
-                ].astype(np.intp)
-                per_pair_basis_fns.append(global_basis_fns)
-        if per_pair_basis_fns:
-            bc_basis_fns = np.unique(
-                np.concatenate(per_pair_basis_fns)
-            ).astype(np.intp)
-        else:
-            bc_basis_fns = np.empty(0, dtype=np.intp)
+        bc_basis_fns = sideset_basis_fns(mesh, fe, bc.sideset_names)
 
         block_offset = block_offsets[field_idx]
         dofs_arr = np.asarray(list(bc.dofs), dtype=np.intp)
