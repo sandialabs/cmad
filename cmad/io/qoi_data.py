@@ -48,6 +48,9 @@ def load_displacement_data(
     field. The extension dispatches the reader:
 
     - ``.npy`` -> :func:`numpy.load`.
+    - ``.npz`` -> the ``"u"`` entry of the archive, or its sole entry
+      when it holds exactly one. Compression matters here because the
+      array is dense and grows as steps times nodes.
     - ``.exo`` / ``.ex2`` -> the nodal ``"u"`` field via
       :func:`cmad.io.exodus.read_results`, so a ``cmad primal`` Exodus
       output is itself valid calibration data with no conversion step.
@@ -60,6 +63,8 @@ def load_displacement_data(
     ext = path.suffix.lower()
     if ext == ".npy":
         arr = np.load(path)
+    elif ext == ".npz":
+        arr = _array_from_npz(path)
     elif ext in {".exo", ".ex2"}:
         results = read_results(
             path, nodal_field_specs=[FieldSpec("u", VarType.VECTOR)],
@@ -68,10 +73,29 @@ def load_displacement_data(
     else:
         raise ValueError(
             f"qoi.data_file: unsupported extension '{ext}' "
-            f"(path: {path}); supported: .npy, .exo, .ex2",
+            f"(path: {path}); supported: .npy, .npz, .exo, .ex2",
         )
     out: NDArray[np.float64] = np.asarray(arr, dtype=np.float64)
     return out
+
+
+def _array_from_npz(path: Path) -> NDArray[np.float64]:
+    """Pull the nodal field out of a ``.npz`` archive.
+
+    Takes the ``"u"`` entry when present, else the sole entry. An archive
+    holding several arrays without a ``"u"`` is ambiguous and raises
+    naming what it found, rather than picking one.
+    """
+    with np.load(path) as archive:
+        names = list(archive.files)
+        if "u" in names:
+            return np.asarray(archive["u"], dtype=np.float64)
+        if len(names) == 1:
+            return np.asarray(archive[names[0]], dtype=np.float64)
+    raise ValueError(
+        f"qoi.data_file: '{path}' holds {names} but no 'u' entry; name "
+        f"the displacement array 'u' or store it alone",
+    )
 
 
 def load_reaction_data(
