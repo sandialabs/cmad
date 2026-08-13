@@ -9,7 +9,9 @@ expects (``.npy`` only).
 field an FE displacement-matching QoI compares against (``.npy`` or a
 ``cmad primal`` Exodus output). :func:`load_reaction_data` reads the
 per-step (per-component) load an FE load-matching QoI compares against
-(``.npy`` / ``.csv`` / ``.txt``).
+(``.npy`` / ``.csv`` / ``.txt``). :func:`load_roi` reads the mesh
+entities a full-field measurement covers, which a field-matching QoI
+integrates over instead of the whole domain.
 
 No shape checks happen here; each QoI constructor asserts its own shape
 contract.
@@ -26,6 +28,41 @@ from numpy.typing import NDArray
 from cmad.io.exodus import read_results
 from cmad.io.results import FieldSpec
 from cmad.models.var_types import VarType
+
+
+def load_roi(qoi_section: dict[str, Any], ndims: int) -> NDArray[np.intp]:
+    """Return the mesh entities a full-field measurement covers.
+
+    Reads ``qoi_section["roi_file"]``, an ``.npz`` written by the
+    preprocessing that decides where the measurement is trustworthy. A 2D
+    mesh is the measured surface itself, so its region of interest is
+    ``elements``, global element indices of shape ``(n,)``. A 3D mesh is
+    measured on one of its faces, so its region of interest is ``sides``,
+    ``(elem_id, local_side_id)`` pairs of shape ``(n, 2)`` matching
+    :attr:`cmad.fem.mesh.Mesh.side_sets`.
+
+    The dimension picks the entry, so a region of interest built for one
+    kind of mesh and handed to the other raises here rather than
+    integrating over the wrong entities.
+    """
+    key = "elements" if ndims == 2 else "sides"
+    expected_ndim = 1 if ndims == 2 else 2
+    path = Path(qoi_section["roi_file"])
+    if not path.exists():
+        raise FileNotFoundError(f"qoi.roi_file: file not found at {path}")
+    with np.load(path) as archive:
+        if key not in archive:
+            raise ValueError(
+                f"qoi.roi_file: {path} has no {key!r} entry, which a "
+                f"{ndims}D mesh needs; found {sorted(archive.files)}"
+            )
+        roi = np.asarray(archive[key], dtype=np.intp)
+    if roi.ndim != expected_ndim:
+        raise ValueError(
+            f"qoi.roi_file: {path} {key!r} has shape {tuple(roi.shape)}; "
+            f"a {ndims}D mesh needs a {expected_ndim}D array"
+        )
+    return roi
 
 
 def load_qoi_data(

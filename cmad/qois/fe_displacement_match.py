@@ -5,10 +5,12 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import jax.numpy as jnp
+import numpy as np
+from numpy.typing import NDArray
 
 from cmad.fem.assembly import _gather_element_U
 from cmad.fem.precompute import compute_ip_quadrature_weights
-from cmad.io.qoi_data import load_displacement_data
+from cmad.io.qoi_data import load_displacement_data, load_roi
 from cmad.io.registry import register_qoi
 from cmad.qois.fe_qoi import FEQoI, StepContribution
 from cmad.qois.surface_match import (
@@ -21,6 +23,25 @@ if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem
     from cmad.fem.kernel_arrays import FEKernelArrays
     from cmad.models.global_fields import StepTime
+
+
+def _element_masks(
+        fe_problem: FEProblem, roi: NDArray[np.intp] | None,
+) -> dict[str, JaxArray] | None:
+    """Per-block 0/1 element masks selecting the region of interest.
+
+    ``None`` when there is no region of interest, which integrates
+    everywhere. Shaped ``(n_elems_in_block, 1)`` to broadcast against the
+    ``(n_elems, n_ip)`` integration measure.
+    """
+    if roi is None:
+        return None
+    keep = np.zeros(fe_problem.mesh.connectivity.shape[0], dtype=bool)
+    keep[roi] = True
+    return {
+        block: jnp.asarray(keep[elems], dtype=jnp.float64)[:, None]
+        for block, elems in fe_problem.mesh.element_blocks.items()
+    }
 
 
 @register_qoi("fe_displacement_match")
@@ -36,7 +57,8 @@ class FEDisplacementMatch(FEQoI):
     is a scalar deck weight; ``u^\mathrm{data}`` is per-step nodal
     displacement of shape ``(num_steps, num_nodes, ndims)``. With a
     ``sideset``, the integral and its normalizing measure are over that
-    sideset's surface rather than the volume.
+    sideset's surface rather than the volume; with a ``roi``, over those
+    elements.
     """
 
     problem_type: ClassVar[str] = "fe"
@@ -48,6 +70,7 @@ class FEDisplacementMatch(FEQoI):
             data: JaxArray,
             weight: float = 1.0,
             sideset: str | None = None,
+            roi: NDArray[np.intp] | None = None,
     ) -> None:
         var_names = list(fe_problem.gr.var_names)
         try:
@@ -87,11 +110,28 @@ class FEDisplacementMatch(FEQoI):
             ip_weights = compute_ip_quadrature_weights(
                 fe_problem.geometry_cache,
             )
-            volume = float(sum(arr.sum() for arr in ip_weights.values()))
+            self._element_mask = _element_masks(fe_problem, roi)
+            if self._element_mask is None:
+                volume = float(sum(arr.sum() for arr in ip_weights.values()))
+            else:
+                volume = float(sum(
+                    (arr * np.asarray(self._element_mask[block])).sum()
+                    for block, arr in ip_weights.items()))
+            if volume <= 0.0:
+                raise ValueError(
+                    "FEDisplacementMatch: the region of interest selects no "
+                    "elements, so the mismatch has nothing to average over"
+                )
             span = float(t_schedule[-1]) - float(t_schedule[0])
             self._surface_groups = None
             self._norm_factor = float(weight) / (span * volume)
         else:
+            if roi is not None:
+                raise ValueError(
+                    "FEDisplacementMatch: give a sideset or a region of "
+                    "interest, not both"
+                )
+            self._element_mask = None
             self._surface_groups, self._norm_factor = surface_groups_and_norm(
                 fe_problem, sideset, "u", weight, t_schedule,
             )
@@ -108,7 +148,20 @@ class FEDisplacementMatch(FEQoI):
         )
         weight = float(qoi_section.get("weight", 1.0))
         sideset = qoi_section.get("sideset")
-        return cls(fe_problem, t_schedule, data, weight, sideset=sideset)
+        roi = None
+        if "roi_file" in qoi_section:
+            ndims = fe_problem.ndims
+            if ndims != 2:
+                raise NotImplementedError(
+                    "FEDisplacementMatch: roi_file is supported on 2D meshes, "
+                    "where the region of interest is elements. A 3D mesh is "
+                    "measured on a face, so its region of interest is sides, "
+                    "which needs build_surface_integration_groups to accept "
+                    "side pairs rather than a sideset name"
+                )
+            roi = load_roi(qoi_section, ndims)
+        return cls(
+            fe_problem, t_schedule, data, weight, sideset=sideset, roi=roi)
 
     def step_contribution(
             self,
@@ -128,6 +181,7 @@ class FEDisplacementMatch(FEQoI):
         data_flat = self._data_flat
         t_schedule = self._t_schedule
 
+        element_mask = self._element_mask
         block_data: list[tuple[str, JaxArray, JaxArray]] = []
         for block_name in fe_problem.models_by_block:
             geom_cache = fe_arrays.geometry_cache[block_name]
@@ -135,6 +189,9 @@ class FEDisplacementMatch(FEQoI):
             quad_w = geom_cache.shared.quad_w
             iso_jac_det = geom_cache.per_elem.iso_jac_det
             weighted_iso_jac_det = iso_jac_det * quad_w
+            if element_mask is not None:
+                weighted_iso_jac_det = (
+                    weighted_iso_jac_det * element_mask[block_name])
             block_data.append(
                 (block_name, N_disp, weighted_iso_jac_det),
             )

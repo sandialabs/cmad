@@ -53,7 +53,9 @@ from jones_304l_load_preview import (
     usable_frames,
 )
 from numpy.typing import NDArray
+from scipy.spatial import cKDTree
 
+from cmad.fem.mesh import _LOCAL_SIDES_PER_ELEMENT, Mesh
 from cmad.io.mesh_io import read_mesh_file
 from cmad.remap.gmls import build_gmls_operators
 
@@ -94,6 +96,79 @@ def select_frames(
     targets = np.linspace(values[0], values[-1], num_steps)
     nearest = np.abs(values[:, None] - targets[None, :]).argmin(axis=0)
     return candidates[np.unique(nearest)]
+
+
+def free_boundary_segments(
+        mesh: Mesh, cut_lo: float, cut_hi: float, rel_tol: float = 1.0e-6,
+) -> NDArray[np.float64]:
+    """In-plane segments of the boundary that are not on a cut.
+
+    A side is on the boundary when exactly one element owns it. The cuts
+    slice a subdomain out of a continuous measured field, so the data
+    runs right up to them; the rest is free surface, where the
+    correlation window runs off the specimen and the measurement stops
+    short. A side counts as on a cut when both of its vertices are within
+    ``rel_tol`` of the cut, scaled by the mesh extent.
+    """
+    local_sides = _LOCAL_SIDES_PER_ELEMENT[mesh.element_family]
+    side_nodes = mesh.connectivity[:, local_sides]
+    n_el, n_sides, _ = side_nodes.shape
+    keys = np.sort(side_nodes.reshape(n_el * n_sides, -1), axis=1)
+    _uniq, inverse, counts = np.unique(
+        keys, axis=0, return_inverse=True, return_counts=True)
+    coords = mesh.nodes[keys[counts[inverse] == 1]][..., :2]
+    y = coords[..., 1]
+    tol = rel_tol * float(np.max(mesh.nodes.max(axis=0) - mesh.nodes.min(axis=0)))
+    on_cut = np.all(
+        (np.abs(y - cut_lo) < tol) | (np.abs(y - cut_hi) < tol), axis=1)
+    return coords[~on_cut]
+
+
+def distance_to_segments(
+        points: NDArray[np.float64], segments: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """Distance from each point to the nearest of ``(n, 2, 2)`` segments."""
+    start, end = segments[:, 0, :], segments[:, 1, :]
+    span = end - start
+    length_sq = (span ** 2).sum(-1)
+    length_sq = np.where(length_sq > 0.0, length_sq, 1.0)
+    t = np.clip(
+        ((points[:, None, :] - start) * span).sum(-1) / length_sq, 0.0, 1.0)
+    closest = start + t[..., None] * span
+    return np.linalg.norm(points[:, None, :] - closest, axis=2).min(axis=1)
+
+
+def region_of_interest(
+        mesh: Mesh, source: NDArray[np.float64], valid: NDArray[np.bool_],
+        cut_lo: float, cut_hi: float, margin: float,
+        band: float | None = None, samples_per_side: int = 20,
+) -> tuple[NDArray[np.intp], float, float, float]:
+    """Elements far enough from the free boundary to carry measurements.
+
+    The band defaults to the largest distance from the free boundary to
+    the nearest valid measurement, plus ``margin``. That maximum is
+    enough on its own, since an element is kept only when every one of
+    its nodes is beyond the band; the margin covers sampling the boundary
+    finitely and the one sided GMLS support just inside the cloud edge.
+
+    Returns the element indices, the band, the largest gap, and the worst
+    distance from a kept node to a measurement. A value there beyond the
+    point spacing means measurements are missing somewhere the free
+    boundary does not predict, which no band will find.
+    """
+    free = free_boundary_segments(mesh, cut_lo, cut_hi)
+    t = np.linspace(0.0, 1.0, samples_per_side + 1)[:-1, None]
+    samples = np.vstack([a + t * (b - a) for a, b in free])
+    tree = cKDTree(source[valid])
+    max_gap = float(tree.query(samples, k=1)[0].max())
+    if band is None:
+        band = max_gap + margin
+    node_distance = distance_to_segments(mesh.nodes[:, :2], free)
+    kept = node_distance[mesh.connectivity].min(axis=1) > band
+    kept_nodes = np.unique(mesh.connectivity[kept])
+    worst_covered = float(tree.query(mesh.nodes[kept_nodes, :2], k=1)[0].max())
+    return (np.nonzero(kept)[0].astype(np.intp), float(band), max_gap,
+            worst_covered)
 
 
 def read_reference_coords(
@@ -252,6 +327,16 @@ def main() -> None:
         help="fit each frame from its own valid points, or from the points "
              "valid in all of them (default per-frame)",
     )
+    parser.add_argument(
+        "--roi-band", type=float, default=None,
+        help="free edge band in mm (default: the largest measured gap "
+             "plus --roi-margin)",
+    )
+    parser.add_argument(
+        "--roi-margin", type=float, default=0.15,
+        help="added to the largest measured gap when --roi-band is not "
+             "given (default 0.15 mm)",
+    )
     parser.add_argument("--poly-order", type=int, default=2)
     parser.add_argument("--support-multiplier", type=float, default=1.6)
     parser.add_argument(
@@ -306,6 +391,19 @@ def main() -> None:
     np.savetxt(f"{stem}_times.txt", schedule)
     np.save(f"{stem}_load.npy", series)
 
+    with h5py.File(args.data, "r") as handle:
+        ever_valid = np.zeros(source.shape[0], dtype=bool)
+        for frame in frames:
+            ever_valid |= handle["sigma"][int(frame), :] >= MIN_VALID_SIGMA
+    elements, band, max_gap, worst_covered = region_of_interest(
+        mesh, source, ever_valid,
+        args.y_min - offset[1], args.y_max - offset[1],
+        args.roi_margin, args.roi_band,
+    )
+    np.savez_compressed(
+        f"{stem}_roi.npz", elements=elements,
+        band=np.float64(band), max_gap=np.float64(max_gap))
+
     raw_bytes = history.nbytes
     stored = Path(f"{stem}_u.npz").stat().st_size
     print(f"load channel: {channel}, scaled by {args.force_scale:g}")
@@ -328,6 +426,12 @@ def main() -> None:
         f"{stored / 1e6:.2f} MB stored against {raw_bytes / 1e6:.2f} MB raw"
     )
     print(f"      {stem}_times.txt, {stem}_load.npy")
+    print(
+        f"      {stem}_roi.npz, {elements.size} of "
+        f"{mesh.connectivity.shape[0]} elements; free edge band "
+        f"{band:.3f} mm from a largest gap of {max_gap:.3f}; worst kept node "
+        f"is {worst_covered:.3f} mm from a measurement"
+    )
 
 
 if __name__ == "__main__":
