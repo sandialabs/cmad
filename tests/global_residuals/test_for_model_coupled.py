@@ -15,6 +15,7 @@ from typing import cast
 
 import jax.numpy as jnp
 import numpy as np
+from jax import make_jaxpr
 from jax.tree_util import tree_map
 
 from cmad.fem.shapes import ShapeFunctionsAtIP
@@ -131,6 +132,61 @@ def _test_inputs(model: Elastic):
     h = 1.0
     ip_set = 0
     return params, U, U_prev, shapes_ip, w, dv, h, ip_set
+
+
+def _sub_jaxprs(value):
+    """Every jaxpr reachable from an equation parameter."""
+    if hasattr(value, "eqns"):
+        yield value
+    elif hasattr(value, "jaxpr") and hasattr(value.jaxpr, "eqns"):
+        yield value.jaxpr
+    elif isinstance(value, (tuple, list)):
+        for item in value:
+            yield from _sub_jaxprs(item)
+
+
+def _count_while(jaxpr) -> int:
+    """``while`` primitives, counting the ones nested in sub-jaxprs.
+
+    They sit inside ``pjit``, ``custom_jvp_call`` and other while bodies,
+    so a scan of the top level alone finds none of them.
+    """
+    total = 0
+    for eqn in jaxpr.eqns:
+        total += eqn.primitive.name == "while"
+        for value in eqn.params.values():
+            for sub in _sub_jaxprs(value):
+                total += _count_while(sub)
+    return total
+
+
+class TestForModelCoupledSharesTheLocalSolve(unittest.TestCase):
+    """The tangent must not run the local Newton a second time.
+
+    The local solve is a ``while`` loop, so counting them says whether
+    the residual and the tangent share one. Evaluating the residual
+    alongside ``jacfwd`` rather than taking it from the aux gives the
+    same answer at twice the local solve cost, which no numerical test
+    would notice.
+    """
+
+    def test_the_tangent_adds_no_local_solve(self):
+        gr = _ToyEquilibrium()
+        model = _make_linear_elastic_model()
+        evaluators = gr.for_model(model, mode=GlobalResidualMode.COUPLED)
+        params, U, U_prev, shapes_ip, w, dv, h, ip_set = (
+            _test_inputs(model))
+        xi_prev = [jnp.zeros_like(b) for b in model._init_xi]
+        args = (params, U, U_prev, xi_prev,
+                shapes_ip, w, dv, h, ip_set, _STEP_TIME)
+
+        residual_only = _count_while(make_jaxpr(evaluators["R"])(*args).jaxpr)
+        with_tangent = _count_while(
+            make_jaxpr(evaluators["R_and_dR_dU_and_xi"])(*args).jaxpr)
+
+        # the local Newton loop and the backtracking loop in its body
+        self.assertEqual(residual_only, 2)
+        self.assertEqual(with_tangent, residual_only)
 
 
 class TestForModelCoupledShape(unittest.TestCase):

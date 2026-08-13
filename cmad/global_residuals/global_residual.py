@@ -359,28 +359,8 @@ class GlobalResidual(ABC):
         # Public-closure argnums:
         #   params=0, U=1, U_prev=2, xi_prev=3,
         #   shapes_ip=4, w=5, dv=6, h=7, ip_set=8, step_time=9.
-        def coupled_r_total(params, U, U_prev, xi_prev,
-                            shapes_ip, w, dv, h, ip_set, step_time):
-            U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
-            U_ip_prev = self.interpolate_global_fields_at_ip(
-                U_prev, shapes_ip)
-            xi = local_newton(xi_prev, params, U_ip, U_ip_prev, step_time)
-            return residual_fn(
-                xi, xi_prev, params, U, U_prev,
-                model, GlobalResidualMode.COUPLED,
-                shapes_ip, w, dv, h, ip_set, step_time,
-            )
-
-        dR_dU_total = jacfwd(coupled_r_total, argnums=1)
-
-        def r_and_dR_dU_and_xi_at_ip(params, U, U_prev, xi_prev,
-                                     shapes_ip, w, dv, h, ip_set, step_time,
-                                     ip_idx=0):
-            if print_local_convergence:
-                debug.print(
-                    "[LOCAL elem={e} ip={i}]",
-                    e=axis_index("elem"), i=ip_idx,
-                )
+        def coupled_r_and_xi(params, U, U_prev, xi_prev,
+                             shapes_ip, w, dv, h, ip_set, step_time):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(
                 U_prev, shapes_ip)
@@ -390,7 +370,37 @@ class GlobalResidual(ABC):
                 model, GlobalResidualMode.COUPLED,
                 shapes_ip, w, dv, h, ip_set, step_time,
             )
-            dR_dU = dR_dU_total(
+            return R, xi
+
+        def coupled_r_total(params, U, U_prev, xi_prev,
+                            shapes_ip, w, dv, h, ip_set, step_time):
+            return coupled_r_and_xi(
+                params, U, U_prev, xi_prev,
+                shapes_ip, w, dv, h, ip_set, step_time,
+            )[0]
+
+        # jacfwd evaluates the residual to build the tangent, so has_aux
+        # hands that value back rather than computing it again, which would
+        # run the local Newton solve twice.
+        def coupled_r_with_aux(params, U, U_prev, xi_prev,
+                               shapes_ip, w, dv, h, ip_set, step_time):
+            R, xi = coupled_r_and_xi(
+                params, U, U_prev, xi_prev,
+                shapes_ip, w, dv, h, ip_set, step_time,
+            )
+            return R, (R, xi)
+
+        dR_dU_and_aux = jacfwd(coupled_r_with_aux, argnums=1, has_aux=True)
+
+        def r_and_dR_dU_and_xi_at_ip(params, U, U_prev, xi_prev,
+                                     shapes_ip, w, dv, h, ip_set, step_time,
+                                     ip_idx=0):
+            if print_local_convergence:
+                debug.print(
+                    "[LOCAL elem={e} ip={i}]",
+                    e=axis_index("elem"), i=ip_idx,
+                )
+            dR_dU, (R, xi) = dR_dU_and_aux(
                 params, U, U_prev, xi_prev,
                 shapes_ip, w, dv, h, ip_set, step_time,
             )
