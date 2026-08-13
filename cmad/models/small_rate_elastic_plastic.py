@@ -4,7 +4,7 @@ from typing import Any, ClassVar, cast
 
 import jax.numpy as jnp
 import numpy as np
-from jax import grad
+from jax import grad, jit
 
 from cmad.io.registry import register_model
 from cmad.models.deformation_types import DefType, def_type_ndims
@@ -73,6 +73,42 @@ def compute_delta_strain(
 
 
     return material_delta_epsilon
+
+
+def elastic_predictor(
+        xi: StateList, xi_prev: StateList, params: dict[str, Any],
+        U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+        def_type: int, uniaxial_stress_idx: int,
+        elastic_stress: Callable[..., JaxArray],
+) -> StateList:
+    """Elastic predictor state ``[cauchy_prev + C:delta_epsilon,
+    alpha_prev]``, the closed form root of the elastic branch.
+    """
+    delta_strain = compute_delta_strain(
+        xi, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx)
+    cauchy_prev = get_sym_tensor_from_vector(xi_prev[0], 3)
+    cauchy_trial = cauchy_prev + elastic_stress(delta_strain, params)
+
+    return [
+        get_vector_from_sym_tensor(cauchy_trial, 3),
+        xi_prev[1],
+        *xi[2:],
+    ]
+
+
+def initial_guess(
+        xi_prev: StateList, params: dict[str, Any],
+        U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+        step_time: StepTime,
+        def_type: int, uniaxial_stress_idx: int,
+        elastic_stress: Callable[..., JaxArray],
+) -> StateList:
+    """Starting state for the local Newton: the elastic predictor taken at
+    the previous stretches, no current iterate existing yet.
+    """
+    return elastic_predictor(
+        xi_prev, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
+        elastic_stress)
 
 
 def compute_yield_fun_and_normal(
@@ -220,6 +256,11 @@ class SmallRateElasticPlastic(MechanicsModel):
                            uniaxial_stress_idx=uniaxial_stress_idx, is_complex=is_complex)
 
         cauchy = partial(self._cauchy_fn, def_type=def_type)
+
+        self.initial_guess_fn = jit(partial(
+            initial_guess, def_type=def_type,
+            uniaxial_stress_idx=uniaxial_stress_idx,
+            elastic_stress=elastic_stress_fun))
 
         super().__init__(residual, cauchy)
 

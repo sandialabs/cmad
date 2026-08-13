@@ -15,7 +15,7 @@ from typing import Any, ClassVar, cast
 
 import jax.numpy as jnp
 import numpy as np
-from jax import grad
+from jax import grad, jit
 
 from cmad.io.registry import register_model
 from cmad.models.deformation_types import DefType, def_type_ndims
@@ -43,6 +43,26 @@ from cmad.models.var_types import (
 )
 from cmad.parameters.parameters import Parameters
 from cmad.typing import JaxArray, Scalar, StateList
+
+
+def elastic_predictor(
+        xi_prev: StateList, params: dict[str, Any],
+        U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+        step_time: StepTime,
+        def_type: int, elastic_stress: Callable[..., JaxArray],
+) -> StateList:
+    """Elastic predictor state ``[TC_prev + dt * C:D, alpha_prev]``, the
+    closed form root of the elastic branch.
+    """
+    dt = step_time.dt
+    F = gather_F(xi_prev, U, def_type, -1)
+    F_prev = gather_F(xi_prev, U_prev, def_type, -1)
+    D = unrotated_rate_of_deformation(F, F_prev, dt)
+
+    TC_prev = get_sym_tensor_from_vector(xi_prev[0], 3)
+    TC_trial = TC_prev + dt * elastic_stress(D, params)
+
+    return [get_vector_from_sym_tensor(TC_trial, 3), xi_prev[1]]
 
 
 def compute_yield_fun_and_normal(
@@ -146,6 +166,10 @@ class HypoElasticPlastic(MechanicsModel):
             yield_tol=yield_tol, is_complex=is_complex)
 
         cauchy = partial(self._cauchy_fn, def_type=def_type)
+
+        self.initial_guess_fn = jit(partial(
+            elastic_predictor,
+            def_type=def_type, elastic_stress=elastic_stress_fun))
 
         super().__init__(residual, cauchy)
 
