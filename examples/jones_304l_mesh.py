@@ -12,6 +12,13 @@ mesh carries one physical group, ``solid``; boundary sets come from
 ``ymin_sides`` and ``ymax_sides``, and in 3D the front and back faces as
 ``zmin_sides`` and ``zmax_sides``.
 
+``--h`` sets the element size away from curvature. Where the boundary
+turns, ``--curvature-elements`` refines it toward the size that puts that
+many elements around a full turn, so a tight corner follows the outline
+instead of cutting the arc off, and the rest of the face stays at
+``--h``. Choose the value with ``jones_304l_mesh_preview.py``, which
+reports the error each setting leaves on the specimen being meshed.
+
 Coordinates are translated after trimming so the bounding box is centered
 on the origin. A point cloud in the file's own system is brought onto the
 mesh by subtracting the same offset, which the run prints and
@@ -40,6 +47,13 @@ from jones_304l_geometry import (
     validate_cuts,
 )
 from numpy.typing import NDArray
+
+# Elements per full turn of the boundary. A mesh coarse enough to be
+# affordable elsewhere cuts across a tight turn instead of following it.
+# The specimens differ in how tightly their holes turn, so
+# jones_304l_mesh_preview.py reports what a setting buys on the one at
+# hand.
+CURVATURE_ELEMENTS = 20.0
 
 
 def _corner_indices(loop: Loop, y_min: float, y_max: float) -> NDArray[np.intp]:
@@ -104,11 +118,17 @@ def build_specimen_mesh(
         path: Path, h: float, *, geometry_file: str | Path,
         y_min: float, y_max: float, thickness: float | None = None,
         center: str = "xy", straight_tol: float = 1.0e-6,
+        curvature_elements: float = CURVATURE_ELEMENTS,
 ) -> tuple[int, NDArray[np.float64], float]:
     """Write the mesh to ``path``.
 
     ``straight_tol`` is the distance below which three consecutive
     outline points count as collinear, in the units of the geometry file.
+
+    ``curvature_elements`` is the number of elements gmsh aims to place
+    per full turn of the boundary, so a run of radius ``r`` is meshed at
+    ``2 * pi * r / curvature_elements`` where that falls below ``h``.
+    Zero meshes at ``h`` everywhere.
 
     Returns the element count, the translation applied to the
     coordinates, and the area of the trimmed face, the last as an
@@ -118,6 +138,10 @@ def build_specimen_mesh(
         raise ValueError(f"center mode {center!r} is not one of {CENTER_MODES}")
     if thickness is not None and thickness <= 0.0:
         raise ValueError(f"thickness must be positive, got {thickness}")
+    if curvature_elements < 0.0:
+        raise ValueError(
+            f"curvature_elements must not be negative, got {curvature_elements}"
+        )
 
     outer, holes = read_nominal_geometry(geometry_file)
     outer = clean_loop(outer)
@@ -174,8 +198,11 @@ def build_specimen_mesh(
             gmsh.model.addPhysicalGroup(3, volumes, name="solid")
             dim = 3
 
+        # A size floor of h would cancel the curvature refinement, so the
+        # curvature rule alone sets how small an element gets.
         gmsh.option.setNumber("Mesh.MeshSizeMax", h)
-        gmsh.option.setNumber("Mesh.MeshSizeMin", h)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", 0.0 if curvature_elements else h)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", curvature_elements)
         gmsh.model.mesh.generate(dim)
         _types, tags, _nodes = gmsh.model.mesh.getElements(dim)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,7 +222,13 @@ def main() -> None:
     parser.add_argument("--y-min", type=float, required=True, help="lower cut")
     parser.add_argument("--y-max", type=float, required=True, help="upper cut")
     parser.add_argument(
-        "--h", type=float, default=2.0, help="uniform element size (default 2)",
+        "--h", type=float, default=2.0,
+        help="element size away from curvature (default 2)",
+    )
+    parser.add_argument(
+        "--curvature-elements", type=float, default=CURVATURE_ELEMENTS,
+        help=f"elements per full turn of the boundary, 0 to mesh at --h "
+             f"everywhere (default {CURVATURE_ELEMENTS:g})",
     )
     parser.add_argument(
         "--thickness", type=float, default=None,
@@ -220,6 +253,7 @@ def main() -> None:
     n_elements, offset, area = build_specimen_mesh(
         out, args.h, geometry_file=args.geometry, y_min=args.y_min,
         y_max=args.y_max, thickness=args.thickness, center=args.center,
+        curvature_elements=args.curvature_elements,
     )
     print(f"trimmed face area {area:.6f}")
     print(
