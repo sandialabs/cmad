@@ -1,11 +1,11 @@
-"""Squared displacement mismatch integrated over a sideset surface.
+"""Squared displacement mismatch integrated over a surface.
 
 Shared by the QoIs that compare an FE field to data on a measured
 surface: :func:`surface_groups_and_norm` builds the per-facet surface
 cache and the ``1 / (time span * area)`` normalization, and
 :func:`surface_l2_step_closure` is the per-step closure that gathers the
 field at each facet, interpolates the mismatch to the side quadrature
-points, and integrates its square over the sideset.
+points, and integrates its square over the surface.
 """
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
+import numpy as np
+from numpy.typing import NDArray
 
 from cmad.fem.surface_integration import (
     SurfaceIntegrationGroup,
@@ -28,18 +30,20 @@ if TYPE_CHECKING:
 
 def surface_groups_and_norm(
         fe_problem: FEProblem,
-        sideset: str,
+        sides: str | NDArray[np.intp],
         field_name: str,
         weight: float,
         t_schedule: Sequence[float],
 ) -> tuple[list[SurfaceIntegrationGroup], float]:
-    """Surface cache for ``field_name`` on ``sideset`` and its normalization.
+    """Surface cache for ``field_name`` on ``sides`` and its normalization.
 
-    The normalization is ``weight / (time span * surface area)``, the
-    surface analogue of the volume averaging used off a sideset.
+    ``sides`` names a sideset or gives its ``(elem_id, local_side_id)``
+    pairs. The normalization is ``weight / (time span * surface area)``,
+    the surface analogue of the volume averaging used off a sideset, and
+    the area is that of the given sides alone.
     """
     groups = build_surface_integration_groups(
-        fe_problem.mesh, fe_problem.dof_map, field_name, sideset,
+        fe_problem.mesh, fe_problem.dof_map, field_name, sides,
         fe_problem.side_quadrature,
     )
     area = sum(float(jnp.sum(g.dA * g.side_w[None, :])) for g in groups)

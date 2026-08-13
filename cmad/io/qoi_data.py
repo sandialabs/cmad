@@ -37,7 +37,7 @@ def load_roi(qoi_section: dict[str, Any], ndims: int) -> NDArray[np.intp]:
     preprocessing that decides where the measurement is trustworthy. A 2D
     mesh is the measured surface itself, so its region of interest is
     ``elements``, global element indices of shape ``(n,)``. A 3D mesh is
-    measured on one of its faces, so its region of interest is ``sides``,
+    measured on its surface, so its region of interest is ``sides``,
     ``(elem_id, local_side_id)`` pairs of shape ``(n, 2)`` matching
     :attr:`cmad.fem.mesh.Mesh.side_sets`.
 

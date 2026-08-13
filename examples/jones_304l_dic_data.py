@@ -1,9 +1,10 @@
 """Convert Jones et al. 304L DIC measurements into CMAD input files.
 
 Reads the dataset's per-frame surface displacements, reconstructs them
-onto the nodes of an FE mesh with GMLS, and writes the three files a
+onto the nodes of an FE mesh with GMLS, and writes the four files a
 calibration run consumes: the nodal displacement history, the time
-schedule it is sampled on, and the measured load.
+schedule it is sampled on, the measured load, and the region of the mesh
+the measurement covers.
 
 The frame range comes from jones_304l_load_preview.py, which plots the
 load record so the ends can be trimmed by eye. Within that range the
@@ -55,13 +56,19 @@ from jones_304l_load_preview import (
 from numpy.typing import NDArray
 from scipy.spatial import cKDTree
 
-from cmad.fem.mesh import _LOCAL_SIDES_PER_ELEMENT, Mesh
+from cmad.fem.mesh import _LOCAL_SIDES_PER_ELEMENT, Mesh, coordinate_side_sets
 from cmad.io.mesh_io import read_mesh_file
 from cmad.remap.gmls import build_gmls_operators
 
 # Uncorrelated points carry a negative confidence, stored as -1, with NaN
 # displacements at the same indices.
 MIN_VALID_SIGMA = 0.0
+
+# The cameras face the front of the specimen, which the extrusion puts at
+# the top of the mesh. The reconstruction is a function of the in-plane
+# position alone, so the two faces differ only in how the model itself
+# varies through the thickness.
+OBSERVED_SIDESET = "zmax_sides"
 
 # The dataset records force in kN; a model in mm and MPa wants newtons.
 KN_TO_N = 1000.0
@@ -98,22 +105,39 @@ def select_frames(
     return candidates[np.unique(nearest)]
 
 
-def free_boundary_segments(
-        mesh: Mesh, cut_lo: float, cut_hi: float, rel_tol: float = 1.0e-6,
-) -> NDArray[np.float64]:
-    """In-plane segments of the boundary that are not on a cut.
+def measured_facets(mesh: Mesh) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
+    """The mesh entities the measurement covers, and their node ids.
 
-    A side is on the boundary when exactly one element owns it. The cuts
+    A 2D mesh is the measured surface itself, so the entities are its
+    elements. A 3D mesh is imaged on one face, so they are that face's
+    ``(elem_id, local_side_id)`` pairs, taken from the same routine the
+    solver builds its coordinate sidesets with so the two agree.
+    """
+    if mesh.nodes.shape[1] == 2:
+        elements = np.arange(mesh.connectivity.shape[0], dtype=np.intp)
+        return elements, mesh.connectivity
+    sides = coordinate_side_sets(mesh)[OBSERVED_SIDESET]
+    local_sides = _LOCAL_SIDES_PER_ELEMENT[mesh.element_family]
+    facets = mesh.connectivity[sides[:, 0][:, None], local_sides[sides[:, 1]]]
+    return sides, facets
+
+
+def free_boundary_segments(
+        mesh: Mesh, facets: NDArray[np.intp], cut_lo: float, cut_hi: float,
+        rel_tol: float = 1.0e-6,
+) -> NDArray[np.float64]:
+    """In-plane segments bounding ``facets`` that are not on a cut.
+
+    An edge is on the boundary when exactly one facet owns it. The cuts
     slice a subdomain out of a continuous measured field, so the data
     runs right up to them; the rest is free surface, where the
     correlation window runs off the specimen and the measurement stops
-    short. A side counts as on a cut when both of its vertices are within
+    short. An edge counts as on a cut when both of its vertices are within
     ``rel_tol`` of the cut, scaled by the mesh extent.
     """
-    local_sides = _LOCAL_SIDES_PER_ELEMENT[mesh.element_family]
-    side_nodes = mesh.connectivity[:, local_sides]
-    n_el, n_sides, _ = side_nodes.shape
-    keys = np.sort(side_nodes.reshape(n_el * n_sides, -1), axis=1)
+    # A facet's vertices run around it, so consecutive pairs are its edges.
+    edges = np.stack([facets, np.roll(facets, -1, axis=1)], axis=-1)
+    keys = np.sort(edges.reshape(-1, 2), axis=1)
     _uniq, inverse, counts = np.unique(
         keys, axis=0, return_inverse=True, return_counts=True)
     coords = mesh.nodes[keys[counts[inverse] == 1]][..., :2]
@@ -139,24 +163,24 @@ def distance_to_segments(
 
 
 def region_of_interest(
-        mesh: Mesh, source: NDArray[np.float64], valid: NDArray[np.bool_],
-        cut_lo: float, cut_hi: float, margin: float,
+        mesh: Mesh, facets: NDArray[np.intp], source: NDArray[np.float64],
+        valid: NDArray[np.bool_], cut_lo: float, cut_hi: float, margin: float,
         band: float | None = None, samples_per_side: int = 20,
-) -> tuple[NDArray[np.intp], float, float, float]:
-    """Elements far enough from the free boundary to carry measurements.
+) -> tuple[NDArray[np.bool_], float, float, float]:
+    """Which facets are far enough from the free boundary to carry measurements.
 
     The band defaults to the largest distance from the free boundary to
     the nearest valid measurement, plus ``margin``. That maximum is
-    enough on its own, since an element is kept only when every one of
-    its nodes is beyond the band; the margin covers sampling the boundary
+    enough on its own, since a facet is kept only when every one of its
+    nodes is beyond the band; the margin covers sampling the boundary
     finitely and the one sided GMLS support just inside the cloud edge.
 
-    Returns the element indices, the band, the largest gap, and the worst
+    Returns the keep mask, the band, the largest gap, and the worst
     distance from a kept node to a measurement. A value there beyond the
     point spacing means measurements are missing somewhere the free
     boundary does not predict, which no band will find.
     """
-    free = free_boundary_segments(mesh, cut_lo, cut_hi)
+    free = free_boundary_segments(mesh, facets, cut_lo, cut_hi)
     t = np.linspace(0.0, 1.0, samples_per_side + 1)[:-1, None]
     samples = np.vstack([a + t * (b - a) for a, b in free])
     tree = cKDTree(source[valid])
@@ -164,11 +188,10 @@ def region_of_interest(
     if band is None:
         band = max_gap + margin
     node_distance = distance_to_segments(mesh.nodes[:, :2], free)
-    kept = node_distance[mesh.connectivity].min(axis=1) > band
-    kept_nodes = np.unique(mesh.connectivity[kept])
+    kept = node_distance[facets].min(axis=1) > band
+    kept_nodes = np.unique(facets[kept])
     worst_covered = float(tree.query(mesh.nodes[kept_nodes, :2], k=1)[0].max())
-    return (np.nonzero(kept)[0].astype(np.intp), float(band), max_gap,
-            worst_covered)
+    return kept, float(band), max_gap, worst_covered
 
 
 def read_reference_coords(
@@ -395,13 +418,15 @@ def main() -> None:
         ever_valid = np.zeros(source.shape[0], dtype=bool)
         for frame in frames:
             ever_valid |= handle["sigma"][int(frame), :] >= MIN_VALID_SIGMA
-    elements, band, max_gap, worst_covered = region_of_interest(
-        mesh, source, ever_valid,
+    entities, facets = measured_facets(mesh)
+    kept, band, max_gap, worst_covered = region_of_interest(
+        mesh, facets, source, ever_valid,
         args.y_min - offset[1], args.y_max - offset[1],
         args.roi_margin, args.roi_band,
     )
+    entity_kind = "elements" if nodes.shape[1] == 2 else "sides"
     np.savez_compressed(
-        f"{stem}_roi.npz", elements=elements,
+        f"{stem}_roi.npz", **{entity_kind: entities[kept]},
         band=np.float64(band), max_gap=np.float64(max_gap))
 
     raw_bytes = history.nbytes
@@ -427,8 +452,8 @@ def main() -> None:
     )
     print(f"      {stem}_times.txt, {stem}_load.npy")
     print(
-        f"      {stem}_roi.npz, {elements.size} of "
-        f"{mesh.connectivity.shape[0]} elements; free edge band "
+        f"      {stem}_roi.npz, {int(kept.sum())} of {kept.size} "
+        f"{entity_kind}; free edge band "
         f"{band:.3f} mm from a largest gap of {max_gap:.3f}; worst kept node "
         f"is {worst_covered:.3f} mm from a measurement"
     )

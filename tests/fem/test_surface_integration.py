@@ -2,7 +2,9 @@
 
 Builds the per-facet surface cache on the x=1 face of a unit cube and
 checks the surface area element, the side shape values, the gather
-indices, and the facet partitioning.
+indices, and the facet partitioning. Also builds it from
+``(elem_id, local_side_id)`` pairs given directly, which is how a
+measurement covering part of a face is integrated over.
 """
 import unittest
 
@@ -82,6 +84,45 @@ class TestSurfaceIntegrationGroups(unittest.TestCase):
                 self.fe.mesh, self.fe.dof_map, "u", "no_such_sideset",
                 self.fe.side_quadrature,
             )
+
+
+class TestGivenSidePairs(unittest.TestCase):
+    """Pairs given directly, rather than resolved from a sideset name."""
+
+    def setUp(self) -> None:
+        self.fe = _unit_cube_problem(2)
+
+    def _groups(self, sides):
+        return build_surface_integration_groups(
+            self.fe.mesh, self.fe.dof_map, "u", sides,
+            self.fe.side_quadrature,
+        )
+
+    def test_the_sideset_pairs_reproduce_the_sideset(self) -> None:
+        by_name = self._groups("xmax_sides")
+        by_pairs = self._groups(self.fe.mesh.side_sets["xmax_sides"])
+        self.assertEqual(len(by_pairs), len(by_name))
+        for named, given in zip(by_name, by_pairs, strict=True):
+            np.testing.assert_allclose(named.dA, given.dA, rtol=0, atol=0)
+            np.testing.assert_array_equal(named.eq, given.eq)
+
+    def test_pairs_across_two_faces_partition_by_local_side(self) -> None:
+        # one facet from each of two faces, which no single sideset holds
+        groups = self._groups(np.vstack([
+            self.fe.mesh.side_sets["xmax_sides"][:1],
+            self.fe.mesh.side_sets["ymax_sides"][:1],
+        ]))
+        self.assertEqual(len(groups), 2)
+        area = sum(float(jnp.sum(g.dA * g.side_w[None, :])) for g in groups)
+        self.assertAlmostEqual(area, 2 * 0.25, places=12)
+
+    def test_wrong_shape_raises(self) -> None:
+        with self.assertRaisesRegex(ValueError, r"shape \(n, 2\)"):
+            self._groups(np.array([0, 1, 2], dtype=np.intp))
+
+    def test_no_sides_raises(self) -> None:
+        with self.assertRaisesRegex(ValueError, "no sides"):
+            self._groups(np.empty((0, 2), dtype=np.intp))
 
 
 if __name__ == "__main__":

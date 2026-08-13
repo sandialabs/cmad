@@ -11,3 +11,5 @@ properties:
     type: number
   sideset:
     type: string
+  roi_file:
+    type: string

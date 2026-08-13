@@ -9,6 +9,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from cmad.fem.assembly import _gather_element_U
+from cmad.fem.dof import dof_physical_coords
 from cmad.fem.precompute import compute_ip_quadrature_weights
 from cmad.io.qoi_data import load_displacement_data, load_roi
 from cmad.io.registry import register_qoi
@@ -57,8 +58,8 @@ class FEDisplacementMatch(FEQoI):
     is a scalar deck weight; ``u^\mathrm{data}`` is per-step nodal
     displacement of shape ``(num_steps, num_nodes, ndims)``. With a
     ``sideset``, the integral and its normalizing measure are over that
-    sideset's surface rather than the volume; with a ``roi``, over those
-    elements.
+    sideset's surface rather than over the whole mesh; with a ``roi``,
+    over the elements or the sides it holds.
     """
 
     problem_type: ClassVar[str] = "fe"
@@ -82,7 +83,7 @@ class FEDisplacementMatch(FEQoI):
             ) from exc
 
         num_steps = len(t_schedule)
-        data_arr = jnp.asarray(data, dtype=jnp.float64)
+        data_arr = np.asarray(data, dtype=np.float64)
         if data_arr.shape[0] != num_steps:
             raise ValueError(
                 f"FEDisplacementMatch: data has {data_arr.shape[0]} steps "
@@ -90,23 +91,42 @@ class FEDisplacementMatch(FEQoI):
                 f"displacement field per schedule time, including the "
                 f"initial time)"
             )
-        data_flat = data_arr.reshape(num_steps, -1)
-        num_total_dofs = fe_problem.dof_map.num_total_dofs
-        if data_flat.shape[1] != num_total_dofs:
+        # The measurement covers the displacement field alone, so it is
+        # scattered into that field's equations. Any other field the
+        # problem carries, a mixed formulation's pressure among them, is
+        # left at zero and never read.
+        _coords, eq = dof_physical_coords(
+            fe_problem.mesh, fe_problem.dof_map, "u",
+        )
+        if data_arr.shape[1:] != eq.shape:
             raise ValueError(
-                f"FEDisplacementMatch: data flattens to {data_flat.shape[1]} "
-                f"dofs/step but the problem has {num_total_dofs} total dofs; "
-                f"this QoI supports single-displacement-field problems "
-                f"(num_total_dofs == num_nodes * ndims)"
+                f"FEDisplacementMatch: data is {data_arr.shape[1:]} per step "
+                f"but field 'u' has {eq.shape} (basis coefficients, "
+                f"components)"
             )
+        data_flat = np.zeros((num_steps, fe_problem.dof_map.num_total_dofs))
+        data_flat[:, eq.reshape(-1)] = data_arr.reshape(num_steps, -1)
 
         self._fe_problem = fe_problem
         self._r_disp = r_disp
         self._field_idx_disp = fe_problem.field_idx_per_block[r_disp]
-        self._data_flat = data_flat
+        self._data_flat = jnp.asarray(data_flat, dtype=jnp.float64)
         self._t_schedule = jnp.asarray(t_schedule, dtype=jnp.float64)
 
-        if sideset is None:
+        if sideset is not None and roi is not None:
+            raise ValueError(
+                "FEDisplacementMatch: give a sideset or a region of "
+                "interest, not both"
+            )
+        # A 2D mesh is the measured surface itself, so a region of
+        # interest over it is elements, integrated the way the whole mesh
+        # is. A 3D mesh is measured on its surface, so its region of
+        # interest is sides, integrated over those.
+        sides: str | NDArray[np.intp] | None = sideset
+        if roi is not None and roi.ndim == 2:
+            sides = roi
+
+        if sides is None:
             ip_weights = compute_ip_quadrature_weights(
                 fe_problem.geometry_cache,
             )
@@ -126,14 +146,9 @@ class FEDisplacementMatch(FEQoI):
             self._surface_groups = None
             self._norm_factor = float(weight) / (span * volume)
         else:
-            if roi is not None:
-                raise ValueError(
-                    "FEDisplacementMatch: give a sideset or a region of "
-                    "interest, not both"
-                )
             self._element_mask = None
             self._surface_groups, self._norm_factor = surface_groups_and_norm(
-                fe_problem, sideset, "u", weight, t_schedule,
+                fe_problem, sides, "u", weight, t_schedule,
             )
 
     @classmethod
@@ -150,16 +165,7 @@ class FEDisplacementMatch(FEQoI):
         sideset = qoi_section.get("sideset")
         roi = None
         if "roi_file" in qoi_section:
-            ndims = fe_problem.ndims
-            if ndims != 2:
-                raise NotImplementedError(
-                    "FEDisplacementMatch: roi_file is supported on 2D meshes, "
-                    "where the region of interest is elements. A 3D mesh is "
-                    "measured on a face, so its region of interest is sides, "
-                    "which needs build_surface_integration_groups to accept "
-                    "side pairs rather than a sideset name"
-                )
-            roi = load_roi(qoi_section, ndims)
+            roi = load_roi(qoi_section, fe_problem.ndims)
         return cls(
             fe_problem, t_schedule, data, weight, sideset=sideset, roi=roi)
 

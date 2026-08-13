@@ -103,7 +103,7 @@ class TestFEDicMatch(unittest.TestCase):
         )
 
     def _reference_J(self, node_field, U) -> float:
-        data = np.broadcast_to(node_field.ravel(), (2, self.n_dofs))
+        data = np.broadcast_to(node_field, (2, *node_field.shape))
         qoi = FEDisplacementMatch(
             self.fe, self.t, jnp.asarray(data), sideset="xmax_sides",
         )

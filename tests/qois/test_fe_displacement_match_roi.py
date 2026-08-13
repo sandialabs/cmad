@@ -12,6 +12,11 @@ than FE solutions:
 - a mismatch on a node that only one element owns scores zero once the
   region excludes that element.
 
+A 3D mesh is measured on its surface, so its region of interest is
+``(elem_id, local_side_id)`` pairs and the mismatch is integrated over
+those sides rather than over the mesh. The same two checks run on a unit
+cube of eight hexes, against pairs on its x=1 face.
+
 ``load_roi`` is covered separately: the mesh dimension chooses whether
 ``elements`` or ``sides`` is read, so a file built for the other kind of
 mesh raises rather than integrating over the wrong entities.
@@ -26,8 +31,8 @@ from jax.tree_util import tree_map
 from cmad.fem.assembly import params_by_block_from_models
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.fe_problem import build_fe_problem
-from cmad.fem.finite_element import Q1_QUAD
-from cmad.fem.mesh import StructuredQuadMesh
+from cmad.fem.finite_element import Q1_HEX, Q1_QUAD
+from cmad.fem.mesh import StructuredHexMesh, StructuredQuadMesh
 from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.qoi_data import load_roi
@@ -40,21 +45,37 @@ from cmad.qois.fe_displacement_match import FEDisplacementMatch
 _T_SCHEDULE = [0.0, 1.0]
 
 
+def _elastic(def_type):
+    values = {"elastic": {"kappa": 100.0, "mu": 50.0}}
+    return Elastic(
+        Parameters(values, tree_map(lambda _: True, values),
+                   tree_map(lambda _: None, values)),
+        def_type=def_type,
+    )
+
+
 def _problem():
     mesh = StructuredQuadMesh(lengths=(1.0, 1.0), divisions=(2, 2))
     dof_map = build_dof_map(
         mesh, [GlobalFieldLayout(name="u", finite_element=Q1_QUAD)], [],
         components_by_field={"u": 2},
     )
-    values = {"elastic": {"kappa": 100.0, "mu": 50.0}}
-    model = Elastic(
-        Parameters(values, tree_map(lambda _: True, values),
-                   tree_map(lambda _: None, values)),
-        def_type=DefType.PLANE_STRAIN,
-    )
     return mesh, build_fe_problem(
         mesh=mesh, dof_map=dof_map, gr=Mechanics(ndims=2),
-        models_by_block={"all": model},
+        models_by_block={"all": _elastic(DefType.PLANE_STRAIN)},
+        modes_by_block={"all": GlobalResidualMode.CLOSED_FORM},
+    )
+
+
+def _cube_problem():
+    mesh = StructuredHexMesh(lengths=(1.0, 1.0, 1.0), divisions=(2, 2, 2))
+    dof_map = build_dof_map(
+        mesh, [GlobalFieldLayout(name="u", finite_element=Q1_HEX)], [],
+        components_by_field={"u": 3},
+    )
+    return mesh, build_fe_problem(
+        mesh=mesh, dof_map=dof_map, gr=Mechanics(ndims=3),
+        models_by_block={"all": _elastic(DefType.FULL_3D)},
         modes_by_block={"all": GlobalResidualMode.CLOSED_FORM},
     )
 
@@ -116,6 +137,59 @@ class TestRegionOfInterest(unittest.TestCase):
             FEDisplacementMatch(
                 self.fe_problem, _T_SCHEDULE, self._uniform_data(0.25),
                 sideset="xmax_sides", roi=np.array([0], dtype=np.intp))
+
+
+class TestSideRegionOfInterest(unittest.TestCase):
+    """A 3D region of interest is sides, integrated over those alone."""
+
+    def setUp(self) -> None:
+        self.mesh, self.fe_problem = _cube_problem()
+        self.n_nodes = self.mesh.nodes.shape[0]
+        self.U = np.zeros(self.n_nodes * 3)
+        self.face = self.mesh.side_sets["xmax_sides"]
+
+    def _data(self, shift: float = 0.0) -> np.ndarray:
+        data = np.zeros((len(_T_SCHEDULE), self.n_nodes, 3))
+        data[..., 0] = shift
+        return data
+
+    def test_normalization_uses_the_selected_sides(self) -> None:
+        data = self._data(0.25)
+        whole = _evaluate(self.fe_problem, data, self.U, self.face)
+        half = _evaluate(self.fe_problem, data, self.U, self.face[:2])
+        self.assertAlmostEqual(whole, 0.25 ** 2, places=12)
+        self.assertAlmostEqual(half, whole, places=12)
+
+    def test_mismatch_off_the_selected_sides_is_not_scored(self) -> None:
+        # the far corner sits on the x=1 face and belongs to one element
+        # there, so the two sides on the other half of the face miss it
+        far_node = int(np.argmin(np.linalg.norm(
+            self.mesh.nodes - np.array([1.0, 1.0, 1.0]), axis=1)))
+        centroids = self.mesh.nodes[self.mesh.connectivity].mean(axis=1)
+        near_half = self.face[centroids[self.face[:, 0], 1] < 0.5]
+        self.assertEqual(near_half.shape[0], 2)
+        self.assertNotIn(
+            far_node, self.mesh.connectivity[near_half[:, 0]])
+
+        data = self._data()
+        data[:, far_node, 0] = 1.0
+        self.assertGreater(
+            _evaluate(self.fe_problem, data, self.U, self.face), 0.0)
+        self.assertAlmostEqual(
+            _evaluate(self.fe_problem, data, self.U, near_half), 0.0,
+            places=12)
+
+    def test_a_mismatch_away_from_the_face_is_not_scored(self) -> None:
+        # scored over the mesh, missed once the region is the x=1 face
+        inner_node = int(np.argmin(np.linalg.norm(
+            self.mesh.nodes - np.array([0.0, 0.5, 0.5]), axis=1)))
+        data = self._data()
+        data[:, inner_node, 0] = 1.0
+        self.assertGreater(
+            _evaluate(self.fe_problem, data, self.U, None), 0.0)
+        self.assertAlmostEqual(
+            _evaluate(self.fe_problem, data, self.U, self.face), 0.0,
+            places=12)
 
 
 class TestLoadRoi(unittest.TestCase):
