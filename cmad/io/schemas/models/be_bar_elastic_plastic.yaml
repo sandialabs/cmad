@@ -6,4 +6,4 @@ properties:
   name:
     const: be_bar_elastic_plastic
   def_type:
-    enum: [full_3d]
+    enum: [full_3d, plane_strain, plane_stress]

@@ -9,6 +9,7 @@ from jax.tree_util import tree_map
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.global_fields import mp_U_from_F
+from cmad.models.nonlinear_solver import make_newton_solve, newton_solve
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.objectives.mp_jvp_objective import MPJVPObjective
 from cmad.objectives.mp_objective import (
@@ -18,7 +19,6 @@ from cmad.objectives.mp_objective import (
 )
 from cmad.parameters.parameters import Parameters
 from cmad.qois.calibration import Calibration
-from cmad.solver.nonlinear_solver import make_newton_solve, newton_solve
 
 
 def get_xis(update_fun, model, F, parameters):
