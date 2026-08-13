@@ -19,6 +19,8 @@ def newton_solve(
         max_ls_evals: int = 0,
 ) -> tuple[int, float]:
 
+    model.apply_initial_guess()
+
     converged = False
     ii = 0
     C_norm_0: np.floating | float = 1.

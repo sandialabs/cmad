@@ -303,6 +303,25 @@ class Model(ABC):
             self._xi[ii] = self._init_xi[ii].copy().astype(self.dtype)
             self._xi_prev[ii] = self._init_xi[ii].copy().astype(self.dtype)
 
+    def apply_initial_guess(self) -> None:
+        """Move xi to the model's initial guess for the local solve.
+
+        A no-op for models that do not supply one, which leaves xi where
+        advance_xi left it, at xi_prev. The arguments match what the traced
+        solver passes (cmad.models.nonlinear_solver.make_newton_solve), so
+        both solvers start a step from the same state.
+
+        The blocks are copied rather than aliased because add_to_xi writes
+        them in place.
+        """
+        if self.initial_guess_fn is None:
+            return
+        _xi, xi_prev, params, U, U_prev = self.variables()
+        guess = self.initial_guess_fn(
+            xi_prev, params, U, U_prev, self._step_time)
+        for ii in range(self.num_residuals):
+            self._xi[ii] = np.array(guess[ii], dtype=self.dtype)
+
     def C(self) -> NDArray[np.floating]:
         return self._C
 

@@ -19,7 +19,7 @@ from typing import Any, ClassVar
 
 import jax.numpy as jnp
 import numpy as np
-from jax import grad
+from jax import grad, jit
 
 from cmad.io.registry import register_model
 from cmad.models.deformation_types import DefType, def_type_ndims
@@ -234,9 +234,9 @@ class BeBarElasticPlastic(MechanicsModel):
             self._cauchy_fn,
             def_type=def_type, oop_stretch_idx=self._oop_stretch_idx)
 
-        self.initial_guess_fn = partial(
+        self.initial_guess_fn = jit(partial(
             initial_guess,
-            def_type=def_type, oop_stretch_idx=self._oop_stretch_idx)
+            def_type=def_type, oop_stretch_idx=self._oop_stretch_idx))
 
         super().__init__(residual, cauchy)
 
