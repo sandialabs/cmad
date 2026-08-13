@@ -48,7 +48,6 @@ class MPObjective(ABC):
             [[None] * self._model.num_residuals
              for ii in range(self._num_steps + 1)],
         )
-        self._model.store_xi(self._xi_at_step, self._model.xi(), 0)
 
     def evaluate(
         self, flat_active_values: NDArray[np.floating]
@@ -66,6 +65,7 @@ class MPObjective(ABC):
         F = self._global_state
         xi_at_step = self._xi_at_step
         model.set_xi_to_init_vals()
+        model.store_xi(xi_at_step, model.xi_prev(), 0)
 
         J: float | NDArray[np.number] = 0.
         num_steps = self._num_steps
