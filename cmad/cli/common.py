@@ -616,10 +616,23 @@ def _build_dirichlet_bcs(
         ))
 
     fe_by_field = {fl.name: fl.finite_element for fl in field_layouts}
-    # Several components usually name the same file; read each one once.
-    by_path: dict[str, NDArray[np.float64]] = {}
-    for entry_name, entry in dbc_section.get("field", {}).items():
-        resid_name, eq, sideset, data_file = entry
+    field_entries = dbc_section.get("field", {})
+    data_file = dbc_section.get("field data file")
+    if field_entries and data_file is None:
+        raise KeyError(
+            "dirichlet bcs: 'field data file' is required when 'field' "
+            "conditions are given; every component reads the same measured "
+            "field, so the file is named once",
+        )
+    data = (
+        np.asarray(
+            load_displacement_data({"data_file": str(data_file)}),
+            dtype=np.float64,
+        )
+        if field_entries else None
+    )
+    for entry_name, entry in field_entries.items():
+        resid_name, eq, sideset = entry
         where = f"dirichlet bcs.field.{entry_name}"
         r = _resolve_resid_idx(resid_name, gr, where)
         _check_bc_eq(eq, r, resid_name, gr, where)
@@ -629,12 +642,7 @@ def _build_dirichlet_bcs(
                 f"{where}: unknown sideset '{sideset}'; known sidesets: "
                 f"{sorted(mesh.side_sets)}",
             )
-        if str(data_file) not in by_path:
-            by_path[str(data_file)] = np.asarray(
-                load_displacement_data({"data_file": str(data_file)}),
-                dtype=np.float64,
-            )
-        data = by_path[str(data_file)]
+        assert data is not None
         _check_field_bc_data(data, t_schedule, mesh, eq, str(data_file), where)
         node_ids = sideset_basis_fns(
             mesh, fe_by_field[field_name], [str(sideset)],

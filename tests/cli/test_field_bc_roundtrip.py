@@ -55,8 +55,9 @@ def _deck(
 ) -> dict[str, Any]:
     """A cube held on the three min faces and pulled on ``xmax_sides``.
 
-    ``loaded_face`` is the entry driving that face; it lands under
-    ``expression`` or ``field`` according to its value slot.
+    ``loaded_face`` is the entry driving that face. A data file in its
+    value slot makes it a field condition, named by ``field data file``;
+    an expression makes it an expression condition.
     """
     is_field = str(loaded_face[3]).endswith((".npy", ".exo"))
     elastic: dict[str, Any] = (
@@ -75,7 +76,8 @@ def _deck(
         },
     }
     if is_field:
-        dbcs["field"] = {"load_x": loaded_face}
+        dbcs["field data file"] = loaded_face[3]
+        dbcs["field"] = {"load_x": loaded_face[:3]}
     else:
         dbcs["expression"]["load_x"] = loaded_face
 
