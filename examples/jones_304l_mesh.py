@@ -41,6 +41,7 @@ from jones_304l_geometry import (
     Loop,
     centering_offset,
     clean_loop,
+    loop_area,
     read_nominal_geometry,
     trim_outline,
     trimmed_area,
@@ -157,6 +158,13 @@ def build_specimen_mesh(
     trimmed = trimmed - offset
     kept = [hole - offset for hole in kept]
     area = trimmed_area(trimmed, kept)
+
+    # The surface takes its normal from the outer loop, and the geometry
+    # file winds every loop clockwise, which would put the normal along
+    # -z and leave every triangle with a negative Jacobian. Turn the
+    # outer loop counterclockwise, leaving the holes opposite to it.
+    if loop_area(trimmed) < 0.0:
+        trimmed = trimmed[::-1]
 
     base_z = -0.5 * thickness if (thickness and center == "xyz") else 0.0
 

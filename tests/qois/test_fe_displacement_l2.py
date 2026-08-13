@@ -167,7 +167,7 @@ class TestQoIThroughDriver(unittest.TestCase):
         t_schedule = [0.0, 0.4, 1.0]
         qoi = FEDisplacementL2(fe_problem, t_schedule)
 
-        state, J_driver = fe_quasistatic_drive(
+        state, J_driver, _ = fe_quasistatic_drive(
             fe_problem, t_schedule, qoi=qoi,
         )
 
@@ -197,7 +197,7 @@ class TestQoIThroughDriver(unittest.TestCase):
 
     def test_driver_returns_zero_J_when_no_qoi(self) -> None:
         fe_problem = self._build_uniaxial_problem()
-        _, J = fe_quasistatic_drive(fe_problem, [0.0, 1.0])
+        _, J, _ = fe_quasistatic_drive(fe_problem, [0.0, 1.0])
         self.assertEqual(float(J), 0.0)
 
 

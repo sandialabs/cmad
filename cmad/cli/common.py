@@ -263,7 +263,9 @@ def build_fe_J_of_params_flat(
         qoi_step_contribution = qoi.step_contribution(
             params_by_block, fe_arrays,
         )
-        _, _, J = trajectory(
+        # This runs under AD, so a non-converged step cannot raise from
+        # here; the objective is built from what the trajectory reached.
+        _, _, J, _first_failed_step, _rel_norm = trajectory(
             fe_arrays,
             params_by_block,
             state_init,
@@ -425,6 +427,7 @@ def build_fe_problem_from_deck(
             local_section.get("print convergence", False),
         ),
         local_newton_settings=local_newton_settings,
+        thickness=resolved["discretization"].get("thickness"),
     )
 
     qoi: FEQoI | None = None

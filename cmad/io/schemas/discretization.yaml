@@ -5,6 +5,7 @@ additionalProperties: false
 properties:
   mesh file: {type: string}
   build coordinate sidesets: {type: boolean}
+  thickness: {type: number, exclusiveMinimum: 0}
   num steps: {type: integer, minimum: 1}
   step size: {type: number, exclusiveMinimum: 0}
   times file: {type: string}

@@ -209,7 +209,7 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
     coo_rows, coo_cols, coo_dedup_scatter = assembled_coo_dedup(fe_problem)
     neumann_side_arrays = build_neumann_side_arrays(
         mesh, dof_map, fe_problem.resolved_neumann_bcs,
-        fe_problem.side_quadrature,
+        fe_problem.side_quadrature, fe_problem.thickness,
     )
     dbc_arrays = build_dbc_arrays(dof_map)
 

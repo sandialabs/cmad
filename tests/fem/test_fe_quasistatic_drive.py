@@ -154,7 +154,7 @@ class TestDriveSingleStepClosedForm(unittest.TestCase):
         )
         t_schedule = [0.0, 1.0]
 
-        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
+        state, _, _ = fe_quasistatic_drive(fe_problem, t_schedule)
 
         n_dofs = fe_problem.dof_map.num_total_dofs
         U_prev_zeros = np.zeros(n_dofs, dtype=np.float64)
@@ -189,7 +189,7 @@ class TestDriveMultiStepCoupledElastic(unittest.TestCase):
         )
         t_schedule = [0.0, 0.5, 1.0]
 
-        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
+        state, _, _ = fe_quasistatic_drive(fe_problem, t_schedule)
 
         self.assertEqual(len(state.U_history), 3)
         self.assertEqual(len(state.xi_history_by_block["all"]), 3)
@@ -235,7 +235,7 @@ class TestDriveXiRestartConsistency(unittest.TestCase):
             slope=1.5e-3,
         )
         t_schedule = [0.0, 1.0, 2.0]
-        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
+        state, _, _ = fe_quasistatic_drive(fe_problem, t_schedule)
 
         # Sanity: at least one IP plastic (alpha > 0) at step 2.
         # SmallElasticPlastic FULL_3D xi = [vec_cauchy(6), alpha(1)],
@@ -285,7 +285,7 @@ class TestDriveMixedModeFEState(unittest.TestCase):
             slope=5e-4,
         )
         t_schedule = [0.0, 0.5, 1.0]
-        state, _ = fe_quasistatic_drive(fe_problem, t_schedule)
+        state, _, _ = fe_quasistatic_drive(fe_problem, t_schedule)
 
         self.assertEqual(len(state.U_history), 3)
         self.assertEqual(len(state.xi_history_by_block["left"]), 3)
@@ -318,7 +318,7 @@ class TestSolverKwargsForwarded(unittest.TestCase):
             slope=5e-4,
         )
         t_schedule = [0.0, 1.0]
-        state, _ = fe_quasistatic_drive(
+        state, _, _ = fe_quasistatic_drive(
             fe_problem, t_schedule,
             nonlinear_solver_settings={"max iters": 0},
         )
@@ -329,6 +329,45 @@ class TestSolverKwargsForwarded(unittest.TestCase):
         np.testing.assert_array_almost_equal(
             np.asarray(state.U_at(1)), np.asarray(state.U_at(0)),
         )
+
+
+class TestDriveReportsNonConvergence(unittest.TestCase):
+    """A step that hits the Newton iteration limit without meeting
+    either tolerance is reported.
+
+    The driver returns the failure rather than raising, so a caller can
+    choose what it means; ``cmad primal`` turns it into an error.
+    """
+
+    def _drive(self, max_iters: int, n_steps: int):
+        mesh = StructuredHexMesh(
+            lengths=(1.0, 1.0, 1.0), divisions=(1, 1, 1),
+        )
+        models_by_block: dict[str, Model] = {"all": _make_elastic_model()}
+        fe_problem = _build_uniaxial_fe_problem(
+            mesh,
+            models_by_block,
+            {"all": GlobalResidualMode.CLOSED_FORM},
+            slope=5e-4,
+        )
+        t_schedule = [i / n_steps for i in range(n_steps + 1)]
+        return fe_quasistatic_drive(
+            fe_problem, t_schedule,
+            nonlinear_solver_settings={"max iters": max_iters},
+        )
+
+    def test_converged_run_reports_success(self) -> None:
+        _state, _J, status = self._drive(max_iters=10, n_steps=3)
+        self.assertTrue(status.converged)
+        self.assertEqual(status.first_failed_step, -1)
+
+    def test_failed_run_reports_the_first_step_that_failed(self) -> None:
+        # No iterations are allowed, so every step fails and the first
+        # one is the one reported.
+        _state, _J, status = self._drive(max_iters=0, n_steps=3)
+        self.assertFalse(status.converged)
+        self.assertEqual(status.first_failed_step, 0)
+        self.assertIn("step 1", status.failure_message())
 
 
 if __name__ == "__main__":

@@ -265,7 +265,7 @@ def per_element_R_and_K(
     :data:`cmad.typing.ResidualFnGR`).
 
     ``geom_per_elem`` packs the per-element-IP arrays — signed
-    ``iso_jac_det`` (the integration measure ``dv = iso_jac_det·w``),
+    ``iso_jac_det`` (the integration measure ``iso_jac_det·thickness·w``),
     physical-frame field-shape gradients (one entry per residual
     block, lifted via ``inv(iso_jac)`` from the geometric basis) and
     physical IP coordinates (``coords_ip = N_geom · X_elem``) consumed
@@ -289,7 +289,7 @@ def per_element_R_and_K(
     """
     num_blocks = len(residual_block_shapes)
 
-    def per_ip(quad_w_ip, iso_jac_det_ip, coords_ip,
+    def per_ip(quad_w_ip, dv_ip, coords_ip,
                field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block):
         field_shapes_phys_per_block = [
             ShapeFunctionsAtIP(
@@ -300,7 +300,7 @@ def per_element_R_and_K(
         ]
         R_ip, dR_dU_ip = R_and_dR_dU_evaluator(
             params, U_elem, U_prev_elem,
-            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip,
+            field_shapes_phys_per_block, quad_w_ip, dv_ip,
             geom_per_elem.element_size, 0, step_time,
         )
         body_force_ip_per_block = {
@@ -308,7 +308,7 @@ def per_element_R_and_K(
                 "a,k->ak",
                 field_shapes_phys_per_block[block_idx].N,
                 jnp.asarray(forcing_fn(coords_ip, step_time.t)),
-            ) * quad_w_ip * iso_jac_det_ip
+            ) * quad_w_ip * dv_ip
             for block_idx, forcing_fn in forcing_fns_by_block_idx.items()
         }
         return R_ip, dR_dU_ip, body_force_ip_per_block
@@ -325,7 +325,7 @@ def per_element_R_and_K(
         _zero_R_and_dR_dU_accumulators(residual_block_shapes),
         (
             geom_shared.quad_w,
-            geom_per_elem.iso_jac_det,
+            geom_per_elem.iso_jac_det * geom_shared.thickness,
             geom_per_elem.coords_ip,
             [geom_shared.field_N_per_block[r] for r in range(num_blocks)],
             [
@@ -370,7 +370,7 @@ def per_element_R(
     """
     num_blocks = len(residual_block_shapes)
 
-    def per_ip(quad_w_ip, iso_jac_det_ip, coords_ip,
+    def per_ip(quad_w_ip, dv_ip, coords_ip,
                field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block):
         field_shapes_phys_per_block = [
             ShapeFunctionsAtIP(
@@ -381,7 +381,7 @@ def per_element_R(
         ]
         R_ip = list(R_evaluator(
             params, U_elem, U_prev_elem,
-            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip,
+            field_shapes_phys_per_block, quad_w_ip, dv_ip,
             geom_per_elem.element_size, 0, step_time,
         ))
         for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
@@ -389,7 +389,7 @@ def per_element_R(
                 "a,k->ak",
                 field_shapes_phys_per_block[block_idx].N,
                 jnp.asarray(forcing_fn(coords_ip, step_time.t)),
-            ) * quad_w_ip * iso_jac_det_ip
+            ) * quad_w_ip * dv_ip
             R_ip[block_idx] = R_ip[block_idx] - f_ext
         return R_ip
 
@@ -402,7 +402,7 @@ def per_element_R(
         [jnp.zeros(shape) for shape in residual_block_shapes],
         (
             geom_shared.quad_w,
-            geom_per_elem.iso_jac_det,
+            geom_per_elem.iso_jac_det * geom_shared.thickness,
             geom_per_elem.coords_ip,
             [geom_shared.field_N_per_block[r] for r in range(num_blocks)],
             [
@@ -475,7 +475,7 @@ def per_element_R_and_K_coupled(
     """
     num_blocks = len(residual_block_shapes)
 
-    def per_ip(quad_w_ip, iso_jac_det_ip, coords_ip,
+    def per_ip(quad_w_ip, dv_ip, coords_ip,
                xi_prev_at_ip,
                field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block,
                ip_idx):
@@ -489,7 +489,7 @@ def per_element_R_and_K_coupled(
         xi_prev_blocks = unravel_xi(xi_prev_at_ip)
         R_ip, dR_dU_ip, xi_blocks = R_and_dR_dU_and_xi_evaluator(
             params, U_elem, U_prev_elem, xi_prev_blocks,
-            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip,
+            field_shapes_phys_per_block, quad_w_ip, dv_ip,
             geom_per_elem.element_size, 0,
             step_time, ip_idx,
         )
@@ -501,7 +501,7 @@ def per_element_R_and_K_coupled(
                 "a,k->ak",
                 field_shapes_phys_per_block[block_idx].N,
                 jnp.asarray(forcing_fn(coords_ip, step_time.t)),
-            ) * quad_w_ip * iso_jac_det_ip
+            ) * quad_w_ip * dv_ip
             for block_idx, forcing_fn in forcing_fns_by_block_idx.items()
         }
         return R_ip, dR_dU_ip, xi_flat, body_force_ip_per_block
@@ -521,7 +521,7 @@ def per_element_R_and_K_coupled(
         _zero_R_and_dR_dU_accumulators(residual_block_shapes),
         (
             geom_shared.quad_w,
-            geom_per_elem.iso_jac_det,
+            geom_per_elem.iso_jac_det * geom_shared.thickness,
             geom_per_elem.coords_ip,
             xi_prev_per_ip,
             [geom_shared.field_N_per_block[r] for r in range(num_blocks)],
@@ -568,7 +568,7 @@ def per_element_R_coupled(
     """
     num_blocks = len(residual_block_shapes)
 
-    def per_ip(quad_w_ip, iso_jac_det_ip, coords_ip, xi_prev_at_ip,
+    def per_ip(quad_w_ip, dv_ip, coords_ip, xi_prev_at_ip,
                field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block):
         field_shapes_phys_per_block = [
             ShapeFunctionsAtIP(
@@ -580,7 +580,7 @@ def per_element_R_coupled(
         xi_prev_blocks = unravel_xi(xi_prev_at_ip)
         R_ip = list(R_coupled_evaluator(
             params, U_elem, U_prev_elem, xi_prev_blocks,
-            field_shapes_phys_per_block, quad_w_ip, iso_jac_det_ip,
+            field_shapes_phys_per_block, quad_w_ip, dv_ip,
             geom_per_elem.element_size, 0, step_time,
         ))
         for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
@@ -588,7 +588,7 @@ def per_element_R_coupled(
                 "a,k->ak",
                 field_shapes_phys_per_block[block_idx].N,
                 jnp.asarray(forcing_fn(coords_ip, step_time.t)),
-            ) * quad_w_ip * iso_jac_det_ip
+            ) * quad_w_ip * dv_ip
             R_ip[block_idx] = R_ip[block_idx] - f_ext
         return R_ip
 
@@ -601,7 +601,7 @@ def per_element_R_coupled(
         [jnp.zeros(shape) for shape in residual_block_shapes],
         (
             geom_shared.quad_w,
-            geom_per_elem.iso_jac_det,
+            geom_per_elem.iso_jac_det * geom_shared.thickness,
             geom_per_elem.coords_ip,
             xi_prev_per_ip,
             [geom_shared.field_N_per_block[r] for r in range(num_blocks)],

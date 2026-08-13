@@ -324,6 +324,7 @@ def build_neumann_side_arrays(
         dof_map: GlobalDofMap,
         resolved_neumann_bcs: Sequence[ResolvedNeumannBC],
         side_quadrature: dict[ElementFamily, QuadratureRule],
+        thickness: float | None = None,
 ) -> NeumannSideArrays:
     """Precompute the per-NBC :class:`NeumannSideGroup` cache.
 
@@ -333,9 +334,10 @@ def build_neumann_side_arrays(
     there are no Neumann BCs.
 
     ``dA`` is the unsigned side measure (area element from the tangent
-    cross product for a 3D face, tangent length for a 2D edge); the
-    lift's orientation is preserved in ``(origin, tangents)`` for
-    follower-load extensions that consume the signed normal.
+    cross product for a 3D face, tangent length times the out of plane
+    ``thickness`` for a 2D edge); the lift's orientation is preserved in
+    ``(origin, tangents)`` for follower-load extensions that consume the
+    signed normal.
     """
     if not resolved_neumann_bcs:
         return ()
@@ -396,8 +398,11 @@ def build_neumann_side_arrays(
                     axis=-1,
                 )
             else:
-                # 2D edge: length of the single physical tangent column
-                dA = jnp.linalg.norm(surface_jac[..., 0], axis=-1)
+                # 2D edge: length of the single physical tangent column,
+                # over the out of plane thickness
+                dA = jnp.linalg.norm(surface_jac[..., 0], axis=-1) * (
+                    1.0 if thickness is None else thickness
+                )
             coords_ip = jnp.einsum("pa,eai->epi", geom_shapes.N, X_block)
 
             eq_3d = (

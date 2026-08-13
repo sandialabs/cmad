@@ -98,13 +98,15 @@ def _run_primal_fe(deck_path: Path) -> int:
     write_qoi = (
         qoi if qoi is not None and qoi.produces_primal_output() else None
     )
-    fe_state, J = fe_quasistatic_drive(
+    fe_state, J, status = fe_quasistatic_drive(
         bundle.fe_problem,
         bundle.t_schedule.tolist(),
         nonlinear_solver_settings=nonlinear_solver_settings,
         linear_solver_settings=linear_solver_settings,
         qoi=None if write_qoi is not None else qoi,
     )
+    if not status.converged:
+        raise RuntimeError(status.failure_message())
 
     if "output" not in bundle.resolved:
         return 0

@@ -1,5 +1,6 @@
 """Global Newton driver for the FE forward problem."""
 from collections.abc import Mapping
+from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
@@ -186,6 +187,45 @@ def _solve_linear(
     )
 
 
+@dataclass(frozen=True)
+class NewtonStatus:
+    """How a global Newton step ended.
+
+    ``converged`` is :func:`newton_converged` applied to the two norms;
+    the norms come along so a caller can report how far off a failed step
+    was, in both absolute and relative terms.
+    """
+    converged: JaxArray
+    residual_norm: JaxArray
+    residual_norm_0: JaxArray
+
+    def relative_norm(self) -> JaxArray:
+        return self.residual_norm / self.residual_norm_0
+
+
+def newton_converged(
+        residual_norm: JaxArray,
+        residual_norm_0: JaxArray,
+        abs_tol: float,
+        rel_tol: float,
+) -> JaxArray:
+    """Whether a global Newton residual meets either tolerance.
+
+    The single place the criterion is written. The forward loop tests it
+    to decide when to stop, and a caller tests it on the returned norms to
+    tell a converged step from one that hit the iteration limit, so the two
+    cannot drift apart.
+
+    ``residual_norm_0`` is the norm the step started from, floored at
+    ``abs_tol`` by the solver, so on a step that begins already converged
+    the relative test is measured against that floor rather than the true
+    initial norm.
+    """
+    return jnp.logical_or(
+        residual_norm < abs_tol, residual_norm < rel_tol * residual_norm_0,
+    )
+
+
 def _fe_newton_primal(
         fe_problem: FEProblem,
         fe_arrays: FEKernelArrays,
@@ -195,7 +235,7 @@ def _fe_newton_primal(
         step_time: StepTime,
         nonlinear_solver_settings: dict[str, Any],
         linear_solver_settings: dict[str, Any],
-) -> tuple[JaxArray, dict[str, JaxArray]]:
+) -> tuple[JaxArray, dict[str, JaxArray], JaxArray, JaxArray]:
     """Forward Newton iteration: ``lax.while_loop`` + linear-solver dispatch.
 
     Each step assembles ``(K_bcoo, R)`` via :func:`assemble_global`,
@@ -206,8 +246,13 @@ def _fe_newton_primal(
     ``direct``, ``cg``, ``gmres``). ``cond`` checks the residual norm
     against the absolute and relative tolerances.
 
-    Returns ``(U_star, xi_star)``: the converged displacement and the
-    solved state at it.
+    Returns ``(U_star, xi_star, residual_norm, residual_norm_0)``: the
+    converged displacement, the solved state at it, the residual norm the
+    loop exited on, and the norm it started from. The loop stops once the
+    residual meets the absolute tolerance ``abs tol`` or falls to
+    ``rel tol`` of where it started, and otherwise when it hits the
+    iteration limit. Both norms come back because the exit alone does not say
+    which of those happened; :func:`newton_converged` is the shared test.
     """
     max_iters = nonlinear_solver_settings["max iters"]
     abs_tol = nonlinear_solver_settings["abs tol"]
@@ -258,10 +303,10 @@ def _fe_newton_primal(
 
     def cond(state):
         i, r, _, _, _ = state
-        R_norm = jnp.linalg.norm(r)
-        return (i < max_iters) & (R_norm >= abs_tol) & (
-            R_norm >= rel_tol * R0
+        converged = newton_converged(
+            jnp.linalg.norm(r), R0, abs_tol, rel_tol,
         )
+        return (i < max_iters) & jnp.logical_not(converged)
 
     def body(state):
         i, r, K, U, xi = state
@@ -288,10 +333,10 @@ def _fe_newton_primal(
         _print_line(i + 2, r_new)
         return (i + 1, r_new, K_new, U_new, xi_new)
 
-    _, _, _, U_star, xi_star = lax.while_loop(
+    _, r_star, _, U_star, xi_star = lax.while_loop(
         cond, body, (0, r_init, K_init, U_init, xi_init),
     )
-    return U_star, xi_star
+    return U_star, xi_star, jnp.linalg.norm(r_star), R0
 
 
 def fe_newton_solve(
@@ -304,7 +349,9 @@ def fe_newton_solve(
         t_prev: float | None = None,
         nonlinear_solver_settings: dict[str, Any] | None = None,
         linear_solver_settings: dict[str, Any] | None = None,
-) -> tuple[JaxArray, dict[str, JaxArray]]:
+        return_status: bool = False,
+) -> tuple[JaxArray, dict[str, JaxArray]] | tuple[
+        JaxArray, dict[str, JaxArray], "NewtonStatus"]:
     """Quasi-static global Newton driver for the FE forward problem.
 
     Nonlinear convention: ``K = dR/dU`` is the tangent stiffness and
@@ -394,7 +441,11 @@ def fe_newton_solve(
     / ``'amg'``), and ``degree`` (the Chebyshev step count). Omitted keys fall
     back to :data:`_DEFAULT_LINEAR_SOLVER_SETTINGS`.
 
-    Returns ``(U_star, xi_star)``. Outputs are JAX arrays.
+    Returns ``(U_star, xi_star)``, or with ``return_status`` a third
+    entry, a :class:`NewtonStatus` saying whether the step met a
+    tolerance or hit the iteration limit. Without it a caller cannot tell
+    those apart, and an abandoned step looks like a solved one. Outputs
+    are JAX arrays.
     """
     nls = {
         **_DEFAULT_NONLINEAR_SOLVER_SETTINGS,
@@ -410,9 +461,18 @@ def fe_newton_solve(
         if xi_prev_by_block is not None else {}
     )
     step_time = StepTime(t, t if t_prev is None else t_prev)
-    return _fe_newton_solve_ad(
+    U_star, xi_star, residual_norm, residual_norm_0 = _fe_newton_solve_ad(
         fe_problem, fe_problem.kernel_arrays, params_by_block,
         U_prev_jax, xi_prev_jax, step_time, _freeze(nls), _freeze(lss),
+    )
+    if not return_status:
+        return U_star, xi_star
+    return U_star, xi_star, NewtonStatus(
+        converged=newton_converged(
+            residual_norm, residual_norm_0, nls["abs tol"], nls["rel tol"],
+        ),
+        residual_norm=residual_norm,
+        residual_norm_0=residual_norm_0,
     )
 
 
@@ -426,7 +486,7 @@ def _fe_newton_solve_ad(
         step_time: StepTime,
         nonlinear_solver_settings_frozen: tuple[tuple[str, Any], ...],
         linear_solver_settings_frozen: tuple[tuple[str, Any], ...],
-) -> tuple[JaxArray, dict[str, JaxArray]]:
+) -> tuple[JaxArray, dict[str, JaxArray], JaxArray, JaxArray]:
     """AD-decorated inner driver. JaxArray inputs only.
 
     Splitting the public ``fe_newton_solve`` from this inner form
@@ -443,11 +503,10 @@ def _fe_newton_solve_ad(
     """
     nls = _thaw(nonlinear_solver_settings_frozen)
     lss = _thaw(linear_solver_settings_frozen)
-    U_star, xi_star = _fe_newton_primal(
+    return _fe_newton_primal(
         fe_problem, fe_arrays, params_by_block, U_prev, xi_prev_by_block,
         step_time, nls, lss,
     )
-    return U_star, xi_star
 
 
 @_fe_newton_solve_ad.defjvp
@@ -480,7 +539,7 @@ def _fe_newton_solve_ad_jvp(
 
     lss = _thaw(linear_solver_settings_frozen)
 
-    U_star, xi_star = _fe_newton_solve_ad(
+    U_star, xi_star, residual_norm, residual_norm_0 = _fe_newton_solve_ad(
         fe_problem, fe_arrays, params_by_block, U_prev, xi_prev_by_block,
         step_time, nonlinear_solver_settings_frozen,
         linear_solver_settings_frozen,
@@ -542,6 +601,11 @@ def _fe_newton_solve_ad_jvp(
         (U_star_dot, *p_dot),
     )
 
-    primals_out = (U_star, xi_star)
-    tangents_out = (U_star_dot, xi_star_dot)
+    # The residual norm reports how the forward loop exited, so it is a
+    # diagnostic rather than a solution quantity and carries no tangent.
+    primals_out = (U_star, xi_star, residual_norm, residual_norm_0)
+    tangents_out = (
+        U_star_dot, xi_star_dot,
+        jnp.zeros_like(residual_norm), jnp.zeros_like(residual_norm_0),
+    )
     return primals_out, tangents_out

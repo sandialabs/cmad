@@ -117,26 +117,30 @@ class BlockIPGeometryShared:
 
     - ``quad_w``: ``(n_ip,)``
     - ``field_N_per_block[r]``: ``(n_ip, n_dofs_b_r)``
+    - ``thickness``: scalar; how far a 2D mesh spans out of plane, so
+      that the volume element is ``iso_jac_det * thickness``.
     """
     quad_w: JaxArray
     field_N_per_block: tuple[JaxArray, ...]
+    thickness: JaxArray
 
     def tree_flatten(
             self,
-    ) -> tuple[tuple[JaxArray, tuple[JaxArray, ...]], None]:
-        children = (self.quad_w, self.field_N_per_block)
+    ) -> tuple[tuple[JaxArray, tuple[JaxArray, ...], JaxArray], None]:
+        children = (self.quad_w, self.field_N_per_block, self.thickness)
         return children, None
 
     @classmethod
     def tree_unflatten(
             cls,
             aux_data: None,
-            children: tuple[JaxArray, tuple[JaxArray, ...]],
+            children: tuple[JaxArray, tuple[JaxArray, ...], JaxArray],
     ) -> "BlockIPGeometryShared":
-        quad_w, field_N_per_block = children
+        quad_w, field_N_per_block, thickness = children
         return cls(
             quad_w=quad_w,
             field_N_per_block=tuple(field_N_per_block),
+            thickness=thickness,
         )
 
 
@@ -171,6 +175,7 @@ def precompute_block_geometry(
         mesh: Mesh,
         quadrature_by_family: dict[ElementFamily, QuadratureRule],
         field_layouts_per_block: Sequence[GlobalFieldLayout],
+        thickness: float | None = None,
 ) -> dict[str, BlockIPGeometryCache]:
     """Build the per-element-block reference-frame geometry cache.
 
@@ -199,11 +204,22 @@ def precompute_block_geometry(
     inverted elements as Newton divergence rather than silently
     absorbing them via ``abs(...)``. Mesh-orientation correctness is
     the mesh builder's responsibility.
+
+    ``thickness`` is the out of plane extent of a 2D mesh, which scales
+    its integration measure from an area to a volume. A 3D mesh has no
+    such extent, so asking for one there is rejected rather than ignored.
     """
     assert mesh.geometric_finite_element is not None, (
         "Mesh.geometric_finite_element must be resolved before "
         "precomputing geometry; this is set in Mesh.__post_init__."
     )
+    ndims = int(mesh.nodes.shape[1])
+    if thickness is not None and ndims != 2:
+        raise ValueError(
+            f"thickness applies to a 2D mesh; this one is {ndims}D"
+        )
+    if thickness is not None and thickness <= 0.0:
+        raise ValueError(f"thickness must be positive, got {thickness}")
 
     quad_rule = quadrature_by_family[mesh.element_family]
     quad_xi = jnp.asarray(quad_rule.xi)
@@ -224,6 +240,7 @@ def precompute_block_geometry(
     shared = BlockIPGeometryShared(
         quad_w=quad_w,
         field_N_per_block=tuple(field_N_per_block),
+        thickness=jnp.asarray(1.0 if thickness is None else thickness),
     )
 
     element_sizes = element_rms_edge_sizes(mesh)

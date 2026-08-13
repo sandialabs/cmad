@@ -129,6 +129,7 @@ class FEProblem:
     assembly_quadrature: dict[ElementFamily, QuadratureRule]
     neumann_bcs: Sequence[NeumannBC]
     side_quadrature: dict[ElementFamily, QuadratureRule]
+    thickness: float | None = None
 
     field_layouts_per_block: list[GlobalFieldLayout] = field(
         init=False, default_factory=list,
@@ -202,7 +203,7 @@ class FEProblem:
         )
 
         geometry_cache = precompute_block_geometry(
-            self.mesh, self.assembly_quadrature, layouts,
+            self.mesh, self.assembly_quadrature, layouts, self.thickness,
         )
         object.__setattr__(self, "geometry_cache", geometry_cache)
 
@@ -362,6 +363,7 @@ def build_fe_problem(
         side_quadrature: dict[ElementFamily, QuadratureRule] | None = None,
         print_local_convergence: bool = False,
         local_newton_settings: dict[str, Any] | None = None,
+        thickness: float | None = None,
 ) -> FEProblem:
     """Validate FE inputs and build an immutable :class:`FEProblem`.
 
@@ -464,4 +466,5 @@ def build_fe_problem(
         assembly_quadrature=assembly_quadrature,
         neumann_bcs=neumann_bcs,
         side_quadrature=side_quadrature,
+        thickness=thickness,
     )
