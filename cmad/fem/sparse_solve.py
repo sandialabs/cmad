@@ -97,6 +97,11 @@ def _symmetric_diagonal_scaling(
     return 1.0 / d
 
 
+def _index_dtype(largest_index: int) -> type:
+    """``np.int32`` when ``largest_index`` fits it, else ``np.int64``."""
+    return np.int32 if largest_index <= np.iinfo(np.int32).max else np.int64
+
+
 def fill_reducing_permutation(
         indptr: NDArray[np.integer], col_indices: NDArray[np.integer],
         n: int,
@@ -1400,12 +1405,19 @@ def build_embedded_sparsity(
             f"(row, row) entry for every dof"
         )
 
+    # The matvec is bandwidth bound, so index width is part of its cost:
+    # narrower indices move less data per pass. The largest value any of
+    # these arrays holds is a position in the pre-dedup COO, which bounds
+    # every one of them, so one check covers all five. Both `indptr` and
+    # `col_indices` must share a dtype or the CPU lowering falls back to a
+    # generic implementation.
+    index_dtype = _index_dtype(n_assembled + n_presc)
     return EmbeddedSparsity(
-        perm=jnp.asarray(perm),
-        segment_ids=jnp.asarray(segment_ids),
-        indptr=jnp.asarray(indptr),
-        col_indices=jnp.asarray(col_indices),
-        diag_idx=jnp.asarray(diag_idx),
+        perm=jnp.asarray(perm, dtype=index_dtype),
+        segment_ids=jnp.asarray(segment_ids, dtype=index_dtype),
+        indptr=jnp.asarray(indptr, dtype=index_dtype),
+        col_indices=jnp.asarray(col_indices, dtype=index_dtype),
+        diag_idx=jnp.asarray(diag_idx, dtype=index_dtype),
     )
 
 
