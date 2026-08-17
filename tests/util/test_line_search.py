@@ -139,6 +139,38 @@ def test_disabled_returns_full_step():
     assert float(aux) == 7.0
 
 
+def test_merit_floor_skips_the_search():
+    """phi_0 below the floor takes the full step and returns init_aux unprobed."""
+    def eval_fn(alpha):
+        r = 1.0 - 3.0 * alpha  # would be rejected if probed, but it is not
+        return 0.5 * r * r, r * (-3.0), r
+
+    alpha, aux = line_search(
+        eval_fn, 0.4, -0.8, DEFAULT_LINE_SEARCH_SETTINGS, 7.0,
+        merit_floor=0.5,
+    )
+    assert float(alpha) == 1.0
+    assert float(aux) == 7.0
+
+
+def test_merit_floor_at_the_boundary_still_searches():
+    """phi_0 equal to the floor probes, so the skip is strictly inside it.
+
+    The caller picks the floor so that skipping implies its own convergence
+    test; a skip on equality would sit on that test's boundary rather than
+    inside it.
+    """
+    def eval_fn(alpha):
+        return 0.0, 0.0, 99.0
+
+    alpha, aux = line_search(
+        eval_fn, 0.5, -1.0, DEFAULT_LINE_SEARCH_SETTINGS, 7.0,
+        merit_floor=0.5,
+    )
+    assert float(alpha) == 1.0
+    assert float(aux) == 99.0  # the probe ran
+
+
 def test_traces_under_jit():
     """The search runs under jit and matches the eager result.
 

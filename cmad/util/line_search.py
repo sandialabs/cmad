@@ -98,6 +98,7 @@ def line_search(
         dphi_0: Scalar,
         settings: Mapping[str, Any],
         init_aux: PyTree,
+        merit_floor: Scalar | None = None,
 ) -> tuple[Scalar, PyTree]:
     """Backtracking Armijo line search; returns ``(alpha, aux)``.
 
@@ -112,6 +113,10 @@ def line_search(
     full step without probing. ``init_aux`` is the starting value for the
     carried ``aux`` (the base-point assembly works) and is what comes back
     when no trial is evaluated.
+
+    ``merit_floor`` skips the search when ``phi_0`` is below it, returning
+    the full step with no evaluation. Callers choose it so that skipping
+    implies their own convergence test.
 
     Starts at the full step ``alpha = 1`` and accepts the first trial
     meeting sufficient decrease; otherwise contracts via
@@ -132,7 +137,10 @@ def line_search(
 
     def cond(carry):
         n, _alpha, accepted, _aux, _b_alpha, _b_phi, _b_aux = carry
-        return jnp.logical_and(n < max_evals, jnp.logical_not(accepted))
+        searching = jnp.logical_and(n < max_evals, jnp.logical_not(accepted))
+        if merit_floor is None:
+            return searching
+        return jnp.logical_and(searching, phi_0 >= merit_floor)
 
     def body(carry):
         n, alpha, _accepted, _aux, best_alpha, best_phi, best_aux = carry

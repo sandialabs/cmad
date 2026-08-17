@@ -137,8 +137,12 @@ def make_newton_solve(
                     C_trial = residual_flat(x - alpha * delta_x)
                     return 0.5 * (C_trial @ C_trial), None, C_trial
 
+                # Skips the search at points the loop already exits on,
+                # which otherwise backtrack on rounding and set the trip
+                # count for every point.
                 alpha, C_next = line_search(
                     eval_fn, 0.5 * (C @ C), -(C @ C), ls_settings, C,
+                    merit_floor=0.5 * abs_tol**2,
                 )
                 x_next = x - alpha * delta_x
             else:
