@@ -614,7 +614,7 @@ def per_element_R_coupled(
     return R_blocks
 
 
-def assemble_element_block(
+def assemble_element_block_dense(
         fe_problem: FEProblem,
         fe_arrays: "FEKernelArrays",
         params_by_block: Mapping[str, Params],
@@ -623,8 +623,8 @@ def assemble_element_block(
         U_prev_global: NDArray[np.floating] | JaxArray,
         step_time: StepTime,
         xi_prev_per_block: NDArray[np.floating] | JaxArray | None = None,
-) -> tuple[JaxArray, JaxArray, JaxArray | None]:
-    """Assemble one element block's R contribution + COO data.
+) -> tuple[JaxArray, list[list[JaxArray]], JaxArray | None]:
+    """Assemble one element block's R contribution + per element tangent.
 
     Dispatches on ``fe_problem.modes_by_block[block_name]``. The
     CLOSED_FORM branch vmaps :func:`per_element_R_and_K`; the COUPLED
@@ -633,17 +633,17 @@ def assemble_element_block(
     total_xi_dofs)``) through the per-IP local Newton, returning the
     converged xi at the same shape.
 
-    Returns ``(R_block, vals, xi_solved_per_block)``. ``R_block`` is a
+    Returns ``(R_block, K_blocks, xi_solved_per_block)``. ``R_block`` is a
     length-``dof_map.num_total_dofs`` JAX vector: this block's
     per-element residual contributions scattered to their global dof
     positions, and left zero at every dof the block's elements do not
     touch, so :func:`assemble_global` sums the per-block vectors
-    directly. ``vals`` is the JAX-traced COO data stream, emitted in
-    ``(r, s)`` residual-block / U-block order; its static
-    ``(rows, cols)`` are ``fe_arrays.coo_rows`` / ``coo_cols``, which
-    :func:`assembled_coo_indices` builds in the same emit order.
-    ``xi_solved_per_block`` is the converged xi for COUPLED, ``None``
-    for CLOSED_FORM.
+    directly. ``K_blocks[r][s]`` is the per element tangent of residual
+    block ``r`` with respect to U block ``s``, shape ``(n_elems_block,
+    n_dofs_r, n_dofs_s)``; its rows and columns are ordered as
+    ``fe_arrays.r_scatter_eq_by_block[block_name][r]`` and ``[s]``, the
+    global equation numbers they scatter to. ``xi_solved_per_block`` is
+    the converged xi for COUPLED, ``None`` for CLOSED_FORM.
 
     The per-element U-gather index arrays, the per-residual-block
     R-scatter eq arrays, and the reference-frame geometry cache are
@@ -654,10 +654,6 @@ def assemble_element_block(
     must match the cached layout ``(n_elems_block, n_ips,
     total_xi_dofs)``; for CLOSED_FORM blocks the kwarg is ignored and
     may be ``None``.
-
-    Multi-residual-block GRs scatter via nested loops over ``(r, s)``
-    residual-block / U-block pairs; single-block GRs are the
-    degenerate ``r=s=0`` case.
     """
     U_elem_block = _gather_element_U(U_global, fe_arrays, block_name)
     U_prev_elem_block = _gather_element_U(
@@ -720,16 +716,47 @@ def assemble_element_block(
             R_flat.ravel(),
         )
 
-    vals_all: list[JaxArray] = []
-    for r in range(num_blocks):
-        n_dofs_r = eq_indices_per_block[r].shape[1]
-        for s in range(num_blocks):
-            n_dofs_s = eq_indices_per_block[s].shape[1]
-            K_flat = K_per_elem_blocks[r][s].reshape(
-                n_elems, n_dofs_r, n_dofs_s,
+    K_blocks = [
+        [
+            K_per_elem_blocks[r][s].reshape(
+                n_elems,
+                eq_indices_per_block[r].shape[1],
+                eq_indices_per_block[s].shape[1],
             )
-            vals_all.append(K_flat.ravel())
+            for s in range(num_blocks)
+        ]
+        for r in range(num_blocks)
+    ]
+    return R_block, K_blocks, xi_solved_per_block
 
+
+def assemble_element_block(
+        fe_problem: FEProblem,
+        fe_arrays: "FEKernelArrays",
+        params_by_block: Mapping[str, Params],
+        block_name: str,
+        U_global: NDArray[np.floating] | JaxArray,
+        U_prev_global: NDArray[np.floating] | JaxArray,
+        step_time: StepTime,
+        xi_prev_per_block: NDArray[np.floating] | JaxArray | None = None,
+) -> tuple[JaxArray, JaxArray, JaxArray | None]:
+    """Assemble one element block's R contribution + COO data.
+
+    :func:`assemble_element_block_dense` with the per element tangent
+    blocks raveled into the COO data stream. Returns ``(R_block, vals,
+    xi_solved_per_block)``: ``vals`` is the JAX traced COO data, emitted
+    in ``(r, s)`` residual block / U block order; its static
+    ``(rows, cols)`` are ``fe_arrays.coo_rows`` / ``coo_cols``, which
+    :func:`assembled_coo_indices` builds in the same emit order. A GR
+    with several residual blocks emits nested ``(r, s)`` pairs; a single
+    block GR is the degenerate ``r = s = 0`` case.
+    """
+    R_block, K_blocks, xi_solved_per_block = assemble_element_block_dense(
+        fe_problem, fe_arrays, params_by_block, block_name,
+        U_global, U_prev_global, step_time,
+        xi_prev_per_block=xi_prev_per_block,
+    )
+    vals_all = [K_rs.ravel() for K_r in K_blocks for K_rs in K_r]
     return R_block, jnp.concatenate(vals_all), xi_solved_per_block
 
 
@@ -916,6 +943,58 @@ def assemble_global(
         unique_indices=True,
     )
     return K, R_global, xi_solved_by_block
+
+
+def assemble_element_tangent(
+        fe_problem: FEProblem,
+        fe_arrays: "FEKernelArrays",
+        params_by_block: Mapping[str, Params],
+        U_global: NDArray[np.floating] | JaxArray,
+        U_prev_global: NDArray[np.floating] | JaxArray,
+        step_time: StepTime,
+        xi_prev_by_block: Mapping[str, NDArray[np.floating] | JaxArray]
+        | None = None,
+) -> tuple[dict[str, list[list[JaxArray]]], JaxArray, dict[str, JaxArray]]:
+    """Walk all element blocks and emit ``(K_elem_by_block, R, xi_solved)``.
+
+    The per element form of :func:`assemble_global`: the same ``R``
+    (surface fluxes included) and the same ``xi_solved_by_block``, with
+    the tangent kept as each element block's ``K_blocks`` from
+    :func:`assemble_element_block_dense` instead of being deduplicated
+    into a :class:`jax.experimental.sparse.BCOO`.
+    ``K_elem_by_block[block][r][s]`` is shaped ``(n_elems_block,
+    n_dofs_r, n_dofs_s)`` and scatters through
+    ``fe_arrays.r_scatter_eq_by_block[block][r]`` (rows) and ``[s]``
+    (columns). Summing every block's entries onto the deduplicated
+    pattern reproduces ``assemble_global``'s ``K`` exactly; what is
+    skipped is the ravel, the concatenation and the segment sum over the
+    stream that still carries duplicates.
+    """
+    xi_prev = xi_prev_by_block or {}
+
+    n_dofs = fe_problem.dof_map.num_total_dofs
+    K_elem_by_block: dict[str, list[list[JaxArray]]] = {}
+    R_global = jnp.zeros(n_dofs)
+    xi_solved_by_block: dict[str, JaxArray] = {}
+
+    for block_name in fe_problem.evaluators_by_block:
+        R_block, K_blocks, xi_solved = assemble_element_block_dense(
+            fe_problem, fe_arrays, params_by_block, block_name,
+            U_global, U_prev_global, step_time,
+            xi_prev_per_block=xi_prev.get(block_name),
+        )
+        R_global = R_global + R_block
+        K_elem_by_block[block_name] = K_blocks
+        if xi_solved is not None:
+            xi_solved_by_block[block_name] = xi_solved
+
+    R_global = R_global + assemble_side_neumann(
+        fe_problem.dof_map,
+        fe_arrays.neumann_side_arrays,
+        fe_problem.resolved_neumann_bcs,
+        step_time.t,
+    )
+    return K_elem_by_block, R_global, xi_solved_by_block
 
 
 def assemble_global_residual(
