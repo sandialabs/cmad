@@ -101,7 +101,7 @@ def _solve_linear(
     sparsity = fe_arrays.embedded_sparsity
     kind = linear_solver_settings["type"]
     if kind == "direct":
-        return scipy_lu(K, sparsity, rhs)
+        return scipy_lu(K, sparsity, rhs, fe_problem.fill_permutation)
 
     precon_spec = linear_solver_settings.get(
         "preconditioner", {"type": "jacobi"},

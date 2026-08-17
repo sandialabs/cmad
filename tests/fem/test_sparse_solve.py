@@ -6,7 +6,10 @@ prescribed-row/column + scaled-diagonal structure).
 
 Free of FE machinery — small dense-cast matrices generated inline.
 """
+import sys
 import unittest
+from typing import Any
+from unittest import mock
 
 import jax
 import jax.numpy as jnp
@@ -21,8 +24,10 @@ from cmad.fem.sparse_solve import (
     _embedded_bc_enforce,
     _lanczos_dominant_eigenvalue,
     _near_null_by_field,
+    _scaled_lu_solve,
     _symmetric_diagonal_scaling,
     build_block_sparsity,
+    fill_reducing_permutation,
     jax_block_gmres,
     jax_cg,
     jax_gmres,
@@ -935,6 +940,67 @@ class TestSymmetricDiagonalScaling(unittest.TestCase):
         s = _symmetric_diagonal_scaling(K)
         self.assertTrue(np.all(np.isfinite(s)))
         np.testing.assert_allclose(s[1:], np.ones(2))
+
+
+class TestFillReducingPermutation(unittest.TestCase):
+    """That an ordering is produced, that the solve is invariant to it,
+    and that every decline path degrades to ``None`` rather than to a
+    corrupt permutation."""
+
+    @staticmethod
+    def _system() -> tuple[Any, np.ndarray]:
+        n = 60
+        rng = np.random.default_rng(0)
+        M = scipy.sparse.random(n, n, density=0.08, format="csr",
+                                random_state=1)
+        A = (M + M.T + 10.0 * scipy.sparse.eye(n)).tocsr()
+        return A, rng.standard_normal(n)
+
+    def test_returns_valid_permutation(self) -> None:
+        A, _ = self._system()
+        n = A.shape[0]
+        perm = fill_reducing_permutation(A.indptr, A.indices, n)
+        if perm is None:
+            self.skipTest("scikit-sparse not installed")
+        np.testing.assert_array_equal(np.sort(perm), np.arange(n))
+
+    def test_solve_is_invariant_to_the_ordering(self) -> None:
+        A, b = self._system()
+        perm = fill_reducing_permutation(A.indptr, A.indices, A.shape[0])
+        if perm is None:
+            self.skipTest("scikit-sparse not installed")
+        plain = _scaled_lu_solve(A.tocsc(), b, None)
+        reordered = _scaled_lu_solve(A.tocsc(), b, perm)
+        np.testing.assert_allclose(reordered, plain, rtol=1e-10)
+
+    def test_none_when_package_absent(self) -> None:
+        A, _ = self._system()
+        with mock.patch.dict(sys.modules, {"sksparse": None,
+                                           "sksparse.cholmod": None}):
+            self.assertIsNone(
+                fill_reducing_permutation(A.indptr, A.indices, A.shape[0]))
+
+    def test_none_and_warns_when_the_ordering_raises(self) -> None:
+        A, _ = self._system()
+        if fill_reducing_permutation(A.indptr, A.indices, A.shape[0]) is None:
+            self.skipTest("scikit-sparse not installed")
+        from sksparse import cholmod
+        with (
+            mock.patch.object(cholmod, "nesdis", side_effect=RuntimeError),
+            self.assertWarns(UserWarning),
+        ):
+            self.assertIsNone(fill_reducing_permutation(
+                A.indptr, A.indices, A.shape[0]))
+
+    def test_none_when_the_harvest_is_malformed(self) -> None:
+        A, _ = self._system()
+        if fill_reducing_permutation(A.indptr, A.indices, A.shape[0]) is None:
+            self.skipTest("scikit-sparse not installed")
+        from sksparse import cholmod
+        with mock.patch.object(cholmod, "nesdis",
+                               return_value=np.zeros(A.shape[0], dtype=int)):
+            self.assertIsNone(fill_reducing_permutation(
+                A.indptr, A.indices, A.shape[0]))
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+solvers = ["scikit-sparse"]
 dev = ["pytest", "mypy", "ruff"]
 cuda12 = ["jax[cuda12]"]
 cuda13 = ["jax[cuda13]"]

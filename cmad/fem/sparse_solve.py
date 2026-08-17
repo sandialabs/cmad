@@ -18,6 +18,7 @@ Two helpers:
 """
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -96,19 +97,54 @@ def _symmetric_diagonal_scaling(
     return 1.0 / d
 
 
+def fill_reducing_permutation(
+        indptr: NDArray[np.integer], col_indices: NDArray[np.integer],
+        n: int,
+) -> NDArray[np.integer] | None:
+    """A symmetric fill reducing permutation for the CSR pattern, or
+    ``None`` when ``scikit-sparse`` is absent or declines it."""
+    try:
+        from sksparse import cholmod  # type: ignore[import-untyped]
+    except ImportError:
+        return None
+    pattern = scipy.sparse.csr_matrix(
+        (np.ones(col_indices.shape[0]), col_indices, indptr), shape=(n, n))
+    try:
+        result = cholmod.nesdis((pattern + pattern.T).tocsc())
+    except Exception as exc:
+        warnings.warn(
+            f"scikit-sparse is installed but produced no fill reducing "
+            f"ordering ({type(exc).__name__}); falling back to COLAMD",
+            stacklevel=2)
+        return None
+    perm = np.asarray(result[0] if isinstance(result, tuple) else result)
+    if perm.shape != (n,) or not np.array_equal(np.sort(perm), np.arange(n)):
+        return None
+    return perm
+
+
 def _scaled_lu_solve(
         K_csc: scipy.sparse.csc_matrix, b_np: np.ndarray,
+        perm: NDArray[np.integer] | None = None,
 ) -> np.ndarray:
     """Solve ``K x = b`` as ``(S K S) y = S b`` with ``x = S y`` and
-    ``S = diag(s)``."""
+    ``S = diag(s)``, reordering by ``perm`` when one is given."""
     s = _symmetric_diagonal_scaling(K_csc)
     S = scipy.sparse.diags(s)
-    scaled = scipy.sparse.linalg.splu((S @ K_csc @ S).tocsc())
-    return np.asarray(s * scaled.solve(s * np.asarray(b_np)))
+    scaled = (S @ K_csc @ S).tocsc()
+    rhs = s * np.asarray(b_np)
+    if perm is None:
+        return np.asarray(s * scipy.sparse.linalg.splu(scaled).solve(rhs))
+    lu = scipy.sparse.linalg.splu(
+        scaled[perm][:, perm].tocsc(), permc_spec="NATURAL")
+    y = np.empty_like(rhs)
+    y[perm] = lu.solve(rhs[perm])
+    return np.asarray(s * y)
 
 
 def scipy_lu(
         K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
+        fill_perm: NDArray[np.integer] | None = None,
 ) -> JaxArray:
     """Solve ``K x = b`` for sparse ``K`` with full JAX AD support.
 
@@ -197,7 +233,8 @@ def scipy_lu(
     ) -> np.ndarray:
         K_csr = _build_scipy_csr(unique_data_np, col_np, indptr_np, n)
         if b_np.ndim == 1:
-            return np.asarray(_scaled_lu_solve(K_csr.tocsc(), b_np))
+            return np.asarray(
+                _scaled_lu_solve(K_csr.tocsc(), b_np, fill_perm))
         # the batched path is left unscaled: it factors at default pivoting
         return _multi_back_sub(K_csr.tocsc(), b_np)
 
@@ -207,7 +244,8 @@ def scipy_lu(
     ) -> np.ndarray:
         K_csr = _build_scipy_csr(unique_data_np, col_np, indptr_np, n)
         if b_np.ndim == 1:
-            return np.asarray(_scaled_lu_solve(K_csr.T.tocsc(), b_np))
+            return np.asarray(
+                _scaled_lu_solve(K_csr.T.tocsc(), b_np, fill_perm))
         return _multi_back_sub(K_csr.T.tocsc(), b_np)
 
     def solve(_unused_matvec, rhs: JaxArray) -> JaxArray:

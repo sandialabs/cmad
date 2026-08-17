@@ -152,6 +152,9 @@ class FEProblem:
     near_null_space: NDArray[np.floating] | None = field(
         init=False, default=None,
     )
+    fill_permutation: NDArray[np.integer] | None = field(
+        init=False, default=None,
+    )
 
     def __post_init__(self) -> None:
         name_to_idx = {
@@ -215,9 +218,18 @@ class FEProblem:
         from cmad.fem.sparse_solve import (
             build_block_sparsity,
             build_embedded_sparsity,
+            fill_reducing_permutation,
         )
         object.__setattr__(
             self, "embedded_sparsity", build_embedded_sparsity(self),
+        )
+        object.__setattr__(
+            self, "fill_permutation",
+            fill_reducing_permutation(
+                np.asarray(self.embedded_sparsity.indptr),
+                np.asarray(self.embedded_sparsity.col_indices),
+                self.embedded_sparsity.n,
+            ),
         )
         if self.gr.num_residuals > 1:
             object.__setattr__(

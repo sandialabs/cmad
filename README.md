@@ -6,7 +6,8 @@ At Sandia, CMAD is SCR# 2985.0
 Installation
 ------------
 
-CMAD is a pure-Python package; all dependencies install from PyPI.
+CMAD is a pure-Python package; all required dependencies install from
+PyPI.
 
 The recommended setup uses uv (https://docs.astral.sh/uv/), which
 provisions the Python interpreter and installs CMAD together:
@@ -29,3 +30,19 @@ already have a supported interpreter:
 GPU: JAX installs its CPU build by default. For an NVIDIA GPU, add
 the CUDA extra matching your toolkit -- `".[cuda12]"` or
 `".[cuda13]"` (install one, not both).
+
+Sparse direct solver: the `solvers` extra adds scikit-sparse, which
+supplies a fill reducing ordering for the sparse direct solve. It
+reduces fill and can roughly halve the factorization cost. It is
+optional; without it the solve uses SuperLU's COLAMD ordering.
+
+Unlike the other extras it builds against a system SuiteSparse, so
+install that first:
+
+    brew install suite-sparse              # macOS
+    sudo apt install libsuitesparse-dev    # Debian, Ubuntu
+    sudo dnf install suitesparse-devel     # Fedora, RHEL
+
+then
+
+    uv pip install -e ".[solvers]"
