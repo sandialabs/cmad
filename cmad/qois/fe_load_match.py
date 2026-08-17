@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import jax.numpy as jnp
 import numpy as np
+from jax import jit
 
 from cmad.fem.assembly import (
     assemble_global_residual,
@@ -165,6 +166,7 @@ class FELoadMatch(FEQoI):
         ]
         num_steps = len(fe_state.t_history)
         series = np.zeros((num_steps, len(self._eq_per_component)))
+        reaction_at = jit(self._reaction_at)
         for k in range(num_steps):
             kp = max(k - 1, 0)
             U = jnp.asarray(fe_state.U_at(k))
@@ -173,7 +175,7 @@ class FELoadMatch(FEQoI):
                 {b: jnp.asarray(fe_state.xi_at(kp, b)) for b in coupled},
                 fe_problem.device_mesh,
             )
-            reaction = self._reaction_at(
+            reaction = reaction_at(
                 params, fe_arrays, U, U_prev,
                 StepTime(float(fe_state.t_history[k]),
                          float(fe_state.t_history[kp])), xi_prev,
