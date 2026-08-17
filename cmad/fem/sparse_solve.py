@@ -142,8 +142,7 @@ def scipy_lu(
     additional batch axes on ``b_np``; the callbacks squeeze the
     K side and flatten the b side before scipy, then restore the
     caller's batch shape on return. Outside vmap both inputs
-    arrive 1D and the callback dispatches a single
-    :func:`scipy.sparse.linalg.spsolve` instead.
+    arrive 1D and the callback factors once for the single column.
 
     A direct ``@custom_jvp`` over the ``pure_callback`` would not
     auto-transpose: ``pure_callback`` has no transpose rule, and
@@ -177,7 +176,8 @@ def scipy_lu(
     ) -> np.ndarray:
         K_csr = _build_scipy_csr(unique_data_np, col_np, indptr_np, n)
         if b_np.ndim == 1:
-            return np.asarray(scipy.sparse.linalg.spsolve(K_csr, b_np))
+            return np.asarray(scipy.sparse.linalg.splu(
+                K_csr.tocsc()).solve(np.asarray(b_np)))
         return _multi_back_sub(K_csr.tocsc(), b_np)
 
     def _scipy_transpose_solve(
@@ -186,7 +186,8 @@ def scipy_lu(
     ) -> np.ndarray:
         K_csr = _build_scipy_csr(unique_data_np, col_np, indptr_np, n)
         if b_np.ndim == 1:
-            return np.asarray(scipy.sparse.linalg.spsolve(K_csr.T, b_np))
+            return np.asarray(scipy.sparse.linalg.splu(
+                K_csr.T.tocsc()).solve(np.asarray(b_np)))
         return _multi_back_sub(K_csr.T.tocsc(), b_np)
 
     def solve(_unused_matvec, rhs: JaxArray) -> JaxArray:
