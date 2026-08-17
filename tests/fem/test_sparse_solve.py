@@ -11,6 +11,7 @@ import unittest
 import jax
 import jax.numpy as jnp
 import numpy as np
+import scipy.sparse
 from jax.experimental.sparse import BCOO
 
 from cmad.fem.sparse_solve import (
@@ -20,6 +21,7 @@ from cmad.fem.sparse_solve import (
     _embedded_bc_enforce,
     _lanczos_dominant_eigenvalue,
     _near_null_by_field,
+    _symmetric_diagonal_scaling,
     build_block_sparsity,
     jax_block_gmres,
     jax_cg,
@@ -911,6 +913,28 @@ class TestNearNullByField(unittest.TestCase):
         self.assertEqual(by_field[0].shape, (6, 2))
         self.assertEqual(by_field[1].shape, (3, 1))
         self.assertIsNone(_near_null_by_field(None, offsets))
+
+
+class TestSymmetricDiagonalScaling(unittest.TestCase):
+    """Properties a dense comparison cannot see: that the scaling is
+    applied at all, and that a negligible diagonal takes the guard."""
+
+    def test_scaled_diagonal_is_unit_magnitude(self) -> None:
+        K = scipy.sparse.csc_matrix(np.array([
+            [4.0e6, 1.0, 0.0],
+            [1.0, -2.0e-8, 3.0],
+            [0.0, 3.0, 9.0e2]]))
+        s = _symmetric_diagonal_scaling(K)
+        S = scipy.sparse.diags(s)
+        scaled = (S @ K @ S).tocsc()
+        np.testing.assert_allclose(
+            np.abs(scaled.diagonal()), np.ones(3), rtol=1e-12)
+
+    def test_negligible_diagonal_left_unscaled(self) -> None:
+        K = scipy.sparse.csc_matrix(np.diag([1.0e6, 0.0, 1.0e-320]))
+        s = _symmetric_diagonal_scaling(K)
+        self.assertTrue(np.all(np.isfinite(s)))
+        np.testing.assert_allclose(s[1:], np.ones(2))
 
 
 if __name__ == "__main__":

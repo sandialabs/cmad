@@ -86,6 +86,27 @@ def _build_scipy_csr(
     )
 
 
+def _symmetric_diagonal_scaling(
+        K_csc: scipy.sparse.csc_matrix,
+) -> NDArray[np.floating]:
+    """``s`` with ``s_i = 1/sqrt(|K_ii|)``, leaving a negligible diagonal
+    unscaled."""
+    d: NDArray[np.floating] = np.sqrt(np.abs(K_csc.diagonal()))
+    d[d <= np.finfo(d.dtype).eps * d.max()] = 1.0
+    return 1.0 / d
+
+
+def _scaled_lu_solve(
+        K_csc: scipy.sparse.csc_matrix, b_np: np.ndarray,
+) -> np.ndarray:
+    """Solve ``K x = b`` as ``(S K S) y = S b`` with ``x = S y`` and
+    ``S = diag(s)``."""
+    s = _symmetric_diagonal_scaling(K_csc)
+    S = scipy.sparse.diags(s)
+    scaled = scipy.sparse.linalg.splu((S @ K_csc @ S).tocsc())
+    return np.asarray(s * scaled.solve(s * np.asarray(b_np)))
+
+
 def scipy_lu(
         K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
 ) -> JaxArray:
@@ -176,8 +197,8 @@ def scipy_lu(
     ) -> np.ndarray:
         K_csr = _build_scipy_csr(unique_data_np, col_np, indptr_np, n)
         if b_np.ndim == 1:
-            return np.asarray(scipy.sparse.linalg.splu(
-                K_csr.tocsc()).solve(np.asarray(b_np)))
+            return np.asarray(_scaled_lu_solve(K_csr.tocsc(), b_np))
+        # the batched path is left unscaled: it factors at default pivoting
         return _multi_back_sub(K_csr.tocsc(), b_np)
 
     def _scipy_transpose_solve(
@@ -186,8 +207,7 @@ def scipy_lu(
     ) -> np.ndarray:
         K_csr = _build_scipy_csr(unique_data_np, col_np, indptr_np, n)
         if b_np.ndim == 1:
-            return np.asarray(scipy.sparse.linalg.splu(
-                K_csr.T.tocsc()).solve(np.asarray(b_np)))
+            return np.asarray(_scaled_lu_solve(K_csr.T.tocsc(), b_np))
         return _multi_back_sub(K_csr.T.tocsc(), b_np)
 
     def solve(_unused_matvec, rhs: JaxArray) -> JaxArray:
