@@ -12,6 +12,7 @@ from cmad.fem.assembly import (
     assemble_global_residual,
     params_by_block_from_models,
 )
+from cmad.fem.sharding import place_element_leaves
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.qoi_data import load_reaction_data
 from cmad.io.registry import register_qoi
@@ -168,7 +169,10 @@ class FELoadMatch(FEQoI):
             kp = max(k - 1, 0)
             U = jnp.asarray(fe_state.U_at(k))
             U_prev = jnp.asarray(fe_state.U_at(kp))
-            xi_prev = {b: jnp.asarray(fe_state.xi_at(kp, b)) for b in coupled}
+            xi_prev = place_element_leaves(
+                {b: jnp.asarray(fe_state.xi_at(kp, b)) for b in coupled},
+                fe_problem.device_mesh,
+            )
             reaction = self._reaction_at(
                 params, fe_arrays, U, U_prev,
                 StepTime(float(fe_state.t_history[k]),

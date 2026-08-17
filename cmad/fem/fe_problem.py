@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from jax.flatten_util import ravel_pytree
+from jax.sharding import Mesh as DeviceMesh
 from numpy.typing import NDArray
 
 from cmad.fem.bcs import NeumannBC
@@ -24,6 +25,7 @@ from cmad.fem.quadrature import (
     tet_quadrature,
     tri_quadrature,
 )
+from cmad.fem.sharding import build_device_mesh, shard_kernel_arrays
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.model import Model
@@ -114,7 +116,14 @@ class FEProblem:
     embedded-BC sparsity, the prescribed-dof indices) collected into
     one pytree. Built once here; ``geometry_cache`` and
     ``embedded_sparsity`` stay as direct fields for non-traced
-    consumers, and the carrier references the same objects.
+    consumers, and the carrier references the same objects (with a
+    ``device_mesh``, the carrier's element axis arrays are sharded
+    copies).
+
+    ``device_mesh`` is the single axis device mesh the assembly's element
+    axis is sharded across when there is more than one JAX device
+    (:mod:`cmad.fem.sharding`), or ``None`` when the assembly runs on
+    one device.
     """
     mesh: Mesh
     dof_map: GlobalDofMap
@@ -149,6 +158,7 @@ class FEProblem:
     embedded_sparsity: "EmbeddedSparsity" = field(init=False)
     block_sparsity: "BlockSparsity | None" = field(init=False, default=None)
     kernel_arrays: "FEKernelArrays" = field(init=False)
+    device_mesh: DeviceMesh | None = field(init=False, default=None)
     near_null_space: NDArray[np.floating] | None = field(
         init=False, default=None,
     )
@@ -247,9 +257,15 @@ class FEProblem:
         # above: kernel_arrays imports the assembly helpers, which import
         # FEProblem at module scope.
         from cmad.fem.kernel_arrays import build_fe_kernel_arrays
-        object.__setattr__(
-            self, "kernel_arrays", build_fe_kernel_arrays(self),
-        )
+        kernel_arrays = build_fe_kernel_arrays(self)
+        device_mesh = build_device_mesh({
+            block: len(elems)
+            for block, elems in self.mesh.element_blocks.items()
+        })
+        if device_mesh is not None:
+            kernel_arrays = shard_kernel_arrays(kernel_arrays, device_mesh)
+        object.__setattr__(self, "device_mesh", device_mesh)
+        object.__setattr__(self, "kernel_arrays", kernel_arrays)
 
     @property
     def ndims(self) -> int:

@@ -42,6 +42,7 @@ from cmad.fem.quadrature import (
     tet_quadrature,
     tri_quadrature,
 )
+from cmad.fem.sharding import place_element_leaves
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.deck import apply_deck_defaults, load_deck
@@ -207,10 +208,10 @@ def build_fe_J_of_params_flat(
         fe_problem, t_init=float(bundle.t_schedule[0]),
     )
     U_init = jnp.asarray(state.U_at(0), dtype=jnp.float64)
-    xi_init: dict[str, JaxArray] = {
-        b: jnp.asarray(state.xi_at(0, b))
-        for b in fe_problem.models_by_block
-    }
+    xi_init: dict[str, JaxArray] = place_element_leaves(
+        {b: jnp.asarray(state.xi_at(0, b)) for b in fe_problem.models_by_block},
+        fe_problem.device_mesh,
+    )
     state_init: StateInit = (U_init, xi_init)
     t_schedule_jax = jnp.asarray(bundle.t_schedule, dtype=jnp.float64)
 

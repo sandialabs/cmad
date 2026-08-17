@@ -13,6 +13,7 @@ from numpy.typing import NDArray
 from cmad.fem.assembly import assemble_global
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.kernel_arrays import FEKernelArrays
+from cmad.fem.sharding import place_element_leaves
 from cmad.fem.sparse_solve import (
     _bcsr_operator,
     _embedded_bc_enforce,
@@ -457,7 +458,10 @@ def fe_newton_solve(
     }
     U_prev_jax = jnp.asarray(U_prev, dtype=jnp.float64)
     xi_prev_jax: dict[str, JaxArray] = (
-        {k: jnp.asarray(v) for k, v in xi_prev_by_block.items()}
+        place_element_leaves(
+            {k: jnp.asarray(v) for k, v in xi_prev_by_block.items()},
+            fe_problem.device_mesh,
+        )
         if xi_prev_by_block is not None else {}
     )
     step_time = StepTime(t, t if t_prev is None else t_prev)

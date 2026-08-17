@@ -85,7 +85,9 @@ class FEKernelArrays:
       ``(coo_rows, coo_cols)`` pattern; :func:`assemble_global`
       segment-sums the concatenated per-element COO data through it.
     - ``geometry_cache``: the per-element-block reference-frame
-      geometry cache; the same object as ``fe_problem.geometry_cache``.
+      geometry cache; the same object as ``fe_problem.geometry_cache``
+      (its per element arrays sharded copies when the problem has a
+      ``device_mesh``).
     - ``embedded_sparsity``: the embedded-BC CSR sparsity cache; the
       same object as ``fe_problem.embedded_sparsity``.
     - ``block_sparsity``: the field partition of the global sparsity used
