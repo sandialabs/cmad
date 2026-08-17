@@ -333,6 +333,129 @@ def _pcg_loop(
     return x_final, i_final
 
 
+def _gmres_loop(
+        matvec: Callable[[JaxArray], JaxArray],
+        precon: Callable[[JaxArray], JaxArray],
+        b: JaxArray,
+        rtol: float,
+        restart: int,
+        max_iters: int | None,
+) -> tuple[JaxArray, JaxArray]:
+    """Right preconditioned restarted GMRES, returning ``(x, iterations)``.
+
+    Solves ``(A M) y = b`` and returns ``x = M y``, with ``A`` the
+    ``matvec`` and ``M`` the ``precon``, so the residual it tests is the
+    true one, ``||b - A x||``, against ``rtol ||b||``. The Arnoldi basis is
+    orthogonalized by two passes of classical Gram-Schmidt against the
+    whole basis (batched projections; the second pass is what keeps the
+    basis orthogonal on ill-conditioned operators, where a single pass
+    stagnates: Giraud, Langou, Rozloznik and van den Eshof, 2005), the
+    residual estimate is carried through Givens rotations
+    so a cycle exits the step it converges, and each cycle ends by
+    recomputing the true residual. ``restart`` is the Krylov dimension per
+    cycle; ``max_iters`` is the cycle count cap, as for
+    :func:`scipy.sparse.linalg.gmres` (``None`` selects ``10 *
+    b.shape[0]``). A breakdown (new basis vector below roundoff of the
+    vector it came from) ends the cycle with the exact solution of that
+    Krylov space.
+
+    ``iterations`` is the total Krylov iteration count over all cycles, for
+    diagnostics; :func:`_gmres_solve` drops it for
+    :func:`jax.lax.custom_linear_solve`.
+    """
+    n = b.shape[0]
+    restart = min(restart, n)
+    if max_iters is None:
+        max_iters = 10 * n
+    dtype = b.dtype
+    eps = jnp.finfo(dtype).eps
+    b_norm = jnp.linalg.norm(b)
+    tol = rtol * b_norm
+
+    def cycle(carry: tuple) -> tuple:
+        x, r, r_norm, cycles, done = carry
+        # Basis vectors are rows of V so each new one is a contiguous write.
+        V = jnp.zeros((restart + 1, n), dtype).at[0].set(r / r_norm)
+        # H[k] holds column k of the Hessenberg matrix after the rotations;
+        # untouched rows are identity rows so the triangular solve below is
+        # well posed however early the cycle stops.
+        H = jnp.eye(restart, restart + 1, dtype=dtype)
+        cs = jnp.zeros(restart, dtype)
+        sn = jnp.zeros(restart, dtype)
+        g = jnp.zeros(restart + 1, dtype).at[0].set(r_norm)
+
+        def step_cond(state: tuple) -> JaxArray:
+            k, _V, _H, _cs, _sn, _g, err = state
+            return (k < restart) & (err > tol)
+
+        def step(state: tuple) -> tuple:
+            k, V, H, cs, sn, g, _err = state
+            w = matvec(precon(V[k]))
+            w_norm_0 = jnp.linalg.norm(w)
+            h1 = V @ w
+            w = w - h1 @ V
+            h2 = V @ w
+            w = w - h2 @ V
+            h = h1 + h2
+            w_norm = jnp.linalg.norm(w)
+            breakdown = w_norm <= eps * w_norm_0
+            h = h.at[k + 1].set(jnp.where(breakdown, 0.0, w_norm))
+            V = V.at[k + 1].set(
+                jnp.where(breakdown, 0.0, w / jnp.where(breakdown, 1.0, w_norm)),
+            )
+
+            def rotate(j: int, h: JaxArray) -> JaxArray:
+                hj = cs[j] * h[j] + sn[j] * h[j + 1]
+                hj1 = -sn[j] * h[j] + cs[j] * h[j + 1]
+                return h.at[j].set(hj).at[j + 1].set(hj1)
+
+            h = lax.fori_loop(0, k, rotate, h)
+            rho = jnp.hypot(h[k], h[k + 1])
+            c = jnp.where(rho > 0.0, h[k] / jnp.where(rho > 0.0, rho, 1.0), 1.0)
+            s = jnp.where(rho > 0.0, h[k + 1] / jnp.where(rho > 0.0, rho, 1.0), 0.0)
+            h = h.at[k].set(rho).at[k + 1].set(0.0)
+            g = g.at[k + 1].set(-s * g[k]).at[k].set(c * g[k])
+            err = jnp.abs(g[k + 1])
+            return (
+                k + 1, V, H.at[k].set(h), cs.at[k].set(c), sn.at[k].set(s),
+                g, err,
+            )
+
+        k, V, H, _cs, _sn, g, _err = lax.while_loop(
+            step_cond, step, (jnp.int32(0), V, H, cs, sn, g, r_norm),
+        )
+        # g[k] is the residual estimate, not a right hand side entry; the
+        # identity rows of H past k must see zeros so y vanishes there.
+        g_solved = jnp.where(jnp.arange(restart) < k, g[:-1], 0.0)
+        y = jax.scipy.linalg.solve_triangular(H[:, :-1].T, g_solved, lower=False)
+        x = x + precon(y @ V[:-1])
+        r = b - matvec(x)
+        return x, r, jnp.linalg.norm(r), cycles + 1, done + k
+
+    def cycle_cond(carry: tuple) -> JaxArray:
+        _x, _r, r_norm, cycles, _done = carry
+        return (r_norm > tol) & (cycles < max_iters)
+
+    x0 = jnp.zeros_like(b)
+    x, _r, _r_norm, _cycles, iterations = lax.while_loop(
+        cycle_cond, cycle, (x0, b, b_norm, jnp.int32(0), jnp.int32(0)),
+    )
+    return x, iterations
+
+
+def _gmres_solve(
+        matvec: Callable[[JaxArray], JaxArray],
+        precon: Callable[[JaxArray], JaxArray],
+        b: JaxArray,
+        rtol: float,
+        restart: int,
+        max_iters: int | None,
+) -> JaxArray:
+    """:func:`_gmres_loop` without the iteration count, the shape
+    :func:`jax.lax.custom_linear_solve`'s ``solve`` callbacks need."""
+    return _gmres_loop(matvec, precon, b, rtol, restart, max_iters)[0]
+
+
 def _bcsr_jacobi_operator(
         K_data: JaxArray, sparsity: EmbeddedSparsity,
 ) -> tuple[
@@ -449,9 +572,11 @@ def jax_gmres(
 ) -> JaxArray:
     """Solve ``K x = b`` for general (possibly non-symmetric) K via GMRES.
 
-    Built on :func:`jax.scipy.sparse.linalg.gmres` running restarted
-    GMRES(``restart``), no scipy callback (fully jit-traceable). The
-    matvec is :class:`jax.experimental.sparse.BCSR` matrix-vector
+    Built on :func:`_gmres_loop`: right preconditioned restarted
+    GMRES(``restart``) with a two pass Gram-Schmidt Arnoldi, testing the
+    true residual against ``rtol ||b||`` and capping the restart cycles
+    at ``max_iters``; no scipy callback (fully jit-traceable).
+    The matvec is :class:`jax.experimental.sparse.BCSR` matrix-vector
     multiplication against the pre-built sparsity cache; the cache's
     ``perm`` + ``segment_ids`` gather + dedup ``K_data`` into the
     unique CSR data buffer once per call (same operator construction
@@ -483,19 +608,11 @@ def jax_gmres(
 
     def solve(matvec_: Callable[[JaxArray], JaxArray],
               rhs: JaxArray) -> JaxArray:
-        x, _info = jax.scipy.sparse.linalg.gmres(
-            matvec_, rhs, M=precon, tol=rtol, maxiter=max_iters,
-            restart=restart,
-        )
-        return x
+        return _gmres_solve(matvec_, precon, rhs, rtol, restart, max_iters)
 
     def transpose_solve(vecmat: Callable[[JaxArray], JaxArray],
                         rhs: JaxArray) -> JaxArray:
-        x, _info = jax.scipy.sparse.linalg.gmres(
-            vecmat, rhs, M=precon, tol=rtol, maxiter=max_iters,
-            restart=restart,
-        )
-        return x
+        return _gmres_solve(vecmat, precon, rhs, rtol, restart, max_iters)
 
     return lax.custom_linear_solve(
         matvec, b, solve, transpose_solve=transpose_solve,
@@ -886,7 +1003,8 @@ def jax_block_gmres(
 ) -> JaxArray:
     """Solve ``K x = b`` with GMRES and a block preconditioner.
 
-    GMRES drives the same global matvec as the other solvers; the
+    GMRES (:func:`_gmres_loop`, right preconditioned, true residual test)
+    drives the same global matvec as the other solvers; the
     preconditioner is the field-block sweep of :func:`_block_precon_apply`
     over the partition in ``block_sparsity``. Fully JAX-native, so it
     composes with :func:`jax.vmap` and runs on GPU.
@@ -932,19 +1050,15 @@ def jax_block_gmres(
 
     def solve(matvec_: Callable[[JaxArray], JaxArray],
               rhs: JaxArray) -> JaxArray:
-        x, _info = jax.scipy.sparse.linalg.gmres(
-            matvec_, rhs, M=precon_forward, tol=rtol, maxiter=max_iters,
-            restart=restart,
+        return _gmres_solve(
+            matvec_, precon_forward, rhs, rtol, restart, max_iters,
         )
-        return x
 
     def transpose_solve(vecmat: Callable[[JaxArray], JaxArray],
                         rhs: JaxArray) -> JaxArray:
-        x, _info = jax.scipy.sparse.linalg.gmres(
-            vecmat, rhs, M=precon_transpose, tol=rtol, maxiter=max_iters,
-            restart=restart,
+        return _gmres_solve(
+            vecmat, precon_transpose, rhs, rtol, restart, max_iters,
         )
-        return x
 
     return lax.custom_linear_solve(
         matvec, b, solve, transpose_solve=transpose_solve, symmetric=False,

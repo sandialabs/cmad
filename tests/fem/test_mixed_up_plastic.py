@@ -85,6 +85,24 @@ _BLOCK_SOLVER_SETTINGS = {
     },
     "rtol": 1.0e-10, "max iters": 20, "restart": 120,
 }
+# The two jax native block arms; restart 120 exceeds this problem's dof
+# count, so each solve is one full GMRES cycle.
+_JAX_BLOCK_JACOBI_SETTINGS = {
+    "type": "gmres",
+    "preconditioner": {
+        "type": "block", "inner": "jacobi",
+        "diagonal_block": "assembled", "coupling": "lower",
+    },
+    "rtol": 1.0e-10, "max iters": 20, "restart": 120,
+}
+_JAX_BLOCK_CHEBYSHEV_SETTINGS = {
+    "type": "gmres",
+    "preconditioner": {
+        "type": "block", "inner": "chebyshev", "degree": 3,
+        "diagonal_block": "schur", "coupling": "lower",
+    },
+    "rtol": 1.0e-10, "max iters": 20, "restart": 120,
+}
 
 
 class TestMixedUpPlastic(unittest.TestCase):
@@ -145,6 +163,12 @@ class TestMixedUpPlastic(unittest.TestCase):
 
     def test_small_rate_elastic_plastic_block_solver(self) -> None:
         self._run(SmallRateElasticPlastic, _BLOCK_SOLVER_SETTINGS)
+
+    def test_small_elastic_plastic_jax_block_jacobi(self) -> None:
+        self._run(SmallElasticPlastic, _JAX_BLOCK_JACOBI_SETTINGS)
+
+    def test_small_elastic_plastic_jax_block_chebyshev(self) -> None:
+        self._run(SmallElasticPlastic, _JAX_BLOCK_CHEBYSHEV_SETTINGS)
 
 
 if __name__ == "__main__":

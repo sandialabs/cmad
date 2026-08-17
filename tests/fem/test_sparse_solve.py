@@ -22,6 +22,7 @@ from cmad.fem.sparse_solve import (
     EmbeddedSparsity,
     _chebyshev_apply,
     _embedded_bc_enforce,
+    _gmres_loop,
     _lanczos_dominant_eigenvalue,
     _near_null_by_field,
     _scaled_lu_solve,
@@ -1001,6 +1002,194 @@ class TestFillReducingPermutation(unittest.TestCase):
                                return_value=np.zeros(A.shape[0], dtype=int)):
             self.assertIsNone(fill_reducing_permutation(
                 A.indptr, A.indices, A.shape[0]))
+
+
+def _gmres_reference(
+        K: np.ndarray, b: np.ndarray, d: np.ndarray, rtol: float,
+        passes: int = 2,
+) -> tuple[np.ndarray, int]:
+    """A reference GMRES in plain numpy: full (no restart), right Jacobi
+    preconditioned, Arnoldi with ``passes`` of classical Gram-Schmidt and
+    Givens rotations for the residual, after Saad and Schultz (1986). With
+    two passes it is the algorithm :func:`_gmres_loop` implements, written
+    out straight so the traced version can be checked against it. Returns
+    ``(x, iterations)``."""
+    n = b.shape[0]
+    V = np.zeros((n, n + 1))
+    H = np.zeros((n + 1, n))
+    cs, sn, g = np.zeros(n), np.zeros(n), np.zeros(n + 1)
+    beta = np.linalg.norm(b)
+    g[0] = beta
+    V[:, 0] = b / beta
+    k_done = n
+    for k in range(n):
+        w = K @ (V[:, k] / d)
+        h = V[:, :k + 1].T @ w
+        w = w - V[:, :k + 1] @ h
+        for _ in range(passes - 1):
+            h2 = V[:, :k + 1].T @ w
+            w = w - V[:, :k + 1] @ h2
+            h = h + h2
+        H[:k + 1, k] = h
+        H[k + 1, k] = np.linalg.norm(w)
+        V[:, k + 1] = w / H[k + 1, k]
+        for j in range(k):
+            t = cs[j] * H[j, k] + sn[j] * H[j + 1, k]
+            H[j + 1, k] = -sn[j] * H[j, k] + cs[j] * H[j + 1, k]
+            H[j, k] = t
+        rho = np.hypot(H[k, k], H[k + 1, k])
+        cs[k], sn[k] = H[k, k] / rho, H[k + 1, k] / rho
+        H[k, k], H[k + 1, k] = rho, 0.0
+        g[k + 1], g[k] = -sn[k] * g[k], cs[k] * g[k]
+        if abs(g[k + 1]) <= rtol * beta:
+            k_done = k + 1
+            break
+    y = np.linalg.solve(H[:k_done, :k_done], g[:k_done])
+    return (V[:, :k_done] @ y) / d, k_done
+
+
+def _row_scaled_nonsymm(n: int, seed: int, spread: float) -> np.ndarray:
+    """A nonsymmetric matrix whose diagonal spans ``spread`` decades, so the
+    Jacobi preconditioner matters and a stopping test on the preconditioned
+    residual would stop far short of the true one. A Gaussian matrix shifted
+    by ``3 sqrt(n)`` keeps its spectrum in a disk of radius ``sqrt(n)`` away
+    from zero, so GMRES needs a few tens of iterations rather than a few."""
+    rng = np.random.default_rng(seed)
+    A = rng.standard_normal((n, n)) + 3.0 * np.sqrt(n) * np.eye(n)
+    scale = np.logspace(0.0, spread, n)
+    return scale[:, None] * A
+
+
+class TestGmresLoop(unittest.TestCase):
+    """The GMRES iteration itself, against a plain numpy statement of the
+    same algorithm, on a matrix where a stopping test on the preconditioned
+    residual would stop far short of the true one."""
+
+    def _system(self, n: int = 60):
+        K = _row_scaled_nonsymm(n, seed=70, spread=4.0)
+        b = np.random.default_rng(71).standard_normal(n)
+        d = np.diag(K).copy()
+        K_j = jnp.asarray(K)
+        d_j = jnp.asarray(d)
+        return K, b, d, (lambda v: K_j @ v), (lambda v: v / d_j)
+
+    def test_matches_reference_and_meets_tolerance(self) -> None:
+        K, b, d, matvec, precon = self._system()
+        rtol = 1e-10
+        x, iters = _gmres_loop(
+            matvec, precon, jnp.asarray(b), rtol, restart=b.shape[0],
+            max_iters=None,
+        )
+        x_ref, iters_ref = _gmres_reference(K, b, d, rtol)
+        res = np.linalg.norm(b - K @ np.asarray(x)) / np.linalg.norm(b)
+        self.assertLessEqual(res, rtol)
+        self.assertLessEqual(abs(int(iters) - iters_ref), 2)
+        self.assertGreater(iters_ref, 10)
+        np.testing.assert_allclose(np.asarray(x), x_ref, rtol=1e-6, atol=1e-8)
+
+    def test_restarted_converges_and_cycle_cap_holds(self) -> None:
+        K, b, _d, matvec, precon = self._system()
+        rtol = 1e-8
+        x, iters = _gmres_loop(
+            matvec, precon, jnp.asarray(b), rtol, restart=8, max_iters=None,
+        )
+        res = np.linalg.norm(b - K @ np.asarray(x)) / np.linalg.norm(b)
+        self.assertLessEqual(res, rtol)
+        _, iters_full = _gmres_loop(
+            matvec, precon, jnp.asarray(b), rtol, restart=b.shape[0],
+            max_iters=None,
+        )
+        self.assertGreater(int(iters), int(iters_full))
+        # One cycle of eight is the cap: eight iterations, not converged.
+        x_cap, iters_cap = _gmres_loop(
+            matvec, precon, jnp.asarray(b), rtol, restart=8, max_iters=1,
+        )
+        self.assertEqual(int(iters_cap), 8)
+        res_cap = np.linalg.norm(b - K @ np.asarray(x_cap)) / np.linalg.norm(b)
+        self.assertGreater(res_cap, rtol)
+
+    def test_zero_rhs_and_breakdown(self) -> None:
+        n = 12
+        _K, _b, _d, matvec, precon = self._system(n)
+        x, iters = _gmres_loop(
+            matvec, precon, jnp.zeros(n), 1e-10, restart=n, max_iters=None,
+        )
+        self.assertEqual(int(iters), 0)
+        np.testing.assert_array_equal(np.asarray(x), np.zeros(n))
+        # A diagonal K with its Jacobi preconditioner is the identity in the
+        # Krylov variable: the first basis vector is exact, and the second
+        # breaks down.
+        d = jnp.asarray(np.logspace(0.0, 3.0, n))
+        b = jnp.asarray(np.random.default_rng(72).standard_normal(n))
+        x, iters = _gmres_loop(
+            lambda v: d * v, lambda v: v / d, b, 1e-12, restart=n,
+            max_iters=None,
+        )
+        self.assertEqual(int(iters), 1)
+        np.testing.assert_allclose(np.asarray(x), np.asarray(b / d),
+                                   rtol=1e-12, atol=1e-14)
+
+    def test_second_pass_is_load_bearing(self) -> None:
+        # A symmetric positive definite matrix with a spectrum spread over
+        # six decades needs most of n iterations, and there a single
+        # Gram-Schmidt pass loses the basis and stagnates while two passes
+        # converge. The loop always does two.
+        n = 300
+        rng = np.random.default_rng(400)
+        q, _ = np.linalg.qr(rng.standard_normal((n, n)))
+        K = (q * np.logspace(0.0, 6.0, n)) @ q.T
+        b = rng.standard_normal(n)
+        d = np.diag(K).copy()
+        rtol = 1e-10
+        x_one, _ = _gmres_reference(K, b, d, rtol, passes=1)
+        res_one = np.linalg.norm(b - K @ x_one) / np.linalg.norm(b)
+        self.assertGreater(res_one, 1e-2)
+        x_two, iters_two = _gmres_reference(K, b, d, rtol, passes=2)
+        res_two = np.linalg.norm(b - K @ x_two) / np.linalg.norm(b)
+        self.assertLessEqual(res_two, rtol)
+        K_j, d_j = jnp.asarray(K), jnp.asarray(d)
+        x, iters = _gmres_loop(
+            lambda v: K_j @ v, lambda v: v / d_j, jnp.asarray(b), rtol,
+            restart=n, max_iters=None,
+        )
+        res = np.linalg.norm(b - K @ np.asarray(x)) / np.linalg.norm(b)
+        self.assertLessEqual(res, rtol)
+        self.assertLessEqual(abs(int(iters) - iters_two), 2)
+
+
+class TestGmresTrueResidual(unittest.TestCase):
+    """``jax_gmres`` and ``jax_block_gmres`` meet ``rtol`` in the TRUE
+    residual on systems whose preconditioner shrinks vectors by orders of
+    magnitude, where a test on the preconditioned residual stops far too
+    early."""
+
+    def test_jax_gmres(self) -> None:
+        n = 40
+        K = _row_scaled_nonsymm(n, seed=80, spread=4.0)
+        K_data, sparsity = _dense_to_cache(K)
+        b = jnp.asarray(np.random.default_rng(81).standard_normal(n))
+        for rtol in (1e-6, 1e-10):
+            with self.subTest(rtol=rtol):
+                x = jax_gmres(K_data, sparsity, b, rtol=rtol, restart=n)
+                res = np.linalg.norm(np.asarray(b) - K @ np.asarray(x))
+                self.assertLessEqual(res, rtol * np.linalg.norm(np.asarray(b)))
+
+    def test_jax_block_gmres(self) -> None:
+        K, offsets = _random_block_matrix((24, 10), symmetric=False, seed=82)
+        K = 1.0e4 * K
+        n = K.shape[0]
+        K_data, sparsity, bs = _dense_to_block_cache(K, offsets)
+        b = jnp.asarray(np.random.default_rng(83).standard_normal(n))
+        rtol = 1e-8
+        for inner, degree in (("jacobi", None), ("chebyshev", 6)):
+            with self.subTest(inner=inner):
+                x = jax_block_gmres(
+                    K_data, sparsity, b, bs, coupling="lower",
+                    diagonal_block="assembled", inner=inner, degree=degree,
+                    rtol=rtol, max_iters=8, restart=n,
+                )
+                res = np.linalg.norm(np.asarray(b) - K @ np.asarray(x))
+                self.assertLessEqual(res, rtol * np.linalg.norm(np.asarray(b)))
 
 
 if __name__ == "__main__":
