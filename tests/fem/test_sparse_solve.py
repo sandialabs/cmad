@@ -20,7 +20,10 @@ from jax.experimental.sparse import BCOO
 from cmad.fem.sparse_solve import (
     BlockSparsity,
     EmbeddedSparsity,
+    _bcsr_operator,
+    _block_precon_apply,
     _chebyshev_apply,
+    _chebyshev_field_bounds,
     _embedded_bc_enforce,
     _gmres_loop,
     _lanczos_dominant_eigenvalue,
@@ -650,6 +653,54 @@ class TestChebyshevApply(unittest.TestCase):
     def test_negative_definite(self) -> None:
         eigs = np.linspace(1.0, 4.0, 8)
         self._check_converges(-_spd_with_spectrum(eigs, seed=910), b_seed=911)
+
+
+class TestChebyshevInnerScaled(unittest.TestCase):
+    """The block Chebyshev inner applies its polynomial to the Jacobi-scaled
+    block ``S A_ii S`` and returns ``S`` times the result of ``S r_i``.
+
+    Checked field by field against the same recurrence run on the dense
+    scaled block, with block Jacobi coupling so the fields do not interact;
+    the unscaled recurrence is the control the scaled result must differ
+    from.
+    """
+
+    def test_matches_dense_scaled_recurrence(self) -> None:
+        K, offsets = _random_block_matrix((12, 6), symmetric=True, seed=920)
+        # Spread each block's diagonal so the scaling changes the spectrum.
+        d = np.logspace(0.0, 2.0, K.shape[0])
+        K = d[:, None] * K * d[None, :]
+        n = K.shape[0]
+        K_data, sparsity, bs = _dense_to_block_cache(K, offsets)
+        unique_data, _ = _bcsr_operator(K_data, sparsity)
+        pair_index = {pair: k for k, pair in enumerate(bs.pairs)}
+        degree = 4
+        bounds = _chebyshev_field_bounds(bs, unique_data, pair_index, "assembled")
+        r = jnp.asarray(np.random.default_rng(921).standard_normal(n))
+        z = _block_precon_apply(
+            bs, unique_data, pair_index, r, coupling="diagonal",
+            diagonal_block="assembled", inner="chebyshev", transpose=False,
+            chebyshev_degree=degree, chebyshev_bounds=bounds,
+        )
+        for i in range(bs.num_fields):
+            lo, hi = int(offsets[i]), int(offsets[i + 1])
+            A_i = jnp.asarray(K[lo:hi, lo:hi])
+            s = 1.0 / jnp.sqrt(jnp.abs(jnp.diag(A_i)))
+            r_i = r[lo:hi]
+            lmin, lmax = bounds[i]
+            z_ref = s * _chebyshev_apply(
+                lambda x, A_i=A_i, s=s: s * (A_i @ (s * x)), s * r_i,
+                lmin, lmax, degree,
+            )
+            np.testing.assert_allclose(
+                np.asarray(z[lo:hi]), np.asarray(z_ref), rtol=1e-12, atol=1e-14,
+            )
+            z_unscaled = _chebyshev_apply(
+                lambda x, A_i=A_i: A_i @ x, r_i, lmin, lmax, degree,
+            )
+            self.assertFalse(np.allclose(
+                np.asarray(z[lo:hi]), np.asarray(z_unscaled), rtol=1e-6,
+            ))
 
 
 class TestLanczosDominantEigenvalue(unittest.TestCase):

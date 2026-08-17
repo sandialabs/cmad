@@ -753,6 +753,20 @@ def _block_diagonal(
     )
 
 
+def _block_scaling(
+        bs: BlockSparsity, unique_data: JaxArray,
+        pair_index: dict[tuple[int, int], int], i: int,
+) -> JaxArray:
+    """``s_i = 1 / sqrt(|diag|)`` of field ``i``'s assembled block ``(i, i)``,
+    the Jacobi scaling the Chebyshev inner applies to its block operator on
+    both sides. The assembled diagonal serves the ``"schur"`` diagonal block
+    too, whose own diagonal is never formed. A negligible diagonal entry is
+    left unscaled, as in :func:`_symmetric_diagonal_scaling`."""
+    d = jnp.sqrt(jnp.abs(_block_diagonal(bs, unique_data, pair_index, i)))
+    negligible = d <= jnp.finfo(d.dtype).eps * jnp.max(d)
+    return jnp.where(negligible, 1.0, 1.0 / jnp.where(negligible, 1.0, d))
+
+
 _LANCZOS_STEPS = 15
 _CHEBYSHEV_DEFAULT_DEGREE = 3
 _CHEBYSHEV_LMIN_FRACTION = 1.0 / 30.0
@@ -875,24 +889,29 @@ def _chebyshev_field_bounds(
         bs: BlockSparsity, unique_data: JaxArray,
         pair_index: dict[tuple[int, int], int], diagonal_block: str,
 ) -> tuple[tuple[JaxArray, JaxArray], ...]:
-    """Spectrum bracket ``(lmin, lmax)`` for each field's diagonal block.
+    """Spectrum bracket ``(lmin, lmax)`` for each field's scaled diagonal block.
 
-    Each field's dominant eigenvalue comes from a short Lanczos run on its
-    forward diagonal block matvec, sign kept. The dominant end is inflated by a
-    safety margin: the largest Ritz value approaches it from below and the
-    Chebyshev polynomial grows past the bracket, so that end must not sit under
-    the true eigenvalue. The other end is a fixed fraction of it. The pair is
-    ordered so ``lmin <= lmax``; both keep the sign, so a negative definite block
-    yields two negative bounds. A block and its transpose share eigenvalues, so
-    the same bracket serves the transpose sweep.
+    The Chebyshev inner works on the Jacobi-scaled block
+    ``S_i A_i S_i`` (:func:`_block_scaling`), whose spectrum is far better
+    clustered than the block's own, so the bracket is taken there. Each
+    field's dominant eigenvalue comes from a short Lanczos run on the scaled
+    forward diagonal block matvec, sign kept. The dominant end is inflated
+    by a safety margin: the largest Ritz value approaches it from below and
+    the Chebyshev polynomial grows past the bracket, so that end must not
+    sit under the true eigenvalue. The other end is a fixed fraction of it.
+    The pair is ordered so ``lmin <= lmax``; both keep the sign, so a
+    negative definite block yields two negative bounds. A block and its
+    transpose share eigenvalues, so the same bracket serves the transpose
+    sweep.
     """
     bounds: list[tuple[JaxArray, JaxArray]] = []
     for i in range(bs.num_fields):
         n_i = bs.field_offsets[i + 1] - bs.field_offsets[i]
+        s = _block_scaling(bs, unique_data, pair_index, i)
 
-        def block_matvec(x: JaxArray, i: int = i) -> JaxArray:
-            return _diag_block_matvec(
-                bs, unique_data, pair_index, i, x,
+        def block_matvec(x: JaxArray, i: int = i, s: JaxArray = s) -> JaxArray:
+            return s * _diag_block_matvec(
+                bs, unique_data, pair_index, i, s * x,
                 diagonal_block=diagonal_block, transpose=False,
             )
 
@@ -926,9 +945,13 @@ def _block_precon_apply(
     ``inner`` sets the approximate inverse of each field's own block ``(i, i)``:
     ``"jacobi"`` divides by the assembled block's diagonal; ``"chebyshev"`` runs
     ``chebyshev_degree`` Chebyshev steps (spectrum bracket per field in
-    ``chebyshev_bounds``) on the diagonal block matvec. ``diagonal_block`` picks
-    that matvec: ``"assembled"`` is the block ``(i, i)`` as stored, ``"schur"``
-    its approximate Schur complement. ``"jacobi"`` pairs only with
+    ``chebyshev_bounds``) on the Jacobi-scaled diagonal block matvec
+    ``S_i A_i S_i`` (:func:`_block_scaling`), returning ``S_i`` times the
+    result of the scaled right hand side ``S_i r_i``: the block's spectrum
+    is clustered by the scaling, so a low degree polynomial approximates its
+    inverse far better. ``diagonal_block`` picks the block matvec:
+    ``"assembled"`` is the block ``(i, i)`` as stored, ``"schur"`` its
+    approximate Schur complement. ``"jacobi"`` pairs only with
     ``"assembled"``; ``"chebyshev"`` pairs with either.
 
     ``transpose=True`` runs the sweep on the transpose operator for the
@@ -962,14 +985,17 @@ def _block_precon_apply(
             return rhs / _block_diagonal(bs, unique_data, pair_index, i)
         assert chebyshev_bounds is not None
         lmin, lmax = chebyshev_bounds[i]
+        s = _block_scaling(bs, unique_data, pair_index, i)
 
         def block_matvec(x: JaxArray) -> JaxArray:
-            return _diag_block_matvec(
-                bs, unique_data, pair_index, i, x,
+            return s * _diag_block_matvec(
+                bs, unique_data, pair_index, i, s * x,
                 diagonal_block=diagonal_block, transpose=transpose,
             )
 
-        return _chebyshev_apply(block_matvec, rhs, lmin, lmax, chebyshev_degree)
+        return s * _chebyshev_apply(
+            block_matvec, s * rhs, lmin, lmax, chebyshev_degree,
+        )
 
     order = (
         range(num_fields) if coupling != "upper"
