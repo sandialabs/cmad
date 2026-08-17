@@ -31,6 +31,13 @@ GPU: JAX installs its CPU build by default. For an NVIDIA GPU, add
 the CUDA extra matching your toolkit -- `".[cuda12]"` or
 `".[cuda13]"` (install one, not both).
 
+CPU devices: `cmad --cpu-devices N ...` runs JAX with N CPU devices and
+shards the FE assembly across them. The count has to be set before JAX
+starts, so it is a command line option, not an input file entry. A
+script that imports cmad instead of running the `cmad` command sets it
+itself with `jax.config.update("jax_num_cpu_devices", N)` right after
+`import jax` (or `XLA_FLAGS=--xla_force_host_platform_device_count=N`).
+
 Sparse direct solver: the `solvers` extra adds scikit-sparse, which
 supplies a fill reducing ordering for the sparse direct solve. It
 reduces fill and can roughly halve the factorization cost. It is
