@@ -122,9 +122,14 @@ def make_newton_solve(
         C_norm_0 = jnp.linalg.norm(C0)
 
 
+        def is_converged(C):
+            C_norm = jnp.linalg.norm(C)
+            return jnp.logical_or(C_norm / C_norm_0 < rel_tol,
+                                  C_norm < abs_tol)
+
+
         def true_fun(carry):
-            ii, _converged, x, C = carry
-            return ii, True, x, C
+            return carry
 
 
         def false_fun(carry):
@@ -148,7 +153,7 @@ def make_newton_solve(
             else:
                 x_next = x - delta_x
                 C_next = residual_flat(x_next)
-            return ii + 1, False, x_next, C_next
+            return ii + 1, is_converged(C_next), x_next, C_next
 
 
         def cond_fun(carry):
@@ -157,20 +162,24 @@ def make_newton_solve(
 
 
         def body_fun(carry):
-            ii, _converged, _x, C = carry
-            C_norm = jnp.linalg.norm(C)
-            C_norm_rel = C_norm / C_norm_0
+            ii, converged, _x, C = carry
             if print_local_convergence:
+                C_norm = jnp.linalg.norm(C)
                 debug.print(
                     "  ({k}) abs ||C|| = {a:.6e} rel ||C|| = {r:.6e}",
-                    k=ii + 1, a=C_norm, r=C_norm_rel,
+                    k=ii + 1, a=C_norm, r=C_norm / C_norm_0,
                 )
-            pred = jnp.logical_or(C_norm_rel < rel_tol, C_norm < abs_tol)
-            return cond(pred, true_fun, false_fun, carry)
+            return cond(converged, true_fun, false_fun, carry)
 
 
-        flat_x = while_loop(cond_fun, body_fun,
-            (0, False, flat_init, C0))[2]
+        ii, _converged, flat_x, C = while_loop(cond_fun, body_fun,
+            (0, is_converged(C0), flat_init, C0))
+        if print_local_convergence:
+            C_norm = jnp.linalg.norm(C)
+            debug.print(
+                "  ({k}) abs ||C|| = {a:.6e} rel ||C|| = {r:.6e}",
+                k=ii + 1, a=C_norm, r=C_norm / C_norm_0,
+            )
         return unravel(flat_x)
 
 
