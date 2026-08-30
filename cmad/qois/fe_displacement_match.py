@@ -13,7 +13,6 @@ from cmad.fem.dof import dof_physical_coords
 from cmad.fem.precompute import compute_ip_quadrature_weights
 from cmad.fem.sharding import pad_element_leaves
 from cmad.io.qoi_data import load_displacement_data, load_roi
-from cmad.io.registry import register_qoi
 from cmad.qois.fe_qoi import FEQoI, StepContribution
 from cmad.qois.surface_match import (
     surface_groups_and_norm,
@@ -46,7 +45,6 @@ def _element_masks(
     }
 
 
-@register_qoi("fe_displacement_match")
 class FEDisplacementMatch(FEQoI):
     r"""Time- and space-averaged squared displacement mismatch.
 

@@ -9,7 +9,6 @@ from cmad.fem.fe_problem import FEProblem, FEState
 from cmad.fem.mesh import Mesh
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
-from cmad.io.registry import register_global_residual
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.kinematics import cofactor
 from cmad.models.model import Model
@@ -17,7 +16,6 @@ from cmad.models.var_types import VarType
 from cmad.typing import GREvaluators
 
 
-@register_global_residual("mechanics")
 class Mechanics(GlobalResidual):
     """Quasi-static mechanics equilibrium.
 

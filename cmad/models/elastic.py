@@ -5,7 +5,6 @@ from typing import Any, ClassVar
 import jax.numpy as jnp
 import numpy as np
 
-from cmad.io.registry import register_model
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.elastic_stress import (
@@ -27,7 +26,6 @@ from cmad.parameters.parameters import Parameters
 from cmad.typing import JaxArray, Scalar, StateList
 
 
-@register_model("elastic")
 class Elastic(MechanicsModel):
     """
     General elastic model

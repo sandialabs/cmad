@@ -1,34 +1,21 @@
-"""Model, QoI, and global-residual registries for the CMAD deck driver.
+"""Model, QoI, and global residual resolution for the CMAD deck driver.
 
-Models, QoIs, and global residuals register themselves at import time
-via ``@register_model("name")`` / ``@register_qoi("name")`` /
-``@register_global_residual("name")``. Drivers resolve a deck's name
-keys to a registered class via :func:`resolve_model` /
-:func:`resolve_qoi` / :func:`resolve_global_residual`. Resolution is
-lazy: the concrete module is imported on first lookup so the CLI pays
-only for the classes a given deck actually uses, which keeps startup
-cost flat as the library grows.
-
-Discoverability (used in the "unknown ..." error messages) comes from
-the schema-fragment directories (``cmad/io/schemas/models/<name>.yaml``,
-``cmad/io/schemas/qois/<name>.yaml``,
-``cmad/io/schemas/global_residuals/<name>.yaml``) rather than the
-runtime registries, so listing available names triggers no user-code
-imports.
-
-Convention across registries: ``name`` equals the module filename
-(``cmad.models.<name>`` / ``cmad.qois.<name>`` /
-``cmad.global_residuals.<name>``), so the lazy import in the resolve
-function can find the module by name alone.
-
-See the driver registry contract for details.
+A deck name is a module name: :func:`resolve_model` imports
+``cmad.models.<name>`` and returns the one :class:`Model` subclass that
+module defines; :func:`resolve_qoi` and :func:`resolve_global_residual`
+do the same under ``cmad.qois`` and ``cmad.global_residuals``. A name
+is available exactly when its module exists; nothing registers itself
+as an import side effect. Resolution is lazy, importing only the module
+a deck names, which keeps startup cost flat as the library grows.
+Unknown names raise with a listing of the modules actually present.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import inspect
+import pkgutil
 from importlib import import_module
-from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
@@ -36,189 +23,107 @@ if TYPE_CHECKING:
     from cmad.models.model import Model
     from cmad.qois.qoi_base import QoIBase
 
-
-ModelT = TypeVar("ModelT", bound="Model")
-QoIT = TypeVar("QoIT", bound="QoIBase")
-GRT = TypeVar("GRT", bound="GlobalResidual")
-
-_REGISTRY: dict[str, type[Model]] = {}
-_QOI_REGISTRY: dict[str, type[QoIBase]] = {}
-_GR_REGISTRY: dict[str, type[GlobalResidual]] = {}
-_SCHEMAS_MODELS_DIR = Path(__file__).parent / "schemas" / "models"
-_SCHEMAS_QOIS_DIR = Path(__file__).parent / "schemas" / "qois"
-_SCHEMAS_GLOBAL_RESIDUALS_DIR = (
-    Path(__file__).parent / "schemas" / "global_residuals"
-)
+T = TypeVar("T")
 
 
-def register_model(name: str) -> Callable[[type[ModelT]], type[ModelT]]:
-    """Register a :class:`Model` subclass under a deck-facing name."""
-    if not name or not name.strip():
-        raise ValueError("register_model: name must be a non-empty string")
-
-    def decorator(cls: type[ModelT]) -> type[ModelT]:
-        if name in _REGISTRY:
-            existing = _REGISTRY[name].__name__
-            raise ValueError(
-                f"register_model: '{name}' is already registered "
-                f"(by {existing}); each name must be unique",
-            )
-        _REGISTRY[name] = cls
-        return cls
-
-    return decorator
+def resolve_model(name: str, where: str = "model.name") -> type[Model]:
+    """The Model subclass defined by ``cmad.models.<name>``."""
+    from cmad.models.model import Model
+    return _resolve_class("cmad.models", name, Model, where, "model")
 
 
-def resolve_model(name: str) -> type[Model]:
-    """Look up a registered class by deck name, importing its module on demand.
+def resolve_qoi(name: str, where: str = "qoi.name") -> type[QoIBase]:
+    """The QoI class defined by ``cmad.qois.<name>``.
 
-    The module path convention is ``cmad.models.<name>``. If the schema
-    fragment for ``name`` exists but the module path has no registration,
-    the "not registered" error still fires after the import attempt.
+    Returns ``type[QoIBase]`` since one namespace serves the MP
+    (:class:`cmad.qois.qoi.QoI`) and FE (:class:`cmad.qois.fe_qoi.FEQoI`)
+    hierarchies. Callers (``build_mp_problem`` /
+    ``build_fe_problem_from_deck``) check ``cls.problem_type`` against
+    the deck's ``problem.type``, so the driver enforces the pairing
+    rather than the resolver.
     """
-    if name in _REGISTRY:
-        return _REGISTRY[name]
-
-    known = registered_models()
-    if name in known:
-        import_module(f"cmad.models.{name}")
-
-    if name not in _REGISTRY:
-        listing = ", ".join(known) if known else "(none)"
-        raise ValueError(
-            f"model.name: '{name}' is not registered. "
-            f"Registered model names: {listing}",
-        )
-    return _REGISTRY[name]
+    from cmad.qois.qoi_base import QoIBase
+    return _resolve_class("cmad.qois", name, QoIBase, where, "qoi")
 
 
-def registered_models() -> list[str]:
-    """Return the sorted list of discoverable model names.
-
-    Discoverability is by schema-fragment presence under
-    ``cmad/io/schemas/models/<name>.yaml``; no models are imported.
-    """
-    if not _SCHEMAS_MODELS_DIR.exists():
-        return []
-    return sorted(p.stem for p in _SCHEMAS_MODELS_DIR.glob("*.yaml"))
-
-
-def register_qoi(name: str) -> Callable[[type[QoIT]], type[QoIT]]:
-    """Register a :class:`QoI` subclass under a deck-facing name."""
-    if not name or not name.strip():
-        raise ValueError("register_qoi: name must be a non-empty string")
-
-    def decorator(cls: type[QoIT]) -> type[QoIT]:
-        if name in _QOI_REGISTRY:
-            existing = _QOI_REGISTRY[name].__name__
-            raise ValueError(
-                f"register_qoi: '{name}' is already registered "
-                f"(by {existing}); each name must be unique",
-            )
-        _QOI_REGISTRY[name] = cls
-        return cls
-
-    return decorator
-
-
-def resolve_qoi(name: str) -> type[QoIBase]:
-    """Look up a registered QoI class by deck name, importing on demand.
-
-    The module path convention is ``cmad.qois.<name>``. If the schema
-    fragment for ``name`` exists but the module path has no
-    registration, the "not registered" error still fires after the
-    import attempt.
-
-    Returns ``type[QoIBase]`` since the registry is shared by the MP
-    (:class:`cmad.qois.qoi.QoI`) and FE
-    (:class:`cmad.qois.fe_qoi.FEQoI`) hierarchies. Callers
-    (``build_mp_problem`` / ``build_fe_problem_from_deck``) check
-    ``cls.problem_type`` against ``deck["problem"]["type"]`` and raise
-    if they disagree, so the deck-driver layer enforces the
-    QoI-hierarchy ↔ problem-type pairing rather than the registry.
-    """
-    if name in _QOI_REGISTRY:
-        return _QOI_REGISTRY[name]
-
-    known = registered_qois()
-    if name in known:
-        import_module(f"cmad.qois.{name}")
-
-    if name not in _QOI_REGISTRY:
-        listing = ", ".join(known) if known else "(none)"
-        raise ValueError(
-            f"qoi.name: '{name}' is not registered. "
-            f"Registered qoi names: {listing}",
-        )
-    return _QOI_REGISTRY[name]
-
-
-def registered_qois() -> list[str]:
-    """Return the sorted list of discoverable qoi names.
-
-    Discoverability is by schema-fragment presence under
-    ``cmad/io/schemas/qois/<name>.yaml``; no qoi modules are imported.
-    """
-    if not _SCHEMAS_QOIS_DIR.exists():
-        return []
-    return sorted(p.stem for p in _SCHEMAS_QOIS_DIR.glob("*.yaml"))
-
-
-def register_global_residual(
-        name: str,
-) -> Callable[[type[GRT]], type[GRT]]:
-    """Register a :class:`GlobalResidual` subclass under a deck-facing name."""
-    if not name or not name.strip():
-        raise ValueError(
-            "register_global_residual: name must be a non-empty string",
-        )
-
-    def decorator(cls: type[GRT]) -> type[GRT]:
-        if name in _GR_REGISTRY:
-            existing = _GR_REGISTRY[name].__name__
-            raise ValueError(
-                f"register_global_residual: '{name}' is already registered "
-                f"(by {existing}); each name must be unique",
-            )
-        _GR_REGISTRY[name] = cls
-        return cls
-
-    return decorator
-
-
-def resolve_global_residual(name: str) -> type[GlobalResidual]:
-    """Look up a registered class by deck name, importing its module on demand.
-
-    The module path convention is ``cmad.global_residuals.<name>``. If the
-    schema fragment for ``name`` exists but the module path has no
-    registration, the "not registered" error still fires after the import
-    attempt.
-    """
-    if name in _GR_REGISTRY:
-        return _GR_REGISTRY[name]
-
-    known = registered_global_residuals()
-    if name in known:
-        import_module(f"cmad.global_residuals.{name}")
-
-    if name not in _GR_REGISTRY:
-        listing = ", ".join(known) if known else "(none)"
-        raise ValueError(
-            f"global residual.type: '{name}' is not registered. "
-            f"Registered global residual names: {listing}",
-        )
-    return _GR_REGISTRY[name]
-
-
-def registered_global_residuals() -> list[str]:
-    """Return the sorted list of discoverable global-residual names.
-
-    Discoverability is by schema-fragment presence under
-    ``cmad/io/schemas/global_residuals/<name>.yaml``; no global-residual
-    modules are imported.
-    """
-    if not _SCHEMAS_GLOBAL_RESIDUALS_DIR.exists():
-        return []
-    return sorted(
-        p.stem for p in _SCHEMAS_GLOBAL_RESIDUALS_DIR.glob("*.yaml")
+def resolve_global_residual(
+        name: str, where: str = "residuals.global residual.type",
+) -> type[GlobalResidual]:
+    """The GlobalResidual subclass defined by ``cmad.global_residuals.<name>``."""
+    from cmad.global_residuals.global_residual import GlobalResidual
+    return _resolve_class(
+        "cmad.global_residuals", name, GlobalResidual, where,
+        "global residual",
     )
+
+
+def _resolve_class(
+        package: str, name: str, base: type[T], where: str, kind: str,
+) -> type[T]:
+    """Import ``<package>.<name>`` and return its one ``base`` subclass.
+
+    Only the class defined in the module itself counts: classes the
+    module merely imports, and abstract classes, do not. A missing
+    import inside a real module propagates; only the named module's own
+    absence becomes the availability error.
+    """
+    module_path = f"{package}.{name}"
+    module: ModuleType | None
+    try:
+        module = import_module(module_path)
+    except ModuleNotFoundError as err:
+        if err.name != module_path:
+            raise
+        module = None
+    if module is None:
+        listing = ", ".join(_available_names(package, base)) or "(none)"
+        raise ValueError(
+            f"{where}: '{name}' is not available. "
+            f"Available {kind} names: {listing}",
+        )
+    found = _defined_classes(module, base)
+    if len(found) != 1:
+        raise ValueError(
+            f"{where}: module '{module_path}' defines {len(found)} "
+            f"{base.__name__} subclasses; expected exactly one",
+        )
+    return found[0]
+
+
+def _defined_classes(module: ModuleType, base: type[T]) -> list[type[T]]:
+    """The ``base`` subclasses defined in ``module`` itself.
+
+    Classes the module imports from elsewhere do not count, and neither
+    do abstract classes.
+    """
+    return [
+        obj for obj in vars(module).values()
+        if isinstance(obj, type) and issubclass(obj, base)
+        and obj.__module__ == module.__name__
+        and not inspect.isabstract(obj)
+    ]
+
+
+def _available_names(package: str, base: type[T]) -> list[str]:
+    """The module names under ``package`` defining a ``base`` subclass.
+
+    A class that another found class inherits from is dropped, so base
+    class modules are not offered as names. Imports every module in the
+    package; this only runs while building the error message for an
+    unknown name.
+    """
+    class_by_name = {}
+    for found in pkgutil.iter_modules(import_module(package).__path__):
+        module = import_module(f"{package}.{found.name}")
+        classes = _defined_classes(module, base)
+        if classes:
+            class_by_name[found.name] = classes[0]
+    names = []
+    for name, cls in class_by_name.items():
+        is_base_of_another = any(
+            issubclass(other, cls) and other is not cls
+            for other in class_by_name.values()
+        )
+        if not is_base_of_another:
+            names.append(name)
+    return sorted(names)

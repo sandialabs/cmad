@@ -17,11 +17,10 @@ and Calibr8-only-section strip. Both are idempotent so calling
 ``validate_deck`` directly on a not-yet-normalized deck produces the
 same result as calling ``apply_deck_defaults`` first.
 
-Callers do not need to eagerly import the concrete model / QoI /
-global-residual modules: lazy resolution happens in
-:mod:`cmad.io.registry`. The ``registered_*`` helpers used by the
-pre-flight checks here discover names from the schema-fragment
-directories without triggering any user-code imports.
+The checks here resolve the deck's model, QoI, and global residual
+names through :mod:`cmad.io.registry`, which imports only the named
+module; an unknown name raises with a listing of the modules actually
+present.
 """
 
 from __future__ import annotations
@@ -35,9 +34,9 @@ from jsonschema.exceptions import ValidationError
 
 from cmad.io.deck import strip_calibr8_only, unwrap_top_level
 from cmad.io.registry import (
-    registered_global_residuals,
-    registered_models,
-    registered_qois,
+    resolve_global_residual,
+    resolve_model,
+    resolve_qoi,
 )
 
 _SCHEMAS_DIR = Path(__file__).parent / "schemas"
@@ -124,14 +123,7 @@ def validate_deck(deck: dict[str, Any], subcommand: str) -> None:
         _check_qoi_registered(deck)
         qoi_name = deck["qoi"]["name"]
 
-    model_name: str | None = None
-    if problem_type == "material_point":
-        model_name = deck["model"]["name"]
-
-    composed = _compose_schema(
-        problem_type, subcommand,
-        model_name=model_name, qoi_name=qoi_name,
-    )
+    composed = _compose_schema(problem_type, subcommand, qoi_name=qoi_name)
     errors = list(Draft202012Validator(composed).iter_errors(deck))
     if errors:
         joined = "\n".join(_format_error(e) for e in errors)
@@ -141,7 +133,7 @@ def validate_deck(deck: dict[str, Any], subcommand: str) -> None:
 def _check_model_registered(
         deck: dict[str, Any], problem_type: str,
 ) -> None:
-    """Verify the deck's model name is in the registry.
+    """Verify the deck's model name resolves to a module.
 
     For MP decks the name lives at ``deck.model.name``; for FE decks
     it lives at ``deck.residuals.local residual.type``.
@@ -166,50 +158,30 @@ def _check_model_registered(
     else:
         return
 
-    known = registered_models()
-    if name not in known:
-        listing = ", ".join(known) if known else "(none)"
-        raise ValueError(
-            f"{path}: '{name}' is not registered. "
-            f"Registered model names: {listing}",
-        )
+    resolve_model(name, where=path)
 
 
 def _check_global_residual_registered(deck: dict[str, Any]) -> None:
-    """Verify the FE deck's GR name is in the registry."""
+    """Verify the FE deck's GR name resolves to a module."""
     residuals = deck.get("residuals")
     if not isinstance(residuals, dict):
         raise ValueError("residuals: missing or not a mapping")
     glob = residuals.get("global residual")
     if not isinstance(glob, dict) or "type" not in glob:
         raise ValueError("residuals.global residual: missing 'type' field")
-    name = glob["type"]
-    known = registered_global_residuals()
-    if name not in known:
-        listing = ", ".join(known) if known else "(none)"
-        raise ValueError(
-            f"residuals.global residual.type: '{name}' is not registered. "
-            f"Registered global residual names: {listing}",
-        )
+    resolve_global_residual(glob["type"])
 
 
 def _check_qoi_registered(deck: dict[str, Any]) -> None:
     qoi_section = deck.get("qoi")
     if not isinstance(qoi_section, dict) or "name" not in qoi_section:
         raise ValueError("qoi: missing 'name' field")
-    known = registered_qois()
-    if qoi_section["name"] not in known:
-        listing = ", ".join(known) if known else "(none)"
-        raise ValueError(
-            f"qoi.name: '{qoi_section['name']}' is not registered. "
-            f"Registered qoi names: {listing}",
-        )
+    resolve_qoi(qoi_section["name"])
 
 
 def _compose_schema(
         problem_type: str,
         subcommand: str,
-        model_name: str | None = None,
         qoi_name: str | None = None,
 ) -> dict[str, Any]:
     required, optional = _SECTIONS[(problem_type, subcommand)]
@@ -218,8 +190,7 @@ def _compose_schema(
     merged_defs: dict[str, Any] = {}
     for section in all_sections:
         if section == "model":
-            assert model_name is not None  # guaranteed by validate_deck
-            fragment = _load_fragment(f"models/{model_name}.yaml")
+            fragment = _load_fragment("model.yaml")
         elif section == "qoi":
             if qoi_name is None:
                 continue
@@ -249,7 +220,12 @@ def _compose_schema(
 
 
 def _load_fragment(relative_path: str) -> dict[str, Any]:
-    with (_SCHEMAS_DIR / relative_path).open("r") as f:
+    path = _SCHEMAS_DIR / relative_path
+    if not path.exists():
+        raise RuntimeError(
+            f"no schema fragment for '{relative_path}' under {_SCHEMAS_DIR}",
+        )
+    with path.open("r") as f:
         data = yaml.safe_load(f)
     if not isinstance(data, dict):
         raise RuntimeError(

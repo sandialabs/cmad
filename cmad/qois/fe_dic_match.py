@@ -15,7 +15,6 @@ from numpy.typing import NDArray
 
 from cmad.fem.dof import dof_physical_coords
 from cmad.io.point_cloud import PointCloud, read_point_cloud
-from cmad.io.registry import register_qoi
 from cmad.qois.fe_qoi import FEQoI, StepContribution
 from cmad.qois.surface_match import (
     surface_groups_and_norm,
@@ -47,7 +46,6 @@ def _plane_coords(
     return (points - centroid) @ axes.T
 
 
-@register_qoi("fe_dic_match")
 class FEDicMatch(FEQoI):
     r"""Squared displacement mismatch against DIC data on a sideset.
 

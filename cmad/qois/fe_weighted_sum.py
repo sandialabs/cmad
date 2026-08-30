@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import jax.numpy as jnp
 
-from cmad.io.registry import register_qoi, resolve_qoi
+from cmad.io.registry import resolve_qoi
 from cmad.qois.fe_qoi import FEQoI, StepContribution
 from cmad.typing import JaxArray, Params
 
@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from cmad.models.global_fields import StepTime
 
 
-@register_qoi("fe_weighted_sum")
 class FEWeightedSum(FEQoI):
     """Sum of FE sub-QoIs, each carrying its own deck ``weight``.
 

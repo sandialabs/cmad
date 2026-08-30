@@ -6,7 +6,6 @@ import jax.numpy as jnp
 import numpy as np
 from jax import grad, jit
 
-from cmad.io.registry import register_model
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.effective_stress import conventional_effective_stress_fun
 from cmad.models.elastic_constants import ElasticConstants
@@ -147,7 +146,6 @@ def compute_yield_fun_and_normal(
         xi, params, def_type, effective_stress, hardening), yield_normal
 
 
-@register_model("small_rate_elastic_plastic")
 class SmallRateElasticPlastic(MechanicsModel):
     """
     Small strain rate form elastic-plastic model:

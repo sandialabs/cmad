@@ -5,7 +5,6 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 
-from cmad.io.registry import register_qoi
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.model import Model
 from cmad.qois.qoi import QoI
@@ -18,7 +17,6 @@ from cmad.typing import (
 )
 
 
-@register_qoi("uniaxial_calibration")
 class UniaxialCalibration(QoI):
     def __init__(
             self, model: Model,

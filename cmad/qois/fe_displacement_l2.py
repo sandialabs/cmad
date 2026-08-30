@@ -8,7 +8,6 @@ import jax.numpy as jnp
 
 from cmad.fem.assembly import _gather_element_U
 from cmad.fem.precompute import compute_ip_quadrature_weights
-from cmad.io.registry import register_qoi
 from cmad.qois.fe_qoi import FEQoI, StepContribution
 from cmad.typing import JaxArray, Params
 
@@ -18,7 +17,6 @@ if TYPE_CHECKING:
     from cmad.models.global_fields import StepTime
 
 
-@register_qoi("fe_displacement_l2")
 class FEDisplacementL2(FEQoI):
     r"""Time- and space-averaged squared displacement.
 

@@ -21,7 +21,6 @@ import jax.numpy as jnp
 import numpy as np
 from jax import grad, jit
 
-from cmad.io.registry import register_model
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.effective_stress import J2_effective_stress
 from cmad.models.elastic_constants import ElasticConstants
@@ -151,7 +150,6 @@ def compute_yield_fun_and_normal(
     return compute_yield_fun(zeta, alpha, params, hardening), yield_normal
 
 
-@register_model("be_bar_elastic_plastic")
 class BeBarElasticPlastic(MechanicsModel):
     """Finite deformation elastic-plastic model via the be_bar return map.
 

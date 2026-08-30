@@ -16,7 +16,6 @@ from cmad.fem.assembly import (
 from cmad.fem.sharding import place_element_leaves
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.qoi_data import load_reaction_data
-from cmad.io.registry import register_qoi
 from cmad.models.global_fields import StepTime
 from cmad.qois.fe_qoi import FEQoI, StepContribution
 from cmad.typing import JaxArray, Params
@@ -26,7 +25,6 @@ if TYPE_CHECKING:
     from cmad.fem.kernel_arrays import FEKernelArrays
 
 
-@register_qoi("fe_load_match")
 class FELoadMatch(FEQoI):
     r"""Net boundary reaction on a displacement-controlled sideset.
 
