@@ -4,19 +4,20 @@ Argparse dispatcher for the driver subcommands. The registries
 lazy load concrete Model / QoI modules on first resolution, so no
 side effect imports are needed here. The subcommand modules are imported
 inside :func:`main` after the command line is parsed, so that
-``--cpu-devices`` can set JAX's CPU device count before anything
-initialises the JAX backend.
+``--devices`` is applied before anything initialises the JAX backend
+(the CPU device count can only be set before that).
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-import warnings
 from pathlib import Path
 
 from jax import config as jax_config
 from jax import devices as jax_devices
+
+from cmad.fem.sharding import set_device_count
 
 
 def _positive_int(text: str) -> int:
@@ -28,30 +29,34 @@ def _positive_int(text: str) -> int:
     return value
 
 
-def _apply_cpu_devices(n_devices: int) -> None:
-    """Run JAX with ``n_devices`` CPU devices; the FE assembly is sharded
-    across them (:mod:`cmad.fem.sharding`). JAX reads the count only before
-    its backend initialises, so a caller that ran JAX in this process before
-    ``main`` keeps the devices it has, with a warning. 1 leaves JAX's own
-    default alone."""
-    if n_devices == 1:
-        return
-    try:
-        jax_config.update("jax_num_cpu_devices", n_devices)
-    except RuntimeError:
-        warnings.warn(
-            f"--cpu-devices {n_devices} ignored: JAX is already running "
-            f"with {len(jax_devices())} device(s) in this process",
-            stacklevel=2,
-        )
+def _apply_device_count(n_devices: int) -> None:
+    """Run on ``n_devices`` devices; the FE assembly is sharded across them
+    (:mod:`cmad.fem.sharding`). On CPU, JAX makes that many devices; on a
+    machine with accelerators, the run uses the first ``n_devices`` of
+    them. JAX reads the CPU count only before its backend initialises.
+    When JAX is already running in this process, the count cannot be
+    changed, and asking for more devices than JAX has is an error."""
+    if n_devices > 1:
+        try:
+            jax_config.update("jax_num_cpu_devices", n_devices)
+        except RuntimeError as exc:
+            present = len(jax_devices())
+            if n_devices > present:
+                raise RuntimeError(
+                    f"--devices {n_devices}: JAX is already running with "
+                    f"{present} device(s) in this process; set the device "
+                    f"count before JAX starts",
+                ) from exc
+    set_device_count(n_devices)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cmad")
     parser.add_argument(
-        "--cpu-devices", type=_positive_int, default=1, metavar="N",
-        help="run JAX with N CPU devices and shard the FE assembly across "
-             "them (default 1)",
+        "--devices", type=_positive_int, default=None, metavar="N",
+        help="run on N devices and shard the FE assembly across them: N CPU "
+             "devices, or the first N accelerators; without it every device "
+             "JAX sees is used",
     )
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
@@ -83,7 +88,8 @@ def main(argv: list[str] | None = None) -> int:
     calibrate.add_argument("deck", type=Path, help="Path to the YAML deck.")
 
     args = parser.parse_args(argv)
-    _apply_cpu_devices(args.cpu_devices)
+    if args.devices is not None:
+        _apply_device_count(args.devices)
 
     # Imported here so the device count above precedes the backend
     # initialisation these modules trigger on import.

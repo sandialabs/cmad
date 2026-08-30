@@ -123,7 +123,8 @@ class FEProblem:
     ``device_mesh`` is the single axis device mesh the assembly's element
     axis is sharded across when there is more than one JAX device
     (:mod:`cmad.fem.sharding`), or ``None`` when the assembly runs on
-    one device.
+    one device. ``num_devices`` is how many of JAX's devices the mesh
+    may use; ``None`` means all of them.
     """
     mesh: Mesh
     dof_map: GlobalDofMap
@@ -139,6 +140,7 @@ class FEProblem:
     neumann_bcs: Sequence[NeumannBC]
     side_quadrature: dict[ElementFamily, QuadratureRule]
     thickness: float | None = None
+    num_devices: int | None = None
 
     field_layouts_per_block: list[GlobalFieldLayout] = field(
         init=False, default_factory=list,
@@ -258,10 +260,13 @@ class FEProblem:
         # FEProblem at module scope.
         from cmad.fem.kernel_arrays import build_fe_kernel_arrays
         kernel_arrays = build_fe_kernel_arrays(self)
-        device_mesh = build_device_mesh({
-            block: len(elems)
-            for block, elems in self.mesh.element_blocks.items()
-        })
+        device_mesh = build_device_mesh(
+            {
+                block: len(elems)
+                for block, elems in self.mesh.element_blocks.items()
+            },
+            self.num_devices,
+        )
         if device_mesh is not None:
             kernel_arrays = shard_kernel_arrays(kernel_arrays, device_mesh)
         object.__setattr__(self, "device_mesh", device_mesh)
@@ -392,6 +397,7 @@ def build_fe_problem(
         print_local_convergence: bool = False,
         local_newton_settings: dict[str, Any] | None = None,
         thickness: float | None = None,
+        num_devices: int | None = None,
 ) -> FEProblem:
     """Validate FE inputs and build an immutable :class:`FEProblem`.
 
@@ -495,4 +501,5 @@ def build_fe_problem(
         neumann_bcs=neumann_bcs,
         side_quadrature=side_quadrature,
         thickness=thickness,
+        num_devices=num_devices,
     )

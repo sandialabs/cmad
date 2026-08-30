@@ -1,8 +1,9 @@
-"""``cmad --cpu-devices N``: JAX's CPU device count from the command line.
+"""``cmad --devices N``: the device count from the command line.
 
-JAX reads the count only before its backend initialises, so the option is
-exercised in a subprocess; in this process, where the backend is already
-up, it warns and the run proceeds on the devices present.
+JAX reads the CPU device count only before its backend initialises, so the
+option is exercised in a subprocess. In this process, where the backend is
+already up, asking for more devices than JAX has is an error. Without the
+option the device count is left to JAX.
 """
 import contextlib
 import io
@@ -17,6 +18,7 @@ import numpy as np
 import yaml
 
 from cmad.cli.main import main as cmad_main
+from cmad.fem import sharding
 from cmad.io.exodus import read_results
 from cmad.io.results import FieldSpec
 from cmad.models.var_types import VarType
@@ -66,7 +68,10 @@ def _read_u(out_dir: Path) -> np.ndarray:
     return np.asarray(results.nodal["u"])
 
 
-class TestCpuDevicesOption(unittest.TestCase):
+class TestDevicesOption(unittest.TestCase):
+
+    def tearDown(self) -> None:
+        sharding.set_device_count(None)
 
     def test_four_devices_subprocess_matches_one_device(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -76,7 +81,7 @@ class TestCpuDevicesOption(unittest.TestCase):
             self.assertEqual(cmad_main(["primal", str(deck_one)]), 0)
             proc = subprocess.run(
                 [sys.executable, "-c", _SUBPROCESS_SCRIPT,
-                 "--cpu-devices", "4", "primal", str(deck_four)],
+                 "--devices", "4", "primal", str(deck_four)],
                 cwd=_REPO_ROOT, capture_output=True, text=True, timeout=600,
             )
             self.assertEqual(
@@ -91,20 +96,25 @@ class TestCpuDevicesOption(unittest.TestCase):
         self.assertGreater(scale, 0.0)
         np.testing.assert_allclose(u_four, u_one, rtol=0, atol=1e-12 * scale)
 
-    def test_in_process_warns_and_runs_on_the_devices_present(self) -> None:
+    def test_in_process_count_above_the_devices_present_raises(self) -> None:
         jax.devices()  # the backend is up in this process
+        with self.assertRaisesRegex(RuntimeError, "--devices 4"):
+            cmad_main(["--devices", "4", "primal", "input.yaml"])
+        self.assertIsNone(sharding._device_count)
+
+    def test_without_the_option_the_count_is_left_to_jax(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
-            deck = _write_deck(tmp, "warned")
-            with self.assertWarnsRegex(UserWarning, "--cpu-devices 4 ignored"):
-                rc = cmad_main(["--cpu-devices", "4", "primal", str(deck)])
-            self.assertEqual(rc, 0)
-            self.assertTrue((tmp / "warned" / "primal.exo").exists())
+            deck = _write_deck(tmp, "default")
+            self.assertEqual(cmad_main(["primal", str(deck)]), 0)
+            self.assertIsNone(sharding._device_count)
+            self.assertEqual(cmad_main(["--devices", "1", "primal", str(deck)]), 0)
+            self.assertEqual(sharding._device_count, 1)
 
     def test_rejects_a_count_below_one(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()), \
                 self.assertRaises(SystemExit) as raised:
-            cmad_main(["--cpu-devices", "0", "primal", "input.yaml"])
+            cmad_main(["--devices", "0", "primal", "input.yaml"])
         self.assertEqual(raised.exception.code, 2)
 
 

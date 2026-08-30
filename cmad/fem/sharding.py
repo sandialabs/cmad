@@ -33,6 +33,16 @@ T = TypeVar("T")
 ELEMENT_AXIS = "elements"
 """Name of the device mesh axis the element axis is sharded across."""
 
+_device_count: int | None = None
+
+
+def set_device_count(num_devices: int | None) -> None:
+    """The number of JAX devices a problem uses when it is built without
+    an explicit ``num_devices``. ``None`` means all of them. The ``cmad``
+    command sets it once from ``--devices``."""
+    global _device_count
+    _device_count = num_devices
+
 
 def element_shard_count(
         n_elems_by_block: Mapping[str, int], n_devices: int,
@@ -43,12 +53,26 @@ def element_shard_count(
     return max(d for d in range(1, n_devices + 1) if common % d == 0)
 
 
-def build_device_mesh(n_elems_by_block: Mapping[str, int]) -> Mesh | None:
+def build_device_mesh(
+        n_elems_by_block: Mapping[str, int], num_devices: int | None = None,
+) -> Mesh | None:
     """The single axis device mesh the element axis is sharded across, or
     ``None`` when the assembly stays on one device: there is one JAX
     device, or the block element counts have no common divisor that fits
-    the device count (a warning says so)."""
+    the device count (a warning says so). The mesh is built from the
+    first ``num_devices`` of JAX's devices; when ``num_devices`` is
+    ``None`` the count set by :func:`set_device_count` applies, and with
+    neither every device is used."""
     all_devices = devices()
+    if num_devices is None:
+        num_devices = _device_count
+    if num_devices is not None:
+        if num_devices > len(all_devices):
+            raise ValueError(
+                f"{num_devices} devices requested, but JAX sees "
+                f"{len(all_devices)}",
+            )
+        all_devices = all_devices[:num_devices]
     if len(all_devices) == 1:
         return None
     count = element_shard_count(n_elems_by_block, len(all_devices))

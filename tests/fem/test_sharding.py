@@ -21,7 +21,11 @@ import numpy as np
 from jax.sharding import NamedSharding, PartitionSpec
 from jax.tree_util import tree_leaves, tree_map
 
-from cmad.fem.assembly import assemble_global, params_by_block_from_models
+from cmad.fem.assembly import (
+    assemble_element_tangent,
+    assemble_global,
+    params_by_block_from_models,
+)
 from cmad.fem.fe_problem import FEState
 from cmad.fem.mesh import StructuredHexMesh
 from cmad.fem.nonlinear_solver import fe_newton_solve
@@ -30,6 +34,11 @@ from cmad.fem.sharding import (
     build_device_mesh,
     element_shard_count,
     place_element_leaves,
+)
+from cmad.fem.sparse_solve import (
+    AssembledOperator,
+    ElementOperator,
+    _embedded_bc_enforce,
 )
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.deformation_types import DefType
@@ -40,12 +49,14 @@ from tests.fem.test_assembly_coupled import (
     _split_into_two_blocks,
 )
 from tests.fem.test_mixed_up_plastic import (
+    _JAX_BLOCK_CHEBYSHEV_SETTINGS,
     MAX_ALPHA,
     NUM_DRIVE_STEPS,
     _build_mixed_fe,
 )
 from tests.support.test_problems import J2AnalyticalProblem
 
+_ELEMENT_SOLVER_SETTINGS = {**_JAX_BLOCK_CHEBYSHEV_SETTINGS, "operator": "element"}
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _N_DEVICES = 4
 # The mixed u-p problem's element axis leaves: two U gather index arrays
@@ -190,6 +201,35 @@ def save_sharded_results(path: str) -> None:
         )
     )
 
+    # The element operator built from the sharded element blocks against
+    # the assembled operator on device 0, and a Newton step through it.
+    K_elem = jax.jit(lambda arrs, xi_p: assemble_element_tangent(
+        fe_problem, arrays, params, U, U_prev, step_time,
+        xi_prev_by_block=xi_p,
+    )[0])(arrays, xi_placed)
+    element = ElementOperator(
+        K_elem, arrays.r_scatter_eq_by_block, fe_problem.field_idx_per_block,
+        fe_problem.dof_map.block_offsets, arrays.prescribed_indices,
+        fe_problem.dof_map.num_total_dofs,
+    )
+    arrays_0 = _on_device_0(arrays)
+    K_bcoo_0, _, _ = jax.jit(lambda arrs, xi_p: assemble_global(
+        fe_problem, arrs, params, U, U_prev, step_time, xi_prev_by_block=xi_p,
+    ))(arrays_0, _on_device_0(xi_prev))
+    K_enforced_0, _ = _embedded_bc_enforce(K_bcoo_0, arrays_0.prescribed_indices)
+    assembled_0 = AssembledOperator(
+        K_enforced_0, arrays_0.embedded_sparsity, arrays_0.block_sparsity,
+    )
+    x = jnp.asarray(np.random.default_rng(5).standard_normal(
+        fe_problem.dof_map.num_total_dofs))
+    element_matvec = np.asarray(jax.jit(element.matvec)(x))
+    element_matvec_ref = np.asarray(jax.jit(assembled_0.matvec)(x))
+    U_element_step, _ = fe_newton_solve(
+        fe_problem, params, U_prev=U_prev, t=float(step_time.t),
+        t_prev=float(step_time.t_prev), xi_prev_by_block=xi_prev,
+        linear_solver_settings=_ELEMENT_SOLVER_SETTINGS,
+    )
+
     # The divisor rule: 7 elements (prime) run on one device with a
     # warning; 6 elements over 4 devices shard over 3; two blocks of 1
     # and 2 elements share no divisor, so no mesh.
@@ -208,6 +248,15 @@ def save_sharded_results(path: str) -> None:
         fe_6, _on_device_0(fe_6.kernel_arrays),
     )
 
+    # num_devices limits the mesh to the first num_devices devices.
+    capped_2 = build_device_mesh({"all": 8}, num_devices=2)
+    capped_1 = build_device_mesh({"all": 8}, num_devices=1)
+    try:
+        build_device_mesh({"all": 8}, num_devices=n_devices + 1)
+        too_many_raises = False
+    except ValueError:
+        too_many_raises = True
+
     np.savez(
         path,
         n_devices=n_devices,
@@ -219,8 +268,12 @@ def save_sharded_results(path: str) -> None:
         U=U, xi=xi["all"],
         K_data=K_data, R=R, xi_out=xi_out,
         K_data_ref=K_data_ref, R_ref=R_ref, xi_out_ref=xi_out_ref,
+        element_matvec=element_matvec, element_matvec_ref=element_matvec_ref,
+        U_element_step=np.asarray(U_element_step),
         mesh_size_7=_mesh_size(fe_7), n_warnings_7=n_warnings_7,
         mesh_size_6=_mesh_size(fe_6), mesh_size_1_2=_mesh_size(fe_1_2),
+        capped_2_size=0 if capped_2 is None else int(capped_2.size),
+        capped_1_is_none=capped_1 is None, too_many_raises=too_many_raises,
         K7=K7, R7=R7, K7_ref=K7_ref, R7_ref=R7_ref,
         K6=K6, R6=R6, K6_ref=K6_ref, R6_ref=R6_ref,
     )
@@ -272,6 +325,9 @@ class TestOneDevice(unittest.TestCase):
         self.assertIs(
             fe_problem.kernel_arrays.geometry_cache, fe_problem.geometry_cache,
         )
+        self.assertIsNone(build_device_mesh({"all": 8}, num_devices=1))
+        with self.assertRaises(ValueError):
+            build_device_mesh({"all": 8}, num_devices=2)
 
 
 @unittest.skipUnless(
@@ -296,7 +352,8 @@ class TestFourDevices(unittest.TestCase):
                 )
             with np.load(out) as data:
                 cls.sharded = {k: data[k] for k in data.files}
-        _, _, cls.U_ref, _, cls.xi_ref, _, _ = drive_mixed_problem()
+        cls.drive = drive_mixed_problem()
+        _, _, cls.U_ref, _, cls.xi_ref, _, _ = cls.drive
 
     def test_placement(self) -> None:
         r = self.sharded
@@ -319,6 +376,17 @@ class TestFourDevices(unittest.TestCase):
         _assert_close(self.sharded["U"], self.U_ref, 1e-12)
         _assert_close(self.sharded["xi"], self.xi_ref["all"], 1e-12)
 
+    def test_element_operator_on_four_devices(self) -> None:
+        r = self.sharded
+        _assert_close(r["element_matvec"], r["element_matvec_ref"], 1e-12)
+        fe_problem, params, _U, U_prev, _xi, xi_prev, step_time = self.drive
+        U_ref, _ = fe_newton_solve(
+            fe_problem, params, U_prev=U_prev, t=float(step_time.t),
+            t_prev=float(step_time.t_prev), xi_prev_by_block=xi_prev,
+            linear_solver_settings=_ELEMENT_SOLVER_SETTINGS,
+        )
+        _assert_close(r["U_element_step"], np.asarray(U_ref), 1e-8)
+
     def test_divisor_rule(self) -> None:
         r = self.sharded
         self.assertEqual(int(r["mesh_size_7"]), 0)
@@ -329,6 +397,12 @@ class TestFourDevices(unittest.TestCase):
         _assert_close(r["K6"], r["K6_ref"], 1e-14)
         _assert_close(r["R6"], r["R6_ref"], 1e-14)
         self.assertEqual(int(r["mesh_size_1_2"]), 0)
+
+    def test_num_devices_limits_the_mesh(self) -> None:
+        r = self.sharded
+        self.assertEqual(int(r["capped_2_size"]), 2)
+        self.assertTrue(bool(r["capped_1_is_none"]))
+        self.assertTrue(bool(r["too_many_raises"]))
 
 
 if __name__ == "__main__":
