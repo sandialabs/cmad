@@ -7,6 +7,12 @@ data to inform them. This plots the outline, the measured point cloud,
 and a candidate pair of cuts together, and reports how much data sits
 outside each cut and how far the data reaches across each cut edge.
 
+Choose the frame range with jones_304l_load_preview.py first: the
+validity shown here is the points valid in every frame of that range,
+after the same load processing, since the Dirichlet edges need data at
+every frame a run uses. ``--frame`` overrides with a single frame's
+validity instead.
+
 Either cut may be given; whichever is omitted defaults to the midpoint of
 the outermost region where the section width is constant and the data
 reaches, rounded to a whole unit. Cut values are in the coordinate system
@@ -34,6 +40,14 @@ from jones_304l_geometry import (
     prismatic_windows,
     read_nominal_geometry,
     trim_outline,
+)
+from jones_304l_load_preview import (
+    DROP_THRESHOLD,
+    load_drop_frames,
+    merge_hand_picks,
+    read_global_channels,
+    resolve_range,
+    usable_frames,
 )
 from matplotlib.patches import PathPatch
 from matplotlib.path import Path as MplPath
@@ -65,6 +79,31 @@ def read_dic_reference(
             )
         sigma = np.asarray(handle["sigma"][frame, :], dtype=np.float64)
     return x, y, sigma >= MIN_VALID_SIGMA
+
+
+def range_validity(
+        path: str | Path, frames: NDArray[np.intp],
+) -> NDArray[np.bool_]:
+    """Points valid in every one of ``frames``.
+
+    Reads the dataset in blocks along the point axis: the file's chunks
+    span every frame of a few points, so a frame by frame read would
+    decompress the whole dataset once per frame.
+    """
+    # Bounds memory only: any block of a few thousand points reads the
+    # chunks exactly once.
+    point_block = 8192
+    with h5py.File(Path(path), "r") as handle:
+        sigma = handle["sigma"]
+        n_frames, n_points = sigma.shape
+        rows = np.zeros(n_frames, dtype=bool)
+        rows[frames] = True
+        valid = np.empty(n_points, dtype=bool)
+        for start in range(0, n_points, point_block):
+            stop = min(start + point_block, n_points)
+            piece = np.asarray(sigma[:, start:stop], dtype=np.float64)
+            valid[start:stop] = (piece[rows] >= MIN_VALID_SIGMA).all(axis=0)
+    return valid
 
 
 def resolve_cuts(
@@ -145,16 +184,13 @@ def plot_cut_preview(
         out_path: Path, outer: Loop, holes: list[Loop],
         x: NDArray[np.float64], y: NDArray[np.float64],
         valid: NDArray[np.bool_], y_min: float, y_max: float,
-        *, frame: int = 0,
+        *, mask_note: str,
 ) -> None:
     """Write the preview plot to ``out_path``."""
     fig, ax = plt.subplots(figsize=(7, 10))
 
     ax.scatter(x[valid], y[valid], s=0.4, c="#7fb3d5", linewidths=0,
                rasterized=True, label=f"DIC valid ({int(valid.sum())})")
-    if (~valid).any():
-        ax.scatter(x[~valid], y[~valid], s=6.0, c="#d62728", linewidths=0,
-                   label=f"DIC invalid ({int((~valid).sum())})")
 
     # The modeled region, with holes removed so it shows only material.
     if count_crossings(outer, y_min) == 2 and count_crossings(outer, y_max) == 2:
@@ -190,7 +226,7 @@ def plot_cut_preview(
     ax.set_aspect("equal")
     ax.set_xlabel("x (mm)")
     ax.set_ylabel("y (mm)")
-    ax.set_title(f"Candidate cuts, frame {frame}")
+    ax.set_title(f"Candidate cuts; {mask_note}")
     ax.legend(loc="upper left", fontsize=8, markerscale=4, framealpha=0.9)
     ax.grid(True, lw=0.3, alpha=0.4)
     fig.tight_layout()
@@ -217,8 +253,26 @@ def main() -> None:
         help="upper cut (default: midpoint of the highest usable window)",
     )
     parser.add_argument(
-        "--frame", type=int, default=0,
-        help="frame supplying the validity mask (default 0)",
+        "--frame-min", type=int, default=None,
+        help="first frame of the range (default: the first usable one)",
+    )
+    parser.add_argument(
+        "--frame-max", type=int, default=None,
+        help="last frame of the range (default: the last usable one)",
+    )
+    parser.add_argument(
+        "--drop-threshold", type=float, default=DROP_THRESHOLD,
+        help=f"exclude frames whose load deviates from a rolling median "
+             f"by more than this, in kN; 0 keeps every frame "
+             f"(default {DROP_THRESHOLD:g})",
+    )
+    parser.add_argument(
+        "--exclude-frames", type=int, nargs="+", default=None,
+        help="frames to exclude by hand, in addition to the detected drops",
+    )
+    parser.add_argument(
+        "--frame", type=int, default=None,
+        help="plot a single frame's validity instead of the range's",
     )
     parser.add_argument(
         "--band", type=float, default=1.0,
@@ -233,7 +287,24 @@ def main() -> None:
     outer, holes = read_nominal_geometry(args.geometry)
     outer = clean_loop(outer)
     holes = [clean_loop(hole) for hole in holes]
-    x, y, valid = read_dic_reference(args.data, args.frame)
+    x, y, valid = read_dic_reference(
+        args.data, 0 if args.frame is None else args.frame,
+    )
+    if args.frame is None:
+        times, load, _extension, _channel = read_global_channels(args.data)
+        candidates = usable_frames(times, load)
+        dropped = load_drop_frames(load, candidates, args.drop_threshold)
+        dropped, _by_hand = merge_hand_picks(
+            dropped, candidates, args.exclude_frames,
+        )
+        kept = resolve_range(
+            np.setdiff1d(candidates, dropped).astype(np.intp),
+            args.frame_min, args.frame_max,
+        )
+        valid = range_validity(args.data, kept)
+        mask_note = f"valid in all {kept.size} frames of {kept[0]}..{kept[-1]}"
+    else:
+        mask_note = f"valid at frame {args.frame}"
 
     y_min, y_max, windows, suggested = resolve_cuts(
         outer, holes, y, valid, args.y_min, args.y_max,
@@ -242,8 +313,9 @@ def main() -> None:
         args.out or f"scratch/cut_preview_y{y_min:g}_{y_max:g}.png"
     )
     plot_cut_preview(
-        out, outer, holes, x, y, valid, y_min, y_max, frame=args.frame,
+        out, outer, holes, x, y, valid, y_min, y_max, mask_note=mask_note,
     )
+    print(f"validity: {mask_note}")
 
     print(
         "usable cut windows (constant width, clear of holes): "
