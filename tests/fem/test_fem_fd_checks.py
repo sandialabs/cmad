@@ -423,7 +423,7 @@ class TestClosedFormMultiStep(unittest.TestCase):
                     "rel tol": 1e-12,
                 },
             )
-            U_steps, _, _, _, _ = trajectory(
+            U_steps, _, _, _, _, _ = trajectory(
                 fe_problem.kernel_arrays, {"all": params},
                 (U_init, xi_init), t_schedule_jax,
             )
@@ -555,7 +555,7 @@ class TestCoupledMultiStepSimple(unittest.TestCase):
                     "rel tol": 1e-10,
                 },
             )
-            U_steps, _, _, _, _ = trajectory(
+            U_steps, _, _, _, _, _ = trajectory(
                 fe_problem.kernel_arrays, {"all": params},
                 (U_init, xi_init), t_schedule_jax,
             )
@@ -624,7 +624,7 @@ class TestCoupledMultiStepAllPaths(unittest.TestCase):
                     "rel tol": 1e-10,
                 },
             )
-            U_steps, xi_steps, _, _, _ = trajectory(
+            U_steps, xi_steps, _, _, _, _ = trajectory(
                 fe_problem.kernel_arrays, {"all": params},
                 (U_init, xi_init_dict), t_schedule_jax,
             )

@@ -396,13 +396,16 @@ def _scaled_lu_solve(
     S = scipy.sparse.diags(s)
     scaled = (S @ K_csc @ S).tocsc()
     rhs = s * np.asarray(b_np)
-    if perm is None:
-        return np.asarray(s * scipy.sparse.linalg.splu(scaled).solve(rhs))
-    lu = scipy.sparse.linalg.splu(
-        scaled[perm][:, perm].tocsc(), permc_spec="NATURAL")
-    y = np.empty_like(rhs)
-    y[perm] = lu.solve(rhs[perm])
-    return np.asarray(s * y)
+    try:
+        if perm is None:
+            return np.asarray(s * scipy.sparse.linalg.splu(scaled).solve(rhs))
+        lu = scipy.sparse.linalg.splu(
+            scaled[perm][:, perm].tocsc(), permc_spec="NATURAL")
+        y = np.empty_like(rhs)
+        y[perm] = lu.solve(rhs[perm])
+        return np.asarray(s * y)
+    except RuntimeError:  # a singular factor reports as NaN
+        return np.full_like(rhs, np.nan)
 
 
 def scipy_lu(
@@ -488,7 +491,10 @@ def scipy_lu(
         b_arr = np.asarray(b_np)
         batch_shape = b_arr.shape[:-1]
         b_2d_T = np.ascontiguousarray(b_arr.reshape(-1, b_arr.shape[-1]).T)
-        lu = scipy.sparse.linalg.splu(K_csc)
+        try:
+            lu = scipy.sparse.linalg.splu(K_csc)
+        except RuntimeError:  # a singular factor reports as NaN
+            return np.full_like(b_arr, np.nan)
         return lu.solve(b_2d_T).T.reshape(*batch_shape, b_arr.shape[-1])
 
     def _scipy_solve(

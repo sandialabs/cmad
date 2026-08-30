@@ -25,6 +25,7 @@ from cmad.fem.mesh import (
     coordinate_side_sets,
     hex_to_tet_split,
     quad_to_tri_split,
+    side_set_nodes,
 )
 from cmad.fem.topology import _TRI_EDGE_NODES
 
@@ -419,6 +420,24 @@ class TestCoordinateSideSets(unittest.TestCase):
         self.assertEqual(_as_pair_set(built["xmin_sides"]), {(0, 2)})
         self.assertEqual(_as_pair_set(built["ymin_sides"]), {(0, 0)})
         self.assertEqual(_as_pair_set(built["zmin_sides"]), {(0, 3)})
+
+
+class TestSideSetNodes(unittest.TestCase):
+
+    def test_matches_builder_node_sets(self):
+        # The structured builders carry the node set of every side set,
+        # so walking the side set must reproduce it: faces for hex, edges
+        # for quad.
+        hex_mesh = StructuredHexMesh((1.0, 2.0, 0.5), (2, 3, 1))
+        np.testing.assert_array_equal(
+            side_set_nodes(hex_mesh, "xmin_sides"),
+            np.sort(hex_mesh.node_sets["xmin_nodes"]),
+        )
+        quad_mesh = StructuredQuadMesh((1.0, 1.0), (2, 3))
+        np.testing.assert_array_equal(
+            side_set_nodes(quad_mesh, "ymax_sides"),
+            np.sort(quad_mesh.node_sets["ymax_nodes"]),
+        )
 
 
 class TestStructuredQuadMesh(unittest.TestCase):

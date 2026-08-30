@@ -3,10 +3,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias
 
+import jax.numpy as jnp
+import numpy as np
+from numpy.typing import NDArray
+
 from cmad.qois.qoi_base import QoIBase
-from cmad.typing import JaxArray, Params
+from cmad.typing import JaxArray, Params, Scalar
 
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem, FEState
@@ -47,6 +52,52 @@ Time-varying state only — params do not appear on this interface;
 they are captured by the factory :meth:`FEQoI.step_contribution`
 when the QoI needs them.
 """
+
+
+@dataclass(frozen=True)
+class MatchTimes:
+    """The times a matching QoI scores and the weight of each.
+
+    The weight of match time ``n`` is ``t_n - t_(n-1)``, zero for the
+    first, so summing weight times mismatch over the solve steps
+    integrates the mismatch in time. A solve step whose time is not a
+    match time, within ``tol``, contributes nothing. When the match
+    times are the time schedule itself, every step's weight is its
+    ``dt``.
+    """
+
+    times: NDArray[np.float64]
+    weights: NDArray[np.float64]
+    tol: float
+
+    @classmethod
+    def from_times(
+            cls,
+            times: Sequence[float] | NDArray[np.float64],
+            rtol: float = 1.0e-8,
+    ) -> MatchTimes:
+        arr = np.asarray(times, dtype=np.float64).ravel()
+        if arr.size == 0 or not np.all(np.diff(arr) > 0.0):
+            raise ValueError(
+                "match times must be nonempty and strictly increasing"
+            )
+        weights = np.concatenate([[0.0], np.diff(arr)])
+        return cls(arr, weights, rtol * float(arr[-1] - arr[0]))
+
+    @property
+    def span(self) -> float:
+        return float(self.times[-1] - self.times[0])
+
+    def index_and_weight(self, t: Scalar) -> tuple[JaxArray, JaxArray]:
+        """Index of the match time nearest ``t`` and its weight, zero when
+        ``t`` is not a match time; traceable."""
+        times = jnp.asarray(self.times)
+        k = jnp.argmin(jnp.abs(times - t))
+        weight = jnp.where(
+            jnp.abs(times[k] - t) <= self.tol,
+            jnp.asarray(self.weights)[k], 0.0,
+        )
+        return k, weight
 
 
 class FEQoI(QoIBase, ABC):

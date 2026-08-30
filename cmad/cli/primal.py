@@ -17,9 +17,12 @@ from numpy.typing import NDArray
 from cmad.cli.common import (
     build_fe_problem_from_deck,
     build_mp_problem,
+    calibration_data_times,
+    nonlinear_solver_settings,
     resolve_output,
 )
 from cmad.fem.driver import fe_quasistatic_drive
+from cmad.fem.time_refinement import TimeRefinement, refine_schedule
 from cmad.io.deck import load_deck, unwrap_top_level
 from cmad.io.point_cloud import read_point_cloud, write_point_cloud
 from cmad.io.writers import (
@@ -84,27 +87,38 @@ def _run_primal_mp(deck_path: Path) -> int:
 def _run_primal_fe(deck_path: Path) -> int:
     bundle = build_fe_problem_from_deck(deck_path, "primal")
     gr_section = bundle.resolved["residuals"]["global residual"]
-    nonlinear_solver_settings = {
-        "max iters": int(gr_section["nonlinear max iters"]),
-        "abs tol": float(gr_section["nonlinear absolute tol"]),
-        "rel tol": float(gr_section["nonlinear relative tol"]),
-        "print convergence": bool(
-            gr_section.get("print convergence", False),
-        ),
-        "line search": gr_section.get("line search", {}),
-    }
+    solver_settings = nonlinear_solver_settings(
+        gr_section, bool(gr_section.get("print convergence", False)),
+    )
     linear_solver_settings = bundle.resolved["linear solver"]
     qoi = bundle.qoi
     write_qoi = (
         qoi if qoi is not None and qoi.produces_primal_output() else None
     )
-    fe_state, J, status = fe_quasistatic_drive(
-        bundle.fe_problem,
-        bundle.t_schedule.tolist(),
-        nonlinear_solver_settings=nonlinear_solver_settings,
-        linear_solver_settings=linear_solver_settings,
-        qoi=None if write_qoi is not None else qoi,
-    )
+    # A failed step is cut back and the schedule driven again, the cuts
+    # moved onto measured frames when the field data is an archive.
+    refinement = TimeRefinement.from_deck(gr_section.get("time refinement"))
+    snap_to = calibration_data_times(bundle.resolved)
+    schedule = np.asarray(bundle.t_schedule, dtype=np.float64)
+    inserted_times: list[float] = []
+    for depth in range(refinement.max_depth + 1):
+        fe_state, J, status = fe_quasistatic_drive(
+            bundle.fe_problem,
+            schedule.tolist(),
+            nonlinear_solver_settings=solver_settings,
+            linear_solver_settings=linear_solver_settings,
+            qoi=None if write_qoi is not None else qoi,
+        )
+        if status.converged or depth == refinement.max_depth:
+            break
+        schedule, inserted = refine_schedule(
+            schedule, status.first_failed_step, refinement.factor, snap_to,
+        )
+        inserted_times.extend(inserted.tolist())
+        print(
+            f"time refinement: step {status.first_failed_step + 1} failed; "
+            f"inserted t = {', '.join(f'{t:g}' for t in inserted)}"
+        )
     if not status.converged:
         raise RuntimeError(status.failure_message())
 
@@ -112,6 +126,10 @@ def _run_primal_fe(deck_path: Path) -> int:
         return 0
 
     out_dir, prefix, _fmt = resolve_output(bundle.resolved)
+    if inserted_times:
+        refined_path = out_dir / f"{prefix}refined_times.txt"
+        np.savetxt(refined_path, schedule)
+        print(f"wrote {refined_path} ({len(inserted_times)} inserted)")
     output_section = bundle.resolved["output"]
     if output_section.get("write exodus", True):
         output_plan = resolve_fe_output_plan(

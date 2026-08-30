@@ -51,13 +51,15 @@ class DriveStatus:
     """Whether every step of a trajectory converged.
 
     ``first_failed_step`` is the index of the earliest step whose Newton
-    solve hit the Newton iteration limit, or ``-1`` when none did, and
-    ``first_failed_rel_norm`` is the relative residual it stopped at.
-    Concrete Python values, read off the device once the run is over, so
-    a caller can branch on them.
+    solve hit the Newton iteration limit, or ``-1`` when none did,
+    ``first_failed_rel_norm`` is the relative residual it stopped at, and
+    ``iters_per_step`` the Newton iterations of every step. Concrete
+    Python values, read off the device once the run is over, so a caller
+    can branch on them.
     """
     first_failed_step: int
     first_failed_rel_norm: float
+    iters_per_step: list[int]
 
     @property
     def converged(self) -> bool:
@@ -77,7 +79,8 @@ def build_fe_quasistatic_trajectory(
         nonlinear_solver_settings: dict[str, Any] | None = None,
         linear_solver_settings: dict[str, Any] | None = None,
 ) -> Callable[..., tuple[
-        JaxArray, dict[str, JaxArray], JaxArray, JaxArray, JaxArray]]:
+        JaxArray, dict[str, JaxArray], JaxArray, JaxArray, JaxArray,
+        JaxArray]]:
     """Build the JAX-pure quasi-static ``trajectory`` closure.
 
     The factory captures ``fe_problem`` and the merged solver settings;
@@ -104,9 +107,9 @@ def build_fe_quasistatic_trajectory(
     ``(jnp.arange(n_steps), t_schedule_jax[1:])`` with
     ``n_steps = t_schedule_jax.shape[0] - 1``; ``step_idx`` feeds only
     the optional debug print. Per-step output is
-    ``(U_solved, xi, converged)``: the nodal vector, the merged
-    all-blocks xi dict, and whether the step met a tolerance rather than
-    running out of Newton iterations.
+    ``(U_solved, xi, iters)``: the nodal vector, the xi dict merged over
+    every block, and the Newton iterations the step took (zero for a
+    step skipped after a failure).
 
     When ``qoi_step_contribution`` is supplied, the scan body invokes
     it after each solve with ``(U_solved, U_prev, xi, xi_prev, t,
@@ -118,12 +121,14 @@ def build_fe_quasistatic_trajectory(
     and the inner Newton driver prints per-iter convergence lines.
 
     The closure returns ``(U_steps, xi_steps_by_block, J,
-    first_failed_step, first_failed_rel_norm)``: the trajectory arrays
-    have leading axis ``n_steps``, ``J`` is the scalar QoI accumulated
-    across the time loop, ``first_failed_step`` is the index of the
-    earliest step whose Newton solve hit the iteration limit without
-    meeting a tolerance (``-1`` when every step converged), and
-    ``first_failed_rel_norm`` is the relative residual it stopped at.
+    first_failed_step, first_failed_rel_norm, iters_per_step)``: the
+    trajectory arrays have leading axis ``n_steps``, ``J`` is the scalar
+    QoI accumulated across the time loop, ``first_failed_step`` is the
+    index of the earliest step whose Newton solve hit the iteration
+    limit without meeting a tolerance (``-1`` when every step
+    converged), ``first_failed_rel_norm`` is the relative residual it
+    stopped at, and ``iters_per_step`` the Newton iterations of each
+    step.
 
     A scan cannot stop early, so a failed step does not end the loop;
     the entries after it skip their solve and carry the state forward,
@@ -138,6 +143,8 @@ def build_fe_quasistatic_trajectory(
         **(linear_solver_settings or {}),
     }
     print_global_convergence = nls["print convergence"]
+    extrapolate = nls["initial guess"] == "extrapolate"
+    max_ratio = nls["extrapolation max ratio"]
     nls_frozen = _freeze(nls)
     lss_frozen = _freeze(lss)
 
@@ -149,13 +156,15 @@ def build_fe_quasistatic_trajectory(
             qoi_step_contribution: StepContribution | None = None,
     ) -> tuple[
         JaxArray, dict[str, JaxArray], JaxArray, JaxArray, JaxArray,
+        JaxArray,
     ]:
         U_init, xi_init_by_block = state_init
 
         def step_fn(carry, step_input):
             step_idx, t = step_input
             (U_prev, xi_prev, t_prev, J,
-             first_failed_step, first_failed_rel_norm) = carry
+             first_failed_step, first_failed_rel_norm,
+             U_prev_prev, t_prev_prev) = carry
             step_time = StepTime(t, t_prev)
             # A failure ends the schedule, so the entries after it carry
             # the state forward rather than solving.
@@ -168,22 +177,35 @@ def build_fe_quasistatic_trajectory(
                     t=t,
                 )
 
+            # Newton starts from the previous state, or from the previous
+            # increment scaled by the stride ratio, unless the ratio is so
+            # large that the increment says nothing about this step.
+            if extrapolate:
+                ratio = (t - t_prev) / (t_prev - t_prev_prev)
+                ratio = jnp.where(ratio <= max_ratio, ratio, 0.0)
+                U_guess = U_prev + ratio * (U_prev - U_prev_prev)
+            else:
+                U_guess = U_prev
+
             def solve(state):
                 U_at, xi_at = state
-                U_new, xi_new, r_norm, r_norm_0 = _fe_newton_solve_ad(
+                U_new, xi_new, r_norm, r_norm_0, iters = _fe_newton_solve_ad(
                     fe_problem, fe_arrays, params_by_block,
-                    U_at, xi_at, step_time, nls_frozen, lss_frozen,
+                    U_at, xi_at, step_time, U_guess, nls_frozen, lss_frozen,
                 )
                 # xi_new only carries keys for element blocks whose
                 # model has time-evolving state; the others keep the
                 # values they already had.
-                return U_new, {**xi_at, **xi_new}, r_norm, r_norm_0
+                return U_new, {**xi_at, **xi_new}, r_norm, r_norm_0, iters
 
             def skip(state):
                 U_at, xi_at = state
-                return U_at, xi_at, jnp.zeros(()), jnp.ones(())
+                return (
+                    U_at, xi_at, jnp.zeros(()), jnp.ones(()),
+                    jnp.zeros((), dtype=jnp.int32),
+                )
 
-            U_solved, xi, r_norm, r_norm_0 = lax.cond(
+            U_solved, xi, r_norm, r_norm_0, iters = lax.cond(
                 already_failed, skip, solve, (U_prev, xi_prev),
             )
             failed_here = jnp.logical_and(
@@ -210,24 +232,30 @@ def build_fe_quasistatic_trajectory(
                 )
             return (
                 (U_solved, xi, t, J,
-                 first_failed_step, first_failed_rel_norm),
-                (U_solved, xi),
+                 first_failed_step, first_failed_rel_norm, U_prev, t_prev),
+                (U_solved, xi, iters),
             )
 
         n_steps = t_schedule_jax.shape[0] - 1
+        # Before the first step there is no increment, so the carry
+        # starts with U_prev_prev = U_init (a zero increment) over a
+        # stride equal to the first; the ratio is 1 and the guess is
+        # U_init.
+        t_before = 2.0 * t_schedule_jax[0] - t_schedule_jax[1]
         initial_carry = (
             U_init, xi_init_by_block, t_schedule_jax[0], jnp.zeros(()),
-            jnp.asarray(-1), jnp.zeros(()),
+            jnp.asarray(-1), jnp.zeros(()), U_init, t_before,
         )
         step_inputs = (jnp.arange(n_steps), t_schedule_jax[1:])
         final_carry, history = lax.scan(
             step_fn, initial_carry, step_inputs,
         )
-        U_steps, xi_steps_by_block = history
-        _, _, _, J, first_failed_step, first_failed_rel_norm = final_carry
+        U_steps, xi_steps_by_block, iters_per_step = history
+        (_, _, _, J, first_failed_step, first_failed_rel_norm,
+         _, _) = final_carry
         return (
             U_steps, xi_steps_by_block, J,
-            first_failed_step, first_failed_rel_norm,
+            first_failed_step, first_failed_rel_norm, iters_per_step,
         )
 
     return trajectory
@@ -324,6 +352,7 @@ def fe_quasistatic_drive(
             fe_arrays: FEKernelArrays,
     ) -> tuple[
         JaxArray, dict[str, JaxArray], JaxArray, JaxArray, JaxArray,
+        JaxArray,
     ]:
         qoi_step_contribution: StepContribution | None = (
             qoi.step_contribution(params_by_block, fe_arrays)
@@ -338,7 +367,7 @@ def fe_quasistatic_drive(
         )
 
     (U_steps, xi_steps_by_block, J,
-     first_failed_step, first_failed_rel_norm) = jit(_run)(
+     first_failed_step, first_failed_rel_norm, iters_per_step) = jit(_run)(
         params_by_block, state_init, fe_arrays,
     )
 
@@ -353,6 +382,7 @@ def fe_quasistatic_drive(
     return state, J, DriveStatus(
         first_failed_step=int(first_failed_step),
         first_failed_rel_norm=float(first_failed_rel_norm),
+        iters_per_step=np.asarray(iters_per_step).tolist(),
     )
 
 

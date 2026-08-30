@@ -12,8 +12,14 @@ from cmad.fem.assembly import _gather_element_U
 from cmad.fem.dof import dof_physical_coords
 from cmad.fem.precompute import compute_ip_quadrature_weights
 from cmad.fem.sharding import pad_element_leaves
-from cmad.io.qoi_data import load_displacement_data, load_roi
-from cmad.qois.fe_qoi import FEQoI, StepContribution
+from cmad.io.qoi_data import (
+    calibration_data_roi,
+    load_calibration_data,
+    load_displacement_data,
+    load_match_times,
+    load_roi,
+)
+from cmad.qois.fe_qoi import FEQoI, MatchTimes, StepContribution
 from cmad.qois.surface_match import (
     surface_groups_and_norm,
     surface_l2_step_closure,
@@ -53,12 +59,16 @@ class FEDisplacementMatch(FEQoI):
        J = \frac{w}{T \, |\Omega|}
             \sum_n \Delta t_n \int_\Omega |u_n - u^\mathrm{data}_n|^2 \, dV
 
-    Operates on the residual block whose ``var_name`` is ``"u"``. ``w``
-    is a scalar deck weight; ``u^\mathrm{data}`` is per-step nodal
-    displacement of shape ``(num_steps, num_nodes, ndims)``. With a
-    ``sideset``, the integral and its normalizing measure are over that
-    sideset's surface rather than over the whole mesh; with a ``roi``,
-    over the elements or the sides it holds.
+    over the match times, :math:`\Delta t_n` being each one's weight
+    (:class:`cmad.qois.fe_qoi.MatchTimes`, the time schedule by
+    default) and :math:`T` their span. Operates on the residual block
+    whose ``var_name`` is ``"u"``. ``w`` is a scalar deck weight;
+    ``u^\mathrm{data}`` is the nodal displacement at each match time on
+    ``node_ids`` (every node when ``None``), shaped
+    ``(num_match_times, num_nodes, ndims)``. With a ``sideset``, the
+    integral and its normalizing measure are over that sideset's surface
+    rather than over the whole mesh; with a ``roi``, over the elements or
+    the sides it holds.
     """
 
     problem_type: ClassVar[str] = "fe"
@@ -71,6 +81,9 @@ class FEDisplacementMatch(FEQoI):
             weight: float = 1.0,
             sideset: str | None = None,
             roi: NDArray[np.intp] | None = None,
+            *,
+            match_times: MatchTimes | None = None,
+            node_ids: NDArray[np.intp] | None = None,
     ) -> None:
         var_names = list(fe_problem.gr.var_names)
         try:
@@ -81,14 +94,18 @@ class FEDisplacementMatch(FEQoI):
                 f"var_name 'u'; got var_names={var_names}"
             ) from exc
 
-        num_steps = len(t_schedule)
+        match = (
+            MatchTimes.from_times(t_schedule) if match_times is None
+            else match_times
+        )
+        num_match = int(match.times.shape[0])
         data_arr = np.asarray(data, dtype=np.float64)
-        if data_arr.shape[0] != num_steps:
+        if data_arr.shape[0] != num_match:
             raise ValueError(
-                f"FEDisplacementMatch: data has {data_arr.shape[0]} steps "
-                f"but the time schedule has {num_steps} (expected one "
-                f"displacement field per schedule time, including the "
-                f"initial time)"
+                f"FEDisplacementMatch: data has {data_arr.shape[0]} frames "
+                f"but there are {num_match} match times (expected one "
+                f"displacement field per match time, the initial time "
+                f"included)"
             )
         # The measurement covers the displacement field alone, so it is
         # scattered into that field's equations. Any other field the
@@ -97,20 +114,22 @@ class FEDisplacementMatch(FEQoI):
         _coords, eq = dof_physical_coords(
             fe_problem.mesh, fe_problem.dof_map, "u",
         )
+        if node_ids is not None:
+            eq = eq[np.asarray(node_ids, dtype=np.intp)]
         if data_arr.shape[1:] != eq.shape:
             raise ValueError(
-                f"FEDisplacementMatch: data is {data_arr.shape[1:]} per step "
-                f"but field 'u' has {eq.shape} (basis coefficients, "
-                f"components)"
+                f"FEDisplacementMatch: data is {data_arr.shape[1:]} per "
+                f"frame but field 'u' has {eq.shape} (basis coefficients, "
+                f"components) on the given nodes"
             )
-        data_flat = np.zeros((num_steps, fe_problem.dof_map.num_total_dofs))
-        data_flat[:, eq.reshape(-1)] = data_arr.reshape(num_steps, -1)
+        data_flat = np.zeros((num_match, fe_problem.dof_map.num_total_dofs))
+        data_flat[:, eq.reshape(-1)] = data_arr.reshape(num_match, -1)
 
         self._fe_problem = fe_problem
         self._r_disp = r_disp
         self._field_idx_disp = fe_problem.field_idx_per_block[r_disp]
         self._data_flat = jnp.asarray(data_flat, dtype=jnp.float64)
-        self._t_schedule = jnp.asarray(t_schedule, dtype=jnp.float64)
+        self._match_times = match
 
         if sideset is not None and roi is not None:
             raise ValueError(
@@ -141,13 +160,12 @@ class FEDisplacementMatch(FEQoI):
                     "FEDisplacementMatch: the region of interest selects no "
                     "elements, so the mismatch has nothing to average over"
                 )
-            span = float(t_schedule[-1]) - float(t_schedule[0])
             self._surface_groups = None
-            self._norm_factor = float(weight) / (span * volume)
+            self._norm_factor = float(weight) / (match.span * volume)
         else:
             self._element_mask = None
             self._surface_groups, self._norm_factor = surface_groups_and_norm(
-                fe_problem, sides, "u", weight, t_schedule,
+                fe_problem, sides, "u", weight, match,
             )
 
     @classmethod
@@ -157,16 +175,29 @@ class FEDisplacementMatch(FEQoI):
             fe_problem: FEProblem,
             t_schedule: Sequence[float],
     ) -> FEDisplacementMatch:
+        match = MatchTimes.from_times(load_match_times(qoi_section, t_schedule))
+        weight = float(qoi_section.get("weight", 1.0))
+        sideset = qoi_section.get("sideset")
+        if "calibration_data_file" in qoi_section:
+            store = load_calibration_data(qoi_section)
+            store.check_mesh(int(fe_problem.mesh.nodes.shape[0]))
+            frames = store.frames_at(match.times)
+            return cls(
+                fe_problem, t_schedule, jnp.asarray(store.rows(frames)),
+                weight, sideset=sideset,
+                roi=calibration_data_roi(store, fe_problem.ndims),
+                match_times=match, node_ids=store.node_ids,
+            )
         data = jnp.asarray(
             load_displacement_data(qoi_section), dtype=jnp.float64,
         )
-        weight = float(qoi_section.get("weight", 1.0))
-        sideset = qoi_section.get("sideset")
         roi = None
         if "roi_file" in qoi_section:
             roi = load_roi(qoi_section, fe_problem.ndims)
         return cls(
-            fe_problem, t_schedule, data, weight, sideset=sideset, roi=roi)
+            fe_problem, t_schedule, data, weight, sideset=sideset, roi=roi,
+            match_times=match,
+        )
 
     def step_contribution(
             self,
@@ -176,7 +207,7 @@ class FEDisplacementMatch(FEQoI):
         del params_by_block  # params enter only through the solved state U
         if self._surface_groups is not None:
             return surface_l2_step_closure(
-                self._surface_groups, self._data_flat, self._t_schedule,
+                self._surface_groups, self._data_flat, self._match_times,
                 self._norm_factor,
             )
         fe_problem = self._fe_problem
@@ -184,7 +215,7 @@ class FEDisplacementMatch(FEQoI):
         field_idx_disp = self._field_idx_disp
         norm_factor = self._norm_factor
         data_flat = self._data_flat
-        t_schedule = self._t_schedule
+        match_times = self._match_times
 
         element_mask = self._element_mask
         block_data: list[tuple[str, JaxArray, JaxArray]] = []
@@ -213,8 +244,7 @@ class FEDisplacementMatch(FEQoI):
                 step_time: StepTime,
         ) -> JaxArray:
             del U_prev, xi, xi_prev
-            dt = step_time.dt
-            step = jnp.argmin(jnp.abs(t_schedule - step_time.t))
+            step, weight = match_times.index_and_weight(step_time.t)
             U_data = data_flat[step]
             total_integral = jnp.zeros(())
             for (block_name, N_disp,
@@ -232,6 +262,6 @@ class FEDisplacementMatch(FEQoI):
                 diff_sq = jnp.sum(diff_at_ip * diff_at_ip, axis=-1)
                 block_integral = jnp.sum(diff_sq * weighted_iso_jac_det)
                 total_integral = total_integral + block_integral
-            return norm_factor * dt * total_integral
+            return norm_factor * weight * total_integral
 
         return _closure

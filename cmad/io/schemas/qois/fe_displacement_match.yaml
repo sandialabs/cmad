@@ -1,11 +1,20 @@
 $schema: https://json-schema.org/draft/2020-12/schema
 type: object
-required: [name, data_file]
+required: [name]
 additionalProperties: false
+oneOf:
+  - required: [data_file]
+  - required: [calibration_data_file]
+    not:
+      required: [roi_file]
 properties:
   name:
     const: fe_displacement_match
   data_file:
+    type: string
+  calibration_data_file:
+    type: string
+  match_times_file:
     type: string
   weight:
     type: number

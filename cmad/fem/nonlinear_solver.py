@@ -38,6 +38,8 @@ _DEFAULT_NONLINEAR_SOLVER_SETTINGS: dict[str, Any] = {
     "rel tol": 1.0e-10,
     "print convergence": False,
     "line search": DEFAULT_LINE_SEARCH_SETTINGS,
+    "initial guess": "previous",
+    "extrapolation max ratio": 10.0,
 }
 _DEFAULT_LINEAR_SOLVER_SETTINGS: dict[str, Any] = {
     "type": "direct",
@@ -335,11 +337,13 @@ class NewtonStatus:
 
     ``converged`` is :func:`newton_converged` applied to the two norms;
     the norms come along so a caller can report how far off a failed step
-    was, in both absolute and relative terms.
+    was, in both absolute and relative terms, and ``iterations`` is the
+    number of Newton iterations the step took.
     """
     converged: JaxArray
     residual_norm: JaxArray
     residual_norm_0: JaxArray
+    iterations: JaxArray
 
     def relative_norm(self) -> JaxArray:
         return self.residual_norm / self.residual_norm_0
@@ -377,8 +381,11 @@ def _fe_newton_primal(
         step_time: StepTime,
         nonlinear_solver_settings: dict[str, Any],
         linear_solver_settings: dict[str, Any],
-) -> tuple[JaxArray, dict[str, JaxArray], JaxArray, JaxArray]:
+        U_guess: JaxArray | None = None,
+) -> tuple[JaxArray, dict[str, JaxArray], JaxArray, JaxArray, JaxArray]:
     """Forward Newton iteration: ``lax.while_loop`` + linear-solver dispatch.
+
+    Newton starts from ``U_guess``, ``U_prev`` when ``None``.
 
     Each step assembles ``(K_bcoo, R)`` via :func:`assemble_global`,
     builds the embedded-BC tangent ``K`` via
@@ -388,9 +395,10 @@ def _fe_newton_primal(
     ``direct``, ``cg``, ``gmres``). ``cond`` checks the residual norm
     against the absolute and relative tolerances.
 
-    Returns ``(U_star, xi_star, residual_norm, residual_norm_0)``: the
-    converged displacement, the solved state at it, the residual norm the
-    loop exited on, and the norm it started from. The loop stops once the
+    Returns ``(U_star, xi_star, residual_norm, residual_norm_0,
+    iterations)``: the converged displacement, the solved state at it,
+    the residual norm the loop exited on, the norm it started from, and
+    the number of Newton iterations taken. The loop stops once the
     residual meets the absolute tolerance ``abs tol`` or falls to
     ``rel tol`` of where it started, and otherwise when it hits the
     iteration limit. Both norms come back because the exit alone does not say
@@ -412,7 +420,7 @@ def _fe_newton_primal(
     )
     operator = _operator_kind(linear_solver_settings)
 
-    U_init = U_prev
+    U_init = U_prev if U_guess is None else U_guess
 
     def _assemble_enforced(U):
         return _assemble_tangent_and_residual(
@@ -472,10 +480,11 @@ def _fe_newton_primal(
         _print_line(i + 2, r_new)
         return (i + 1, r_new, K_new, U_new, xi_new)
 
-    _, r_star, _, U_star, xi_star = lax.while_loop(
-        cond, body, (0, r_init, K_init, U_init, xi_init),
+    iters, r_star, _, U_star, xi_star = lax.while_loop(
+        cond, body,
+        (jnp.zeros((), dtype=jnp.int32), r_init, K_init, U_init, xi_init),
     )
-    return U_star, xi_star, jnp.linalg.norm(r_star), R0
+    return U_star, xi_star, jnp.linalg.norm(r_star), R0, iters
 
 
 def fe_newton_solve(
@@ -603,9 +612,12 @@ def fe_newton_solve(
         if xi_prev_by_block is not None else {}
     )
     step_time = StepTime(t, t if t_prev is None else t_prev)
-    U_star, xi_star, residual_norm, residual_norm_0 = _fe_newton_solve_ad(
+    U_start = U_prev_jax  # no history here to extrapolate from
+    (U_star, xi_star, residual_norm, residual_norm_0,
+     iterations) = _fe_newton_solve_ad(
         fe_problem, fe_problem.kernel_arrays, params_by_block,
-        U_prev_jax, xi_prev_jax, step_time, _freeze(nls), _freeze(lss),
+        U_prev_jax, xi_prev_jax, step_time, U_start, _freeze(nls),
+        _freeze(lss),
     )
     xi_star = strip_element_padding(xi_star, fe_problem.n_elems_by_block)
     if not return_status:
@@ -616,10 +628,11 @@ def fe_newton_solve(
         ),
         residual_norm=residual_norm,
         residual_norm_0=residual_norm_0,
+        iterations=iterations,
     )
 
 
-@partial(jax.custom_jvp, nondiff_argnums=(0, 6, 7))
+@partial(jax.custom_jvp, nondiff_argnums=(0, 7, 8))
 def _fe_newton_solve_ad(
         fe_problem: FEProblem,
         fe_arrays: FEKernelArrays,
@@ -627,10 +640,14 @@ def _fe_newton_solve_ad(
         U_prev: JaxArray,
         xi_prev_by_block: dict[str, JaxArray],
         step_time: StepTime,
+        U_guess: JaxArray,
         nonlinear_solver_settings_frozen: tuple[tuple[str, Any], ...],
         linear_solver_settings_frozen: tuple[tuple[str, Any], ...],
-) -> tuple[JaxArray, dict[str, JaxArray], JaxArray, JaxArray]:
+) -> tuple[JaxArray, dict[str, JaxArray], JaxArray, JaxArray, JaxArray]:
     """AD-decorated inner driver. JaxArray inputs only.
+
+    ``U_guess`` is where Newton starts; the converged solution does not
+    depend on it, so its tangent is ignored.
 
     Splitting the public ``fe_newton_solve`` from this inner form
     keeps the boundary ``np.ndarray → jnp.ndarray`` conversion
@@ -648,7 +665,7 @@ def _fe_newton_solve_ad(
     lss = _thaw(linear_solver_settings_frozen)
     return _fe_newton_primal(
         fe_problem, fe_arrays, params_by_block, U_prev, xi_prev_by_block,
-        step_time, nls, lss,
+        step_time, nls, lss, U_guess,
     )
 
 
@@ -678,14 +695,16 @@ def _fe_newton_solve_ad_jvp(
     traced (its ``t`` is a scanned input slice and its ``t_prev`` a
     carried value) and cannot ride in ``nondiff_argnums``.
     """
-    fe_arrays, params_by_block, U_prev, xi_prev_by_block, step_time = primals
-    p_dot = tangents[1:]  # tangents[0]: fe_arrays tangent, unused
+    (fe_arrays, params_by_block, U_prev, xi_prev_by_block, step_time,
+     U_guess) = primals
+    p_dot = tangents[1:5]
 
     lss = _thaw(linear_solver_settings_frozen)
 
-    U_star, xi_star, residual_norm, residual_norm_0 = _fe_newton_solve_ad(
+    (U_star, xi_star, residual_norm, residual_norm_0,
+     iterations) = _fe_newton_solve_ad(
         fe_problem, fe_arrays, params_by_block, U_prev, xi_prev_by_block,
-        step_time, nonlinear_solver_settings_frozen,
+        step_time, U_guess, nonlinear_solver_settings_frozen,
         linear_solver_settings_frozen,
     )
 
@@ -738,11 +757,16 @@ def _fe_newton_solve_ad_jvp(
         (U_star_dot, *p_dot),
     )
 
-    # The residual norm reports how the forward loop exited, so it is a
-    # diagnostic rather than a solution quantity and carries no tangent.
-    primals_out = (U_star, xi_star, residual_norm, residual_norm_0)
+    # The residual norms and the iteration count report how the forward
+    # loop exited, so they are diagnostics rather than solution
+    # quantities and carry no tangent; the integer count takes the
+    # float0 tangent JAX reserves for that.
+    primals_out = (
+        U_star, xi_star, residual_norm, residual_norm_0, iterations,
+    )
     tangents_out = (
         U_star_dot, xi_star_dot,
         jnp.zeros_like(residual_norm), jnp.zeros_like(residual_norm_0),
+        np.zeros(iterations.shape, dtype=jax.dtypes.float0),
     )
     return primals_out, tangents_out

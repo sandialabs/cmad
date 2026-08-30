@@ -15,7 +15,7 @@ from numpy.typing import NDArray
 
 from cmad.fem.dof import dof_physical_coords
 from cmad.io.point_cloud import PointCloud, read_point_cloud
-from cmad.qois.fe_qoi import FEQoI, StepContribution
+from cmad.qois.fe_qoi import FEQoI, MatchTimes, StepContribution
 from cmad.qois.surface_match import (
     surface_groups_and_norm,
     surface_l2_step_closure,
@@ -116,11 +116,11 @@ class FEDicMatch(FEQoI):
             for c in range(num_components):
                 data_flat[step, eq[:, c]] = ops.value @ disp[step, :, c]
 
+        self._match_times = MatchTimes.from_times(t_schedule)
         self._groups, self._norm_factor = surface_groups_and_norm(
-            fe_problem, sideset, "u", weight, t_schedule,
+            fe_problem, sideset, "u", weight, self._match_times,
         )
         self._data_flat = jnp.asarray(data_flat, dtype=jnp.float64)
-        self._t_schedule = jnp.asarray(t_schedule, dtype=jnp.float64)
 
     @classmethod
     def from_deck(
@@ -147,5 +147,6 @@ class FEDicMatch(FEQoI):
     ) -> StepContribution:
         del params_by_block, fe_arrays  # params enter through the solved U
         return surface_l2_step_closure(
-            self._groups, self._data_flat, self._t_schedule, self._norm_factor,
+            self._groups, self._data_flat, self._match_times,
+            self._norm_factor,
         )

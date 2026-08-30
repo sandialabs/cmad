@@ -1,14 +1,21 @@
-"""Convert Jones et al. 304L DIC measurements into CMAD input files.
+"""Convert Jones et al. 304L DIC measurements into CMAD calibration data.
 
-Reads the dataset's per-frame surface displacements, reconstructs them
-onto the nodes of an FE mesh with GMLS, and writes the four files a
-calibration run consumes: the nodal displacement history, the time
-schedule it is sampled on, the measured load, and the region of the mesh
-the measurement covers.
+Reconstructs the measured surface displacements onto an FE mesh with
+GMLS at every usable frame of the chosen range and writes them, with the
+measured load, as a calibration data archive
+(:mod:`cmad.io.calibration_data`), plus the time schedule of
+``--num-steps`` selected frames and the match times.
+
+The archive also carries the region of interest the displacement match
+integrates over: the elements (2D) or imaged face sides (3D) whose nodes
+all sit farther from the free boundary than ``--roi-band``, chosen with
+jones_304l_roi_preview.py. Only the nodes of that region and of the
+Dirichlet sidesets (``--bc-sidesets``) are remapped.
 
 The frame range comes from jones_304l_load_preview.py, which plots the
 load record so the ends can be trimmed by eye. Within that range the
-frames are selected here.
+frames are selected here, after excluding the record's spurious force
+artifacts the same way the preview does; see ``load_drop_frames`` there.
 
 An undeformed reference is prepended as a constructed entry at t = 0
 with zero displacement and zero load. The dataset zeroes time at the
@@ -36,6 +43,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 import h5py
@@ -48,7 +56,11 @@ from jones_304l_geometry import (
     trim_outline,
 )
 from jones_304l_load_preview import (
+    DROP_THRESHOLD,
     LOAD_ROW_FY,
+    drop_summary,
+    load_drop_frames,
+    merge_hand_picks,
     read_global_channels,
     resolve_range,
     usable_frames,
@@ -56,7 +68,13 @@ from jones_304l_load_preview import (
 from numpy.typing import NDArray
 from scipy.spatial import cKDTree
 
-from cmad.fem.mesh import _LOCAL_SIDES_PER_ELEMENT, Mesh, coordinate_side_sets
+from cmad.fem.mesh import (
+    _LOCAL_SIDES_PER_ELEMENT,
+    Mesh,
+    coordinate_side_sets,
+    side_set_nodes,
+)
+from cmad.io.calibration_data import CalibrationData
 from cmad.io.mesh_io import read_mesh_file
 from cmad.remap.gmls import build_gmls_operators
 
@@ -110,13 +128,17 @@ def measured_facets(mesh: Mesh) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
 
     A 2D mesh is the measured surface itself, so the entities are its
     elements. A 3D mesh is imaged on one face, so they are that face's
-    ``(elem_id, local_side_id)`` pairs, taken from the same routine the
-    solver builds its coordinate sidesets with so the two agree.
+    ``(elem_id, local_side_id)`` pairs from ``mesh.side_sets``.
     """
     if mesh.nodes.shape[1] == 2:
         elements = np.arange(mesh.connectivity.shape[0], dtype=np.intp)
         return elements, mesh.connectivity
-    sides = coordinate_side_sets(mesh)[OBSERVED_SIDESET]
+    if OBSERVED_SIDESET not in mesh.side_sets:
+        raise KeyError(
+            f"observed sideset {OBSERVED_SIDESET!r} not in the mesh (known: "
+            f"{sorted(mesh.side_sets)})"
+        )
+    sides = mesh.side_sets[OBSERVED_SIDESET]
     local_sides = _LOCAL_SIDES_PER_ELEMENT[mesh.element_family]
     facets = mesh.connectivity[sides[:, 0][:, None], local_sides[sides[:, 1]]]
     return sides, facets
@@ -164,16 +186,19 @@ def distance_to_segments(
 
 def region_of_interest(
         mesh: Mesh, facets: NDArray[np.intp], source: NDArray[np.float64],
-        valid: NDArray[np.bool_], cut_lo: float, cut_hi: float, margin: float,
-        band: float | None = None, samples_per_side: int = 20,
+        valid: NDArray[np.bool_], cut_lo: float, cut_hi: float, *,
+        band: float | None = None, margin: float = 0.15,
+        samples_per_side: int = 20,
 ) -> tuple[NDArray[np.bool_], float, float, float]:
     """Which facets are far enough from the free boundary to carry measurements.
 
-    The band defaults to the largest distance from the free boundary to
-    the nearest valid measurement, plus ``margin``. That maximum is
-    enough on its own, since a facet is kept only when every one of its
-    nodes is beyond the band; the margin covers sampling the boundary
-    finitely and the one sided GMLS support just inside the cloud edge.
+    A facet is kept when every one of its nodes is farther than ``band``
+    from the free boundary. The band defaults to the largest distance
+    from the free boundary to the nearest valid measurement, plus
+    ``margin``. The gap is measured at ``samples_per_side`` points per
+    free boundary segment, so the margin pads for the true maximum falling
+    between samples, and keeps the nodes a little inside the cloud edge,
+    where a fit has measurements on one side only.
 
     Returns the keep mask, the band, the largest gap, and the worst
     distance from a kept node to a measurement. A value there beyond the
@@ -202,6 +227,28 @@ def read_reference_coords(
         x = np.asarray(handle["X0"][0, :], dtype=np.float64)
         y = np.asarray(handle["Y0"][0, :], dtype=np.float64)
     return x, y
+
+
+def read_frame_rows(
+        handle: h5py.File, key: str, frames: NDArray[np.intp],
+) -> NDArray[np.float64]:
+    """Rows ``frames`` of the dataset ``key``, read in point axis blocks.
+
+    The files chunk every frame of a few points together, so a frame by
+    frame read decompresses the whole dataset once per frame; one pass
+    along the point axis reads each chunk once.
+    """
+    # Bounds memory only: any block of a few thousand points reads the
+    # chunks exactly once.
+    point_block = 8192
+    dataset = handle[key]
+    _n_frames, n_points = dataset.shape
+    rows = np.empty((frames.size, n_points), dtype=np.float64)
+    for start in range(0, n_points, point_block):
+        stop = min(start + point_block, n_points)
+        piece = np.asarray(dataset[:, start:stop], dtype=np.float64)
+        rows[:, start:stop] = piece[frames]
+    return rows
 
 
 def cloud_offset_for_mesh(
@@ -248,9 +295,36 @@ def cloud_offset_for_mesh(
     return offset
 
 
+# Frames read per pass. The chunks span every frame, so a block of rows
+# costs the same read as one.
+FRAME_BLOCK = 128
+
+
+def frame_validity(
+        data_file: str | Path, frames: NDArray[np.intp],
+) -> NDArray[np.bool_]:
+    """Which measurements are valid at ``frames``.
+
+    Shaped ``(num_frames, num_points)``, read in one pass along the point
+    axis as :func:`read_frame_rows` does, and kept as booleans so every
+    frame of the record fits in memory.
+    """
+    point_block = 8192
+    with h5py.File(Path(data_file), "r") as handle:
+        dataset = handle["sigma"]
+        _n_frames, n_points = dataset.shape
+        valid = np.empty((frames.size, n_points), dtype=bool)
+        for start in range(0, n_points, point_block):
+            stop = min(start + point_block, n_points)
+            piece = np.asarray(dataset[:, start:stop], dtype=np.float64)
+            valid[:, start:stop] = piece[frames] >= MIN_VALID_SIGMA
+    return valid
+
+
 def remap_history(
         data_file: str | Path,
         frames: NDArray[np.intp],
+        valid: NDArray[np.bool_],
         source: NDArray[np.float64],
         targets: NDArray[np.float64],
         num_components: int,
@@ -258,12 +332,15 @@ def remap_history(
         per_frame: bool = True,
         poly_order: int = 2,
         support_multiplier: float = 1.6,
+        frame_block: int = FRAME_BLOCK,
 ) -> tuple[NDArray[np.float64], int]:
-    """Reconstruct the measured displacements onto ``targets``.
+    """Reconstruct the measured displacements at ``frames`` onto ``targets``.
 
-    With ``per_frame`` each frame is fitted from exactly the points valid
-    in that frame; otherwise one operator serves every frame, built from
-    the points valid throughout. Returns the ``(num_frames, num_targets,
+    ``valid`` is the validity from :func:`frame_validity`. With
+    ``per_frame`` each frame is fitted from exactly the points valid in
+    that frame; otherwise one operator serves every frame, built from the
+    points valid throughout. The displacements are read ``frame_block``
+    frames at a time. Returns the ``(num_frames, num_targets,
     num_components)`` history and the fewest source points any fit used.
 
     The source is every valid measurement point, untrimmed. GMLS support
@@ -275,35 +352,29 @@ def remap_history(
     history = np.zeros(
         (frames.size, targets.shape[0], num_components), dtype=np.float64,
     )
-    fewest = source.shape[0]
+    throughout = None if per_frame else valid.all(axis=0)
     shared = None
-
+    if throughout is None:
+        fewest = int(valid.sum(axis=1).min())
+    else:
+        fewest = int(throughout.sum())
+        shared = build_gmls_operators(
+            source[throughout], targets, poly_order=poly_order,
+            support_multiplier=support_multiplier,
+        )
     with h5py.File(Path(data_file), "r") as handle:
-        if not per_frame:
-            valid = np.ones(source.shape[0], dtype=bool)
-            for frame in frames:
-                valid &= handle["sigma"][int(frame), :] >= MIN_VALID_SIGMA
-            fewest = int(valid.sum())
-            shared = build_gmls_operators(
-                source[valid], targets, poly_order=poly_order,
-                support_multiplier=support_multiplier,
-            )
-        for i, frame in enumerate(frames):
-            if per_frame:
-                valid = handle["sigma"][int(frame), :] >= MIN_VALID_SIGMA
-                fewest = min(fewest, int(valid.sum()))
-                ops = build_gmls_operators(
-                    source[valid], targets, poly_order=poly_order,
+        for start in range(0, frames.size, frame_block):
+            block = frames[start:start + frame_block]
+            measured = [read_frame_rows(handle, key, block) for key in keys]
+            for j in range(block.size):
+                i = start + j
+                keep = valid[i] if throughout is None else throughout
+                ops = shared if shared is not None else build_gmls_operators(
+                    source[keep], targets, poly_order=poly_order,
                     support_multiplier=support_multiplier,
                 )
-            else:
-                assert shared is not None
-                ops = shared
-            for c, key in enumerate(keys):
-                measured = np.asarray(
-                    handle[key][int(frame), :], dtype=np.float64,
-                )
-                history[i, :, c] = ops.value @ measured[valid]
+                for c in range(num_components):
+                    history[i, :, c] = ops.value @ measured[c][j][keep]
     return history, fewest
 
 
@@ -351,14 +422,8 @@ def main() -> None:
              "valid in all of them (default per-frame)",
     )
     parser.add_argument(
-        "--roi-band", type=float, default=None,
-        help="free edge band in mm (default: the largest measured gap "
-             "plus --roi-margin)",
-    )
-    parser.add_argument(
-        "--roi-margin", type=float, default=0.15,
-        help="added to the largest measured gap when --roi-band is not "
-             "given (default 0.15 mm)",
+        "--roi-band", type=float, required=True,
+        help="free edge band in mm, chosen with jones_304l_roi_preview.py",
     )
     parser.add_argument("--poly-order", type=int, default=2)
     parser.add_argument("--support-multiplier", type=float, default=1.6)
@@ -371,12 +436,34 @@ def main() -> None:
         help="multiplies the load; the data is kN (default 1000, to newtons)",
     )
     parser.add_argument(
+        "--drop-threshold", type=float, default=DROP_THRESHOLD,
+        help=f"exclude frames whose load deviates from a rolling median by "
+             f"more than this, in kN before --force-scale; 0 keeps every "
+             f"frame (default {DROP_THRESHOLD:g})",
+    )
+    parser.add_argument(
+        "--exclude-frames", type=int, nargs="+", default=None,
+        help="frames to exclude by hand, in addition to the detected drops",
+    )
+    parser.add_argument(
         "--out-prefix", default=None,
         help="output stem (default data/jones_304l/<mesh stem>)",
+    )
+    parser.add_argument(
+        "--bc-sidesets", nargs="+", default=["ymin_sides", "ymax_sides"],
+        help="sidesets the Dirichlet conditions prescribe "
+             "(default ymin_sides ymax_sides)",
+    )
+    parser.add_argument(
+        "--frame-block", type=int, default=FRAME_BLOCK,
+        help=f"frames read per pass (default {FRAME_BLOCK})",
     )
     args = parser.parse_args()
 
     mesh = read_mesh_file(args.mesh)
+    mesh = replace(
+        mesh, side_sets={**mesh.side_sets, **coordinate_side_sets(mesh)},
+    )
     nodes = np.asarray(mesh.nodes, dtype=np.float64)
     num_components = nodes.shape[1]
     offset = cloud_offset_for_mesh(
@@ -386,76 +473,99 @@ def main() -> None:
     times, load, extension, channel = read_global_channels(
         args.data, args.load_component,
     )
+    candidates = usable_frames(times, load)
+    dropped = load_drop_frames(load, candidates, args.drop_threshold)
+    dropped, by_hand = merge_hand_picks(
+        dropped, candidates, args.exclude_frames,
+    )
     in_range = resolve_range(
-        usable_frames(times, load), args.frame_min, args.frame_max,
+        np.setdiff1d(candidates, dropped).astype(np.intp),
+        args.frame_min, args.frame_max,
     )
     spread = {"index": None, "force": load, "extension": extension}
     frames = select_frames(in_range, args.num_steps, by=spread[args.select])
 
     x, y = read_reference_coords(args.data)
     source = np.column_stack([x - offset[0], y - offset[1]])
+    valid = frame_validity(args.data, in_range)
+
+    entities, facets = measured_facets(mesh)
+    kept, band, max_gap, worst_covered = region_of_interest(
+        mesh, facets, source, valid.all(axis=0),
+        args.y_min - offset[1], args.y_max - offset[1], band=args.roi_band,
+    )
+    sidesets = {name: side_set_nodes(mesh, name) for name in args.bc_sidesets}
+    node_ids = np.union1d(
+        np.unique(facets[kept]), np.concatenate(list(sidesets.values())),
+    ).astype(np.intp)
+
     deformed, fewest = remap_history(
-        args.data, frames, source, nodes[:, :2], num_components,
+        args.data, in_range, valid, source, nodes[node_ids, :2],
+        num_components,
         per_frame=args.filter == "per-frame",
         poly_order=args.poly_order,
         support_multiplier=args.support_multiplier,
+        frame_block=args.frame_block,
     )
 
     # The reference is constructed, not measured: t = 0 is the test start
     # the dataset zeroes to, where the specimen is unloaded and undeformed.
-    reference = np.zeros_like(deformed[:1])
-    history = np.concatenate([reference, deformed], axis=0)
+    entity_kind = "elements" if num_components == 2 else "sides"
+    data = CalibrationData(
+        times=np.concatenate([[0.0], times[in_range]]),
+        frame_ids=np.concatenate([[-1], in_range]).astype(np.intp),
+        load=np.concatenate([[0.0], load[in_range]]) * args.force_scale,
+        node_ids=node_ids,
+        sidesets=sidesets,
+        values=np.concatenate([np.zeros_like(deformed[:1]), deformed]),
+        mesh_file=str(args.mesh),
+        mesh_num_nodes=int(nodes.shape[0]),
+        roi={
+            entity_kind: entities[kept],
+            "band": np.float64(band), "max_gap": np.float64(max_gap),
+        },
+    )
     schedule = np.concatenate([[0.0], times[frames]])
-    series = np.concatenate([[0.0], load[frames]]) * args.force_scale
 
     stem = Path(args.out_prefix or f"data/jones_304l/{Path(args.mesh).stem}")
     stem.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(f"{stem}_u.npz", u=history)
+    archive = Path(f"{stem}_calibration_data.npz")
+    data.write(archive)
     np.savetxt(f"{stem}_times.txt", schedule)
-    np.save(f"{stem}_load.npy", series)
+    np.savetxt(f"{stem}_match_times.txt", schedule)
 
-    with h5py.File(args.data, "r") as handle:
-        ever_valid = np.zeros(source.shape[0], dtype=bool)
-        for frame in frames:
-            ever_valid |= handle["sigma"][int(frame), :] >= MIN_VALID_SIGMA
-    entities, facets = measured_facets(mesh)
-    kept, band, max_gap, worst_covered = region_of_interest(
-        mesh, facets, source, ever_valid,
-        args.y_min - offset[1], args.y_max - offset[1],
-        args.roi_margin, args.roi_band,
-    )
-    entity_kind = "elements" if nodes.shape[1] == 2 else "sides"
-    np.savez_compressed(
-        f"{stem}_roi.npz", **{entity_kind: entities[kept]},
-        band=np.float64(band), max_gap=np.float64(max_gap))
-
-    raw_bytes = history.nbytes
-    stored = Path(f"{stem}_u.npz").stat().st_size
     print(f"load channel: {channel}, scaled by {args.force_scale:g}")
+    if dropped.size:
+        print(drop_summary(dropped))
+    if by_hand.size:
+        print(f"excluded by hand: {', '.join(str(f) for f in by_hand)}")
     print(
-        f"drawing from frames {in_range[0]} to {in_range[-1]} "
-        f"({in_range.size}); selected {frames.size} plus the reference"
+        f"frames {in_range[0]} to {in_range[-1]} ({in_range.size}) plus the "
+        f"reference; schedule of {frames.size} selected frames"
     )
     print(
         f"source {source.shape[0]} points, fewest valid in a fit {fewest}; "
-        f"targets {nodes.shape[0]} nodes, {num_components} components"
+        f"targets {node_ids.size} of {nodes.shape[0]} nodes, "
+        f"{num_components} components"
     )
     print("\n  frame      time      load    extension     |u|max")
-    for i, frame in enumerate(frames):
+    for row, frame in zip(np.searchsorted(in_range, frames), frames,
+                          strict=True):
         print(
             f"  {frame:5d} {times[frame]:9.1f} {load[frame]:9.4f} "
-            f"{extension[frame]:11.4f} {np.abs(history[i + 1]).max():10.4f}"
+            f"{extension[frame]:11.4f} {np.abs(deformed[row]).max():10.4f}"
         )
     print(
-        f"\nwrote {stem}_u.npz {history.shape}, "
-        f"{stored / 1e6:.2f} MB stored against {raw_bytes / 1e6:.2f} MB raw"
+        f"\nwrote {archive} {data.values.shape}, "
+        f"{archive.stat().st_size / 1e6:.2f} MB stored against "
+        f"{data.values.nbytes / 1e6:.2f} MB raw"
     )
-    print(f"      {stem}_times.txt, {stem}_load.npy")
+    print(f"      {stem}_times.txt, {stem}_match_times.txt")
     print(
-        f"      {stem}_roi.npz, {int(kept.sum())} of {kept.size} "
-        f"{entity_kind}; free edge band "
-        f"{band:.3f} mm from a largest gap of {max_gap:.3f}; worst kept node "
-        f"is {worst_covered:.3f} mm from a measurement"
+        f"      region of interest {int(kept.sum())} of {kept.size} "
+        f"{entity_kind}; free edge band {band:.3f} mm from a largest gap of "
+        f"{max_gap:.3f}; worst kept node is {worst_covered:.3f} mm from a "
+        f"measurement"
     )
 
 

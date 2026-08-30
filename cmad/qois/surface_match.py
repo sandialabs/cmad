@@ -9,7 +9,7 @@ points, and integrates its square over the surface.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
@@ -20,7 +20,7 @@ from cmad.fem.surface_integration import (
     SurfaceIntegrationGroup,
     build_surface_integration_groups,
 )
-from cmad.qois.fe_qoi import StepContribution
+from cmad.qois.fe_qoi import MatchTimes, StepContribution
 from cmad.typing import JaxArray
 
 if TYPE_CHECKING:
@@ -33,36 +33,37 @@ def surface_groups_and_norm(
         sides: str | NDArray[np.intp],
         field_name: str,
         weight: float,
-        t_schedule: Sequence[float],
+        match_times: MatchTimes,
 ) -> tuple[list[SurfaceIntegrationGroup], float]:
     """Surface cache for ``field_name`` on ``sides`` and its normalization.
 
     ``sides`` names a sideset or gives its ``(elem_id, local_side_id)``
     pairs. The normalization is ``weight / (time span * surface area)``,
-    the surface analogue of the volume averaging used off a sideset, and
-    the area is that of the given sides alone.
+    the surface analogue of the volume averaging used off a sideset; the
+    span is the match times' and the area is that of the given sides
+    alone.
     """
     groups = build_surface_integration_groups(
         fe_problem.mesh, fe_problem.dof_map, field_name, sides,
         fe_problem.side_quadrature,
     )
     area = sum(float(jnp.sum(g.dA * g.side_w[None, :])) for g in groups)
-    span = float(t_schedule[-1]) - float(t_schedule[0])
-    return groups, float(weight) / (span * area)
+    return groups, float(weight) / (match_times.span * area)
 
 
 def surface_l2_step_closure(
         groups: list[SurfaceIntegrationGroup],
         data_flat: JaxArray,
-        t_schedule: JaxArray,
+        match_times: MatchTimes,
         norm_factor: float,
 ) -> StepContribution:
     """Per-step closure for the squared mismatch over the sideset.
 
-    ``data_flat`` is ``(num_steps, num_total_dofs)``; the step is the one
-    in ``t_schedule`` nearest ``t``. The field is gathered at each facet's
-    equation numbers, the mismatch is interpolated to the side quadrature
-    points, and its square is integrated over the sideset.
+    ``data_flat`` is ``(num_match_times, num_total_dofs)``, one row per
+    match time. The row and the weight are the match time at ``t``; a
+    step at any other time scores zero. The field is gathered at each
+    facet's equation numbers, the mismatch is interpolated to the side
+    quadrature points, and its square is integrated over the sideset.
     """
     def _closure(
             U: JaxArray,
@@ -72,8 +73,7 @@ def surface_l2_step_closure(
             step_time: StepTime,
     ) -> JaxArray:
         del U_prev, xi, xi_prev
-        dt = step_time.dt
-        step = jnp.argmin(jnp.abs(t_schedule - step_time.t))
+        step, weight = match_times.index_and_weight(step_time.t)
         U_data = data_flat[step]
         total = jnp.zeros(())
         for g in groups:
@@ -81,6 +81,6 @@ def surface_l2_step_closure(
             diff_at_ip = jnp.einsum("pa,eac->epc", g.N_side, diff)
             diff_sq = jnp.sum(diff_at_ip * diff_at_ip, axis=-1)
             total = total + jnp.sum(diff_sq * g.dA * g.side_w[None, :])
-        return norm_factor * dt * total
+        return norm_factor * weight * total
 
     return _closure

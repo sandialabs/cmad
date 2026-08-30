@@ -4,6 +4,7 @@ required: [name, sideset, components]
 additionalProperties: false
 oneOf:
   - required: [data_file]
+  - required: [calibration_data_file]
   - required: [output_file]
 properties:
   name:
@@ -18,6 +19,10 @@ properties:
     minItems: 1
     uniqueItems: true
   data_file:
+    type: string
+  calibration_data_file:
+    type: string
+  match_times_file:
     type: string
   output_file:
     type: string

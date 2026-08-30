@@ -77,6 +77,17 @@ properties:
         minimum: 0
       line search:
         $ref: '#/$defs/line_search'
+      initial guess:
+        enum: [previous, extrapolate]
+      extrapolation max ratio:
+        type: number
+        exclusiveMinimum: 0
+      time refinement:
+        type: object
+        additionalProperties: false
+        properties:
+          factor: {type: integer, minimum: 2}
+          max depth: {type: integer, minimum: 0}
   local residual:
     type: object
     required: [type, materials]

@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 import jax.numpy as jnp
 import numpy as np
@@ -45,6 +45,7 @@ from cmad.fem.quadrature import (
 from cmad.fem.sharding import place_element_leaves
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
+from cmad.io.calibration_data import CalibrationData, is_calibration_data
 from cmad.io.deck import apply_deck_defaults, load_deck
 from cmad.io.deformation import load_history
 from cmad.io.expressions import parse_scalar_expression
@@ -155,17 +156,43 @@ def resolve_output(
     )
 
 
-def build_fe_J_of_params_flat(
+def nonlinear_solver_settings(
+        gr_section: dict[str, Any], print_global_convergence: bool,
+) -> dict[str, Any]:
+    """The global Newton settings an input file's ``global residual``
+    section gives, in the solver's keys; the rest take the solver's
+    defaults."""
+    names = {
+        "nonlinear max iters": "max iters",
+        "nonlinear absolute tol": "abs tol",
+        "nonlinear relative tol": "rel tol",
+        "line search": "line search",
+        "initial guess": "initial guess",
+        "extrapolation max ratio": "extrapolation max ratio",
+    }
+    settings = {
+        key: gr_section[name] for name, key in names.items()
+        if name in gr_section
+    }
+    settings["print convergence"] = print_global_convergence
+    return settings
+
+
+TrajectoryCost: TypeAlias = Callable[
+    [JaxArray, StateInit, FEKernelArrays, JaxArray],
+    tuple[JaxArray, tuple[JaxArray, JaxArray]],
+]
+"""``cost(params_flat, state_init, fe_arrays, t_schedule_jax)`` returning
+``(J, (first_failed_step, iters_per_step))``: the QoI accumulated over
+the forward solve on the given schedule and the solve's status, so a
+caller can refine the schedule and evaluate again."""
+
+
+def build_fe_trajectory_cost(
         bundle: FEProblemBundle,
         print_global_convergence: bool = False,
-) -> tuple[
-    JaxArray,
-    StateInit,
-    Callable[[JaxArray, StateInit, FEKernelArrays], JaxArray],
-]:
-    """Build the ``(params_flat_init, state_init, J_of_params_flat)``
-    triple for ``cmad objective`` / ``gradient`` / ``hessian`` on FE
-    problems.
+) -> tuple[JaxArray, StateInit, TrajectoryCost]:
+    """Build ``(params_flat_init, state_init, cost)`` for the FE objective.
 
     ``params_flat`` is the concatenation of each mesh element block's
     flat-active canonical parameter vector
@@ -178,28 +205,27 @@ def build_fe_J_of_params_flat(
     are JAX constants. Hessians are therefore
     ``(num_active, num_active)``, not ``(num_total, num_total)``.
 
-    The cost closure ``J_of_params_flat(params_flat, state_init,
-    fe_arrays)`` reconstructs ``params_by_block`` per block, invokes
-    :meth:`FEQoI.step_contribution` to build the per-step QoI closure
-    against those reconstructed params, and runs the FE forward solve
-    via the ``trajectory`` closure from
-    :func:`cmad.fem.driver.build_fe_quasistatic_trajectory`. The
-    returned scalar ``J`` is the QoI accumulated across the time loop,
-    suitable for direct evaluation, ``jax.grad``, or ``jax.hessian``.
-    ``state_init`` is the ``(U_init, xi_init_by_block)`` pair seeding
-    the time loop; callers source ``fe_arrays`` (the
+    The :data:`TrajectoryCost` closure reconstructs ``params_by_block``
+    per block, invokes :meth:`FEQoI.step_contribution` to build the
+    per-step QoI closure against those reconstructed params, and runs
+    the FE forward solve on the schedule it is given via the
+    ``trajectory`` closure from
+    :func:`cmad.fem.driver.build_fe_quasistatic_trajectory`; the
+    schedule is an argument so that a refined one only retraces.
+    ``state_init`` is the ``(U_init, xi_init_by_block)`` pair the time
+    loop starts from; callers source ``fe_arrays`` (the
     :class:`FEKernelArrays` carrier) from
     ``bundle.fe_problem.kernel_arrays``.
 
     ``bundle.qoi`` must be non-None; the FE-side
     ``build_fe_problem_from_deck`` populates it for ``"objective"``,
-    ``"gradient"``, and ``"hessian"`` subcommands.
+    ``"gradient"``, ``"hessian"``, and ``"calibrate"`` subcommands.
     """
     fe_problem = bundle.fe_problem
     qoi = bundle.qoi
     if qoi is None:
         raise ValueError(
-            "build_fe_J_of_params_flat requires bundle.qoi to be set; "
+            "build_fe_trajectory_cost requires bundle.qoi to be set; "
             "FEProblemBundle from a 'primal' build has no QoI"
         )
     gr_section = bundle.resolved["residuals"]["global residual"]
@@ -213,7 +239,6 @@ def build_fe_J_of_params_flat(
         fe_problem.device_mesh,
     )
     state_init: StateInit = (U_init, xi_init)
-    t_schedule_jax = jnp.asarray(bundle.t_schedule, dtype=jnp.float64)
 
     dbc_arrays = fe_problem.kernel_arrays.dbc_arrays
     for t in bundle.t_schedule[1:]:
@@ -233,25 +258,20 @@ def build_fe_J_of_params_flat(
     )
     boundaries = np.cumsum([0, *per_block_lengths])
 
-    nonlinear_solver_settings = {
-        "max iters": int(gr_section["nonlinear max iters"]),
-        "abs tol": float(gr_section["nonlinear absolute tol"]),
-        "rel tol": float(gr_section["nonlinear relative tol"]),
-        "print convergence": print_global_convergence,
-        "line search": gr_section.get("line search", {}),
-    }
-    linear_solver_settings = bundle.resolved["linear solver"]
     trajectory = build_fe_quasistatic_trajectory(
         fe_problem,
-        nonlinear_solver_settings=nonlinear_solver_settings,
-        linear_solver_settings=linear_solver_settings,
+        nonlinear_solver_settings=nonlinear_solver_settings(
+            gr_section, print_global_convergence,
+        ),
+        linear_solver_settings=bundle.resolved["linear solver"],
     )
 
-    def J_of_params_flat(
+    def cost(
             params_flat: JaxArray,
             state_init: StateInit,
             fe_arrays: FEKernelArrays,
-    ) -> JaxArray:
+            t_schedule_jax: JaxArray,
+    ) -> tuple[JaxArray, tuple[JaxArray, JaxArray]]:
         params_by_block: dict[str, Any] = {}
         for i, b in enumerate(block_names):
             sub_flat = params_flat[boundaries[i]:boundaries[i + 1]]
@@ -265,15 +285,42 @@ def build_fe_J_of_params_flat(
             params_by_block, fe_arrays,
         )
         # This runs under AD, so a non-converged step cannot raise from
-        # here; the objective is built from what the trajectory reached.
-        _, _, J, _first_failed_step, _rel_norm = trajectory(
+        # here; the objective is built from what the trajectory reached
+        # and the status says whether that was every step.
+        _, _, J, first_failed_step, _rel_norm, iters_per_step = trajectory(
             fe_arrays,
             params_by_block,
             state_init,
             t_schedule_jax,
             qoi_step_contribution=qoi_step_contribution,
         )
-        return J
+        return J, (first_failed_step, iters_per_step)
+
+    return params_flat_init, state_init, cost
+
+
+def build_fe_J_of_params_flat(
+        bundle: FEProblemBundle,
+        print_global_convergence: bool = False,
+) -> tuple[
+    JaxArray,
+    StateInit,
+    Callable[[JaxArray, StateInit, FEKernelArrays], JaxArray],
+]:
+    """``(params_flat_init, state_init, J_of_params_flat)`` for ``cmad
+    objective`` / ``gradient`` / ``hessian``: :func:`build_fe_trajectory_cost`
+    on the bundle's schedule, returning ``J`` alone."""
+    params_flat_init, state_init, cost = build_fe_trajectory_cost(
+        bundle, print_global_convergence,
+    )
+    t_schedule_jax = jnp.asarray(bundle.t_schedule, dtype=jnp.float64)
+
+    def J_of_params_flat(
+            params_flat: JaxArray,
+            state_init: StateInit,
+            fe_arrays: FEKernelArrays,
+    ) -> JaxArray:
+        return cost(params_flat, state_init, fe_arrays, t_schedule_jax)[0]
 
     return params_flat_init, state_init, J_of_params_flat
 
@@ -640,13 +687,19 @@ def _build_dirichlet_bcs(
             "conditions are given; every component reads the same measured "
             "field, so the file is named once",
         )
-    data = (
-        np.asarray(
+    # The file is either a calibration data archive, which carries every
+    # measured frame on the sideset nodes, or a plain nodal field with
+    # one frame per schedule entry.
+    store: CalibrationData | None = None
+    data: NDArray[np.float64] | None = None
+    if field_entries and is_calibration_data(str(data_file)):
+        store = CalibrationData.read(str(data_file))
+        _check_calibration_bc_data(store, t_schedule, mesh, str(data_file))
+    elif field_entries:
+        data = np.asarray(
             load_displacement_data({"data_file": str(data_file)}),
             dtype=np.float64,
         )
-        if field_entries else None
-    )
     for entry_name, entry in field_entries.items():
         resid_name, eq, sideset = entry
         where = f"dirichlet bcs.field.{entry_name}"
@@ -658,20 +711,65 @@ def _build_dirichlet_bcs(
                 f"{where}: unknown sideset '{sideset}'; known sidesets: "
                 f"{sorted(mesh.side_sets)}",
             )
-        assert data is not None
-        _check_field_bc_data(data, t_schedule, mesh, eq, str(data_file), where)
         node_ids = sideset_basis_fns(
             mesh, fe_by_field[field_name], [str(sideset)],
         )
+        if store is not None:
+            if int(eq) >= store.num_components:
+                raise ValueError(
+                    f"{where}: eq {eq} exceeds the {store.num_components} "
+                    f"components in '{data_file}'",
+                )
+            values_by_step = store.rows(
+                np.arange(store.num_frames), node_ids,
+            )[:, :, int(eq):int(eq) + 1]
+            data_times = store.times
+        else:
+            assert data is not None
+            _check_field_bc_data(
+                data, t_schedule, mesh, eq, str(data_file), where,
+            )
+            values_by_step = data[:, node_ids, int(eq):int(eq) + 1]
+            data_times = t_schedule
         bcs.append(DirichletBC(
             sideset_names=[str(sideset)],
             field_name=field_name,
             dofs=[int(eq)],
-            values=make_nodal_field_values(
-                data[:, node_ids, int(eq):int(eq) + 1], t_schedule,
-            ),
+            values=make_nodal_field_values(values_by_step, data_times),
         ))
     return bcs
+
+
+def calibration_data_times(
+        resolved: dict[str, Any],
+) -> NDArray[np.float64] | None:
+    """The frame times of the archive named by ``dirichlet bcs.field data
+    file``, ``None`` when the file is not one."""
+    path = (resolved.get("dirichlet bcs") or {}).get("field data file")
+    if path is None or not is_calibration_data(str(path)):
+        return None
+    return CalibrationData.read(str(path)).times
+
+
+def _check_calibration_bc_data(
+        store: CalibrationData,
+        t_schedule: NDArray[np.float64],
+        mesh: Mesh,
+        data_file: str,
+) -> None:
+    """Reject an archive built for another mesh or not covering the schedule."""
+    store.check_mesh(int(mesh.nodes.shape[0]))
+    tol = 1.0e-8 * float(store.times[-1] - store.times[0])
+    if (
+        float(t_schedule[0]) < float(store.times[0]) - tol
+        or float(t_schedule[-1]) > float(store.times[-1]) + tol
+    ):
+        raise ValueError(
+            f"dirichlet bcs.field data file: the schedule spans "
+            f"{float(t_schedule[0]):g} to {float(t_schedule[-1]):g} but "
+            f"'{data_file}' covers {float(store.times[0]):g} to "
+            f"{float(store.times[-1]):g}",
+        )
 
 
 def _check_bc_eq(

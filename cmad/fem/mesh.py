@@ -838,6 +838,19 @@ def coordinate_side_sets(
     return side_sets
 
 
+def side_set_nodes(mesh: Mesh, name: str) -> NDArray[np.intp]:
+    """Sorted node ids on the side set ``name``."""
+    if name not in mesh.side_sets:
+        raise KeyError(
+            f"side set {name!r} not in mesh.side_sets (known: "
+            f"{sorted(mesh.side_sets)})"
+        )
+    sides = mesh.side_sets[name]
+    local_sides = _LOCAL_SIDES_PER_ELEMENT[mesh.element_family]
+    facets = mesh.connectivity[sides[:, 0][:, None], local_sides[sides[:, 1]]]
+    return np.unique(facets).astype(np.intp)
+
+
 def element_rms_edge_sizes(mesh: Mesh) -> NDArray[np.floating]:
     """Characteristic size of each element: the RMS of its edge lengths.
 

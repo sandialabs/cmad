@@ -11,7 +11,10 @@ field an FE displacement-matching QoI compares against (``.npy`` or a
 per-step (per-component) load an FE load-matching QoI compares against
 (``.npy`` / ``.csv`` / ``.txt``). :func:`load_roi` reads the mesh
 entities a full-field measurement covers, which a field-matching QoI
-integrates over instead of the whole domain.
+integrates over instead of the whole domain. :func:`load_calibration_data`
+reads a :class:`cmad.io.calibration_data.CalibrationData` archive, which
+carries all three, and :func:`load_match_times` the times a matching QoI
+scores.
 
 No shape checks happen here; each QoI constructor asserts its own shape
 contract.
@@ -19,12 +22,14 @@ contract.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
+from cmad.io.calibration_data import CalibrationData
 from cmad.io.exodus import read_results
 from cmad.io.results import FieldSpec
 from cmad.models.var_types import VarType
@@ -45,24 +50,79 @@ def load_roi(qoi_section: dict[str, Any], ndims: int) -> NDArray[np.intp]:
     kind of mesh and handed to the other raises here rather than
     integrating over the wrong entities.
     """
-    key = "elements" if ndims == 2 else "sides"
-    expected_ndim = 1 if ndims == 2 else 2
     path = Path(qoi_section["roi_file"])
     if not path.exists():
         raise FileNotFoundError(f"qoi.roi_file: file not found at {path}")
     with np.load(path) as archive:
-        if key not in archive:
-            raise ValueError(
-                f"qoi.roi_file: {path} has no {key!r} entry, which a "
-                f"{ndims}D mesh needs; found {sorted(archive.files)}"
-            )
-        roi = np.asarray(archive[key], dtype=np.intp)
+        return _roi_entry(archive, ndims, f"qoi.roi_file: {path}")
+
+
+def calibration_data_roi(
+        data: CalibrationData, ndims: int,
+) -> NDArray[np.intp]:
+    """Return the region of interest carried by ``data``, as :func:`load_roi`
+    reads one from a file."""
+    return _roi_entry(
+        data.roi, ndims, f"calibration data for {data.mesh_file}",
+    )
+
+
+def _roi_entry(
+        entries: Mapping[str, Any], ndims: int, where: str,
+) -> NDArray[np.intp]:
+    key = "elements" if ndims == 2 else "sides"
+    expected_ndim = 1 if ndims == 2 else 2
+    if key not in entries:
+        raise ValueError(
+            f"{where} has no {key!r} entry, which a {ndims}D mesh needs; "
+            f"found {sorted(entries)}"
+        )
+    roi = np.asarray(entries[key], dtype=np.intp)
     if roi.ndim != expected_ndim:
         raise ValueError(
-            f"qoi.roi_file: {path} {key!r} has shape {tuple(roi.shape)}; "
-            f"a {ndims}D mesh needs a {expected_ndim}D array"
+            f"{where} {key!r} has shape {tuple(roi.shape)}; a {ndims}D "
+            f"mesh needs a {expected_ndim}D array"
         )
     return roi
+
+
+def load_calibration_data(qoi_section: dict[str, Any]) -> CalibrationData:
+    """Return the archive named by ``qoi_section["calibration_data_file"]``."""
+    path = Path(qoi_section["calibration_data_file"])
+    if not path.exists():
+        raise FileNotFoundError(
+            f"qoi.calibration_data_file: file not found at {path}"
+        )
+    return CalibrationData.read(path)
+
+
+def load_match_times(
+        qoi_section: dict[str, Any], t_schedule: Sequence[float],
+) -> NDArray[np.float64]:
+    """Return the times a matching QoI scores.
+
+    ``qoi_section["match_times_file"]`` when given (``.txt`` / ``.csv``
+    via :func:`numpy.loadtxt`, ``.npy`` via :func:`numpy.load``), else the
+    time schedule, which scores every step.
+    """
+    if "match_times_file" not in qoi_section:
+        return np.asarray(t_schedule, dtype=np.float64).ravel()
+    path = Path(qoi_section["match_times_file"])
+    if not path.exists():
+        raise FileNotFoundError(
+            f"qoi.match_times_file: file not found at {path}"
+        )
+    ext = path.suffix.lower()
+    if ext == ".npy":
+        arr = np.load(path)
+    elif ext in {".csv", ".txt"}:
+        arr = np.loadtxt(path)
+    else:
+        raise ValueError(
+            f"qoi.match_times_file: unsupported extension '{ext}' "
+            f"(path: {path}); supported: .npy, .csv, .txt",
+        )
+    return np.asarray(arr, dtype=np.float64).ravel()
 
 
 def load_qoi_data(

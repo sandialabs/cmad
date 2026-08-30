@@ -15,9 +15,13 @@ from cmad.fem.assembly import (
 )
 from cmad.fem.sharding import place_element_leaves
 from cmad.global_residuals.modes import GlobalResidualMode
-from cmad.io.qoi_data import load_reaction_data
+from cmad.io.qoi_data import (
+    load_calibration_data,
+    load_match_times,
+    load_reaction_data,
+)
 from cmad.models.global_fields import StepTime
-from cmad.qois.fe_qoi import FEQoI, StepContribution
+from cmad.qois.fe_qoi import FEQoI, MatchTimes, StepContribution
 from cmad.typing import JaxArray, Params
 
 if TYPE_CHECKING:
@@ -30,23 +34,27 @@ class FELoadMatch(FEQoI):
 
     Two mutually-exclusive modes, set by the deck:
 
-    - **match** (``data_file``): the time-averaged squared mismatch against a
-      measured load is the objective,
+    - **match** (``data_file`` or ``calibration_data_file``): the time
+      averaged squared mismatch against a measured load is the objective,
 
       .. math::
 
          J = \frac{w}{T} \sum_n \Delta t_n
               \sum_c \left( R_{c,n} - d_{c,n} \right)^2
 
+      over the match times, :math:`\Delta t_n` being each one's weight
+      (:class:`cmad.qois.fe_qoi.MatchTimes`, the time schedule by
+      default) and :math:`T` their span.
+
     - **write** (``output_file``): ``cmad primal`` writes the computed
       reaction series to a CSV (synthetic data / plotting); no objective.
 
     ``R_{c,n}`` is the net reaction in component ``c`` of the displacement
-    field on the sideset at step ``n`` -- the global residual summed over
-    that sideset's Dirichlet-prescribed dofs. The reaction depends on the
-    parameters both through the solved state and directly through the
-    residual assembly, so the match closure captures ``params_by_block`` and
-    passes it to :func:`cmad.fem.assembly.assemble_global_residual`.
+    field on the sideset at match time ``n`` -- the global residual summed
+    over that sideset's Dirichlet-prescribed dofs. The reaction depends on
+    the parameters both through the solved state and directly through the
+    residual assembly, so the match closure captures ``params_by_block``
+    and passes it to :func:`cmad.fem.assembly.assemble_global_residual`.
     """
 
     problem_type: ClassVar[str] = "fe"
@@ -60,10 +68,16 @@ class FELoadMatch(FEQoI):
             data: JaxArray | None = None,
             output_file: str | None = None,
             weight: float = 1.0,
+            *,
+            match_times: MatchTimes | None = None,
     ) -> None:
         comps = [int(c) for c in components]
         n_comp = len(comps)
-        num_steps = len(t_schedule)
+        match = (
+            MatchTimes.from_times(t_schedule) if match_times is None
+            else match_times
+        )
+        num_match = int(match.times.shape[0])
 
         self._fe_problem = fe_problem
         self._eq_per_component = [
@@ -74,10 +88,8 @@ class FELoadMatch(FEQoI):
             )
             for c in comps
         ]
-        self._t_schedule = jnp.asarray(t_schedule, dtype=jnp.float64)
-        self._norm_factor = float(weight) / (
-            float(t_schedule[-1]) - float(t_schedule[0])
-        )
+        self._match_times = match
+        self._norm_factor = float(weight) / match.span
         self._output_file = output_file
 
         self._data: JaxArray | None
@@ -86,11 +98,11 @@ class FELoadMatch(FEQoI):
         else:
             data_arr = jnp.asarray(data, dtype=jnp.float64)
             if data_arr.ndim == 1 and n_comp == 1:
-                data_arr = data_arr.reshape(num_steps, 1)
-            if data_arr.shape != (num_steps, n_comp):
+                data_arr = data_arr.reshape(num_match, 1)
+            if data_arr.shape != (num_match, n_comp):
                 raise ValueError(
                     f"FELoadMatch: data has shape {tuple(data_arr.shape)} "
-                    f"but expected (num_steps={num_steps}, "
+                    f"but expected (num_match_times={num_match}, "
                     f"num_components={n_comp})"
                 )
             self._data = data_arr
@@ -104,13 +116,25 @@ class FELoadMatch(FEQoI):
     ) -> FELoadMatch:
         sideset = qoi_section["sideset"]
         components = qoi_section["components"]
+        match = MatchTimes.from_times(load_match_times(qoi_section, t_schedule))
+        weight = float(qoi_section.get("weight", 1.0))
+        if "calibration_data_file" in qoi_section:
+            store = load_calibration_data(qoi_section)
+            store.check_mesh(int(fe_problem.mesh.nodes.shape[0]))
+            data = jnp.asarray(
+                store.load[store.frames_at(match.times)], dtype=jnp.float64,
+            )
+            return cls(
+                fe_problem, t_schedule, sideset, components,
+                data=data, weight=weight, match_times=match,
+            )
         if "data_file" in qoi_section:
             data = jnp.asarray(
                 load_reaction_data(qoi_section), dtype=jnp.float64,
             )
             return cls(
                 fe_problem, t_schedule, sideset, components,
-                data=data, weight=float(qoi_section.get("weight", 1.0)),
+                data=data, weight=weight, match_times=match,
             )
         return cls(
             fe_problem, t_schedule, sideset, components,
@@ -128,7 +152,7 @@ class FELoadMatch(FEQoI):
                 "use it under cmad primal, not objective/calibrate"
             )
         data = self._data
-        t_schedule = self._t_schedule
+        match_times = self._match_times
         norm_factor = self._norm_factor
 
         def _closure(
@@ -139,13 +163,12 @@ class FELoadMatch(FEQoI):
                 step_time: StepTime,
         ) -> JaxArray:
             del xi
-            dt = step_time.dt
-            step = jnp.argmin(jnp.abs(t_schedule - step_time.t))
+            step, weight = match_times.index_and_weight(step_time.t)
             reaction = self._reaction_at(
                 params_by_block, fe_arrays, U, U_prev, step_time, xi_prev,
             )
             mismatch = jnp.sum((reaction - data[step]) ** 2)
-            return norm_factor * dt * mismatch
+            return norm_factor * weight * mismatch
 
         return _closure
 
