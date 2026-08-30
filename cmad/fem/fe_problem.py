@@ -133,7 +133,9 @@ class FEProblem:
     device count (:mod:`cmad.fem.sharding`); ``n_elems_padded_by_block``
     holds those padded counts, the same as the true counts without a
     mesh, and the per element state arrays the traced kernels carry have
-    that length.
+    that length. ``num_dofs_padded`` is the dof count padded the same
+    way: the embedded tangent the linear solvers apply has that many
+    rows, the padding dofs carrying a unit diagonal and zero residuals.
     """
     mesh: Mesh
     dof_map: GlobalDofMap
@@ -173,6 +175,10 @@ class FEProblem:
     n_elems_padded_by_block: dict[str, int] = field(
         init=False, default_factory=dict,
     )
+    num_dofs_padded: int = field(init=False, default=0)
+    dof_padding_map: NDArray[np.intp] = field(init=False)
+    dof_padding_indices: NDArray[np.intp] = field(init=False)
+    block_offsets_padded: NDArray[np.intp] = field(init=False)
     near_null_space: NDArray[np.floating] | None = field(
         init=False, default=None,
     )
@@ -234,15 +240,40 @@ class FEProblem:
         )
         object.__setattr__(self, "geometry_cache", geometry_cache)
 
-        # The device mesh and the padded element counts come before the
-        # sparsity and the kernel arrays, which are built for the padded
-        # element axis.
+        # The device mesh and the padded counts come before the sparsity
+        # and the kernel arrays, which are built for the padded element
+        # axis and the padded dof count.
         device_mesh = build_device_mesh(self.num_devices)
         object.__setattr__(self, "device_mesh", device_mesh)
         object.__setattr__(self, "n_elems_padded_by_block", {
             block: padded_count(count, device_mesh)
             for block, count in self.n_elems_by_block.items()
         })
+        # The dofs are padded per field: each field's block is extended
+        # to a multiple of the device count, so every field slice of a
+        # vector is a union of whole device blocks. ``dof_padding_map[i]``
+        # is the padded position of true dof ``i``.
+        offsets = np.asarray(self.dof_map.block_offsets, dtype=np.intp)
+        padded_offsets = [0]
+        dof_padding_map = np.empty(int(offsets[-1]), dtype=np.intp)
+        for i in range(offsets.shape[0] - 1):
+            lo, hi = int(offsets[i]), int(offsets[i + 1])
+            dof_padding_map[lo:hi] = padded_offsets[-1] + np.arange(hi - lo)
+            padded_offsets.append(
+                padded_offsets[-1] + padded_count(hi - lo, device_mesh),
+            )
+        object.__setattr__(self, "dof_padding_map", dof_padding_map)
+        object.__setattr__(
+            self, "block_offsets_padded",
+            np.asarray(padded_offsets, dtype=np.intp),
+        )
+        object.__setattr__(self, "num_dofs_padded", padded_offsets[-1])
+        is_true_dof = np.zeros(padded_offsets[-1], dtype=bool)
+        is_true_dof[dof_padding_map] = True
+        object.__setattr__(
+            self, "dof_padding_indices",
+            np.where(~is_true_dof)[0].astype(np.intp),
+        )
 
         # Lazy import to break the
         # fe_problem -> sparse_solve -> assembly -> fe_problem
@@ -269,7 +300,7 @@ class FEProblem:
             object.__setattr__(
                 self, "block_sparsity",
                 build_block_sparsity(
-                    self.embedded_sparsity, self.dof_map.block_offsets,
+                    self.embedded_sparsity, self.block_offsets_padded,
                 ),
             )
 

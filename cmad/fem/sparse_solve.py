@@ -48,8 +48,9 @@ if TYPE_CHECKING:
 def _dof_sharded(v: JaxArray, device_mesh: Mesh | None) -> JaxArray:
     """``v`` constrained to be split along its last axis (the dofs) across
     ``device_mesh``, so the Krylov vector work is partitioned the way the
-    element work is; ``v`` itself when there is no mesh or the dof count
-    does not divide by the device count (the vectors then stay replicated).
+    element work is; ``v`` itself when there is no mesh. A field vector
+    whose length does not divide by the device count is not constrained
+    and XLA chooses its layout.
     """
     if device_mesh is None or v.shape[-1] % device_mesh.size:
         return v
@@ -214,6 +215,7 @@ class ElementOperator:
             prescribed_indices: JaxArray,
             n: int,
             device_mesh: Mesh | None = None,
+            padding_indices: JaxArray | None = None,
     ) -> None:
         self.K_elem_by_block = K_elem_by_block
         self.eq_by_block = eq_by_block
@@ -223,10 +225,15 @@ class ElementOperator:
         self.device_mesh = device_mesh
         self._n = n
         first = next(iter(K_elem_by_block.values()))[0][0]
-        self._free = jnp.ones(
-            n, dtype=first.dtype,
-        ).at[prescribed_indices].set(0.0)
-        self._diagonal = self._assembled_diagonal(first.dtype)
+        # ``padding_indices`` are the padding dofs (cmad.fem.sharding),
+        # held like prescribed dofs with a unit diagonal.
+        free = jnp.ones(n, dtype=first.dtype).at[prescribed_indices].set(0.0)
+        diagonal = self._assembled_diagonal(first.dtype)
+        if padding_indices is not None:
+            free = free.at[padding_indices].set(0.0)
+            diagonal = diagonal.at[padding_indices].set(1.0)
+        self._free = free
+        self._diagonal = diagonal
 
     @property
     def n(self) -> int:
@@ -1464,9 +1471,13 @@ def scipy_block_gmres(
 
 
 def _embedded_bc_enforce(
-        K_bcoo: BCOO, presc_idx: JaxArray,
+        K_bcoo: BCOO, presc_idx: JaxArray, n_padded: int | None = None,
 ) -> tuple[JaxArray, JaxArray]:
     """Embedded-BC symmetric form on a :class:`BCOO` tangent.
+
+    With ``n_padded`` (the padded dof count of :mod:`cmad.fem.sharding`)
+    the data ends with a 1 for each padding dof's diagonal entry, matching
+    the pattern :func:`build_embedded_sparsity` caches.
 
     Returns ``(K_data, K_ii_presc)``:
 
@@ -1540,7 +1551,9 @@ def _embedded_bc_enforce(
     )
     K_ii_presc = K_ii_full[presc_idx]
 
-    return jnp.concatenate([data_zeroed, K_ii_presc]), K_ii_presc
+    n_padding = 0 if n_padded is None else n_padded - n
+    padding_ones = jnp.ones(n_padding, dtype=K_bcoo.data.dtype)
+    return jnp.concatenate([data_zeroed, K_ii_presc, padding_ones]), K_ii_presc
 
 
 def _embedded_residual(
@@ -1692,12 +1705,23 @@ def build_embedded_sparsity(
     from cmad.fem.assembly import assembled_coo_dedup
 
     assembled_rows, assembled_cols, _ = assembled_coo_dedup(fe_problem)
-    presc_idx = np.asarray(
+    # The operator's dofs are the padded ones (cmad.fem.sharding, each
+    # field padded to a multiple of the device count): every true dof is
+    # mapped to its padded position, and a padding dof is a unit diagonal
+    # entry, like a prescribed dof with a zero value.
+    dof_map_padded = np.asarray(fe_problem.dof_padding_map, dtype=np.intp)
+    assembled_rows = dof_map_padded[assembled_rows]
+    assembled_cols = dof_map_padded[assembled_cols]
+    presc_idx = dof_map_padded[np.asarray(
         fe_problem.dof_map.prescribed_indices, dtype=np.intp,
-    )
-    n = int(fe_problem.dof_map.num_total_dofs)
+    )]
+    n = int(fe_problem.num_dofs_padded)
+    is_true_dof = np.zeros(n, dtype=bool)
+    is_true_dof[dof_map_padded] = True
+    padding_idx = np.where(~is_true_dof)[0].astype(np.intp)
     n_assembled = assembled_rows.shape[0]
     n_presc = presc_idx.shape[0]
+    n_padding = padding_idx.shape[0]
 
     is_presc = np.zeros(n, dtype=bool)
     is_presc[presc_idx] = True
@@ -1708,12 +1732,12 @@ def build_embedded_sparsity(
     ff_positions = np.where(free_free_mask)[0].astype(np.intp)
 
     appended_positions = np.arange(
-        n_assembled, n_assembled + n_presc, dtype=np.intp,
+        n_assembled, n_assembled + n_presc + n_padding, dtype=np.intp,
     )
     kept_positions = np.concatenate([ff_positions, appended_positions])
 
-    full_rows = np.concatenate([assembled_rows, presc_idx])
-    full_cols = np.concatenate([assembled_cols, presc_idx])
+    full_rows = np.concatenate([assembled_rows, presc_idx, padding_idx])
+    full_cols = np.concatenate([assembled_cols, presc_idx, padding_idx])
     kept_rows = full_rows[kept_positions]
     kept_cols = full_cols[kept_positions]
 
@@ -1756,7 +1780,7 @@ def build_embedded_sparsity(
     # every one of them, so one check covers all five. Both `indptr` and
     # `col_indices` must share a dtype or the CPU lowering falls back to a
     # generic implementation.
-    index_dtype = _index_dtype(n_assembled + n_presc)
+    index_dtype = _index_dtype(n_assembled + n_presc + n_padding)
     return EmbeddedSparsity(
         perm=jnp.asarray(perm, dtype=index_dtype),
         segment_ids=jnp.asarray(segment_ids, dtype=index_dtype),

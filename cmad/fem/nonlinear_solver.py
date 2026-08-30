@@ -109,11 +109,51 @@ def _tangent_operator(
             K, fe_arrays.embedded_sparsity, fe_arrays.block_sparsity,
             fe_problem.device_mesh,
         )
+    return _element_operator(K, fe_problem, fe_arrays)
+
+
+def _element_operator(
+        K_elem: Any, fe_problem: FEProblem, fe_arrays: FEKernelArrays,
+) -> ElementOperator:
+    """:class:`ElementOperator` on the padded dofs: the scatter indices and
+    the prescribed dofs mapped through ``fe_problem.dof_padding_map``."""
+    dof_map_padded = jnp.asarray(fe_problem.dof_padding_map)
     return ElementOperator(
-        K, fe_arrays.r_scatter_eq_by_block, fe_problem.field_idx_per_block,
-        fe_problem.dof_map.block_offsets, fe_arrays.prescribed_indices,
-        fe_problem.dof_map.num_total_dofs, fe_problem.device_mesh,
+        K_elem,
+        {
+            block: tuple(dof_map_padded[eq] for eq in eqs)
+            for block, eqs in fe_arrays.r_scatter_eq_by_block.items()
+        },
+        fe_problem.field_idx_per_block, fe_problem.block_offsets_padded,
+        dof_map_padded[fe_arrays.prescribed_indices],
+        fe_problem.num_dofs_padded, fe_problem.device_mesh,
+        jnp.asarray(fe_problem.dof_padding_indices),
     )
+
+
+def _pad_dofs(v: JaxArray, fe_problem: FEProblem) -> JaxArray:
+    """``v`` on the true dofs scattered to the padded positions; the
+    padding dofs are zero."""
+    return jnp.zeros(
+        (*v.shape[:-1], fe_problem.num_dofs_padded), dtype=v.dtype,
+    ).at[..., jnp.asarray(fe_problem.dof_padding_map)].set(v)
+
+
+def _strip_dofs(v: JaxArray, fe_problem: FEProblem) -> JaxArray:
+    """``v`` on the padded dofs gathered back to the true ones."""
+    return v[..., jnp.asarray(fe_problem.dof_padding_map)]
+
+
+def _pad_near_null_space(
+        modes: NDArray[np.floating] | None, fe_problem: FEProblem,
+) -> NDArray[np.floating] | None:
+    """The near null space on the padded dofs, zero on the padding."""
+    if modes is None:
+        return None
+    modes = np.asarray(modes)
+    padded = np.zeros((fe_problem.num_dofs_padded, modes.shape[1]))
+    padded[np.asarray(fe_problem.dof_padding_map)] = modes
+    return padded
 
 
 def _assemble_tangent_and_residual(
@@ -139,24 +179,25 @@ def _assemble_tangent_and_residual(
             fe_problem, fe_arrays, params_by_block, U, U_prev, step_time,
             xi_prev_by_block=xi_prev_by_block,
         )
-        K, K_ii_presc = _embedded_bc_enforce(K_bcoo, presc_idx)
+        K, K_ii_presc = _embedded_bc_enforce(
+            K_bcoo, presc_idx, fe_problem.num_dofs_padded,
+        )
         r = _embedded_residual(
             R, lambda v: K_bcoo @ v, U, presc_idx, presc_vals, K_ii_presc,
         )
-        return r, K, xi
+        return _pad_dofs(r, fe_problem), K, xi
     K_elem, R, xi = assemble_element_tangent(
         fe_problem, fe_arrays, params_by_block, U, U_prev, step_time,
         xi_prev_by_block=xi_prev_by_block,
     )
-    op = ElementOperator(
-        K_elem, fe_arrays.r_scatter_eq_by_block, fe_problem.field_idx_per_block,
-        fe_problem.dof_map.block_offsets, presc_idx,
-        fe_problem.dof_map.num_total_dofs,
-    )
+    op = _element_operator(K_elem, fe_problem, fe_arrays)
+    presc_idx_padded = jnp.asarray(fe_problem.dof_padding_map)[presc_idx]
     r = _embedded_residual(
-        R, op.raw_matvec, U, presc_idx, presc_vals, op.diagonal()[presc_idx],
+        R,
+        lambda v: _strip_dofs(op.raw_matvec(_pad_dofs(v, fe_problem)), fe_problem),
+        U, presc_idx, presc_vals, op.diagonal()[presc_idx_padded],
     )
-    return r, K_elem, xi
+    return _pad_dofs(r, fe_problem), K_elem, xi
 
 
 def _solve_linear(
@@ -214,7 +255,9 @@ def _solve_linear(
             require_assembled("'cg' with the pyamg preconditioner")
             kwargs = dict(precon_spec.get("kwargs") or {})
             if "B" not in kwargs and fe_problem.near_null_space is not None:
-                kwargs["B"] = fe_problem.near_null_space
+                kwargs["B"] = _pad_near_null_space(
+                    fe_problem.near_null_space, fe_problem,
+                )
             return scipy_amg_cg(
                 K, sparsity, rhs,
                 rtol=linear_solver_settings["rtol"],
@@ -255,8 +298,10 @@ def _solve_linear(
             if inner == "amg":
                 require_assembled("'gmres' with the block amg preconditioner")
                 near_null = _near_null_by_field(
-                    fe_problem.near_null_space,
-                    fe_problem.dof_map.block_offsets,
+                    _pad_near_null_space(
+                        fe_problem.near_null_space, fe_problem,
+                    ),
+                    np.asarray(block_sparsity.field_offsets, dtype=np.intp),
                 )
                 return scipy_block_gmres(
                     K, sparsity, rhs, block_sparsity, near_null,
@@ -400,9 +445,12 @@ def _fe_newton_primal(
 
     def body(state):
         i, r, K, U, xi = state
-        dU = _solve_linear(
+        # r and the linear solve live on the padded dofs
+        # (cmad.fem.sharding); U and dU on the true ones.
+        dU_padded = _solve_linear(
             K, fe_problem, fe_arrays, -r, linear_solver_settings,
         )
+        dU = _strip_dofs(dU_padded, fe_problem)
         if ls_max_evals > 0:
             r_norm_sq = r @ r
 
@@ -410,7 +458,7 @@ def _fe_newton_primal(
                 r_trial, K_trial, xi_trial = _assemble_enforced(U + alpha * dU)
                 slope = r_trial @ _tangent_operator(
                     K_trial, fe_problem, fe_arrays, operator,
-                ).matvec(dU)
+                ).matvec(dU_padded)
                 phi = 0.5 * (r_trial @ r_trial)
                 return phi, slope, (r_trial, K_trial, xi_trial)
 
@@ -672,8 +720,8 @@ def _fe_newton_solve_ad_jvp(
         xi_prev_by_block, prescribed_values(step_time), operator,
     )
 
-    U_star_dot = _solve_linear(
-        K, fe_problem, fe_arrays, -Rp_dot, lss,
+    U_star_dot = _strip_dofs(
+        _solve_linear(K, fe_problem, fe_arrays, -Rp_dot, lss), fe_problem,
     )
 
     def xi_of_U_p(U_, params_, Up_, xp_, step_time_):

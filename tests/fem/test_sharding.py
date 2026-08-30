@@ -29,6 +29,9 @@ from cmad.fem.fe_problem import FEState
 from cmad.fem.mesh import StructuredHexMesh
 from cmad.fem.nonlinear_solver import (
     _assemble_tangent_and_residual,
+    _element_operator,
+    _pad_dofs,
+    _strip_dofs,
     _tangent_operator,
     fe_newton_solve,
 )
@@ -159,13 +162,14 @@ def _on_device_0(tree):
 _CG_SETTINGS = {"type": "cg", "rtol": 1.0e-10, "max iters": 2000}
 
 
-def elastic_krylov_problem():
-    """``(fe_problem, params, U)``: the elastic 3 x 3 x 3 cube (192 dofs, the
-    24 at the interior nodes free) at a random displacement."""
-    fe_problem = elastic_problem((3, 3, 3))
+def elastic_krylov_problem(divisions=(3, 3, 3), seed=27):
+    """``(fe_problem, params, U)``: the elastic cube with ``divisions``
+    (the default 3 x 3 x 3 has 192 dofs, the 24 at the interior nodes
+    free) at a random displacement."""
+    fe_problem = elastic_problem(divisions)
     params = params_by_block_from_models(fe_problem)
     n = fe_problem.dof_map.num_total_dofs
-    U = 0.01 * np.random.default_rng(27).standard_normal(n)
+    U = 0.01 * np.random.default_rng(seed).standard_normal(n)
     return fe_problem, params, U
 
 
@@ -179,11 +183,13 @@ def _block_chebyshev_preconditioner(op, bounds):
     return precon
 
 
-def krylov_solves(fe_problem, params, U, U_prev, xi_prev, step_time):
+def krylov_solves(fe_problem, params, U, U_prev, xi_prev, step_time,
+                  gmres_on_single_field=False, rtol=1.0e-10):
     """One Krylov solve of ``K dU = -r`` at the given state per operator
     kind, through the problem's device mesh: ``{kind: (iterations, x)}``.
     A mixed problem runs block chebyshev GMRES, a single field problem
-    CG + jacobi, both unrestarted at rtol 1e-10."""
+    CG + jacobi (or GMRES + jacobi with ``gmres_on_single_field``), all
+    unrestarted at ``rtol``. ``x`` is on the true dofs."""
     arrays = fe_problem.kernel_arrays
     presc_vals = jnp.asarray(fe_problem.dof_map.evaluate_prescribed_values(
         arrays.dbc_arrays, float(step_time.t),
@@ -201,10 +207,15 @@ def krylov_solves(fe_problem, params, U, U_prev, xi_prev, step_time):
                 precon = _block_chebyshev_preconditioner(
                     op, _chebyshev_field_bounds(op, "schur"),
                 )
-                return _gmres_loop(op.matvec, precon, -r, 1.0e-10, op.n, 4,
+                return _gmres_loop(op.matvec, precon, -r, rtol, op.n, 4,
                                    op.device_mesh)
+            if gmres_on_single_field:
+                return _gmres_loop(
+                    op.matvec, _jacobi_preconditioner(op), -r, rtol, op.n,
+                    4, op.device_mesh,
+                )
             return _pcg_loop(op.matvec, -r, _jacobi_preconditioner(op),
-                             1.0e-10, 10 * op.n, op.device_mesh)
+                             rtol, 10 * op.n, op.device_mesh)
 
         x, iterations = jax.jit(solve)(
             jnp.asarray(U), jnp.asarray(U_prev),
@@ -213,7 +224,7 @@ def krylov_solves(fe_problem, params, U, U_prev, xi_prev, step_time):
                 fe_problem.device_mesh,
             ),
         )
-        out[kind] = (int(iterations), np.asarray(x))
+        out[kind] = (int(iterations), np.asarray(_strip_dofs(x, fe_problem)))
     return out
 
 
@@ -278,21 +289,20 @@ def save_sharded_results(path: str) -> None:
         fe_problem, arrays, params, U, U_prev, step_time,
         xi_prev_by_block=xi_p,
     )[0])(arrays, xi_placed)
-    element = ElementOperator(
-        K_elem, arrays.r_scatter_eq_by_block, fe_problem.field_idx_per_block,
-        fe_problem.dof_map.block_offsets, arrays.prescribed_indices,
-        fe_problem.dof_map.num_total_dofs,
-    )
+    element = _element_operator(K_elem, fe_problem, arrays)
     arrays_0 = _on_device_0(arrays)
     K_bcoo_0, _, _ = jax.jit(lambda arrs, xi_p: assemble_global(
         fe_problem, arrs, params, U, U_prev, step_time, xi_prev_by_block=xi_p,
     ))(arrays_0, _on_device_0(xi_prev))
-    K_enforced_0, _ = _embedded_bc_enforce(K_bcoo_0, arrays_0.prescribed_indices)
+    K_enforced_0, _ = _embedded_bc_enforce(
+        K_bcoo_0, arrays_0.prescribed_indices, fe_problem.num_dofs_padded,
+    )
     assembled_0 = AssembledOperator(
         K_enforced_0, arrays_0.embedded_sparsity, arrays_0.block_sparsity,
     )
-    x = jnp.asarray(np.random.default_rng(5).standard_normal(
-        fe_problem.dof_map.num_total_dofs))
+    # Both operators live on the padded dofs.
+    x = _pad_dofs(jnp.asarray(np.random.default_rng(5).standard_normal(
+        fe_problem.dof_map.num_total_dofs)), fe_problem)
     element_matvec = np.asarray(jax.jit(element.matvec)(x))
     element_matvec_ref = np.asarray(jax.jit(assembled_0.matvec)(x))
     U_element_step, xi_element_step = fe_newton_solve(
@@ -310,9 +320,19 @@ def save_sharded_results(path: str) -> None:
     mixed_solves = krylov_solves(
         fe_problem, params, U_prev, U_prev, xi_prev, step_time,
     )
+    mixed_tight = krylov_solves(
+        fe_problem, params, U_prev, U_prev, xi_prev, step_time, rtol=1.0e-14,
+    )
     fe_27, params_27, U_27 = elastic_krylov_problem()
     elastic_solves = krylov_solves(
         fe_27, params_27, U_27, np.zeros_like(U_27), {}, StepTime(1.0, 0.0),
+    )
+    # 162 dofs do not divide by four devices: the dofs are padded to 164
+    # and the solve partitions all the same (GMRES + jacobi here).
+    fe_8, params_8, U_8 = elastic_krylov_problem((5, 2, 2), seed=81)
+    padded_solves = krylov_solves(
+        fe_8, params_8, U_8, np.zeros_like(U_8), {}, StepTime(1.0, 0.0),
+        gmres_on_single_field=True,
     )
     U_cg_step = {}
     for kind in ("assembled", "element"):
@@ -361,10 +381,20 @@ def save_sharded_results(path: str) -> None:
         mixed_x_assembled=mixed_solves["assembled"][1],
         mixed_iters_element=mixed_solves["element"][0],
         mixed_x_element=mixed_solves["element"][1],
+        mixed_tight_iters_assembled=mixed_tight["assembled"][0],
+        mixed_tight_x_assembled=mixed_tight["assembled"][1],
+        mixed_tight_iters_element=mixed_tight["element"][0],
+        mixed_tight_x_element=mixed_tight["element"][1],
         elastic_iters_assembled=elastic_solves["assembled"][0],
         elastic_x_assembled=elastic_solves["assembled"][1],
         elastic_iters_element=elastic_solves["element"][0],
         elastic_x_element=elastic_solves["element"][1],
+        padded_iters_assembled=padded_solves["assembled"][0],
+        padded_x_assembled=padded_solves["assembled"][1],
+        padded_iters_element=padded_solves["element"][0],
+        padded_x_element=padded_solves["element"][1],
+        num_dofs_padded_8=fe_8.num_dofs_padded,
+        num_dofs_padded_mixed=fe_problem.num_dofs_padded,
         U_cg_step_assembled=np.asarray(U_cg_step["assembled"]),
         U_cg_step_element=np.asarray(U_cg_step["element"]),
         xi_element_step_rows=np.asarray(xi_element_step["all"]).shape[0],
@@ -376,9 +406,16 @@ def save_sharded_results(path: str) -> None:
     )
 
 
-def _assert_close(actual, reference, rel: float) -> None:
+def _assert_close(actual, reference, rel: float, label: str = "") -> None:
+    """``actual`` within ``rel`` of ``max|reference|`` of ``reference``; with
+    a ``label`` the measured relative difference is printed (visible with
+    ``pytest -s``)."""
     scale = float(np.abs(reference).max())
     assert scale > 0.0
+    if label:
+        measured = float(np.abs(np.asarray(actual) - np.asarray(reference)).max())
+        print(f"  {label}: max|difference| / max|reference| = "
+              f"{measured / scale:.2e}")
     np.testing.assert_allclose(actual, reference, rtol=0, atol=rel * scale)
 
 
@@ -459,22 +496,37 @@ class TestFourDevices(unittest.TestCase):
         r = self.sharded
         for name in ("K_data", "R", "xi_out"):
             with self.subTest(name=name):
-                _assert_close(r[name], r[f"{name}_ref"], 1e-14)
+                _assert_close(
+                    r[name], r[f"{name}_ref"], 1e-14,
+                    f"assembly {name}, 4 devices vs device 0",
+                )
 
     def test_newton_solve_matches_one_device_process(self) -> None:
-        _assert_close(self.sharded["U"], self.U_ref, 1e-12)
-        _assert_close(self.sharded["xi"], self.xi_ref["all"], 1e-12)
+        _assert_close(
+            self.sharded["U"], self.U_ref, 1e-12,
+            "Newton drive U, 4 devices vs 1 device",
+        )
+        _assert_close(
+            self.sharded["xi"], self.xi_ref["all"], 1e-12,
+            "Newton drive xi, 4 devices vs 1 device",
+        )
 
     def test_element_operator_on_four_devices(self) -> None:
         r = self.sharded
-        _assert_close(r["element_matvec"], r["element_matvec_ref"], 1e-12)
+        _assert_close(
+            r["element_matvec"], r["element_matvec_ref"], 1e-12,
+            "element operator matvec, 4 devices vs assembled on device 0",
+        )
         fe_problem, params, _U, U_prev, _xi, xi_prev, step_time = self.drive
         U_ref, _ = fe_newton_solve(
             fe_problem, params, U_prev=U_prev, t=float(step_time.t),
             t_prev=float(step_time.t_prev), xi_prev_by_block=xi_prev,
             linear_solver_settings=_ELEMENT_SOLVER_SETTINGS,
         )
-        _assert_close(r["U_element_step"], np.asarray(U_ref), 1e-8)
+        _assert_close(
+            r["U_element_step"], np.asarray(U_ref), 1e-8,
+            "element operator Newton step U, 4 devices vs 1 device",
+        )
 
     def test_partitioned_krylov_solves_match_one_device(self) -> None:
         r = self.sharded
@@ -482,19 +534,42 @@ class TestFourDevices(unittest.TestCase):
         mixed = krylov_solves(
             fe_problem, params, U_prev, U_prev, xi_prev, step_time,
         )
+        mixed_tight = krylov_solves(
+            fe_problem, params, U_prev, U_prev, xi_prev, step_time,
+            rtol=1.0e-14,
+        )
         fe_27, params_27, U_27 = elastic_krylov_problem()
         elastic = krylov_solves(
             fe_27, params_27, U_27, np.zeros_like(U_27), {}, StepTime(1.0, 0.0),
         )
-        for name, solves in (("mixed", mixed), ("elastic", elastic)):
+        fe_8, params_8, U_8 = elastic_krylov_problem((5, 2, 2), seed=81)
+        self.assertEqual(fe_8.dof_map.num_total_dofs, 162)
+        self.assertEqual(int(r["num_dofs_padded_8"]), 164)
+        padded = krylov_solves(
+            fe_8, params_8, U_8, np.zeros_like(U_8), {}, StepTime(1.0, 0.0),
+            gmres_on_single_field=True,
+        )
+        print(f"\n  dofs padded per field on 4 devices: mixed cube 108 "
+              f"(u 81, p 27) -> {int(r['num_dofs_padded_mixed'])}, "
+              f"162 dof cube -> {int(r['num_dofs_padded_8'])}")
+        for name, solves in (
+                ("mixed", mixed), ("mixed_tight", mixed_tight),
+                ("elastic", elastic), ("padded", padded),
+        ):
             for kind in ("assembled", "element"):
                 with self.subTest(problem=name, operator=kind):
                     iterations, x = solves[kind]
                     self.assertGreater(iterations, 1)
+                    print(f"  {name} {kind}: Krylov iterations 1 device "
+                          f"{iterations}, 4 devices "
+                          f"{int(r[f'{name}_iters_{kind}'])}")
                     self.assertEqual(
                         int(r[f"{name}_iters_{kind}"]), iterations,
                     )
-                    _assert_close(r[f"{name}_x_{kind}"], x, 1e-8)
+                    _assert_close(
+                        r[f"{name}_x_{kind}"], x, 1e-8,
+                        f"{name} {kind} solution, 4 devices vs 1 device",
+                    )
         # The step drives the random start to the exact answer, zero, so the
         # comparison is scaled by the start, not by the answer.
         for kind in ("assembled", "element"):
@@ -516,12 +591,15 @@ class TestFourDevices(unittest.TestCase):
         self.assertEqual(tuple(int(p) for p in r["padded_1_2"]), (4, 4))
         fe_7 = elastic_problem((7, 1, 1))
         K7, R7 = assemble_at_random_state(fe_7, fe_7.kernel_arrays)
-        _assert_close(r["K7"], K7, 1e-14)
-        _assert_close(r["R7"], R7, 1e-14)
+        print(f"\n  7 elements padded to {int(r['padded_7'])} on 4 devices")
+        _assert_close(r["K7"], K7, 1e-14, "7 element K.data, 4 devices vs 1")
+        _assert_close(r["R7"], R7, 1e-14, "7 element R, 4 devices vs 1")
         fe_1_2 = elastic_problem((3, 1, 1), two_blocks=True)
         K12, R12 = assemble_at_random_state(fe_1_2, fe_1_2.kernel_arrays)
-        _assert_close(r["K12"], K12, 1e-14)
-        _assert_close(r["R12"], R12, 1e-14)
+        print(f"  blocks of 1 and 2 elements padded to "
+              f"{tuple(int(p) for p in r['padded_1_2'])}")
+        _assert_close(r["K12"], K12, 1e-14, "two block K.data, 4 devices vs 1")
+        _assert_close(r["R12"], R12, 1e-14, "two block R, 4 devices vs 1")
         # The state returned to the caller has the true element count.
         fe_problem = self.drive[0]
         self.assertEqual(
