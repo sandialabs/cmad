@@ -179,6 +179,27 @@ class TestFEDeckSchema(unittest.TestCase):
         self.assertIn("not_a_real_model", str(ctx.exception))
 
 
+class TestLinearSolverOperator(unittest.TestCase):
+    def test_defaults_to_assembled(self) -> None:
+        resolved = apply_deck_defaults(_minimal_fe_deck())
+        self.assertEqual(resolved["linear solver"]["operator"], "assembled")
+        validate_deck(resolved, "primal")
+
+    def test_element_validates(self) -> None:
+        deck = _minimal_fe_deck()
+        deck["linear solver"] = {"type": "cg", "operator": "element"}
+        resolved = apply_deck_defaults(deck)
+        self.assertEqual(resolved["linear solver"]["operator"], "element")
+        validate_deck(resolved, "primal")
+
+    def test_unknown_operator_errors(self) -> None:
+        deck = _minimal_fe_deck()
+        deck["linear solver"] = {"type": "cg", "operator": "dense"}
+        with self.assertRaises(ValueError) as ctx:
+            validate_deck(apply_deck_defaults(deck), "primal")
+        self.assertIn("operator", str(ctx.exception))
+
+
 class TestDiscretizationTimeSpecs(unittest.TestCase):
     def test_num_steps_and_step_size_form(self) -> None:
         deck = _minimal_fe_deck()

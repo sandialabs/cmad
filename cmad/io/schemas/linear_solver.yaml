@@ -16,6 +16,9 @@ properties:
   restart:
     type: integer
     minimum: 1
+  operator:
+    type: string
+    enum: [assembled, element]
   preconditioner:
     type: object
     required: [type]

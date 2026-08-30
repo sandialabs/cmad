@@ -72,6 +72,8 @@ class TestHessianFeRoundTrip(unittest.TestCase):
             {"type": "direct"},
             {"type": "cg"},
             {"type": "gmres", "restart": 30},
+            {"type": "cg", "operator": "element"},
+            {"type": "gmres", "restart": 30, "operator": "element"},
         ]
         hessians: dict[str, np.ndarray] = {}
         for ls in solver_configs:
@@ -108,14 +110,14 @@ class TestHessianFeRoundTrip(unittest.TestCase):
                 self.assertFalse((out_dir / "grad.npy").exists())
                 self.assertFalse(any(out_dir.glob("*.exo")))
 
-                hessians[ls["type"]] = hess
+                hessians[f"{ls['type']}+{ls.get('operator', 'assembled')}"] = hess
 
-        np.testing.assert_allclose(
-            hessians["cg"], hessians["direct"], rtol=1e-6, atol=1e-9,
-        )
-        np.testing.assert_allclose(
-            hessians["gmres"], hessians["direct"], rtol=1e-6, atol=1e-9,
-        )
+        for key in ("cg+assembled", "gmres+assembled", "cg+element",
+                    "gmres+element"):
+            np.testing.assert_allclose(
+                hessians[key], hessians["direct+assembled"],
+                rtol=1e-6, atol=1e-9, err_msg=key,
+            )
 
 
 if __name__ == "__main__":

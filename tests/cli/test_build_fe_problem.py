@@ -527,6 +527,49 @@ class TestMixed(unittest.TestCase):
         self.assertTrue(bundle.fe_problem.gr.mixed)
         self.assertIsNotNone(bundle.fe_problem.block_sparsity)
 
+    def test_element_operator_accepts_jax_native_solvers(self) -> None:
+        for deck, linear_solver in (
+            (_minimal_fe_deck(),
+             {"type": "cg", "operator": "element"}),
+            (_minimal_fe_deck(),
+             {"type": "gmres", "preconditioner": {"type": "jacobi"},
+              "operator": "element"}),
+            (self._mixed_deck(),
+             {"type": "gmres", "operator": "element",
+              "preconditioner": {"type": "block", "coupling": "lower",
+                                 "diagonal_block": "schur",
+                                 "inner": "chebyshev"}}),
+        ):
+            deck["linear solver"] = linear_solver
+            with (
+                self.subTest(linear_solver=linear_solver),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                bundle = _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
+            self.assertEqual(
+                bundle.resolved["linear solver"]["operator"], "element",
+            )
+
+    def test_element_operator_rejects_assembled_only_solvers(self) -> None:
+        for deck, linear_solver in (
+            (_minimal_fe_deck(),
+             {"type": "direct", "operator": "element"}),
+            (_minimal_fe_deck(),
+             {"type": "cg", "preconditioner": {"type": "pyamg"},
+              "operator": "element"}),
+            (self._mixed_deck(),
+             {"type": "gmres", "operator": "element",
+              "preconditioner": {"type": "block", "coupling": "lower",
+                                 "diagonal_block": "schur", "inner": "amg"}}),
+        ):
+            deck["linear solver"] = linear_solver
+            with (
+                self.subTest(linear_solver=linear_solver),
+                tempfile.TemporaryDirectory() as tmpdir,
+                self.assertRaisesRegex(ValueError, "operator 'element'"),
+            ):
+                _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
+
     def test_mixed_rejects_low_volume_quadrature(self) -> None:
         deck = self._mixed_deck()
         deck["discretization"]["quadrature"] = {"volume degree": 1}
