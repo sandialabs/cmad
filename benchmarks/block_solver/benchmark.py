@@ -30,7 +30,9 @@ from cmad.fem.driver import build_fe_quasistatic_trajectory  # noqa: E402
 from cmad.fem.fe_problem import FEState  # noqa: E402
 from examples.notch_mesh import generate_notch_msh  # noqa: E402
 
-_GMRES = {"type": "gmres", "rtol": 1.0e-8, "restart": 50, "max iters": 500}
+# restart 500: the block preconditioners stagnate under short restarts on
+# 3D problems; `max iters` counts restart cycles.
+_GMRES = {"type": "gmres", "rtol": 1.0e-8, "restart": 500, "max iters": 20}
 _NLS = {
     "max iters": 15, "abs tol": 1.0e-9, "rel tol": 1.0e-9,
     "print convergence": False, "line search": {},
@@ -48,15 +50,24 @@ def _block(coupling: str, diagonal_block: str, inner: str, **extra: Any) -> dict
 
 
 # Each entry is (label, linear solver settings). jacobi takes only the assembled
-# diagonal block, while chebyshev and amg take either.
+# diagonal block, while chebyshev and amg take either. The [element] rows apply
+# the tangent from the per element blocks instead of the assembled matrix.
 CONFIGS: list[tuple[str, dict]] = [
     ("direct", {"type": "direct"}),
     ("block jacobi (assembled)", _block("lower", "assembled", "jacobi")),
+    ("block jacobi (assembled) [element]",
+     {**_block("lower", "assembled", "jacobi"), "operator": "element"}),
     ("block amg (schur)", _block("lower", "schur", "amg")),
     ("block chebyshev d3 (assembled)",
      _block("lower", "assembled", "chebyshev", degree=3)),
+    ("block chebyshev d3 (assembled) [element]",
+     {**_block("lower", "assembled", "chebyshev", degree=3),
+      "operator": "element"}),
     ("block chebyshev d3 (schur)",
      _block("lower", "schur", "chebyshev", degree=3)),
+    ("block chebyshev d3 (schur) [element]",
+     {**_block("lower", "schur", "chebyshev", degree=3),
+      "operator": "element"}),
 ]
 
 MESH_SIZES = (0.12, 0.07)
