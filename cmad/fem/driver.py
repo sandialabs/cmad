@@ -342,6 +342,12 @@ def fe_quasistatic_drive(
         params_by_block, state_init, fe_arrays,
     )
 
+    # The traced state carries the padded element axis
+    # (cmad.fem.sharding); the stored history has the true counts.
+    xi_steps_by_block = {
+        b: xi[:, :fe_problem.n_elems_by_block[b]]
+        for b, xi in xi_steps_by_block.items()
+    }
     materialize_fe_state(state, U_steps, xi_steps_by_block, t_schedule)
 
     return state, J, DriveStatus(

@@ -21,16 +21,21 @@ stored as ``fe_problem.kernel_arrays``.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 from jax.tree_util import register_pytree_node_class
 
-from cmad.fem.assembly import _element_eq_indices, assembled_coo_dedup
+from cmad.fem.assembly import (
+    _element_eq_indices,
+    _pad_element_rows,
+    assembled_coo_dedup,
+)
 from cmad.fem.dof import DBCArrays, build_dbc_arrays
 from cmad.fem.neumann import NeumannSideArrays, build_neumann_side_arrays
 from cmad.fem.precompute import BlockIPGeometryCache
+from cmad.fem.sharding import pad_element_leaves
 from cmad.fem.sparse_solve import BlockSparsity, EmbeddedSparsity
 from cmad.typing import JaxArray
 
@@ -181,19 +186,26 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
     field_idx_per_block = fe_problem.field_idx_per_block
     num_fields = len(dof_map.field_layouts)
 
+    # The element axis is the padded one (cmad.fem.sharding): a padding
+    # element repeats the block's last element's indices and has a zero
+    # iso_jac_det, so it contributes nothing.
     u_gather_eq_by_block: dict[str, tuple[JaxArray, ...]] = {}
     r_scatter_eq_by_block: dict[str, tuple[JaxArray, ...]] = {}
+    geometry_cache: dict[str, BlockIPGeometryCache] = {}
     for block_name in fe_problem.evaluators_by_block:
         connectivity_block = mesh.connectivity[
             mesh.element_blocks[block_name]
         ]
-        n_elems = connectivity_block.shape[0]
+        n_elems = fe_problem.n_elems_padded_by_block[block_name]
 
         u_gather_eqs: list[JaxArray] = []
         for field_idx in range(num_fields):
             ndofs = int(dof_map.num_dofs_per_basis_fn[field_idx])
-            eq = _element_eq_indices(
-                connectivity_block, dof_map, field_idx=field_idx,
+            eq = _pad_element_rows(
+                _element_eq_indices(
+                    connectivity_block, dof_map, field_idx=field_idx,
+                ),
+                n_elems,
             )
             u_gather_eqs.append(
                 jnp.asarray(eq.reshape(n_elems, -1, ndofs)),
@@ -201,12 +213,34 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
         u_gather_eq_by_block[block_name] = tuple(u_gather_eqs)
 
         r_scatter_eq_by_block[block_name] = tuple(
-            jnp.asarray(_element_eq_indices(
-                connectivity_block, dof_map,
-                field_idx=field_idx_per_block[r],
+            jnp.asarray(_pad_element_rows(
+                _element_eq_indices(
+                    connectivity_block, dof_map,
+                    field_idx=field_idx_per_block[r],
+                ),
+                n_elems,
             ))
             for r in range(num_residuals)
         )
+
+        cache = fe_problem.geometry_cache[block_name]
+        if cache.per_elem.iso_jac_det.shape[0] == n_elems:
+            geometry_cache[block_name] = cache
+        else:
+            per_elem = pad_element_leaves(cache.per_elem, n_elems)
+            geometry_cache[block_name] = replace(
+                cache,
+                per_elem=replace(
+                    per_elem,
+                    iso_jac_det=pad_element_leaves(
+                        cache.per_elem.iso_jac_det, n_elems, zero=True,
+                    ),
+                ),
+            )
+    if all(
+        geometry_cache[b] is fe_problem.geometry_cache[b] for b in geometry_cache
+    ):
+        geometry_cache = fe_problem.geometry_cache
 
     coo_rows, coo_cols, coo_dedup_scatter = assembled_coo_dedup(fe_problem)
     neumann_side_arrays = build_neumann_side_arrays(
@@ -221,7 +255,7 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
         coo_rows=jnp.asarray(coo_rows),
         coo_cols=jnp.asarray(coo_cols),
         coo_dedup_scatter=jnp.asarray(coo_dedup_scatter),
-        geometry_cache=fe_problem.geometry_cache,
+        geometry_cache=geometry_cache,
         embedded_sparsity=fe_problem.embedded_sparsity,
         block_sparsity=fe_problem.block_sparsity,
         prescribed_indices=jnp.asarray(dof_map.prescribed_indices),

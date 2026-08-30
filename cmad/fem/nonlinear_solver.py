@@ -13,7 +13,7 @@ from numpy.typing import NDArray
 from cmad.fem.assembly import assemble_element_tangent, assemble_global
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.kernel_arrays import FEKernelArrays
-from cmad.fem.sharding import place_element_leaves
+from cmad.fem.sharding import place_element_leaves, strip_element_padding
 from cmad.fem.sparse_solve import (
     AssembledOperator,
     ElementOperator,
@@ -559,6 +559,7 @@ def fe_newton_solve(
         fe_problem, fe_problem.kernel_arrays, params_by_block,
         U_prev_jax, xi_prev_jax, step_time, _freeze(nls), _freeze(lss),
     )
+    xi_star = strip_element_padding(xi_star, fe_problem.n_elems_by_block)
     if not return_status:
         return U_star, xi_star
     return U_star, xi_star, NewtonStatus(

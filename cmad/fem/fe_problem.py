@@ -25,7 +25,11 @@ from cmad.fem.quadrature import (
     tet_quadrature,
     tri_quadrature,
 )
-from cmad.fem.sharding import build_device_mesh, shard_kernel_arrays
+from cmad.fem.sharding import (
+    build_device_mesh,
+    padded_count,
+    shard_kernel_arrays,
+)
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.model import Model
@@ -124,7 +128,12 @@ class FEProblem:
     axis is sharded across when there is more than one JAX device
     (:mod:`cmad.fem.sharding`), or ``None`` when the assembly runs on
     one device. ``num_devices`` is how many of JAX's devices the mesh
-    may use; ``None`` means all of them.
+    may use; ``None`` means all of them. With a mesh, each block's
+    element axis in ``kernel_arrays`` is padded to a multiple of the
+    device count (:mod:`cmad.fem.sharding`); ``n_elems_padded_by_block``
+    holds those padded counts, the same as the true counts without a
+    mesh, and the per element state arrays the traced kernels carry have
+    that length.
     """
     mesh: Mesh
     dof_map: GlobalDofMap
@@ -161,6 +170,9 @@ class FEProblem:
     block_sparsity: "BlockSparsity | None" = field(init=False, default=None)
     kernel_arrays: "FEKernelArrays" = field(init=False)
     device_mesh: DeviceMesh | None = field(init=False, default=None)
+    n_elems_padded_by_block: dict[str, int] = field(
+        init=False, default_factory=dict,
+    )
     near_null_space: NDArray[np.floating] | None = field(
         init=False, default=None,
     )
@@ -222,6 +234,16 @@ class FEProblem:
         )
         object.__setattr__(self, "geometry_cache", geometry_cache)
 
+        # The device mesh and the padded element counts come before the
+        # sparsity and the kernel arrays, which are built for the padded
+        # element axis.
+        device_mesh = build_device_mesh(self.num_devices)
+        object.__setattr__(self, "device_mesh", device_mesh)
+        object.__setattr__(self, "n_elems_padded_by_block", {
+            block: padded_count(count, device_mesh)
+            for block, count in self.n_elems_by_block.items()
+        })
+
         # Lazy import to break the
         # fe_problem -> sparse_solve -> assembly -> fe_problem
         # cycle; assembly imports FEProblem at module scope, so
@@ -260,21 +282,20 @@ class FEProblem:
         # FEProblem at module scope.
         from cmad.fem.kernel_arrays import build_fe_kernel_arrays
         kernel_arrays = build_fe_kernel_arrays(self)
-        device_mesh = build_device_mesh(
-            {
-                block: len(elems)
-                for block, elems in self.mesh.element_blocks.items()
-            },
-            self.num_devices,
-        )
-        if device_mesh is not None:
-            kernel_arrays = shard_kernel_arrays(kernel_arrays, device_mesh)
-        object.__setattr__(self, "device_mesh", device_mesh)
+        if self.device_mesh is not None:
+            kernel_arrays = shard_kernel_arrays(kernel_arrays, self.device_mesh)
         object.__setattr__(self, "kernel_arrays", kernel_arrays)
 
     @property
     def ndims(self) -> int:
         return int(self.mesh.nodes.shape[1])
+
+    @property
+    def n_elems_by_block(self) -> dict[str, int]:
+        """Each element block's element count."""
+        return {
+            block: len(elems) for block, elems in self.mesh.element_blocks.items()
+        }
 
     @property
     def block_shapes(self) -> list[tuple[int, int]]:

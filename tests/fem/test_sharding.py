@@ -5,14 +5,13 @@ multidevice cases run :func:`save_sharded_results` in a subprocess with
 ``jax_num_cpu_devices`` set first (JAX's own tests do the same); it saves
 what it computed on four CPU devices, and the test compares that with the
 same computation on one device: this process for the Newton solve, device
-0 of the subprocess for the assembly. The divisor rule and the one device
-path are checked in process.
+0 of the subprocess for the assembly. The padding helpers and the one
+device path are checked in process.
 """
 import subprocess
 import sys
 import tempfile
 import unittest
-import warnings
 from pathlib import Path
 
 import jax
@@ -36,8 +35,10 @@ from cmad.fem.nonlinear_solver import (
 from cmad.fem.sharding import (
     ELEMENT_AXIS,
     build_device_mesh,
-    element_shard_count,
+    pad_element_leaves,
+    padded_count,
     place_element_leaves,
+    strip_element_padding,
 )
 from cmad.fem.sparse_solve import (
     AssembledOperator,
@@ -294,7 +295,7 @@ def save_sharded_results(path: str) -> None:
         fe_problem.dof_map.num_total_dofs))
     element_matvec = np.asarray(jax.jit(element.matvec)(x))
     element_matvec_ref = np.asarray(jax.jit(assembled_0.matvec)(x))
-    U_element_step, _ = fe_newton_solve(
+    U_element_step, xi_element_step = fe_newton_solve(
         fe_problem, params, U_prev=U_prev, t=float(step_time.t),
         t_prev=float(step_time.t_prev), xi_prev_by_block=xi_prev,
         linear_solver_settings=_ELEMENT_SOLVER_SETTINGS,
@@ -320,29 +321,25 @@ def save_sharded_results(path: str) -> None:
             linear_solver_settings={**_CG_SETTINGS, "operator": kind},
         )
 
-    # The divisor rule: 7 elements (prime) run on one device with a
-    # warning; 6 elements over 4 devices shard over 3; two blocks of 1
-    # and 2 elements share no divisor, so no mesh.
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        fe_7 = elastic_problem((7, 1, 1))
-    n_warnings_7 = sum("common divisor" in str(w.message) for w in caught)
-    fe_6 = elastic_problem((6, 1, 1))
+    # Element counts that do not divide by the device count are padded:
+    # 7 elements (prime) and two blocks of 1 and 2 elements shard over all
+    # four devices and assemble the same K and R as on one device; the
+    # padding never reaches the stored state (xi has the true count).
+    fe_7 = elastic_problem((7, 1, 1))
     fe_1_2 = elastic_problem((3, 1, 1), two_blocks=True)
     K7, R7 = assemble_at_random_state(fe_7, fe_7.kernel_arrays)
-    K7_ref, R7_ref = assemble_at_random_state(
-        fe_7, _on_device_0(fe_7.kernel_arrays),
-    )
-    K6, R6 = assemble_at_random_state(fe_6, fe_6.kernel_arrays)
-    K6_ref, R6_ref = assemble_at_random_state(
-        fe_6, _on_device_0(fe_6.kernel_arrays),
+    K12, R12 = assemble_at_random_state(fe_1_2, fe_1_2.kernel_arrays)
+    padded_7 = fe_7.kernel_arrays.r_scatter_eq_by_block["all"][0].shape[0]
+    padded_1_2 = tuple(
+        fe_1_2.kernel_arrays.r_scatter_eq_by_block[b][0].shape[0]
+        for b in ("left", "right")
     )
 
     # num_devices limits the mesh to the first num_devices devices.
-    capped_2 = build_device_mesh({"all": 8}, num_devices=2)
-    capped_1 = build_device_mesh({"all": 8}, num_devices=1)
+    capped_2 = build_device_mesh(num_devices=2)
+    capped_1 = build_device_mesh(num_devices=1)
     try:
-        build_device_mesh({"all": 8}, num_devices=n_devices + 1)
+        build_device_mesh(num_devices=n_devices + 1)
         too_many_raises = False
     except ValueError:
         too_many_raises = True
@@ -370,12 +367,12 @@ def save_sharded_results(path: str) -> None:
         elastic_x_element=elastic_solves["element"][1],
         U_cg_step_assembled=np.asarray(U_cg_step["assembled"]),
         U_cg_step_element=np.asarray(U_cg_step["element"]),
-        mesh_size_7=_mesh_size(fe_7), n_warnings_7=n_warnings_7,
-        mesh_size_6=_mesh_size(fe_6), mesh_size_1_2=_mesh_size(fe_1_2),
+        xi_element_step_rows=np.asarray(xi_element_step["all"]).shape[0],
+        mesh_size_7=_mesh_size(fe_7), padded_7=padded_7,
+        mesh_size_1_2=_mesh_size(fe_1_2), padded_1_2=padded_1_2,
         capped_2_size=0 if capped_2 is None else int(capped_2.size),
         capped_1_is_none=capped_1 is None, too_many_raises=too_many_raises,
-        K7=K7, R7=R7, K7_ref=K7_ref, R7_ref=R7_ref,
-        K6=K6, R6=R6, K6_ref=K6_ref, R6_ref=R6_ref,
+        K7=K7, R7=R7, K12=K12, R12=R12,
     )
 
 
@@ -385,27 +382,21 @@ def _assert_close(actual, reference, rel: float) -> None:
     np.testing.assert_allclose(actual, reference, rtol=0, atol=rel * scale)
 
 
-class TestElementShardCount(unittest.TestCase):
+class TestPadding(unittest.TestCase):
 
-    def test_largest_common_divisor_that_fits(self) -> None:
-        cases = [
-            ({"all": 8}, 4, 4),
-            ({"all": 7}, 4, 1),
-            ({"all": 6}, 4, 3),
-            ({"left": 1, "right": 2}, 4, 1),
-            ({"left": 4, "right": 4}, 4, 4),
-            ({"all": 8}, 1, 1),
-            # The 2D and 3D XT10 meshes: 2387 = 7 * 11 * 31 triangles,
-            # 8184 tets.
-            ({"all": 2387}, 8, 7),
-            ({"all": 2387}, 12, 11),
-            ({"all": 8184}, 8, 8),
-        ]
-        for counts, n_devices, expected in cases:
-            with self.subTest(counts=counts, n_devices=n_devices):
-                self.assertEqual(
-                    element_shard_count(counts, n_devices), expected,
-                )
+    def test_pad_and_strip(self) -> None:
+        xi = jnp.arange(24.0).reshape(4, 3, 2)
+        repeated = pad_element_leaves(xi, 6)
+        self.assertEqual(repeated.shape, (6, 3, 2))
+        np.testing.assert_array_equal(np.asarray(repeated[:4]), np.asarray(xi))
+        np.testing.assert_array_equal(np.asarray(repeated[4]), np.asarray(xi[3]))
+        np.testing.assert_array_equal(np.asarray(repeated[5]), np.asarray(xi[3]))
+        zeroed = pad_element_leaves(xi, 6, zero=True)
+        np.testing.assert_array_equal(np.asarray(zeroed[4:]), 0.0)
+        self.assertIs(pad_element_leaves(xi, 4), xi)
+        stripped = strip_element_padding({"all": repeated}, {"all": 4})
+        np.testing.assert_array_equal(np.asarray(stripped["all"]), np.asarray(xi))
+        self.assertEqual(padded_count(7, None), 7)
 
 
 @unittest.skipUnless(
@@ -414,20 +405,18 @@ class TestElementShardCount(unittest.TestCase):
 class TestOneDevice(unittest.TestCase):
 
     def test_nothing_is_placed(self) -> None:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            self.assertIsNone(build_device_mesh({"all": 8}))
-        self.assertEqual(caught, [])
+        self.assertIsNone(build_device_mesh())
         xi = {"all": jnp.arange(24.0).reshape(4, 3, 2)}
         self.assertIs(place_element_leaves(xi, None), xi)
         fe_problem = elastic_problem((2, 1, 1))
         self.assertIsNone(fe_problem.device_mesh)
+        self.assertEqual(fe_problem.n_elems_padded_by_block, {"all": 2})
         self.assertIs(
             fe_problem.kernel_arrays.geometry_cache, fe_problem.geometry_cache,
         )
-        self.assertIsNone(build_device_mesh({"all": 8}, num_devices=1))
+        self.assertIsNone(build_device_mesh(num_devices=1))
         with self.assertRaises(ValueError):
-            build_device_mesh({"all": 8}, num_devices=2)
+            build_device_mesh(num_devices=2)
 
 
 @unittest.skipUnless(
@@ -519,16 +508,25 @@ class TestFourDevices(unittest.TestCase):
                     atol=1e-8 * float(np.abs(U_27).max()),
                 )
 
-    def test_divisor_rule(self) -> None:
+    def test_padding_shards_every_mesh(self) -> None:
         r = self.sharded
-        self.assertEqual(int(r["mesh_size_7"]), 0)
-        self.assertEqual(int(r["n_warnings_7"]), 1)
-        _assert_close(r["K7"], r["K7_ref"], 1e-14)
-        _assert_close(r["R7"], r["R7_ref"], 1e-14)
-        self.assertEqual(int(r["mesh_size_6"]), 3)
-        _assert_close(r["K6"], r["K6_ref"], 1e-14)
-        _assert_close(r["R6"], r["R6_ref"], 1e-14)
-        self.assertEqual(int(r["mesh_size_1_2"]), 0)
+        self.assertEqual(int(r["mesh_size_7"]), _N_DEVICES)
+        self.assertEqual(int(r["padded_7"]), 8)
+        self.assertEqual(int(r["mesh_size_1_2"]), _N_DEVICES)
+        self.assertEqual(tuple(int(p) for p in r["padded_1_2"]), (4, 4))
+        fe_7 = elastic_problem((7, 1, 1))
+        K7, R7 = assemble_at_random_state(fe_7, fe_7.kernel_arrays)
+        _assert_close(r["K7"], K7, 1e-14)
+        _assert_close(r["R7"], R7, 1e-14)
+        fe_1_2 = elastic_problem((3, 1, 1), two_blocks=True)
+        K12, R12 = assemble_at_random_state(fe_1_2, fe_1_2.kernel_arrays)
+        _assert_close(r["K12"], K12, 1e-14)
+        _assert_close(r["R12"], R12, 1e-14)
+        # The state returned to the caller has the true element count.
+        fe_problem = self.drive[0]
+        self.assertEqual(
+            int(r["xi_element_step_rows"]), fe_problem.n_elems_by_block["all"],
+        )
 
     def test_num_devices_limits_the_mesh(self) -> None:
         r = self.sharded

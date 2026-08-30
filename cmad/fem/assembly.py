@@ -166,6 +166,17 @@ def _element_eq_indices(
     return eq.reshape(n_elems, -1).astype(np.intp)
 
 
+def _pad_element_rows(
+        eq: NDArray[np.intp], n_elems_padded: int,
+) -> NDArray[np.intp]:
+    """``eq`` with its leading (element) axis extended to ``n_elems_padded``
+    rows by repeating the last row (:mod:`cmad.fem.sharding`)."""
+    extra = n_elems_padded - eq.shape[0]
+    if extra == 0:
+        return eq
+    return np.concatenate([eq, np.repeat(eq[-1:], extra, axis=0)], axis=0)
+
+
 def _zero_R_and_dR_dU_accumulators(
         residual_block_shapes: Sequence[tuple[int, int]],
 ) -> tuple[list[JaxArray], list[list[JaxArray]]]:
@@ -706,6 +717,8 @@ def assemble_element_block_dense(
         xi_solved_per_block = None
 
     eq_indices_per_block = fe_arrays.r_scatter_eq_by_block[block_name]
+    # The carrier's element axis is the padded one (cmad.fem.sharding);
+    # the padding elements carry zero residuals and tangents.
     n_elems = eq_indices_per_block[0].shape[0]
     n_dofs = fe_problem.dof_map.num_total_dofs
 
@@ -1066,7 +1079,9 @@ def assembled_coo_indices(
     :func:`assemble_element_block`'s COO emit: changing the iteration
     order there requires the same change here, or any permutation
     pre-computed against this output silently breaks at the next
-    Newton iter.
+    Newton iter. The stream covers the padded element axis
+    (``fe_problem.n_elems_padded_by_block``): a padding element repeats
+    the block's last element's equation numbers and emits zeros there.
     """
     mesh = fe_problem.mesh
     dof_map = fe_problem.dof_map
@@ -1078,11 +1093,14 @@ def assembled_coo_indices(
     for block_name in fe_problem.evaluators_by_block:
         elem_indices = mesh.element_blocks[block_name]
         connectivity_block = mesh.connectivity[elem_indices]
-        n_elems = connectivity_block.shape[0]
+        n_elems = fe_problem.n_elems_padded_by_block[block_name]
         eq_indices_per_block = [
-            _element_eq_indices(
-                connectivity_block, dof_map,
-                field_idx=field_idx_per_block[r],
+            _pad_element_rows(
+                _element_eq_indices(
+                    connectivity_block, dof_map,
+                    field_idx=field_idx_per_block[r],
+                ),
+                n_elems,
             )
             for r in range(num_blocks)
         ]
