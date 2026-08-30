@@ -35,6 +35,7 @@ from cmad.fem.nonlinear_solver import (
     _tangent_operator,
     fe_newton_solve,
 )
+from cmad.fem.postprocess import evaluate_cauchy_at_ips
 from cmad.fem.sharding import (
     ELEMENT_AXIS,
     build_device_mesh,
@@ -122,6 +123,14 @@ def drive_mixed_problem():
         {b: np.asarray(x) for b, x in xi_prev.items()},
         StepTime(t=t, t_prev=t_prev),
     )
+
+
+def cauchy_after_one_step(fe_problem, params, U, xi_by_block, t, block):
+    """``evaluate_cauchy_at_ips`` at step 1 of an ``FEState`` holding
+    ``(U, xi_by_block)``; the post run evaluator the exodus writer runs."""
+    state = FEState.from_problem(fe_problem)
+    state.append(U, xi_by_block, t)
+    return np.asarray(evaluate_cauchy_at_ips(fe_problem, state, 1, block))
 
 
 def elastic_problem(divisions, two_blocks=False):
@@ -350,6 +359,21 @@ def save_sharded_results(path: str) -> None:
     K7, R7 = assemble_at_random_state(fe_7, fe_7.kernel_arrays)
     K12, R12 = assemble_at_random_state(fe_1_2, fe_1_2.kernel_arrays)
     padded_7 = fe_7.kernel_arrays.r_scatter_eq_by_block["all"][0].shape[0]
+
+    # The post run cauchy evaluator on padded problems, both branches:
+    # COUPLED on the mixed cube's driven state, CLOSED_FORM on the padded
+    # 7 element bar after one elastic step.
+    cauchy_mixed = cauchy_after_one_step(
+        fe_problem, params, U, xi, float(step_time.t), "all",
+    )
+    params_7 = params_by_block_from_models(fe_7)
+    U_7 = 0.01 * np.random.default_rng(7).standard_normal(
+        fe_7.dof_map.num_total_dofs,
+    )
+    state_7 = FEState.from_problem(fe_7)
+    cauchy_7 = cauchy_after_one_step(
+        fe_7, params_7, U_7, {"all": state_7.xi_at(0, "all")}, 1.0, "all",
+    )
     padded_1_2 = tuple(
         fe_1_2.kernel_arrays.r_scatter_eq_by_block[b][0].shape[0]
         for b in ("left", "right")
@@ -398,6 +422,7 @@ def save_sharded_results(path: str) -> None:
         U_cg_step_assembled=np.asarray(U_cg_step["assembled"]),
         U_cg_step_element=np.asarray(U_cg_step["element"]),
         xi_element_step_rows=np.asarray(xi_element_step["all"]).shape[0],
+        cauchy_mixed=cauchy_mixed, cauchy_7=cauchy_7,
         mesh_size_7=_mesh_size(fe_7), padded_7=padded_7,
         mesh_size_1_2=_mesh_size(fe_1_2), padded_1_2=padded_1_2,
         capped_2_size=0 if capped_2 is None else int(capped_2.size),
@@ -604,6 +629,30 @@ class TestFourDevices(unittest.TestCase):
         fe_problem = self.drive[0]
         self.assertEqual(
             int(r["xi_element_step_rows"]), fe_problem.n_elems_by_block["all"],
+        )
+
+    def test_cauchy_evaluator_on_padded_problems(self) -> None:
+        r = self.sharded
+        fe_problem, params, U, _U_prev, xi, _xi_prev, step_time = self.drive
+        cauchy_mixed = cauchy_after_one_step(
+            fe_problem, params, U, xi, float(step_time.t), "all",
+        )
+        _assert_close(
+            r["cauchy_mixed"], cauchy_mixed, 1e-12,
+            "cauchy at ips, mixed cube, 4 devices vs 1 device",
+        )
+        fe_7 = elastic_problem((7, 1, 1))
+        params_7 = params_by_block_from_models(fe_7)
+        U_7 = 0.01 * np.random.default_rng(7).standard_normal(
+            fe_7.dof_map.num_total_dofs,
+        )
+        state_7 = FEState.from_problem(fe_7)
+        cauchy_7 = cauchy_after_one_step(
+            fe_7, params_7, U_7, {"all": state_7.xi_at(0, "all")}, 1.0, "all",
+        )
+        _assert_close(
+            r["cauchy_7"], cauchy_7, 1e-12,
+            "cauchy at ips, padded 7 element bar, 4 devices vs 1 device",
         )
 
     def test_num_devices_limits_the_mesh(self) -> None:

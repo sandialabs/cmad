@@ -21,7 +21,7 @@ from jax import vmap
 from jax.flatten_util import ravel_pytree
 from numpy.typing import NDArray
 
-from cmad.fem.assembly import _gather_element_U
+from cmad.fem.assembly import _element_eq_indices
 from cmad.fem.fe_problem import FEProblem, FEState
 from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.global_residuals.interpolation import (
@@ -72,11 +72,29 @@ def evaluate_cauchy_at_ips(
         jnp.asarray(fe_state.U_at(step - 1)) if step > 0
         else jnp.zeros_like(U_global)
     )
-    fe_arrays = fe_problem.kernel_arrays
-    U_elem_block = _gather_element_U(U_global, fe_arrays, block_name)
-    U_prev_elem_block = _gather_element_U(
-        U_prev_global, fe_arrays, block_name,
-    )
+    # The gather indices are derived from the FE mesh's connectivity
+    # rather than read off the kernel arrays: the carrier's element axis
+    # is padded for the device sharding (cmad.fem.sharding), and this
+    # evaluator works on the stored history, which has the true element
+    # counts.
+    dof_map = fe_problem.dof_map
+    connectivity_block = fe_problem.mesh.connectivity[
+        fe_problem.mesh.element_blocks[block_name]
+    ]
+    n_elems_block = connectivity_block.shape[0]
+
+    def gather(U_jax):
+        gathered = []
+        for field_idx in range(len(dof_map.field_layouts)):
+            ndofs = int(dof_map.num_dofs_per_basis_fn[field_idx])
+            eq = _element_eq_indices(
+                connectivity_block, dof_map, field_idx=field_idx,
+            )
+            gathered.append(U_jax[eq.reshape(n_elems_block, -1, ndofs)])
+        return gathered
+
+    U_elem_block = gather(U_global)
+    U_prev_elem_block = gather(U_prev_global)
 
     model = fe_problem.models_by_block[block_name]
     params = model.parameters.values
