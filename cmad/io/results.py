@@ -217,7 +217,7 @@ def volume_average_global_field(
     order or non-vertex bases when they land) the volume integral
     and the simple average diverge — this helper does the integral.
     """
-    from cmad.fem.assembly import _gather_element_U
+    from cmad.fem.assembly import _element_eq_indices
 
     var_names = fe_problem.gr.var_names
     matches = [r for r, name in enumerate(var_names) if name == field_name]
@@ -234,10 +234,21 @@ def volume_average_global_field(
     r = matches[0]
 
     field_idx = fe_problem.field_idx_per_block[r]
-    U_per_field = _gather_element_U(
-        U_global, fe_problem.kernel_arrays, block_name,
+    # The gather indices are derived from the FE mesh's connectivity: the
+    # element axis of the kernel arrays is padded for the device sharding
+    # (cmad.fem.sharding), and this helper works on the stored history,
+    # which has the true element counts.
+    dof_map = fe_problem.dof_map
+    connectivity_block = fe_problem.mesh.connectivity[
+        fe_problem.mesh.element_blocks[block_name]
+    ]
+    ndofs = int(dof_map.num_dofs_per_basis_fn[field_idx])
+    eq = _element_eq_indices(
+        connectivity_block, dof_map, field_idx=field_idx,
     )
-    U_elem_field = U_per_field[field_idx]
+    U_elem_field = jnp.asarray(U_global)[
+        eq.reshape(connectivity_block.shape[0], -1, ndofs)
+    ]
 
     block_cache = fe_problem.geometry_cache[block_name]
     field_N = block_cache.shared.field_N_per_block[r]

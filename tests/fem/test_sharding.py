@@ -125,6 +125,24 @@ def drive_mixed_problem():
     )
 
 
+def displacement_match_value(fe_problem, U):
+    """One step contribution of ``FEDisplacementMatch`` with an element
+    region of interest. The measured data is zero, so the value is the
+    integral of ``|U|^2`` over the region of interest. The mask has the
+    true element count while the kernel arrays are padded, so this covers
+    the pairing of the two."""
+    from cmad.qois.fe_displacement_match import FEDisplacementMatch
+    n_nodes = fe_problem.mesh.nodes.shape[0]
+    qoi = FEDisplacementMatch(
+        fe_problem, [0.0, 1.0], jnp.zeros((2, n_nodes, 3)), 1.0,
+        roi=np.arange(0, fe_problem.n_elems_by_block["all"], 2),
+    )
+    closure = qoi.step_contribution({}, fe_problem.kernel_arrays)
+    return float(closure(
+        jnp.asarray(U), jnp.asarray(U), {}, {}, StepTime(1.0, 0.0),
+    ))
+
+
 def cauchy_after_one_step(fe_problem, params, U, xi_by_block, t, block):
     """``evaluate_cauchy_at_ips`` at step 1 of an ``FEState`` holding
     ``(U, xi_by_block)``; the post run evaluator the exodus writer runs."""
@@ -374,6 +392,7 @@ def save_sharded_results(path: str) -> None:
     cauchy_7 = cauchy_after_one_step(
         fe_7, params_7, U_7, {"all": state_7.xi_at(0, "all")}, 1.0, "all",
     )
+    qoi_7 = displacement_match_value(fe_7, U_7)
     padded_1_2 = tuple(
         fe_1_2.kernel_arrays.r_scatter_eq_by_block[b][0].shape[0]
         for b in ("left", "right")
@@ -422,7 +441,7 @@ def save_sharded_results(path: str) -> None:
         U_cg_step_assembled=np.asarray(U_cg_step["assembled"]),
         U_cg_step_element=np.asarray(U_cg_step["element"]),
         xi_element_step_rows=np.asarray(xi_element_step["all"]).shape[0],
-        cauchy_mixed=cauchy_mixed, cauchy_7=cauchy_7,
+        cauchy_mixed=cauchy_mixed, cauchy_7=cauchy_7, qoi_7=qoi_7,
         mesh_size_7=_mesh_size(fe_7), padded_7=padded_7,
         mesh_size_1_2=_mesh_size(fe_1_2), padded_1_2=padded_1_2,
         capped_2_size=0 if capped_2 is None else int(capped_2.size),
@@ -653,6 +672,12 @@ class TestFourDevices(unittest.TestCase):
         _assert_close(
             r["cauchy_7"], cauchy_7, 1e-12,
             "cauchy at ips, padded 7 element bar, 4 devices vs 1 device",
+        )
+        qoi_7 = displacement_match_value(fe_7, U_7)
+        self.assertGreater(qoi_7, 0.0)
+        _assert_close(
+            np.asarray(float(r["qoi_7"])), np.asarray(qoi_7), 1e-12,
+            "displacement match with a region of interest, 4 devices vs 1",
         )
 
     def test_num_devices_limits_the_mesh(self) -> None:

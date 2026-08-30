@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 from cmad.fem.assembly import _gather_element_U
 from cmad.fem.dof import dof_physical_coords
 from cmad.fem.precompute import compute_ip_quadrature_weights
+from cmad.fem.sharding import pad_element_leaves
 from cmad.io.qoi_data import load_displacement_data, load_roi
 from cmad.io.registry import register_qoi
 from cmad.qois.fe_qoi import FEQoI, StepContribution
@@ -196,8 +197,12 @@ class FEDisplacementMatch(FEQoI):
             iso_jac_det = geom_cache.per_elem.iso_jac_det
             weighted_iso_jac_det = iso_jac_det * quad_w
             if element_mask is not None:
-                weighted_iso_jac_det = (
-                    weighted_iso_jac_det * element_mask[block_name])
+                # The carrier's element axis may be padded past the mask
+                # (cmad.fem.sharding); the padding elements are masked out.
+                mask = pad_element_leaves(
+                    element_mask[block_name], iso_jac_det.shape[0], zero=True,
+                )
+                weighted_iso_jac_det = weighted_iso_jac_det * mask
             block_data.append(
                 (block_name, N_disp, weighted_iso_jac_det),
             )
