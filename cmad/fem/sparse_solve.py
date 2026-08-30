@@ -21,7 +21,7 @@ is the assembled sparse matrix behind it. Two further helpers:
 from __future__ import annotations
 
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -163,6 +163,124 @@ class AssembledOperator:
         return jnp.zeros(n_i, dtype=data.dtype).at[rows].add(
             jnp.where(rows == cols, data, 0.0),
         )
+
+
+class ElementOperator:
+    """The embedded BC tangent applied from the per element tangent blocks,
+    the assembled matrix never formed.
+
+    ``K_elem_by_block[block][r][s]`` is the ``(n_elems, n_dofs_r, n_dofs_s)``
+    tangent of residual block ``r`` with respect to residual block ``s``'s
+    unknowns on each element of ``block``
+    (:func:`cmad.fem.assembly.assemble_element_tangent`),
+    ``eq_by_block[block][r]`` the ``(n_elems, n_dofs_r)`` global equation
+    numbers of those rows (``fe_arrays.r_scatter_eq_by_block``),
+    ``field_idx_per_block[r]`` the field of residual block ``r``,
+    ``field_offsets`` each field's start in the global vector with the
+    total last, and ``prescribed_indices`` the Dirichlet dofs.
+    ``raw_matvec`` is the assembled ``K x`` (gather, per element product,
+    scatter add); ``matvec`` and the field blocks are the embedded form of
+    :func:`_embedded_bc_enforce`, ``P_f K P_f`` plus the assembled
+    diagonal at the prescribed dofs, so they equal
+    :class:`AssembledOperator`'s on the enforced data to roundoff.
+    """
+
+    def __init__(
+            self,
+            K_elem_by_block: Mapping[str, Sequence[Sequence[JaxArray]]],
+            eq_by_block: Mapping[str, Sequence[JaxArray]],
+            field_idx_per_block: Sequence[int],
+            field_offsets: Sequence[int] | NDArray[np.integer],
+            prescribed_indices: JaxArray,
+            n: int,
+    ) -> None:
+        self.K_elem_by_block = K_elem_by_block
+        self.eq_by_block = eq_by_block
+        self.field_idx_per_block = tuple(field_idx_per_block)
+        self.field_offsets = tuple(int(o) for o in field_offsets)
+        self.prescribed_indices = prescribed_indices
+        self._n = n
+        first = next(iter(K_elem_by_block.values()))[0][0]
+        self._free = jnp.ones(
+            n, dtype=first.dtype,
+        ).at[prescribed_indices].set(0.0)
+        self._diagonal = self._assembled_diagonal(first.dtype)
+
+    @property
+    def n(self) -> int:
+        return self._n
+
+    @property
+    def num_fields(self) -> int:
+        return len(self.field_offsets) - 1
+
+    def raw_matvec(self, x: JaxArray) -> JaxArray:
+        """The assembled ``K x``, no boundary conditions."""
+        y = jnp.zeros(self._n, dtype=x.dtype)
+        for block, K_blocks in self.K_elem_by_block.items():
+            eqs = self.eq_by_block[block]
+            for r, K_r in enumerate(K_blocks):
+                for s, K_rs in enumerate(K_r):
+                    y = y.at[eqs[r]].add(
+                        jnp.einsum("eij,ej->ei", K_rs, x[eqs[s]]),
+                    )
+        return y
+
+    def matvec(self, x: JaxArray) -> JaxArray:
+        y = self.raw_matvec(x * self._free) * self._free
+        return y + jnp.where(self._free == 0.0, self._diagonal * x, 0.0)
+
+    def _assembled_diagonal(self, dtype: np.dtype) -> JaxArray:
+        d = jnp.zeros(self._n, dtype=dtype)
+        for block, K_blocks in self.K_elem_by_block.items():
+            eqs = self.eq_by_block[block]
+            for r, K_r in enumerate(K_blocks):
+                d = d.at[eqs[r]].add(jnp.diagonal(K_r[r], axis1=1, axis2=2))
+        return d
+
+    def diagonal(self) -> JaxArray:
+        return self._diagonal
+
+    def block_matvec(
+            self, i: int, j: int, x: JaxArray, *, transpose: bool = False,
+    ) -> JaxArray:
+        """Field block ``(i, j)`` (the transpose operator's with
+        ``transpose=True``) applied to a field ``j`` vector: the ``(r, s)``
+        element blocks with ``r`` in field ``i`` and ``s`` in field ``j``
+        (swapped for the transpose, applied as ``einsum('eij,ei->ej')``),
+        with the embedded masks and the prescribed diagonal on ``(i, i)``.
+        """
+        offs = self.field_offsets
+        fields = self.field_idx_per_block
+        free_i = self._free[offs[i]:offs[i + 1]]
+        free_j = self._free[offs[j]:offs[j + 1]]
+        xf = x * free_j
+        y = jnp.zeros(offs[i + 1] - offs[i], dtype=x.dtype)
+        for block, K_blocks in self.K_elem_by_block.items():
+            eqs = self.eq_by_block[block]
+            for r, K_r in enumerate(K_blocks):
+                for s, K_rs in enumerate(K_r):
+                    if not transpose:
+                        if fields[r] != i or fields[s] != j:
+                            continue
+                        y = y.at[eqs[r] - offs[i]].add(jnp.einsum(
+                            "eij,ej->ei", K_rs, xf[eqs[s] - offs[j]],
+                        ))
+                    else:
+                        if fields[r] != j or fields[s] != i:
+                            continue
+                        y = y.at[eqs[s] - offs[i]].add(jnp.einsum(
+                            "eij,ei->ej", K_rs, xf[eqs[r] - offs[j]],
+                        ))
+        y = y * free_i
+        if i == j:
+            diag_i = self._diagonal[offs[i]:offs[i + 1]]
+            y = y + jnp.where(free_i == 0.0, diag_i * x, 0.0)
+        return y
+
+    def block_diagonal(self, i: int) -> JaxArray:
+        offs = self.field_offsets
+        return self._diagonal[offs[i]:offs[i + 1]]
 
 
 def _jacobi_preconditioner(
@@ -1388,8 +1506,8 @@ def _embedded_bc_enforce(
 
 
 def _embedded_residual(
-        R_assembled: JaxArray, K_bcoo: BCOO, U: JaxArray,
-        presc_idx: JaxArray, presc_vals: JaxArray,
+        R_assembled: JaxArray, raw_matvec: Callable[[JaxArray], JaxArray],
+        U: JaxArray, presc_idx: JaxArray, presc_vals: JaxArray,
         K_ii_presc: JaxArray,
 ) -> JaxArray:
     """Embedded-BC residual paired with :func:`_embedded_bc_enforce`.
@@ -1409,8 +1527,9 @@ def _embedded_residual(
       ``K_ii · dU = -r`` yields ``dU[prescribed] = presc_vals -
       U[prescribed]``.
 
-    The coupling is formed as ``K_bcoo @ bc_increment`` restricted to
-    the free rows, where ``bc_increment`` is the increment
+    The coupling is formed as ``raw_matvec(bc_increment)`` (the assembled
+    ``K`` applied without boundary conditions) restricted to the free
+    rows, where ``bc_increment`` is the increment
     ``presc_vals - U[prescribed]`` scattered to the prescribed positions
     (zero elsewhere); the matvec's prescribed rows are discarded by the
     final overwrite. The coupling vanishes once
@@ -1420,7 +1539,7 @@ def _embedded_residual(
     bc_increment = jnp.zeros_like(U).at[presc_idx].set(
         presc_vals - U[presc_idx],
     )
-    r = R_assembled + K_bcoo @ bc_increment
+    r = R_assembled + raw_matvec(bc_increment)
     return r.at[presc_idx].set(
         K_ii_presc * (U[presc_idx] - presc_vals),
     )

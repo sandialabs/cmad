@@ -170,6 +170,18 @@ class TestMixedUpPlastic(unittest.TestCase):
     def test_small_elastic_plastic_jax_block_chebyshev(self) -> None:
         self._run(SmallElasticPlastic, _JAX_BLOCK_CHEBYSHEV_SETTINGS)
 
+    def test_small_elastic_plastic_jax_block_jacobi_element(self) -> None:
+        self._run(
+            SmallElasticPlastic,
+            {**_JAX_BLOCK_JACOBI_SETTINGS, "operator": "element"},
+        )
+
+    def test_small_elastic_plastic_jax_block_chebyshev_element(self) -> None:
+        self._run(
+            SmallElasticPlastic,
+            {**_JAX_BLOCK_CHEBYSHEV_SETTINGS, "operator": "element"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

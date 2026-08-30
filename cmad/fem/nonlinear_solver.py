@@ -10,19 +10,20 @@ import numpy as np
 from jax import lax
 from numpy.typing import NDArray
 
-from cmad.fem.assembly import assemble_global
+from cmad.fem.assembly import assemble_element_tangent, assemble_global
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.kernel_arrays import FEKernelArrays
 from cmad.fem.sharding import place_element_leaves
 from cmad.fem.sparse_solve import (
     AssembledOperator,
+    ElementOperator,
     TangentOperator,
+    _block_gmres,
     _embedded_bc_enforce,
     _embedded_residual,
+    _jacobi_cg,
+    _jacobi_gmres,
     _near_null_by_field,
-    jax_block_gmres,
-    jax_cg,
-    jax_gmres,
     scipy_amg_cg,
     scipy_block_gmres,
     scipy_lu,
@@ -44,7 +45,9 @@ _DEFAULT_LINEAR_SOLVER_SETTINGS: dict[str, Any] = {
     "max iters": None,
     "restart": 20,
     "preconditioner": {"type": "jacobi"},
+    "operator": "assembled",
 }
+_OPERATORS = ("assembled", "element")
 
 
 class _FrozenDict(tuple):
@@ -82,17 +85,81 @@ def _thaw(value: Any) -> Any:
     return value
 
 
-def _tangent_operator(K: JaxArray, fe_arrays: FEKernelArrays) -> TangentOperator:
-    """The tangent ``K`` (the embedded COO data of
-    :func:`_embedded_bc_enforce`) as the operator the line search slope
-    and the jax native solvers apply."""
-    return AssembledOperator(
-        K, fe_arrays.embedded_sparsity, fe_arrays.block_sparsity,
+def _operator_kind(linear_solver_settings: dict[str, Any]) -> str:
+    """``settings['operator']``: ``'assembled'`` (the default) or
+    ``'element'``."""
+    operator = linear_solver_settings.get("operator", "assembled")
+    if operator not in _OPERATORS:
+        raise ValueError(
+            f"unknown operator {operator!r}; expected one of {_OPERATORS}",
+        )
+    return str(operator)
+
+
+def _tangent_operator(
+        K: Any, fe_problem: FEProblem, fe_arrays: FEKernelArrays,
+        operator: str,
+) -> TangentOperator:
+    """The operator the line search slope and the jax native solvers apply:
+    :class:`AssembledOperator` on the enforced COO data when ``operator``
+    is ``'assembled'``, :class:`ElementOperator` on the per element blocks
+    when it is ``'element'``."""
+    if operator == "assembled":
+        return AssembledOperator(
+            K, fe_arrays.embedded_sparsity, fe_arrays.block_sparsity,
+        )
+    return ElementOperator(
+        K, fe_arrays.r_scatter_eq_by_block, fe_problem.field_idx_per_block,
+        fe_problem.dof_map.block_offsets, fe_arrays.prescribed_indices,
+        fe_problem.dof_map.num_total_dofs,
     )
 
 
+def _assemble_tangent_and_residual(
+        fe_problem: FEProblem,
+        fe_arrays: FEKernelArrays,
+        params_by_block: Mapping[str, Params],
+        U: JaxArray,
+        U_prev: JaxArray,
+        step_time: StepTime,
+        xi_prev_by_block: Mapping[str, JaxArray],
+        presc_vals: JaxArray,
+        operator: str,
+) -> tuple[JaxArray, Any, dict[str, JaxArray]]:
+    """Assemble at ``U`` and return ``(r, K, xi)``: the embedded residual,
+    the tangent, and the solved state. ``operator`` picks the tangent's
+    representation: ``'assembled'`` gives the enforced COO data of
+    :func:`_embedded_bc_enforce`, ``'element'`` the per element blocks of
+    :func:`assemble_element_tangent`; :func:`_tangent_operator` builds the
+    operator from either."""
+    presc_idx = fe_arrays.prescribed_indices
+    if operator == "assembled":
+        K_bcoo, R, xi = assemble_global(
+            fe_problem, fe_arrays, params_by_block, U, U_prev, step_time,
+            xi_prev_by_block=xi_prev_by_block,
+        )
+        K, K_ii_presc = _embedded_bc_enforce(K_bcoo, presc_idx)
+        r = _embedded_residual(
+            R, lambda v: K_bcoo @ v, U, presc_idx, presc_vals, K_ii_presc,
+        )
+        return r, K, xi
+    K_elem, R, xi = assemble_element_tangent(
+        fe_problem, fe_arrays, params_by_block, U, U_prev, step_time,
+        xi_prev_by_block=xi_prev_by_block,
+    )
+    op = ElementOperator(
+        K_elem, fe_arrays.r_scatter_eq_by_block, fe_problem.field_idx_per_block,
+        fe_problem.dof_map.block_offsets, presc_idx,
+        fe_problem.dof_map.num_total_dofs,
+    )
+    r = _embedded_residual(
+        R, op.raw_matvec, U, presc_idx, presc_vals, op.diagonal()[presc_idx],
+    )
+    return r, K_elem, xi
+
+
 def _solve_linear(
-        K: JaxArray,
+        K: Any,
         fe_problem: FEProblem,
         fe_arrays: FEKernelArrays,
         rhs: JaxArray,
@@ -101,9 +168,11 @@ def _solve_linear(
     """Dispatch on ``settings['type']`` to direct / CG / GMRES, with the
     iterative arms picking a preconditioner from
     ``settings['preconditioner']``: Jacobi or pyamg for CG, Jacobi or a
-    block preconditioner for GMRES (:func:`jax_block_gmres` with a Jacobi
+    block preconditioner for GMRES (:func:`_block_gmres` with a Jacobi
     or Chebyshev inner solve, :func:`scipy_block_gmres` with an AMG inner
-    solve).
+    solve). The jax native solvers apply ``K`` through
+    :func:`_tangent_operator`; the direct, pyamg and AMG solvers need the
+    assembled representation.
 
     :attr:`FEProblem.near_null_space` is auto-merged into pyamg
     ``kwargs`` as ``B`` when present and the caller hasn't already set
@@ -111,7 +180,21 @@ def _solve_linear(
     """
     sparsity = fe_arrays.embedded_sparsity
     kind = linear_solver_settings["type"]
+    operator = _operator_kind(linear_solver_settings)
+
+    def require_assembled(solver: str) -> None:
+        if operator != "assembled":
+            raise ValueError(
+                f"linear solver {solver} needs operator 'assembled'; the "
+                f"element operator serves cg + jacobi, gmres + jacobi and "
+                f"gmres + block with a jacobi or chebyshev inner solve"
+            )
+
+    def tangent_operator() -> TangentOperator:
+        return _tangent_operator(K, fe_problem, fe_arrays, operator)
+
     if kind == "direct":
+        require_assembled("'direct'")
         return scipy_lu(K, sparsity, rhs, fe_problem.fill_permutation)
 
     precon_spec = linear_solver_settings.get(
@@ -121,12 +204,13 @@ def _solve_linear(
 
     if kind == "cg":
         if precon == "jacobi":
-            return jax_cg(
-                K, sparsity, rhs,
+            return _jacobi_cg(
+                tangent_operator(), rhs,
                 rtol=linear_solver_settings["rtol"],
                 max_iters=linear_solver_settings["max iters"],
             )
         if precon == "pyamg":
+            require_assembled("'cg' with the pyamg preconditioner")
             kwargs = dict(precon_spec.get("kwargs") or {})
             if "B" not in kwargs and fe_problem.near_null_space is not None:
                 kwargs["B"] = fe_problem.near_null_space
@@ -142,11 +226,11 @@ def _solve_linear(
         )
     if kind == "gmres":
         if precon == "jacobi":
-            return jax_gmres(
-                K, sparsity, rhs,
+            return _jacobi_gmres(
+                tangent_operator(), rhs,
                 rtol=linear_solver_settings["rtol"],
-                max_iters=linear_solver_settings["max iters"],
                 restart=linear_solver_settings["restart"],
+                max_iters=linear_solver_settings["max iters"],
             )
         if precon == "block":
             block_sparsity = fe_arrays.block_sparsity
@@ -159,8 +243,8 @@ def _solve_linear(
             diagonal_block = precon_spec.get("diagonal_block", "assembled")
             inner = precon_spec.get("inner", "jacobi")
             if inner in ("jacobi", "chebyshev"):
-                return jax_block_gmres(
-                    K, sparsity, rhs, block_sparsity,
+                return _block_gmres(
+                    tangent_operator(), rhs,
                     coupling=coupling, diagonal_block=diagonal_block,
                     inner=inner, degree=precon_spec.get("degree"),
                     rtol=linear_solver_settings["rtol"],
@@ -168,6 +252,7 @@ def _solve_linear(
                     restart=linear_solver_settings["restart"],
                 )
             if inner == "amg":
+                require_assembled("'gmres' with the block amg preconditioner")
                 near_null = _near_null_by_field(
                     fe_problem.near_null_space,
                     fe_problem.dof_map.block_offsets,
@@ -276,24 +361,18 @@ def _fe_newton_primal(
     ls_max_evals = ls_settings["max evals"]
 
     dof_map = fe_problem.dof_map
-    presc_idx = fe_arrays.prescribed_indices
     presc_vals = jnp.asarray(
         dof_map.evaluate_prescribed_values(fe_arrays.dbc_arrays, step_time.t),
     )
+    operator = _operator_kind(linear_solver_settings)
 
     U_init = U_prev
 
     def _assemble_enforced(U):
-        K_bcoo, R_assembled, xi = assemble_global(
-            fe_problem, fe_arrays, params_by_block,
-            U, U_prev, step_time,
-            xi_prev_by_block=xi_prev_by_block,
+        return _assemble_tangent_and_residual(
+            fe_problem, fe_arrays, params_by_block, U, U_prev, step_time,
+            xi_prev_by_block, presc_vals, operator,
         )
-        K, K_ii_presc = _embedded_bc_enforce(K_bcoo, presc_idx)
-        r = _embedded_residual(
-            R_assembled, K_bcoo, U, presc_idx, presc_vals, K_ii_presc,
-        )
-        return r, K, xi
 
     r_init, K_init, xi_init = _assemble_enforced(U_init)
     R0 = jnp.maximum(jnp.linalg.norm(r_init), abs_tol)
@@ -328,7 +407,9 @@ def _fe_newton_primal(
 
             def eval_fn(alpha):
                 r_trial, K_trial, xi_trial = _assemble_enforced(U + alpha * dU)
-                slope = r_trial @ _tangent_operator(K_trial, fe_arrays).matvec(dU)
+                slope = r_trial @ _tangent_operator(
+                    K_trial, fe_problem, fe_arrays, operator,
+                ).matvec(dU)
                 phi = 0.5 * (r_trial @ r_trial)
                 return phi, slope, (r_trial, K_trial, xi_trial)
 
@@ -534,7 +615,8 @@ def _fe_newton_solve_ad_jvp(
     ``U_star_dot = -K^{-1} · (∂r/∂p · p_dot)`` with ``K = ∂r/∂U`` at
     ``U_star``. ``∂r/∂p · p_dot`` is computed by
     ``jax.jvp(r, p, p_dot)`` at fixed ``U_star``; ``K`` is the
-    ``_embedded_bc_enforce``-applied assembled tangent at ``U_star``;
+    embedded tangent at ``U_star`` in the representation the settings
+    select (:func:`_assemble_tangent_and_residual`);
     the linear solve goes through :func:`_solve_linear` so the ``K``
     cotangent flows automatically when JAX auto-transposes the rule.
     ``xi_star_dot`` follows from chain rule: the assembly's xi
@@ -557,30 +639,25 @@ def _fe_newton_solve_ad_jvp(
         linear_solver_settings_frozen,
     )
 
-    presc_idx = fe_arrays.prescribed_indices
+    operator = _operator_kind(lss)
+
+    def prescribed_values(step_time_):
+        return jnp.asarray(
+            fe_problem.dof_map.evaluate_prescribed_values(
+                fe_arrays.dbc_arrays, step_time_.t,
+            ),
+        )
 
     # Trailing-underscore params (params_ <-> params_by_block, Up_ <->
     # U_prev, xp_ <-> xi_prev_by_block, step_time_ <-> step_time) are this
     # helper's explicit jvp-differentiated inputs; U_star is captured,
     # held fixed by the IFT.
     def r_of_p(params_, Up_, xp_, step_time_):
-        pv = jnp.asarray(
-            fe_problem.dof_map.evaluate_prescribed_values(
-                fe_arrays.dbc_arrays, step_time_.t,
-            ),
+        r, _, _ = _assemble_tangent_and_residual(
+            fe_problem, fe_arrays, params_, U_star, Up_, step_time_, xp_,
+            prescribed_values(step_time_), operator,
         )
-        K_bcoo_local, R_local, _ = assemble_global(
-            fe_problem, fe_arrays, params_,
-            U_star, Up_, step_time_,
-            xi_prev_by_block=xp_,
-        )
-        _, K_ii_presc_local = _embedded_bc_enforce(
-            K_bcoo_local, presc_idx,
-        )
-        return _embedded_residual(
-            R_local, K_bcoo_local, U_star, presc_idx, pv,
-            K_ii_presc_local,
-        )
+        return r
 
     _, Rp_dot = jax.jvp(
         r_of_p,
@@ -588,12 +665,10 @@ def _fe_newton_solve_ad_jvp(
         p_dot,
     )
 
-    K_bcoo, _, _ = assemble_global(
-        fe_problem, fe_arrays, params_by_block,
-        U_star, U_prev, step_time,
-        xi_prev_by_block=xi_prev_by_block,
+    _, K, _ = _assemble_tangent_and_residual(
+        fe_problem, fe_arrays, params_by_block, U_star, U_prev, step_time,
+        xi_prev_by_block, prescribed_values(step_time), operator,
     )
-    K, _ = _embedded_bc_enforce(K_bcoo, presc_idx)
 
     U_star_dot = _solve_linear(
         K, fe_problem, fe_arrays, -Rp_dot, lss,
