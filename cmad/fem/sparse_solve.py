@@ -1,6 +1,8 @@
 """Sparse direct solve and embedded-BC enforcement for the FE Newton driver.
 
-Two helpers:
+The jax native Krylov solvers and the block preconditioner apply the tangent
+through the :class:`TangentOperator` interface; :class:`AssembledOperator`
+is the assembled sparse matrix behind it. Two further helpers:
 
 - :func:`scipy_lu` solves ``K x = b`` via
   :func:`scipy.sparse.linalg.spsolve` through :func:`jax.pure_callback`,
@@ -21,7 +23,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import jax
 import jax.numpy as jnp
@@ -40,30 +42,139 @@ if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem
 
 
-def _bcsr_operator(
-        K_data: JaxArray, sparsity: EmbeddedSparsity,
-) -> tuple[JaxArray, Callable[[JaxArray], JaxArray]]:
-    """Dedup the COO ``K_data`` and wrap it as a BCSR matvec.
+class TangentOperator(Protocol):
+    """What the jax native Krylov solvers and the block preconditioner
+    apply: the embedded BC tangent as a matvec, its diagonal, and, for a
+    problem with several fields, its field blocks (block ``(i, j)`` takes a
+    field ``j`` vector to a field ``i`` vector; ``transpose`` applies the
+    transpose operator's block)."""
 
-    Segment-sums the with-duplicates COO data into the deduped CSR
-    data buffer (keyed by the cached ``perm`` / ``segment_ids``) and
-    wraps it on the cached ``(indptr, col_indices)`` pattern. Returns
-    ``(unique_data, matvec)``; the scipy-callback solvers need
-    ``unique_data`` to rebuild a host-side CSR, the JAX-native ones
-    use only the matvec.
+    @property
+    def n(self) -> int: ...
+
+    @property
+    def num_fields(self) -> int: ...
+
+    @property
+    def field_offsets(self) -> tuple[int, ...]: ...
+
+    def matvec(self, x: JaxArray) -> JaxArray: ...
+
+    def diagonal(self) -> JaxArray: ...
+
+    def block_matvec(
+            self, i: int, j: int, x: JaxArray, *, transpose: bool,
+    ) -> JaxArray: ...
+
+    def block_diagonal(self, i: int) -> JaxArray: ...
+
+
+class AssembledOperator:
+    """The embedded BC tangent as the assembled sparse matrix.
+
+    ``K_data`` (the embedded COO data of :func:`_embedded_bc_enforce`) is
+    segment summed onto the cached CSR pattern of ``sparsity`` and applied
+    as a BCSR matvec; the field blocks come from ``block_sparsity``
+    (``None`` for a single field problem). The scipy callback solvers read
+    ``unique_data`` to rebuild a host side CSR.
     """
-    unique_data = jnp.zeros(
-        sparsity.num_unique, dtype=K_data.dtype,
-    ).at[sparsity.segment_ids].add(K_data[sparsity.perm])
-    K_bcsr = BCSR(
-        (unique_data, sparsity.col_indices, sparsity.indptr),
-        shape=(sparsity.n, sparsity.n),
-    )
 
-    def matvec(x: JaxArray) -> JaxArray:
-        return K_bcsr @ x
+    def __init__(
+            self, K_data: JaxArray, sparsity: EmbeddedSparsity,
+            block_sparsity: BlockSparsity | None = None,
+    ) -> None:
+        self.sparsity = sparsity
+        self.block_sparsity = block_sparsity
+        self.unique_data = jnp.zeros(
+            sparsity.num_unique, dtype=K_data.dtype,
+        ).at[sparsity.segment_ids].add(K_data[sparsity.perm])
+        self._K_bcsr = BCSR(
+            (self.unique_data, sparsity.col_indices, sparsity.indptr),
+            shape=(sparsity.n, sparsity.n),
+        )
+        self._pair_index = (
+            {pair: k for k, pair in enumerate(block_sparsity.pairs)}
+            if block_sparsity is not None else {}
+        )
 
-    return unique_data, matvec
+    @property
+    def n(self) -> int:
+        return self.sparsity.n
+
+    @property
+    def _blocks(self) -> BlockSparsity:
+        if self.block_sparsity is None:
+            raise ValueError(
+                "the operator has no field blocks: the problem has one field",
+            )
+        return self.block_sparsity
+
+    @property
+    def num_fields(self) -> int:
+        return self._blocks.num_fields
+
+    @property
+    def field_offsets(self) -> tuple[int, ...]:
+        return self._blocks.field_offsets
+
+    def matvec(self, x: JaxArray) -> JaxArray:
+        return self._K_bcsr @ x
+
+    def diagonal(self) -> JaxArray:
+        return self.unique_data[self.sparsity.diag_idx]
+
+    def block_matvec(
+            self, i: int, j: int, x: JaxArray, *, transpose: bool = False,
+    ) -> JaxArray:
+        """Multiply one field block of the operator by a vector.
+
+        The unknowns are grouped by field, so the operator splits into
+        blocks: block ``(i, j)`` couples field ``j``'s unknowns to field
+        ``i``'s equations. ``transpose=True`` applies the transpose
+        operator's ``(i, j)`` block, which is the stored ``(j, i)`` block
+        with its rows and columns swapped: the product is a scatter add,
+        so swapping the gather and scatter indices transposes it. An
+        empty field pair contributes nothing.
+        """
+        bs = self._blocks
+        n_i = bs.field_offsets[i + 1] - bs.field_offsets[i]
+        key = (j, i) if transpose else (i, j)
+        if key not in self._pair_index:
+            return jnp.zeros(n_i, dtype=self.unique_data.dtype)
+        k = self._pair_index[key]
+        data = self.unique_data[bs.global_data_indices[k]]
+        if not transpose:
+            return jnp.zeros(n_i, dtype=data.dtype).at[bs.local_rows[k]].add(
+                data * x[bs.local_cols[k]],
+            )
+        return jnp.zeros(n_i, dtype=data.dtype).at[bs.local_cols[k]].add(
+            data * x[bs.local_rows[k]],
+        )
+
+    def block_diagonal(self, i: int) -> JaxArray:
+        """Main diagonal of field ``i``'s own block ``(i, i)``, the same
+        on the forward and transpose sweeps."""
+        bs = self._blocks
+        n_i = bs.field_offsets[i + 1] - bs.field_offsets[i]
+        k = self._pair_index[(i, i)]
+        data = self.unique_data[bs.global_data_indices[k]]
+        rows = bs.local_rows[k]
+        cols = bs.local_cols[k]
+        return jnp.zeros(n_i, dtype=data.dtype).at[rows].add(
+            jnp.where(rows == cols, data, 0.0),
+        )
+
+
+def _jacobi_preconditioner(
+        op: TangentOperator,
+) -> Callable[[JaxArray], JaxArray]:
+    """Division by the operator's diagonal."""
+    diag = op.diagonal()
+
+    def precon(x: JaxArray) -> JaxArray:
+        return x / diag
+
+    return precon
 
 
 def _build_scipy_csr(
@@ -215,7 +326,8 @@ def scipy_lu(
     JVP / VJP rules cover any ``(matvec, solve, transpose_solve)``
     triple.
     """
-    unique_data, matvec = _bcsr_operator(K_data, sparsity)
+    op = AssembledOperator(K_data, sparsity)
+    unique_data, matvec = op.unique_data, op.matvec
     n = sparsity.n
 
     def _multi_back_sub(
@@ -456,26 +568,46 @@ def _gmres_solve(
     return _gmres_loop(matvec, precon, b, rtol, restart, max_iters)[0]
 
 
-def _bcsr_jacobi_operator(
-        K_data: JaxArray, sparsity: EmbeddedSparsity,
-) -> tuple[
-    Callable[[JaxArray], JaxArray],
-    Callable[[JaxArray], JaxArray],
-]:
-    """Build the BCSR matvec + Jacobi preconditioner.
+def _jacobi_cg(
+        op: TangentOperator, b: JaxArray, rtol: float, max_iters: int | None,
+) -> JaxArray:
+    """Jacobi preconditioned CG on ``op``, differentiable through
+    :func:`jax.lax.custom_linear_solve` (``symmetric=True``)."""
+    precon = _jacobi_preconditioner(op)
 
-    Shared setup between :func:`jax_cg`, :func:`jax_cg_with_iters`,
-    and :func:`jax_gmres`: the matvec from :func:`_bcsr_operator`,
-    plus the Jacobi (diagonal) preconditioner read off the deduped
-    data via ``sparsity.diag_idx``.
-    """
-    unique_data, matvec = _bcsr_operator(K_data, sparsity)
-    diag = unique_data[sparsity.diag_idx]
+    def solve(_unused_matvec, rhs: JaxArray) -> JaxArray:
+        x, _info = jax.scipy.sparse.linalg.cg(
+            op.matvec, rhs, M=precon, tol=rtol, maxiter=max_iters,
+        )
+        return x
 
-    def precon(x: JaxArray) -> JaxArray:
-        return x / diag
+    return lax.custom_linear_solve(
+        op.matvec, b, solve, symmetric=True,
+    )
 
-    return matvec, precon
+
+def _jacobi_gmres(
+        op: TangentOperator, b: JaxArray, rtol: float, restart: int,
+        max_iters: int | None,
+) -> JaxArray:
+    """Jacobi preconditioned GMRES on ``op`` (:func:`_gmres_loop`),
+    differentiable through :func:`jax.lax.custom_linear_solve`; the adjoint
+    solve runs on the auto transposed matvec with the same diagonal
+    preconditioner."""
+    precon = _jacobi_preconditioner(op)
+
+    def solve(matvec_: Callable[[JaxArray], JaxArray],
+              rhs: JaxArray) -> JaxArray:
+        return _gmres_solve(matvec_, precon, rhs, rtol, restart, max_iters)
+
+    def transpose_solve(vecmat: Callable[[JaxArray], JaxArray],
+                        rhs: JaxArray) -> JaxArray:
+        return _gmres_solve(vecmat, precon, rhs, rtol, restart, max_iters)
+
+    return lax.custom_linear_solve(
+        op.matvec, b, solve, transpose_solve=transpose_solve,
+        symmetric=False,
+    )
 
 
 def jax_cg(
@@ -525,17 +657,7 @@ def jax_cg(
     When the iteration count is needed (without AD), call
     :func:`jax_cg_with_iters` instead.
     """
-    matvec, precon = _bcsr_jacobi_operator(K_data, sparsity)
-
-    def solve(_unused_matvec, rhs: JaxArray) -> JaxArray:
-        x, _info = jax.scipy.sparse.linalg.cg(
-            matvec, rhs, M=precon, tol=rtol, maxiter=max_iters,
-        )
-        return x
-
-    return lax.custom_linear_solve(
-        matvec, b, solve, symmetric=True,
-    )
+    return _jacobi_cg(AssembledOperator(K_data, sparsity), b, rtol, max_iters)
 
 
 def jax_cg_with_iters(
@@ -544,8 +666,8 @@ def jax_cg_with_iters(
 ) -> tuple[JaxArray, JaxArray]:
     """CG returning ``(x, iter_count)``.
 
-    Same matvec + Jacobi preconditioner as :func:`jax_cg` via
-    :func:`_bcsr_jacobi_operator`. Inner iteration is :func:`_pcg_loop`
+    Same operator + Jacobi preconditioner as :func:`jax_cg`. Inner
+    iteration is :func:`_pcg_loop`
     rather than :func:`jax.scipy.sparse.linalg.cg` so the loop
     counter is surfaced through the return tuple;
     :func:`jax.lax.custom_linear_solve`'s ``solve`` callback can
@@ -561,8 +683,8 @@ def jax_cg_with_iters(
     by ±1 on convergence-test rounding; acceptable for diagnostic
     purposes.
     """
-    matvec, precon = _bcsr_jacobi_operator(K_data, sparsity)
-    return _pcg_loop(matvec, b, precon, rtol, max_iters)
+    op = AssembledOperator(K_data, sparsity)
+    return _pcg_loop(op.matvec, b, _jacobi_preconditioner(op), rtol, max_iters)
 
 
 def jax_gmres(
@@ -604,19 +726,8 @@ def jax_gmres(
     with :func:`jax.vmap` as a single batched ``while_loop``; the
     slowest column dictates the iteration count for the batch.
     """
-    matvec, precon = _bcsr_jacobi_operator(K_data, sparsity)
-
-    def solve(matvec_: Callable[[JaxArray], JaxArray],
-              rhs: JaxArray) -> JaxArray:
-        return _gmres_solve(matvec_, precon, rhs, rtol, restart, max_iters)
-
-    def transpose_solve(vecmat: Callable[[JaxArray], JaxArray],
-                        rhs: JaxArray) -> JaxArray:
-        return _gmres_solve(vecmat, precon, rhs, rtol, restart, max_iters)
-
-    return lax.custom_linear_solve(
-        matvec, b, solve, transpose_solve=transpose_solve,
-        symmetric=False,
+    return _jacobi_gmres(
+        AssembledOperator(K_data, sparsity), b, rtol, restart, max_iters,
     )
 
 
@@ -655,7 +766,8 @@ def scipy_amg_cg(
 
     For non-SPD K this will silently produce wrong results.
     """
-    unique_data, matvec = _bcsr_operator(K_data, sparsity)
+    op = AssembledOperator(K_data, sparsity)
+    unique_data, matvec = op.unique_data, op.matvec
     n = sparsity.n
     pyamg_kw = pyamg_kwargs or {}
 
@@ -696,73 +808,13 @@ def scipy_amg_cg(
     )
 
 
-def _block_op_apply(
-        bs: BlockSparsity, unique_data: JaxArray,
-        pair_index: dict[tuple[int, int], int],
-        i: int, j: int, x: JaxArray, *, transpose: bool,
-) -> JaxArray:
-    """Multiply one field block of the operator by a vector.
-
-    The unknowns are grouped by field, so the operator splits into blocks:
-    block ``(i, j)`` couples field ``j``'s unknowns to field ``i``'s
-    equations. This applies that one block, taking a field-``j`` vector to
-    a field-``i`` vector.
-
-    ``transpose=True`` applies the transpose operator's ``(i, j)`` block,
-    which is the stored ``(j, i)`` block with its rows and columns swapped.
-    Each block holds the global matrix entries that lie in it; the product
-    is a scatter-add, so swapping the gather and scatter indices transposes
-    it. An empty field pair contributes nothing.
-    """
-    n_i = bs.field_offsets[i + 1] - bs.field_offsets[i]
-    if not transpose:
-        key = (i, j)
-        if key not in pair_index:
-            return jnp.zeros(n_i, dtype=unique_data.dtype)
-        k = pair_index[key]
-        data = unique_data[bs.global_data_indices[k]]
-        return jnp.zeros(n_i, dtype=unique_data.dtype).at[bs.local_rows[k]].add(
-            data * x[bs.local_cols[k]],
-        )
-    key = (j, i)
-    if key not in pair_index:
-        return jnp.zeros(n_i, dtype=unique_data.dtype)
-    k = pair_index[key]
-    data = unique_data[bs.global_data_indices[k]]
-    return jnp.zeros(n_i, dtype=unique_data.dtype).at[bs.local_cols[k]].add(
-        data * x[bs.local_rows[k]],
-    )
-
-
-def _block_diagonal(
-        bs: BlockSparsity, unique_data: JaxArray,
-        pair_index: dict[tuple[int, int], int], i: int,
-) -> JaxArray:
-    """Main diagonal of field ``i``'s own block ``(i, i)``.
-
-    Unchanged by transposing, so the Jacobi inverse is the same on the
-    forward and transpose sweeps.
-    """
-    n_i = bs.field_offsets[i + 1] - bs.field_offsets[i]
-    k = pair_index[(i, i)]
-    data = unique_data[bs.global_data_indices[k]]
-    rows = bs.local_rows[k]
-    cols = bs.local_cols[k]
-    return jnp.zeros(n_i, dtype=unique_data.dtype).at[rows].add(
-        jnp.where(rows == cols, data, 0.0),
-    )
-
-
-def _block_scaling(
-        bs: BlockSparsity, unique_data: JaxArray,
-        pair_index: dict[tuple[int, int], int], i: int,
-) -> JaxArray:
+def _block_scaling(op: TangentOperator, i: int) -> JaxArray:
     """``s_i = 1 / sqrt(|diag|)`` of field ``i``'s assembled block ``(i, i)``,
     the Jacobi scaling the Chebyshev inner applies to its block operator on
     both sides. The assembled diagonal serves the ``"schur"`` diagonal block
     too, whose own diagonal is never formed. A negligible diagonal entry is
     left unscaled, as in :func:`_symmetric_diagonal_scaling`."""
-    d = jnp.sqrt(jnp.abs(_block_diagonal(bs, unique_data, pair_index, i)))
+    d = jnp.sqrt(jnp.abs(op.block_diagonal(i)))
     negligible = d <= jnp.finfo(d.dtype).eps * jnp.max(d)
     return jnp.where(negligible, 1.0, 1.0 / jnp.where(negligible, 1.0, d))
 
@@ -774,8 +826,7 @@ _CHEBYSHEV_LMAX_SAFETY = 1.1
 
 
 def _diag_block_matvec(
-        bs: BlockSparsity, unique_data: JaxArray,
-        pair_index: dict[tuple[int, int], int], i: int, x: JaxArray, *,
+        op: TangentOperator, i: int, x: JaxArray, *,
         diagonal_block: str, transpose: bool,
 ) -> JaxArray:
     """Apply the operator for field ``i``'s diagonal block to a field-``i`` vector.
@@ -791,21 +842,15 @@ def _diag_block_matvec(
     the transpose of the forward operator, so the adjoint sweep reuses this with
     no separate derivation.
     """
-    out = _block_op_apply(
-        bs, unique_data, pair_index, i, i, x, transpose=transpose,
-    )
+    out = op.block_matvec(i, i, x, transpose=transpose)
     if diagonal_block != "schur":
         return out
-    for j in range(bs.num_fields):
+    for j in range(op.num_fields):
         if j == i:
             continue
-        proj = _block_op_apply(
-            bs, unique_data, pair_index, j, i, x, transpose=transpose,
-        )
-        proj = proj / _block_diagonal(bs, unique_data, pair_index, j)
-        out = out - _block_op_apply(
-            bs, unique_data, pair_index, i, j, proj, transpose=transpose,
-        )
+        proj = op.block_matvec(j, i, x, transpose=transpose)
+        proj = proj / op.block_diagonal(j)
+        out = out - op.block_matvec(i, j, proj, transpose=transpose)
     return out
 
 
@@ -886,8 +931,7 @@ def _chebyshev_apply(
 
 
 def _chebyshev_field_bounds(
-        bs: BlockSparsity, unique_data: JaxArray,
-        pair_index: dict[tuple[int, int], int], diagonal_block: str,
+        op: TangentOperator, diagonal_block: str,
 ) -> tuple[tuple[JaxArray, JaxArray], ...]:
     """Spectrum bracket ``(lmin, lmax)`` for each field's scaled diagonal block.
 
@@ -905,17 +949,17 @@ def _chebyshev_field_bounds(
     sweep.
     """
     bounds: list[tuple[JaxArray, JaxArray]] = []
-    for i in range(bs.num_fields):
-        n_i = bs.field_offsets[i + 1] - bs.field_offsets[i]
-        s = _block_scaling(bs, unique_data, pair_index, i)
+    offs = op.field_offsets
+    for i in range(op.num_fields):
+        n_i = offs[i + 1] - offs[i]
+        s = _block_scaling(op, i)
 
         def block_matvec(x: JaxArray, i: int = i, s: JaxArray = s) -> JaxArray:
             return s * _diag_block_matvec(
-                bs, unique_data, pair_index, i, s * x,
-                diagonal_block=diagonal_block, transpose=False,
+                op, i, s * x, diagonal_block=diagonal_block, transpose=False,
             )
 
-        lam = _lanczos_dominant_eigenvalue(block_matvec, n_i, unique_data.dtype)
+        lam = _lanczos_dominant_eigenvalue(block_matvec, n_i, s.dtype)
         lo = lam * _CHEBYSHEV_LMIN_FRACTION
         hi = lam * _CHEBYSHEV_LMAX_SAFETY
         bounds.append((jnp.minimum(lo, hi), jnp.maximum(lo, hi)))
@@ -923,8 +967,7 @@ def _chebyshev_field_bounds(
 
 
 def _block_precon_apply(
-        bs: BlockSparsity, unique_data: JaxArray,
-        pair_index: dict[tuple[int, int], int], r: JaxArray, *,
+        op: TangentOperator, r: JaxArray, *,
         coupling: str, diagonal_block: str, inner: str, transpose: bool,
         chebyshev_degree: int = 0,
         chebyshev_bounds: tuple[tuple[JaxArray, JaxArray], ...] | None = None,
@@ -973,8 +1016,8 @@ def _block_precon_apply(
             "use inner='chebyshev' for the schur diagonal block"
         )
 
-    num_fields = bs.num_fields
-    offs = bs.field_offsets
+    num_fields = op.num_fields
+    offs = op.field_offsets
     r_fields = [r[offs[i]:offs[i + 1]] for i in range(num_fields)]
     z_fields: list[JaxArray] = [
         jnp.zeros_like(r_fields[i]) for i in range(num_fields)
@@ -982,15 +1025,15 @@ def _block_precon_apply(
 
     def apply_block_inverse(i: int, rhs: JaxArray) -> JaxArray:
         if inner == "jacobi":
-            return rhs / _block_diagonal(bs, unique_data, pair_index, i)
+            return rhs / op.block_diagonal(i)
         assert chebyshev_bounds is not None
         lmin, lmax = chebyshev_bounds[i]
-        s = _block_scaling(bs, unique_data, pair_index, i)
+        s = _block_scaling(op, i)
 
         def block_matvec(x: JaxArray) -> JaxArray:
             return s * _diag_block_matvec(
-                bs, unique_data, pair_index, i, s * x,
-                diagonal_block=diagonal_block, transpose=transpose,
+                op, i, s * x, diagonal_block=diagonal_block,
+                transpose=transpose,
             )
 
         return s * _chebyshev_apply(
@@ -1005,18 +1048,61 @@ def _block_precon_apply(
         rhs = r_fields[i]
         if coupling == "lower":
             for j in range(i):
-                rhs = rhs - _block_op_apply(
-                    bs, unique_data, pair_index, i, j,
-                    z_fields[j], transpose=transpose,
-                )
+                rhs = rhs - op.block_matvec(i, j, z_fields[j], transpose=transpose)
         elif coupling == "upper":
             for j in range(i + 1, num_fields):
-                rhs = rhs - _block_op_apply(
-                    bs, unique_data, pair_index, i, j,
-                    z_fields[j], transpose=transpose,
-                )
+                rhs = rhs - op.block_matvec(i, j, z_fields[j], transpose=transpose)
         z_fields[i] = apply_block_inverse(i, rhs)
     return jnp.concatenate(z_fields)
+
+
+def _block_gmres(
+        op: TangentOperator, b: JaxArray, *,
+        coupling: str, diagonal_block: str, inner: str, degree: int | None,
+        rtol: float, max_iters: int | None, restart: int,
+) -> JaxArray:
+    """GMRES on ``op`` with the block preconditioner
+    (:func:`_block_precon_apply` over ``op``'s field blocks), differentiable
+    through :func:`jax.lax.custom_linear_solve`; the adjoint solve runs on
+    the auto transposed matvec with the transposed sweep."""
+    if inner == "chebyshev":
+        chebyshev_degree = (
+            _CHEBYSHEV_DEFAULT_DEGREE if degree is None else degree
+        )
+        chebyshev_bounds = _chebyshev_field_bounds(op, diagonal_block)
+    else:
+        chebyshev_degree = 0
+        chebyshev_bounds = None
+
+    def precon_forward(r: JaxArray) -> JaxArray:
+        return _block_precon_apply(
+            op, r, coupling=coupling, diagonal_block=diagonal_block,
+            inner=inner, transpose=False,
+            chebyshev_degree=chebyshev_degree, chebyshev_bounds=chebyshev_bounds,
+        )
+
+    def precon_transpose(r: JaxArray) -> JaxArray:
+        return _block_precon_apply(
+            op, r, coupling=coupling, diagonal_block=diagonal_block,
+            inner=inner, transpose=True,
+            chebyshev_degree=chebyshev_degree, chebyshev_bounds=chebyshev_bounds,
+        )
+
+    def solve(matvec_: Callable[[JaxArray], JaxArray],
+              rhs: JaxArray) -> JaxArray:
+        return _gmres_solve(
+            matvec_, precon_forward, rhs, rtol, restart, max_iters,
+        )
+
+    def transpose_solve(vecmat: Callable[[JaxArray], JaxArray],
+                        rhs: JaxArray) -> JaxArray:
+        return _gmres_solve(
+            vecmat, precon_transpose, rhs, rtol, restart, max_iters,
+        )
+
+    return lax.custom_linear_solve(
+        op.matvec, b, solve, transpose_solve=transpose_solve, symmetric=False,
+    )
 
 
 def jax_block_gmres(
@@ -1045,49 +1131,10 @@ def jax_block_gmres(
     step count); ``None`` selects the built-in default, and the jacobi path
     ignores it.
     """
-    unique_data, matvec = _bcsr_operator(K_data, sparsity)
-    pair_index = {pair: k for k, pair in enumerate(block_sparsity.pairs)}
-    if inner == "chebyshev":
-        chebyshev_degree = (
-            _CHEBYSHEV_DEFAULT_DEGREE if degree is None else degree
-        )
-        chebyshev_bounds = _chebyshev_field_bounds(
-            block_sparsity, unique_data, pair_index, diagonal_block,
-        )
-    else:
-        chebyshev_degree = 0
-        chebyshev_bounds = None
-
-    def precon_forward(r: JaxArray) -> JaxArray:
-        return _block_precon_apply(
-            block_sparsity, unique_data, pair_index, r,
-            coupling=coupling, diagonal_block=diagonal_block, inner=inner,
-            transpose=False,
-            chebyshev_degree=chebyshev_degree, chebyshev_bounds=chebyshev_bounds,
-        )
-
-    def precon_transpose(r: JaxArray) -> JaxArray:
-        return _block_precon_apply(
-            block_sparsity, unique_data, pair_index, r,
-            coupling=coupling, diagonal_block=diagonal_block, inner=inner,
-            transpose=True,
-            chebyshev_degree=chebyshev_degree, chebyshev_bounds=chebyshev_bounds,
-        )
-
-    def solve(matvec_: Callable[[JaxArray], JaxArray],
-              rhs: JaxArray) -> JaxArray:
-        return _gmres_solve(
-            matvec_, precon_forward, rhs, rtol, restart, max_iters,
-        )
-
-    def transpose_solve(vecmat: Callable[[JaxArray], JaxArray],
-                        rhs: JaxArray) -> JaxArray:
-        return _gmres_solve(
-            vecmat, precon_transpose, rhs, rtol, restart, max_iters,
-        )
-
-    return lax.custom_linear_solve(
-        matvec, b, solve, transpose_solve=transpose_solve, symmetric=False,
+    return _block_gmres(
+        AssembledOperator(K_data, sparsity, block_sparsity), b,
+        coupling=coupling, diagonal_block=diagonal_block, inner=inner,
+        degree=degree, rtol=rtol, max_iters=max_iters, restart=restart,
     )
 
 
@@ -1209,7 +1256,8 @@ def scipy_block_gmres(
     callbacks and never enters the derivative rules. The adjoint solve runs
     GMRES on ``K^T`` with the transpose of the block sweep.
     """
-    unique_data, matvec = _bcsr_operator(K_data, sparsity)
+    op = AssembledOperator(K_data, sparsity)
+    unique_data, matvec = op.unique_data, op.matvec
     n = sparsity.n
     leaves, treedef = jax.tree_util.tree_flatten(block_sparsity)
     maxiter = max_iters if max_iters is not None else n

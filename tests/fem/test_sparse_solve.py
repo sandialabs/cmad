@@ -18,9 +18,9 @@ import scipy.sparse
 from jax.experimental.sparse import BCOO
 
 from cmad.fem.sparse_solve import (
+    AssembledOperator,
     BlockSparsity,
     EmbeddedSparsity,
-    _bcsr_operator,
     _block_precon_apply,
     _chebyshev_apply,
     _chebyshev_field_bounds,
@@ -672,13 +672,12 @@ class TestChebyshevInnerScaled(unittest.TestCase):
         K = d[:, None] * K * d[None, :]
         n = K.shape[0]
         K_data, sparsity, bs = _dense_to_block_cache(K, offsets)
-        unique_data, _ = _bcsr_operator(K_data, sparsity)
-        pair_index = {pair: k for k, pair in enumerate(bs.pairs)}
+        op = AssembledOperator(K_data, sparsity, bs)
         degree = 4
-        bounds = _chebyshev_field_bounds(bs, unique_data, pair_index, "assembled")
+        bounds = _chebyshev_field_bounds(op, "assembled")
         r = jnp.asarray(np.random.default_rng(921).standard_normal(n))
         z = _block_precon_apply(
-            bs, unique_data, pair_index, r, coupling="diagonal",
+            op, r, coupling="diagonal",
             diagonal_block="assembled", inner="chebyshev", transpose=False,
             chebyshev_degree=degree, chebyshev_bounds=bounds,
         )

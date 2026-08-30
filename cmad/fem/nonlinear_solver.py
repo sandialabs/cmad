@@ -15,7 +15,8 @@ from cmad.fem.fe_problem import FEProblem
 from cmad.fem.kernel_arrays import FEKernelArrays
 from cmad.fem.sharding import place_element_leaves
 from cmad.fem.sparse_solve import (
-    _bcsr_operator,
+    AssembledOperator,
+    TangentOperator,
     _embedded_bc_enforce,
     _embedded_residual,
     _near_null_by_field,
@@ -79,6 +80,15 @@ def _thaw(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_thaw(v) for v in value]
     return value
+
+
+def _tangent_operator(K: JaxArray, fe_arrays: FEKernelArrays) -> TangentOperator:
+    """The tangent ``K`` (the embedded COO data of
+    :func:`_embedded_bc_enforce`) as the operator the line search slope
+    and the jax native solvers apply."""
+    return AssembledOperator(
+        K, fe_arrays.embedded_sparsity, fe_arrays.block_sparsity,
+    )
 
 
 def _solve_linear(
@@ -266,7 +276,6 @@ def _fe_newton_primal(
     ls_max_evals = ls_settings["max evals"]
 
     dof_map = fe_problem.dof_map
-    sparsity = fe_arrays.embedded_sparsity
     presc_idx = fe_arrays.prescribed_indices
     presc_vals = jnp.asarray(
         dof_map.evaluate_prescribed_values(fe_arrays.dbc_arrays, step_time.t),
@@ -319,8 +328,7 @@ def _fe_newton_primal(
 
             def eval_fn(alpha):
                 r_trial, K_trial, xi_trial = _assemble_enforced(U + alpha * dU)
-                _, matvec = _bcsr_operator(K_trial, sparsity)
-                slope = r_trial @ matvec(dU)
+                slope = r_trial @ _tangent_operator(K_trial, fe_arrays).matvec(dU)
                 phi = 0.5 * (r_trial @ r_trial)
                 return phi, slope, (r_trial, K_trial, xi_trial)
 
