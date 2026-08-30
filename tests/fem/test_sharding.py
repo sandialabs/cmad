@@ -28,7 +28,11 @@ from cmad.fem.assembly import (
 )
 from cmad.fem.fe_problem import FEState
 from cmad.fem.mesh import StructuredHexMesh
-from cmad.fem.nonlinear_solver import fe_newton_solve
+from cmad.fem.nonlinear_solver import (
+    _assemble_tangent_and_residual,
+    _tangent_operator,
+    fe_newton_solve,
+)
 from cmad.fem.sharding import (
     ELEMENT_AXIS,
     build_device_mesh,
@@ -38,7 +42,12 @@ from cmad.fem.sharding import (
 from cmad.fem.sparse_solve import (
     AssembledOperator,
     ElementOperator,
+    _block_precon_apply,
+    _chebyshev_field_bounds,
     _embedded_bc_enforce,
+    _gmres_loop,
+    _jacobi_preconditioner,
+    _pcg_loop,
 )
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.deformation_types import DefType
@@ -146,6 +155,67 @@ def _on_device_0(tree):
     return tree_map(lambda leaf: jax.device_put(leaf, device_0), tree)
 
 
+_CG_SETTINGS = {"type": "cg", "rtol": 1.0e-10, "max iters": 2000}
+
+
+def elastic_krylov_problem():
+    """``(fe_problem, params, U)``: the elastic 3 x 3 x 3 cube (192 dofs, the
+    24 at the interior nodes free) at a random displacement."""
+    fe_problem = elastic_problem((3, 3, 3))
+    params = params_by_block_from_models(fe_problem)
+    n = fe_problem.dof_map.num_total_dofs
+    U = 0.01 * np.random.default_rng(27).standard_normal(n)
+    return fe_problem, params, U
+
+
+def _block_chebyshev_preconditioner(op, bounds):
+    def precon(v):
+        return _block_precon_apply(
+            op, v, coupling="lower", diagonal_block="schur",
+            inner="chebyshev", transpose=False,
+            chebyshev_degree=3, chebyshev_bounds=bounds,
+        )
+    return precon
+
+
+def krylov_solves(fe_problem, params, U, U_prev, xi_prev, step_time):
+    """One Krylov solve of ``K dU = -r`` at the given state per operator
+    kind, through the problem's device mesh: ``{kind: (iterations, x)}``.
+    A mixed problem runs block chebyshev GMRES, a single field problem
+    CG + jacobi, both unrestarted at rtol 1e-10."""
+    arrays = fe_problem.kernel_arrays
+    presc_vals = jnp.asarray(fe_problem.dof_map.evaluate_prescribed_values(
+        arrays.dbc_arrays, float(step_time.t),
+    ))
+    mixed = arrays.block_sparsity is not None
+    out = {}
+    for kind in ("assembled", "element"):
+        def solve(U_, U_prev_, xi_prev_, kind=kind):
+            r, K, _ = _assemble_tangent_and_residual(
+                fe_problem, arrays, params, U_, U_prev_, step_time, xi_prev_,
+                presc_vals, kind,
+            )
+            op = _tangent_operator(K, fe_problem, arrays, kind)
+            if mixed:
+                precon = _block_chebyshev_preconditioner(
+                    op, _chebyshev_field_bounds(op, "schur"),
+                )
+                return _gmres_loop(op.matvec, precon, -r, 1.0e-10, op.n, 4,
+                                   op.device_mesh)
+            return _pcg_loop(op.matvec, -r, _jacobi_preconditioner(op),
+                             1.0e-10, 10 * op.n, op.device_mesh)
+
+        x, iterations = jax.jit(solve)(
+            jnp.asarray(U), jnp.asarray(U_prev),
+            place_element_leaves(
+                {b: jnp.asarray(v) for b, v in xi_prev.items()},
+                fe_problem.device_mesh,
+            ),
+        )
+        out[kind] = (int(iterations), np.asarray(x))
+    return out
+
+
 def _mesh_size(fe_problem) -> int:
     mesh = fe_problem.device_mesh
     return 0 if mesh is None else int(mesh.size)
@@ -230,6 +300,26 @@ def save_sharded_results(path: str) -> None:
         linear_solver_settings=_ELEMENT_SOLVER_SETTINGS,
     )
 
+    # Partitioning the Krylov vectors across the devices changes where the
+    # arithmetic runs, not its result: same iteration count and the same
+    # solution as on one device. Mixed cube (108 dofs) with block chebyshev
+    # GMRES at the start of a step (a residual of size one, not the
+    # converged one); 27 element elastic cube (192 dofs, 24 free) with CG +
+    # jacobi at a random state, and a CG Newton step under both operators.
+    mixed_solves = krylov_solves(
+        fe_problem, params, U_prev, U_prev, xi_prev, step_time,
+    )
+    fe_27, params_27, U_27 = elastic_krylov_problem()
+    elastic_solves = krylov_solves(
+        fe_27, params_27, U_27, np.zeros_like(U_27), {}, StepTime(1.0, 0.0),
+    )
+    U_cg_step = {}
+    for kind in ("assembled", "element"):
+        U_cg_step[kind], _ = fe_newton_solve(
+            fe_27, params_27, U_prev=U_27, t=1.0, t_prev=0.0,
+            linear_solver_settings={**_CG_SETTINGS, "operator": kind},
+        )
+
     # The divisor rule: 7 elements (prime) run on one device with a
     # warning; 6 elements over 4 devices shard over 3; two blocks of 1
     # and 2 elements share no divisor, so no mesh.
@@ -270,6 +360,16 @@ def save_sharded_results(path: str) -> None:
         K_data_ref=K_data_ref, R_ref=R_ref, xi_out_ref=xi_out_ref,
         element_matvec=element_matvec, element_matvec_ref=element_matvec_ref,
         U_element_step=np.asarray(U_element_step),
+        mixed_iters_assembled=mixed_solves["assembled"][0],
+        mixed_x_assembled=mixed_solves["assembled"][1],
+        mixed_iters_element=mixed_solves["element"][0],
+        mixed_x_element=mixed_solves["element"][1],
+        elastic_iters_assembled=elastic_solves["assembled"][0],
+        elastic_x_assembled=elastic_solves["assembled"][1],
+        elastic_iters_element=elastic_solves["element"][0],
+        elastic_x_element=elastic_solves["element"][1],
+        U_cg_step_assembled=np.asarray(U_cg_step["assembled"]),
+        U_cg_step_element=np.asarray(U_cg_step["element"]),
         mesh_size_7=_mesh_size(fe_7), n_warnings_7=n_warnings_7,
         mesh_size_6=_mesh_size(fe_6), mesh_size_1_2=_mesh_size(fe_1_2),
         capped_2_size=0 if capped_2 is None else int(capped_2.size),
@@ -386,6 +486,38 @@ class TestFourDevices(unittest.TestCase):
             linear_solver_settings=_ELEMENT_SOLVER_SETTINGS,
         )
         _assert_close(r["U_element_step"], np.asarray(U_ref), 1e-8)
+
+    def test_partitioned_krylov_solves_match_one_device(self) -> None:
+        r = self.sharded
+        fe_problem, params, _U, U_prev, _xi, xi_prev, step_time = self.drive
+        mixed = krylov_solves(
+            fe_problem, params, U_prev, U_prev, xi_prev, step_time,
+        )
+        fe_27, params_27, U_27 = elastic_krylov_problem()
+        elastic = krylov_solves(
+            fe_27, params_27, U_27, np.zeros_like(U_27), {}, StepTime(1.0, 0.0),
+        )
+        for name, solves in (("mixed", mixed), ("elastic", elastic)):
+            for kind in ("assembled", "element"):
+                with self.subTest(problem=name, operator=kind):
+                    iterations, x = solves[kind]
+                    self.assertGreater(iterations, 1)
+                    self.assertEqual(
+                        int(r[f"{name}_iters_{kind}"]), iterations,
+                    )
+                    _assert_close(r[f"{name}_x_{kind}"], x, 1e-8)
+        # The step drives the random start to the exact answer, zero, so the
+        # comparison is scaled by the start, not by the answer.
+        for kind in ("assembled", "element"):
+            U_step, _ = fe_newton_solve(
+                fe_27, params_27, U_prev=U_27, t=1.0, t_prev=0.0,
+                linear_solver_settings={**_CG_SETTINGS, "operator": kind},
+            )
+            with self.subTest(operator=kind):
+                np.testing.assert_allclose(
+                    r[f"U_cg_step_{kind}"], np.asarray(U_step), rtol=0,
+                    atol=1e-8 * float(np.abs(U_27).max()),
+                )
 
     def test_divisor_rule(self) -> None:
         r = self.sharded

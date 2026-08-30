@@ -107,11 +107,12 @@ def _tangent_operator(
     if operator == "assembled":
         return AssembledOperator(
             K, fe_arrays.embedded_sparsity, fe_arrays.block_sparsity,
+            fe_problem.device_mesh,
         )
     return ElementOperator(
         K, fe_arrays.r_scatter_eq_by_block, fe_problem.field_idx_per_block,
         fe_problem.dof_map.block_offsets, fe_arrays.prescribed_indices,
-        fe_problem.dof_map.num_total_dofs,
+        fe_problem.dof_map.num_total_dofs, fe_problem.device_mesh,
     )
 
 

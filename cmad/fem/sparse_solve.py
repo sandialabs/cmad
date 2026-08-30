@@ -23,6 +23,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Protocol
 
 import jax
@@ -33,13 +34,27 @@ import scipy.sparse
 import scipy.sparse.linalg
 from jax import lax
 from jax.experimental.sparse import BCOO, BCSR
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from jax.tree_util import register_pytree_node_class
 from numpy.typing import NDArray
 
+from cmad.fem.sharding import ELEMENT_AXIS
 from cmad.typing import JaxArray
 
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem
+
+
+def _dof_sharded(v: JaxArray, device_mesh: Mesh | None) -> JaxArray:
+    """``v`` constrained to be split along its last axis (the dofs) across
+    ``device_mesh``, so the Krylov vector work is partitioned the way the
+    element work is; ``v`` itself when there is no mesh or the dof count
+    does not divide by the device count (the vectors then stay replicated).
+    """
+    if device_mesh is None or v.shape[-1] % device_mesh.size:
+        return v
+    spec = PartitionSpec(*([None] * (v.ndim - 1)), ELEMENT_AXIS)
+    return lax.with_sharding_constraint(v, NamedSharding(device_mesh, spec))
 
 
 class TangentOperator(Protocol):
@@ -57,6 +72,9 @@ class TangentOperator(Protocol):
 
     @property
     def field_offsets(self) -> tuple[int, ...]: ...
+
+    @property
+    def device_mesh(self) -> Mesh | None: ...
 
     def matvec(self, x: JaxArray) -> JaxArray: ...
 
@@ -82,9 +100,11 @@ class AssembledOperator:
     def __init__(
             self, K_data: JaxArray, sparsity: EmbeddedSparsity,
             block_sparsity: BlockSparsity | None = None,
+            device_mesh: Mesh | None = None,
     ) -> None:
         self.sparsity = sparsity
         self.block_sparsity = block_sparsity
+        self.device_mesh = device_mesh
         self.unique_data = jnp.zeros(
             sparsity.num_unique, dtype=K_data.dtype,
         ).at[sparsity.segment_ids].add(K_data[sparsity.perm])
@@ -193,12 +213,14 @@ class ElementOperator:
             field_offsets: Sequence[int] | NDArray[np.integer],
             prescribed_indices: JaxArray,
             n: int,
+            device_mesh: Mesh | None = None,
     ) -> None:
         self.K_elem_by_block = K_elem_by_block
         self.eq_by_block = eq_by_block
         self.field_idx_per_block = tuple(field_idx_per_block)
         self.field_offsets = tuple(int(o) for o in field_offsets)
         self.prescribed_indices = prescribed_indices
+        self.device_mesh = device_mesh
         self._n = n
         first = next(iter(K_elem_by_block.values()))[0][0]
         self._free = jnp.ones(
@@ -511,32 +533,27 @@ def _pcg_loop(
         precon: Callable[[JaxArray], JaxArray],
         rtol: float,
         max_iters: int | None,
+        device_mesh: Mesh | None = None,
 ) -> tuple[JaxArray, JaxArray]:
-    """Preconditioned CG via manual ``lax.while_loop`` with iter count.
+    """Preconditioned CG via ``lax.while_loop``, returning ``(x, iterations)``.
 
-    Same Hestenes-Stiefel algorithm as
-    :func:`jax.scipy.sparse.linalg.cg`, restructured to expose the
-    iteration counter through the loop carry. Convergence test on
-    the unpreconditioned residual:
-    ``|r|^2 <= rtol^2 * |b|^2``.
+    The Hestenes-Stiefel algorithm, as in
+    :func:`jax.scipy.sparse.linalg.cg`, with the iteration counter in the
+    loop carry. Convergence test on the unpreconditioned residual:
+    ``|r|^2 <= rtol^2 * |b|^2``. The CG behind :func:`jax_cg` and
+    :func:`jax_cg_with_iters`.
 
-    Used by :func:`jax_cg_with_iters` to expose the counter
-    through its return tuple. :func:`jax_cg` defers to
-    :func:`jax.scipy.sparse.linalg.cg` so CMAD inherits whatever
-    upstream JAX does. Iter count from this loop may differ from
-    the JAX-native CG by ±1 on convergence-test rounding;
-    acceptable for diagnostic purposes.
-
-    ``max_iters=None`` selects the
-    :func:`jax.scipy.sparse.linalg.cg` default of
-    ``10 * b.shape[0]``.
+    ``max_iters=None`` selects ``10 * b.shape[0]``. With a ``device_mesh``
+    the vectors are split across its devices (:func:`_dof_sharded`).
     """
     if max_iters is None:
         max_iters = 10 * b.shape[0]
 
+    split = partial(_dof_sharded, device_mesh=device_mesh)
+    b = split(b)
     x0 = jnp.zeros_like(b)
-    r0 = b - matvec(x0)
-    z0 = precon(r0)
+    r0 = split(b - matvec(x0))
+    z0 = split(precon(r0))
     p0 = z0
     rz0 = jnp.dot(r0, z0)
     tol_sq = (rtol ** 2) * jnp.dot(b, b)
@@ -547,14 +564,14 @@ def _pcg_loop(
 
     def body(state: tuple) -> tuple:
         i, x, r, _z, p, rz = state
-        Ap = matvec(p)
+        Ap = split(matvec(p))
         alpha = rz / jnp.dot(p, Ap)
-        x_new = x + alpha * p
-        r_new = r - alpha * Ap
-        z_new = precon(r_new)
+        x_new = split(x + alpha * p)
+        r_new = split(r - alpha * Ap)
+        z_new = split(precon(r_new))
         rz_new = jnp.dot(r_new, z_new)
         beta = rz_new / rz
-        p_new = z_new + beta * p
+        p_new = split(z_new + beta * p)
         return (i + 1, x_new, r_new, z_new, p_new, rz_new)
 
     initial = (jnp.int32(0), x0, r0, z0, p0, rz0)
@@ -570,6 +587,7 @@ def _gmres_loop(
         rtol: float,
         restart: int,
         max_iters: int | None,
+        device_mesh: Mesh | None = None,
 ) -> tuple[JaxArray, JaxArray]:
     """Right preconditioned restarted GMRES, returning ``(x, iterations)``.
 
@@ -591,7 +609,9 @@ def _gmres_loop(
 
     ``iterations`` is the total Krylov iteration count over all cycles, for
     diagnostics; :func:`_gmres_solve` drops it for
-    :func:`jax.lax.custom_linear_solve`.
+    :func:`jax.lax.custom_linear_solve`. With a ``device_mesh`` the Krylov
+    basis and the vectors are split across its devices
+    (:func:`_dof_sharded`).
     """
     n = b.shape[0]
     restart = min(restart, n)
@@ -599,13 +619,15 @@ def _gmres_loop(
         max_iters = 10 * n
     dtype = b.dtype
     eps = jnp.finfo(dtype).eps
+    split = partial(_dof_sharded, device_mesh=device_mesh)
+    b = split(b)
     b_norm = jnp.linalg.norm(b)
     tol = rtol * b_norm
 
     def cycle(carry: tuple) -> tuple:
         x, r, r_norm, cycles, done = carry
         # Basis vectors are rows of V so each new one is a contiguous write.
-        V = jnp.zeros((restart + 1, n), dtype).at[0].set(r / r_norm)
+        V = split(jnp.zeros((restart + 1, n), dtype).at[0].set(r / r_norm))
         # H[k] holds column k of the Hessenberg matrix after the rotations;
         # untouched rows are identity rows so the triangular solve below is
         # well posed however early the cycle stops.
@@ -620,19 +642,19 @@ def _gmres_loop(
 
         def step(state: tuple) -> tuple:
             k, V, H, cs, sn, g, _err = state
-            w = matvec(precon(V[k]))
+            w = split(matvec(precon(V[k])))
             w_norm_0 = jnp.linalg.norm(w)
             h1 = V @ w
-            w = w - h1 @ V
+            w = split(w - h1 @ V)
             h2 = V @ w
-            w = w - h2 @ V
+            w = split(w - h2 @ V)
             h = h1 + h2
             w_norm = jnp.linalg.norm(w)
             breakdown = w_norm <= eps * w_norm_0
             h = h.at[k + 1].set(jnp.where(breakdown, 0.0, w_norm))
-            V = V.at[k + 1].set(
+            V = split(V.at[k + 1].set(
                 jnp.where(breakdown, 0.0, w / jnp.where(breakdown, 1.0, w_norm)),
-            )
+            ))
 
             def rotate(j: int, h: JaxArray) -> JaxArray:
                 hj = cs[j] * h[j] + sn[j] * h[j + 1]
@@ -658,8 +680,8 @@ def _gmres_loop(
         # identity rows of H past k must see zeros so y vanishes there.
         g_solved = jnp.where(jnp.arange(restart) < k, g[:-1], 0.0)
         y = jax.scipy.linalg.solve_triangular(H[:, :-1].T, g_solved, lower=False)
-        x = x + precon(y @ V[:-1])
-        r = b - matvec(x)
+        x = split(x + precon(y @ V[:-1]))
+        r = split(b - matvec(x))
         return x, r, jnp.linalg.norm(r), cycles + 1, done + k
 
     def cycle_cond(carry: tuple) -> JaxArray:
@@ -680,10 +702,13 @@ def _gmres_solve(
         rtol: float,
         restart: int,
         max_iters: int | None,
+        device_mesh: Mesh | None = None,
 ) -> JaxArray:
     """:func:`_gmres_loop` without the iteration count, the shape
     :func:`jax.lax.custom_linear_solve`'s ``solve`` callbacks need."""
-    return _gmres_loop(matvec, precon, b, rtol, restart, max_iters)[0]
+    return _gmres_loop(
+        matvec, precon, b, rtol, restart, max_iters, device_mesh,
+    )[0]
 
 
 def _jacobi_cg(
@@ -694,8 +719,8 @@ def _jacobi_cg(
     precon = _jacobi_preconditioner(op)
 
     def solve(_unused_matvec, rhs: JaxArray) -> JaxArray:
-        x, _info = jax.scipy.sparse.linalg.cg(
-            op.matvec, rhs, M=precon, tol=rtol, maxiter=max_iters,
+        x, _iterations = _pcg_loop(
+            op.matvec, rhs, precon, rtol, max_iters, op.device_mesh,
         )
         return x
 
@@ -716,11 +741,15 @@ def _jacobi_gmres(
 
     def solve(matvec_: Callable[[JaxArray], JaxArray],
               rhs: JaxArray) -> JaxArray:
-        return _gmres_solve(matvec_, precon, rhs, rtol, restart, max_iters)
+        return _gmres_solve(
+            matvec_, precon, rhs, rtol, restart, max_iters, op.device_mesh,
+        )
 
     def transpose_solve(vecmat: Callable[[JaxArray], JaxArray],
                         rhs: JaxArray) -> JaxArray:
-        return _gmres_solve(vecmat, precon, rhs, rtol, restart, max_iters)
+        return _gmres_solve(
+            vecmat, precon, rhs, rtol, restart, max_iters, op.device_mesh,
+        )
 
     return lax.custom_linear_solve(
         op.matvec, b, solve, transpose_solve=transpose_solve,
@@ -734,7 +763,7 @@ def jax_cg(
 ) -> JaxArray:
     """Solve ``K x = b`` for symmetric positive-definite K via CG.
 
-    Built on :func:`jax.scipy.sparse.linalg.cg` (no scipy callback,
+    Built on :func:`_pcg_loop` (no scipy callback,
     fully jit-traceable). The matvec is
     :class:`jax.experimental.sparse.BCSR` matrix-vector
     multiplication against the pre-built sparsity cache; the
@@ -784,22 +813,15 @@ def jax_cg_with_iters(
 ) -> tuple[JaxArray, JaxArray]:
     """CG returning ``(x, iter_count)``.
 
-    Same operator + Jacobi preconditioner as :func:`jax_cg`. Inner
-    iteration is :func:`_pcg_loop`
-    rather than :func:`jax.scipy.sparse.linalg.cg` so the loop
-    counter is surfaced through the return tuple;
-    :func:`jax.lax.custom_linear_solve`'s ``solve`` callback can
-    return only a single output, so :func:`jax_cg` drops the
-    count.
+    The same :func:`_pcg_loop` with the same operator and Jacobi
+    preconditioner as :func:`jax_cg`, with the iteration count kept;
+    :func:`jax.lax.custom_linear_solve`'s ``solve`` callback can return
+    only a single output, so :func:`jax_cg` drops it.
 
     Doesn't participate in JAX AD (no
     :func:`jax.lax.custom_linear_solve` wrapper). Call sites that
     need to differentiate through the linear solve must use
     :func:`jax_cg`.
-
-    Iter count may differ from :func:`jax.scipy.sparse.linalg.cg`
-    by ±1 on convergence-test rounding; acceptable for diagnostic
-    purposes.
     """
     op = AssembledOperator(K_data, sparsity)
     return _pcg_loop(op.matvec, b, _jacobi_preconditioner(op), rtol, max_iters)
@@ -974,6 +996,7 @@ def _diag_block_matvec(
 
 def _lanczos_dominant_eigenvalue(
         matvec: Callable[[JaxArray], JaxArray], n: int, dtype: np.dtype,
+        device_mesh: Mesh | None = None,
 ) -> JaxArray:
     """Dominant eigenvalue of ``matvec`` (largest magnitude, sign kept), via Lanczos.
 
@@ -985,19 +1008,20 @@ def _lanczos_dominant_eigenvalue(
     safety inflation. ``matvec`` is assumed symmetric.
     """
     steps = min(_LANCZOS_STEPS, n)
+    split = partial(_dof_sharded, device_mesh=device_mesh)
     q0 = jnp.arange(1, n + 1, dtype=dtype)
-    q0 = q0 / jnp.linalg.norm(q0)
+    q0 = split(q0 / jnp.linalg.norm(q0))
 
     def step(
             j: int,
             carry: tuple[JaxArray, JaxArray, JaxArray, JaxArray, JaxArray],
     ) -> tuple[JaxArray, JaxArray, JaxArray, JaxArray, JaxArray]:
         q, q_prev, beta_prev, alphas, betas = carry
-        w = matvec(q) - beta_prev * q_prev
+        w = split(matvec(q) - beta_prev * q_prev)
         alpha = jnp.dot(q, w)
-        w = w - alpha * q
+        w = split(w - alpha * q)
         beta = jnp.linalg.norm(w)
-        q_next = w / jnp.where(beta > 0.0, beta, 1.0)
+        q_next = split(w / jnp.where(beta > 0.0, beta, 1.0))
         return q_next, q, beta, alphas.at[j].set(alpha), betas.at[j].set(beta)
 
     zeros_k = jnp.zeros(steps, dtype=dtype)
@@ -1018,6 +1042,7 @@ def _lanczos_dominant_eigenvalue(
 def _chebyshev_apply(
         matvec: Callable[[JaxArray], JaxArray], r: JaxArray,
         lmin: JaxArray, lmax: JaxArray, degree: int,
+        device_mesh: Mesh | None = None,
 ) -> JaxArray:
     """Approximately solve ``A z = r`` with a Chebyshev iteration of fixed degree.
 
@@ -1026,22 +1051,25 @@ def _chebyshev_apply(
     negative bounds. The result is a polynomial in ``A`` of degree ``degree``
     applied to ``r`` that approaches ``A^-1 r`` as the degree grows. Used as a
     smoother, not run to a tolerance, so it carries no inner convergence test.
+    With a ``device_mesh`` the vectors are split across its devices.
     """
     theta = (lmax + lmin) / 2.0
     delta = (lmax - lmin) / 2.0
     sigma = theta / delta
     rho0 = 1.0 / sigma
+    split = partial(_dof_sharded, device_mesh=device_mesh)
+    r = split(r)
     z0 = jnp.zeros_like(r)
-    d0 = r / theta
+    d0 = split(r / theta)
 
     def step(
             _: int, carry: tuple[JaxArray, JaxArray, JaxArray, JaxArray],
     ) -> tuple[JaxArray, JaxArray, JaxArray, JaxArray]:
         z, res, d, rho = carry
-        z = z + d
-        res = res - matvec(d)
+        z = split(z + d)
+        res = split(res - matvec(d))
         rho_next = 1.0 / (2.0 * sigma - rho)
-        d = rho * rho_next * d + (2.0 * rho_next / delta) * res
+        d = split(rho * rho_next * d + (2.0 * rho_next / delta) * res)
         return z, res, d, rho_next
 
     z, _res, _d, _rho = lax.fori_loop(0, degree, step, (z0, r, d0, rho0))
@@ -1077,7 +1105,9 @@ def _chebyshev_field_bounds(
                 op, i, s * x, diagonal_block=diagonal_block, transpose=False,
             )
 
-        lam = _lanczos_dominant_eigenvalue(block_matvec, n_i, s.dtype)
+        lam = _lanczos_dominant_eigenvalue(
+            block_matvec, n_i, s.dtype, op.device_mesh,
+        )
         lo = lam * _CHEBYSHEV_LMIN_FRACTION
         hi = lam * _CHEBYSHEV_LMAX_SAFETY
         bounds.append((jnp.minimum(lo, hi), jnp.maximum(lo, hi)))
@@ -1136,14 +1166,15 @@ def _block_precon_apply(
 
     num_fields = op.num_fields
     offs = op.field_offsets
-    r_fields = [r[offs[i]:offs[i + 1]] for i in range(num_fields)]
+    split = partial(_dof_sharded, device_mesh=op.device_mesh)
+    r_fields = [split(r[offs[i]:offs[i + 1]]) for i in range(num_fields)]
     z_fields: list[JaxArray] = [
         jnp.zeros_like(r_fields[i]) for i in range(num_fields)
     ]
 
     def apply_block_inverse(i: int, rhs: JaxArray) -> JaxArray:
         if inner == "jacobi":
-            return rhs / op.block_diagonal(i)
+            return split(rhs / op.block_diagonal(i))
         assert chebyshev_bounds is not None
         lmin, lmax = chebyshev_bounds[i]
         s = _block_scaling(op, i)
@@ -1154,9 +1185,10 @@ def _block_precon_apply(
                 transpose=transpose,
             )
 
-        return s * _chebyshev_apply(
+        return split(s * _chebyshev_apply(
             block_matvec, s * rhs, lmin, lmax, chebyshev_degree,
-        )
+            op.device_mesh,
+        ))
 
     order = (
         range(num_fields) if coupling != "upper"
@@ -1166,12 +1198,16 @@ def _block_precon_apply(
         rhs = r_fields[i]
         if coupling == "lower":
             for j in range(i):
-                rhs = rhs - op.block_matvec(i, j, z_fields[j], transpose=transpose)
+                rhs = split(
+                    rhs - op.block_matvec(i, j, z_fields[j], transpose=transpose),
+                )
         elif coupling == "upper":
             for j in range(i + 1, num_fields):
-                rhs = rhs - op.block_matvec(i, j, z_fields[j], transpose=transpose)
+                rhs = split(
+                    rhs - op.block_matvec(i, j, z_fields[j], transpose=transpose),
+                )
         z_fields[i] = apply_block_inverse(i, rhs)
-    return jnp.concatenate(z_fields)
+    return split(jnp.concatenate(z_fields))
 
 
 def _block_gmres(
@@ -1210,12 +1246,14 @@ def _block_gmres(
               rhs: JaxArray) -> JaxArray:
         return _gmres_solve(
             matvec_, precon_forward, rhs, rtol, restart, max_iters,
+            op.device_mesh,
         )
 
     def transpose_solve(vecmat: Callable[[JaxArray], JaxArray],
                         rhs: JaxArray) -> JaxArray:
         return _gmres_solve(
             vecmat, precon_transpose, rhs, rtol, restart, max_iters,
+            op.device_mesh,
         )
 
     return lax.custom_linear_solve(
