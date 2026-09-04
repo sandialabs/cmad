@@ -104,7 +104,7 @@ class TestCoupledResidualMatchesAssembleGlobal(unittest.TestCase):
         }
 
         params = params_by_block_from_models(fe)
-        _, R, _ = assemble_global(
+        _, R, _, _ = assemble_global(
             fe, fe.kernel_arrays, params, U, U, step_time=StepTime(1.0, 0.0),
             xi_prev_by_block=xi_prev_by_block,
         )

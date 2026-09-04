@@ -634,7 +634,7 @@ def assemble_element_block_dense(
         U_prev_global: NDArray[np.floating] | JaxArray,
         step_time: StepTime,
         xi_prev_per_block: NDArray[np.floating] | JaxArray | None = None,
-) -> tuple[JaxArray, list[list[JaxArray]], JaxArray | None]:
+) -> tuple[JaxArray, list[list[JaxArray]], JaxArray | None, JaxArray]:
     """Assemble one element block's R contribution + per element tangent.
 
     Dispatches on ``fe_problem.modes_by_block[block_name]``. The
@@ -644,7 +644,8 @@ def assemble_element_block_dense(
     total_xi_dofs)``) through the per-IP local Newton, returning the
     converged xi at the same shape.
 
-    Returns ``(R_block, K_blocks, xi_solved_per_block)``. ``R_block`` is a
+    Returns ``(R_block, K_blocks, xi_solved_per_block, R_elem_norm)``.
+    ``R_block`` is a
     length-``dof_map.num_total_dofs`` JAX vector: this block's
     per-element residual contributions scattered to their global dof
     positions, and left zero at every dof the block's elements do not
@@ -655,6 +656,10 @@ def assemble_element_block_dense(
     ``fe_arrays.r_scatter_eq_by_block[block_name][r]`` and ``[s]``, the
     global equation numbers they scatter to. ``xi_solved_per_block`` is
     the converged xi for COUPLED, ``None`` for CLOSED_FORM.
+    ``R_elem_norm`` is the l2 norm of the per-element residual entries
+    exactly as the kernels produced them, before the scatter sums them
+    into ``R_block``: the size of the assembly's summands, not of their
+    sum.
 
     The per-element U-gather index arrays, the per-residual-block
     R-scatter eq arrays, and the reference-frame geometry cache are
@@ -728,6 +733,8 @@ def assemble_element_block_dense(
         R_block = R_block.at[eq_indices_per_block[r].ravel()].add(
             R_flat.ravel(),
         )
+    block_norms = [jnp.linalg.norm(R) for R in R_per_elem_blocks]
+    R_elem_norm = jnp.linalg.norm(jnp.stack(block_norms))
 
     K_blocks = [
         [
@@ -740,7 +747,7 @@ def assemble_element_block_dense(
         ]
         for r in range(num_blocks)
     ]
-    return R_block, K_blocks, xi_solved_per_block
+    return R_block, K_blocks, xi_solved_per_block, R_elem_norm
 
 
 def assemble_element_block(
@@ -752,25 +759,29 @@ def assemble_element_block(
         U_prev_global: NDArray[np.floating] | JaxArray,
         step_time: StepTime,
         xi_prev_per_block: NDArray[np.floating] | JaxArray | None = None,
-) -> tuple[JaxArray, JaxArray, JaxArray | None]:
+) -> tuple[JaxArray, JaxArray, JaxArray | None, JaxArray]:
     """Assemble one element block's R contribution + COO data.
 
     :func:`assemble_element_block_dense` with the per element tangent
     blocks raveled into the COO data stream. Returns ``(R_block, vals,
-    xi_solved_per_block)``: ``vals`` is the JAX traced COO data, emitted
+    xi_solved_per_block, R_elem_norm)``: ``vals`` is the JAX traced COO
+    data, emitted
     in ``(r, s)`` residual block / U block order; its static
     ``(rows, cols)`` are ``fe_arrays.coo_rows`` / ``coo_cols``, which
     :func:`assembled_coo_indices` builds in the same emit order. A GR
     with several residual blocks emits nested ``(r, s)`` pairs; a single
-    block GR is the degenerate ``r = s = 0`` case.
+    block GR is the degenerate ``r = s = 0`` case. ``R_elem_norm``
+    passes through from :func:`assemble_element_block_dense`.
     """
-    R_block, K_blocks, xi_solved_per_block = assemble_element_block_dense(
-        fe_problem, fe_arrays, params_by_block, block_name,
-        U_global, U_prev_global, step_time,
-        xi_prev_per_block=xi_prev_per_block,
+    R_block, K_blocks, xi_solved_per_block, R_elem_norm = (
+        assemble_element_block_dense(
+            fe_problem, fe_arrays, params_by_block, block_name,
+            U_global, U_prev_global, step_time,
+            xi_prev_per_block=xi_prev_per_block,
+        )
     )
     vals_all = [K_rs.ravel() for K_r in K_blocks for K_rs in K_r]
-    return R_block, jnp.concatenate(vals_all), xi_solved_per_block
+    return R_block, jnp.concatenate(vals_all), xi_solved_per_block, R_elem_norm
 
 
 def assemble_element_block_residual(
@@ -863,8 +874,9 @@ def assemble_global(
         step_time: StepTime,
         xi_prev_by_block: Mapping[str, NDArray[np.floating] | JaxArray]
         | None = None,
-) -> tuple[BCOO, JaxArray, dict[str, JaxArray]]:
-    """Walk all element blocks and emit the global ``(K, R, xi_solved)``.
+) -> tuple[BCOO, JaxArray, dict[str, JaxArray], JaxArray]:
+    """Walk all element blocks and emit the global
+    ``(K, R, xi_solved, residual_scale)``.
 
     ``K`` is the global tangent ``dR/dU`` as a
     :class:`jax.experimental.sparse.BCOO` of shape
@@ -877,7 +889,10 @@ def assemble_global(
     ``xi_solved_by_block`` is the per-block converged-xi dict — keys
     are exactly the set of blocks whose mode is COUPLED, each entry
     shaped ``(n_elems_block, n_ips, total_xi_dofs)``. CLOSED_FORM-
-    only problems get an empty dict.
+    only problems get an empty dict. ``residual_scale`` combines the
+    element blocks' ``R_elem_norm`` values into one l2 norm (see
+    :func:`assemble_element_block_dense` for what each measures); the
+    Neumann contributions are not in it.
 
     Nonlinear-FE convention: ``R(U) = R_int(U) - F_ext`` (body-force
     and surface-flux contributions folded into ``R``, no separate
@@ -923,19 +938,22 @@ def assemble_global(
 
     n_dofs = fe_problem.dof_map.num_total_dofs
     vals_all: list[JaxArray] = []
+    R_elem_norms: list[JaxArray] = []
     R_global = jnp.zeros(n_dofs)
     xi_solved_by_block: dict[str, JaxArray] = {}
 
     for block_name in fe_problem.evaluators_by_block:
-        R_block, vals, xi_solved = assemble_element_block(
+        R_block, vals, xi_solved, R_elem_norm = assemble_element_block(
             fe_problem, fe_arrays, params_by_block, block_name,
             U_global, U_prev_global, step_time,
             xi_prev_per_block=xi_prev.get(block_name),
         )
         R_global = R_global + R_block
         vals_all.append(vals)
+        R_elem_norms.append(R_elem_norm)
         if xi_solved is not None:
             xi_solved_by_block[block_name] = xi_solved
+    residual_scale = jnp.linalg.norm(jnp.stack(R_elem_norms))
 
     R_global = R_global + assemble_side_neumann(
         fe_problem.dof_map,
@@ -955,7 +973,7 @@ def assemble_global(
         indices_sorted=True,
         unique_indices=True,
     )
-    return K, R_global, xi_solved_by_block
+    return K, R_global, xi_solved_by_block, residual_scale
 
 
 def assemble_element_tangent(
@@ -967,11 +985,15 @@ def assemble_element_tangent(
         step_time: StepTime,
         xi_prev_by_block: Mapping[str, NDArray[np.floating] | JaxArray]
         | None = None,
-) -> tuple[dict[str, list[list[JaxArray]]], JaxArray, dict[str, JaxArray]]:
-    """Walk all element blocks and emit ``(K_elem_by_block, R, xi_solved)``.
+) -> tuple[
+        dict[str, list[list[JaxArray]]], JaxArray, dict[str, JaxArray],
+        JaxArray]:
+    """Walk all element blocks and emit
+    ``(K_elem_by_block, R, xi_solved, residual_scale)``.
 
     The per element form of :func:`assemble_global`: the same ``R``
-    (surface fluxes included) and the same ``xi_solved_by_block``, with
+    (surface fluxes included), the same ``xi_solved_by_block``, and the
+    same ``residual_scale``, with
     the tangent kept as each element block's ``K_blocks`` from
     :func:`assemble_element_block_dense` instead of being deduplicated
     into a :class:`jax.experimental.sparse.BCOO`.
@@ -987,19 +1009,24 @@ def assemble_element_tangent(
 
     n_dofs = fe_problem.dof_map.num_total_dofs
     K_elem_by_block: dict[str, list[list[JaxArray]]] = {}
+    R_elem_norms: list[JaxArray] = []
     R_global = jnp.zeros(n_dofs)
     xi_solved_by_block: dict[str, JaxArray] = {}
 
     for block_name in fe_problem.evaluators_by_block:
-        R_block, K_blocks, xi_solved = assemble_element_block_dense(
-            fe_problem, fe_arrays, params_by_block, block_name,
-            U_global, U_prev_global, step_time,
-            xi_prev_per_block=xi_prev.get(block_name),
+        R_block, K_blocks, xi_solved, R_elem_norm = (
+            assemble_element_block_dense(
+                fe_problem, fe_arrays, params_by_block, block_name,
+                U_global, U_prev_global, step_time,
+                xi_prev_per_block=xi_prev.get(block_name),
+            )
         )
         R_global = R_global + R_block
         K_elem_by_block[block_name] = K_blocks
+        R_elem_norms.append(R_elem_norm)
         if xi_solved is not None:
             xi_solved_by_block[block_name] = xi_solved
+    residual_scale = jnp.linalg.norm(jnp.stack(R_elem_norms))
 
     R_global = R_global + assemble_side_neumann(
         fe_problem.dof_map,
@@ -1007,7 +1034,7 @@ def assemble_element_tangent(
         fe_problem.resolved_neumann_bcs,
         step_time.t,
     )
-    return K_elem_by_block, R_global, xi_solved_by_block
+    return K_elem_by_block, R_global, xi_solved_by_block, residual_scale
 
 
 def assemble_global_residual(

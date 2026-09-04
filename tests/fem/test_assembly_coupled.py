@@ -109,8 +109,8 @@ def _split_into_two_blocks(mesh: Mesh) -> Mesh:
 
 class TestAssembleElementBlockCoupledShape(unittest.TestCase):
     """``assemble_element_block`` returns ``(R_block, vals,
-    xi_solved_per_block)``; for a COUPLED block the third slot is
-    ``xi_solved_per_block`` shaped ``(n_elems_block, n_ips,
+    xi_solved_per_block, R_elem_norm)``; for a COUPLED block the third
+    slot is ``xi_solved_per_block`` shaped ``(n_elems_block, n_ips,
     total_xi_dofs)``, and for a CLOSED_FORM block it is ``None``."""
 
     def test_coupled_returns_xi_solved_per_block(self) -> None:
@@ -127,7 +127,7 @@ class TestAssembleElementBlockCoupledShape(unittest.TestCase):
         xi_prev = np.zeros((1, 8, 6), dtype=np.float64)
 
         params_by_block = params_by_block_from_models(fe_problem)
-        R_block, vals, xi_solved = assemble_element_block(
+        R_block, vals, xi_solved, _ = assemble_element_block(
             fe_problem, fe_problem.kernel_arrays, params_by_block, "all",
             U, U, step_time=StepTime(1.0, 0.0), xi_prev_per_block=xi_prev,
         )
@@ -147,7 +147,7 @@ class TestAssembleElementBlockCoupledShape(unittest.TestCase):
         U = np.zeros(n_dofs, dtype=np.float64)
 
         params_by_block = params_by_block_from_models(fe_problem)
-        _, _, xi_solved = assemble_element_block(
+        _, _, xi_solved, _ = assemble_element_block(
             fe_problem, fe_problem.kernel_arrays, params_by_block, "all",
             U, U, step_time=StepTime(1.0, 0.0),
         )
@@ -180,7 +180,7 @@ class TestAssembleGlobalCoupledClosedFormEquivalence(unittest.TestCase):
 
         params_closed = params_by_block_from_models(fe_closed)
         params_coupled = params_by_block_from_models(fe_coupled)
-        K_closed, R_closed, xi_closed = assemble_global(
+        K_closed, R_closed, xi_closed, _ = assemble_global(
             fe_closed, fe_closed.kernel_arrays, params_closed, U, U,
             step_time=StepTime(1.0, 0.0),
         )
@@ -188,7 +188,7 @@ class TestAssembleGlobalCoupledClosedFormEquivalence(unittest.TestCase):
         xi_prev_by_block: dict[str, NDArray[np.floating]] = {
             "all": np.zeros((n_elems, 8, 6)),
         }
-        K_coupled, R_coupled, xi_coupled = assemble_global(
+        K_coupled, R_coupled, xi_coupled, _ = assemble_global(
             fe_coupled, fe_coupled.kernel_arrays, params_coupled, U, U,
             step_time=StepTime(1.0, 0.0), xi_prev_by_block=xi_prev_by_block,
         )
@@ -231,7 +231,7 @@ class TestAssembleGlobalCoupledMixedMode(unittest.TestCase):
         }
 
         params_by_block = params_by_block_from_models(fe_problem)
-        _, _, xi_solved = assemble_global(
+        _, _, xi_solved, _ = assemble_global(
             fe_problem, fe_problem.kernel_arrays, params_by_block, U, U,
             step_time=StepTime(1.0, 0.0), xi_prev_by_block=xi_prev_by_block,
         )

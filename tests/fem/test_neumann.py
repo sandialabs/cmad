@@ -379,7 +379,7 @@ class TestNeumannBCThreading(unittest.TestCase):
         n_dofs = fe_problem.dof_map.num_total_dofs
         U_zero = np.zeros(n_dofs, dtype=np.float64)
         params_by_block = params_by_block_from_models(fe_problem)
-        _, R, _ = assemble_global(
+        _, R, _, _ = assemble_global(
             fe_problem, fe_problem.kernel_arrays, params_by_block,
             U_zero, U_zero, step_time=StepTime(1.0, 0.0),
         )

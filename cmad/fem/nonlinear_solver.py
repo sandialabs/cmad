@@ -168,16 +168,17 @@ def _assemble_tangent_and_residual(
         xi_prev_by_block: Mapping[str, JaxArray],
         presc_vals: JaxArray,
         operator: str,
-) -> tuple[JaxArray, Any, dict[str, JaxArray]]:
-    """Assemble at ``U`` and return ``(r, K, xi)``: the embedded residual,
-    the tangent, and the solved state. ``operator`` picks the tangent's
+) -> tuple[JaxArray, Any, dict[str, JaxArray], JaxArray]:
+    """Assemble at ``U`` and return ``(r, K, xi, residual_scale)``: the
+    embedded residual, the tangent, the solved state, and the assembly's
+    ``residual_scale``. ``operator`` picks the tangent's
     representation: ``'assembled'`` gives the enforced COO data of
     :func:`_embedded_bc_enforce`, ``'element'`` the per element blocks of
     :func:`assemble_element_tangent`; :func:`_tangent_operator` builds the
     operator from either."""
     presc_idx = fe_arrays.prescribed_indices
     if operator == "assembled":
-        K_bcoo, R, xi = assemble_global(
+        K_bcoo, R, xi, residual_scale = assemble_global(
             fe_problem, fe_arrays, params_by_block, U, U_prev, step_time,
             xi_prev_by_block=xi_prev_by_block,
         )
@@ -187,8 +188,8 @@ def _assemble_tangent_and_residual(
         r = _embedded_residual(
             R, lambda v: K_bcoo @ v, U, presc_idx, presc_vals, K_ii_presc,
         )
-        return _pad_dofs(r, fe_problem), K, xi
-    K_elem, R, xi = assemble_element_tangent(
+        return _pad_dofs(r, fe_problem), K, xi, residual_scale
+    K_elem, R, xi, residual_scale = assemble_element_tangent(
         fe_problem, fe_arrays, params_by_block, U, U_prev, step_time,
         xi_prev_by_block=xi_prev_by_block,
     )
@@ -199,7 +200,7 @@ def _assemble_tangent_and_residual(
         lambda v: _strip_dofs(op.raw_matvec(_pad_dofs(v, fe_problem)), fe_problem),
         U, presc_idx, presc_vals, op.diagonal()[presc_idx_padded],
     )
-    return _pad_dofs(r, fe_problem), K_elem, xi
+    return _pad_dofs(r, fe_problem), K_elem, xi, residual_scale
 
 
 def _solve_linear(
@@ -342,16 +343,16 @@ class NewtonStatus:
     """
     converged: JaxArray
     residual_norm: JaxArray
-    residual_norm_0: JaxArray
+    reference_norm: JaxArray
     iterations: JaxArray
 
     def relative_norm(self) -> JaxArray:
-        return self.residual_norm / self.residual_norm_0
+        return self.residual_norm / self.reference_norm
 
 
 def newton_converged(
         residual_norm: JaxArray,
-        residual_norm_0: JaxArray,
+        reference_norm: JaxArray,
         abs_tol: float,
         rel_tol: float,
 ) -> JaxArray:
@@ -362,13 +363,12 @@ def newton_converged(
     tell a converged step from one that hit the iteration limit, so the two
     cannot drift apart.
 
-    ``residual_norm_0`` is the norm the step started from, floored at
-    ``abs_tol`` by the solver, so on a step that begins already converged
-    the relative test is measured against that floor rather than the true
-    initial norm.
+    ``reference_norm`` is the assembly's ``residual_scale`` at the same
+    iterate, floored at ``abs_tol`` so a stress free state falls back to
+    the absolute test.
     """
     return jnp.logical_or(
-        residual_norm < abs_tol, residual_norm < rel_tol * residual_norm_0,
+        residual_norm < abs_tol, residual_norm < rel_tol * reference_norm,
     )
 
 
@@ -395,12 +395,13 @@ def _fe_newton_primal(
     ``direct``, ``cg``, ``gmres``). ``cond`` checks the residual norm
     against the absolute and relative tolerances.
 
-    Returns ``(U_star, xi_star, residual_norm, residual_norm_0,
+    Returns ``(U_star, xi_star, residual_norm, reference_norm,
     iterations)``: the converged displacement, the solved state at it,
-    the residual norm the loop exited on, the norm it started from, and
+    the residual norm the loop exited on, the reference norm of the same
+    iterate, and
     the number of Newton iterations taken. The loop stops once the
-    residual meets the absolute tolerance ``abs tol`` or falls to
-    ``rel tol`` of where it started, and otherwise when it hits the
+    residual meets the absolute tolerance ``abs tol`` or falls below
+    ``rel tol`` times the reference, and otherwise when it hits the
     iteration limit. Both norms come back because the exit alone does not say
     which of those happened; :func:`newton_converged` is the shared test.
     """
@@ -423,15 +424,15 @@ def _fe_newton_primal(
     U_init = U_prev if U_guess is None else U_guess
 
     def _assemble_enforced(U):
-        return _assemble_tangent_and_residual(
+        r, K, xi, residual_scale = _assemble_tangent_and_residual(
             fe_problem, fe_arrays, params_by_block, U, U_prev, step_time,
             xi_prev_by_block, presc_vals, operator,
         )
+        return r, K, xi, jnp.maximum(residual_scale, abs_tol)
 
-    r_init, K_init, xi_init = _assemble_enforced(U_init)
-    R0 = jnp.maximum(jnp.linalg.norm(r_init), abs_tol)
+    r_init, K_init, xi_init, ref_init = _assemble_enforced(U_init)
 
-    def _print_line(k, r):
+    def _print_line(k, r, ref):
         if print_global_convergence:
             R_norm = jnp.linalg.norm(r)
             jax.debug.print(" > ({k}) Newton iteration", k=k)
@@ -439,20 +440,20 @@ def _fe_newton_primal(
                 " > absolute ||R|| = {abs_r:.6e}", abs_r=R_norm,
             )
             jax.debug.print(
-                " > relative ||R|| = {rel_r:.6e}", rel_r=R_norm / R0,
+                " > relative ||R|| = {rel_r:.6e}", rel_r=R_norm / ref,
             )
 
-    _print_line(1, r_init)
+    _print_line(1, r_init, ref_init)
 
     def cond(state):
-        i, r, _, _, _ = state
+        i, r, ref, _, _, _ = state
         converged = newton_converged(
-            jnp.linalg.norm(r), R0, abs_tol, rel_tol,
+            jnp.linalg.norm(r), ref, abs_tol, rel_tol,
         )
         return (i < max_iters) & jnp.logical_not(converged)
 
     def body(state):
-        i, r, K, U, xi = state
+        i, r, ref, K, U, xi = state
         # r and the linear solve live on the padded dofs
         # (cmad.fem.sharding); U and dU on the true ones.
         dU_padded = _solve_linear(
@@ -463,28 +464,32 @@ def _fe_newton_primal(
             r_norm_sq = r @ r
 
             def eval_fn(alpha):
-                r_trial, K_trial, xi_trial = _assemble_enforced(U + alpha * dU)
+                r_trial, K_trial, xi_trial, ref_trial = _assemble_enforced(
+                    U + alpha * dU,
+                )
                 slope = r_trial @ _tangent_operator(
                     K_trial, fe_problem, fe_arrays, operator,
                 ).matvec(dU_padded)
                 phi = 0.5 * (r_trial @ r_trial)
-                return phi, slope, (r_trial, K_trial, xi_trial)
+                return phi, slope, (r_trial, K_trial, xi_trial, ref_trial)
 
-            alpha, (r_new, K_new, xi_new) = line_search(
-                eval_fn, 0.5 * r_norm_sq, -r_norm_sq, ls_settings, (r, K, xi),
+            alpha, (r_new, K_new, xi_new, ref_new) = line_search(
+                eval_fn, 0.5 * r_norm_sq, -r_norm_sq, ls_settings,
+                (r, K, xi, ref),
             )
             U_new = U + alpha * dU
         else:
             U_new = U + dU
-            r_new, K_new, xi_new = _assemble_enforced(U_new)
-        _print_line(i + 2, r_new)
-        return (i + 1, r_new, K_new, U_new, xi_new)
+            r_new, K_new, xi_new, ref_new = _assemble_enforced(U_new)
+        _print_line(i + 2, r_new, ref_new)
+        return (i + 1, r_new, ref_new, K_new, U_new, xi_new)
 
-    iters, r_star, _, U_star, xi_star = lax.while_loop(
+    iters, r_star, ref_star, _, U_star, xi_star = lax.while_loop(
         cond, body,
-        (jnp.zeros((), dtype=jnp.int32), r_init, K_init, U_init, xi_init),
+        (jnp.zeros((), dtype=jnp.int32), r_init, ref_init, K_init, U_init,
+         xi_init),
     )
-    return U_star, xi_star, jnp.linalg.norm(r_star), R0, iters
+    return U_star, xi_star, jnp.linalg.norm(r_star), ref_star, iters
 
 
 def fe_newton_solve(
@@ -613,7 +618,7 @@ def fe_newton_solve(
     )
     step_time = StepTime(t, t if t_prev is None else t_prev)
     U_start = U_prev_jax  # no history here to extrapolate from
-    (U_star, xi_star, residual_norm, residual_norm_0,
+    (U_star, xi_star, residual_norm, reference_norm,
      iterations) = _fe_newton_solve_ad(
         fe_problem, fe_problem.kernel_arrays, params_by_block,
         U_prev_jax, xi_prev_jax, step_time, U_start, _freeze(nls),
@@ -624,10 +629,10 @@ def fe_newton_solve(
         return U_star, xi_star
     return U_star, xi_star, NewtonStatus(
         converged=newton_converged(
-            residual_norm, residual_norm_0, nls["abs tol"], nls["rel tol"],
+            residual_norm, reference_norm, nls["abs tol"], nls["rel tol"],
         ),
         residual_norm=residual_norm,
-        residual_norm_0=residual_norm_0,
+        reference_norm=reference_norm,
         iterations=iterations,
     )
 
@@ -701,7 +706,7 @@ def _fe_newton_solve_ad_jvp(
 
     lss = _thaw(linear_solver_settings_frozen)
 
-    (U_star, xi_star, residual_norm, residual_norm_0,
+    (U_star, xi_star, residual_norm, reference_norm,
      iterations) = _fe_newton_solve_ad(
         fe_problem, fe_arrays, params_by_block, U_prev, xi_prev_by_block,
         step_time, U_guess, nonlinear_solver_settings_frozen,
@@ -722,7 +727,7 @@ def _fe_newton_solve_ad_jvp(
     # helper's explicit jvp-differentiated inputs; U_star is captured,
     # held fixed by the IFT.
     def r_of_p(params_, Up_, xp_, step_time_):
-        r, _, _ = _assemble_tangent_and_residual(
+        r, _, _, _ = _assemble_tangent_and_residual(
             fe_problem, fe_arrays, params_, U_star, Up_, step_time_, xp_,
             prescribed_values(step_time_), operator,
         )
@@ -734,7 +739,7 @@ def _fe_newton_solve_ad_jvp(
         p_dot,
     )
 
-    _, K, _ = _assemble_tangent_and_residual(
+    _, K, _, _ = _assemble_tangent_and_residual(
         fe_problem, fe_arrays, params_by_block, U_star, U_prev, step_time,
         xi_prev_by_block, prescribed_values(step_time), operator,
     )
@@ -744,7 +749,7 @@ def _fe_newton_solve_ad_jvp(
     )
 
     def xi_of_U_p(U_, params_, Up_, xp_, step_time_):
-        _, _, xi_local = assemble_global(
+        _, _, xi_local, _ = assemble_global(
             fe_problem, fe_arrays, params_,
             U_, Up_, step_time_,
             xi_prev_by_block=xp_,
@@ -762,11 +767,11 @@ def _fe_newton_solve_ad_jvp(
     # quantities and carry no tangent; the integer count takes the
     # float0 tangent JAX reserves for that.
     primals_out = (
-        U_star, xi_star, residual_norm, residual_norm_0, iterations,
+        U_star, xi_star, residual_norm, reference_norm, iterations,
     )
     tangents_out = (
         U_star_dot, xi_star_dot,
-        jnp.zeros_like(residual_norm), jnp.zeros_like(residual_norm_0),
+        jnp.zeros_like(residual_norm), jnp.zeros_like(reference_norm),
         np.zeros(iterations.shape, dtype=jax.dtypes.float0),
     )
     return primals_out, tangents_out

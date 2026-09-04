@@ -171,7 +171,7 @@ def assemble_at_random_state(fe_problem, arrays):
     params = params_by_block_from_models(fe_problem)
 
     def assemble(arrs):
-        K, R, _ = assemble_global(
+        K, R, _, _ = assemble_global(
             fe_problem, arrs, params, U, np.zeros(n), StepTime(1.0, 0.0),
         )
         return K.data, R
@@ -225,7 +225,7 @@ def krylov_solves(fe_problem, params, U, U_prev, xi_prev, step_time,
     out = {}
     for kind in ("assembled", "element"):
         def solve(U_, U_prev_, xi_prev_, kind=kind):
-            r, K, _ = _assemble_tangent_and_residual(
+            r, K, _, _ = _assemble_tangent_and_residual(
                 fe_problem, arrays, params, U_, U_prev_, step_time, xi_prev_,
                 presc_vals, kind,
             )
@@ -295,7 +295,7 @@ def save_sharded_results(path: str) -> None:
     # The assembly at the plastic state through the sharded carrier, and
     # through the same arrays committed to device 0.
     def assemble(arrs, xi_p):
-        K, R, xi_out = assemble_global(
+        K, R, xi_out, _ = assemble_global(
             fe_problem, arrs, params, U, U_prev, step_time,
             xi_prev_by_block=xi_p,
         )
@@ -318,7 +318,7 @@ def save_sharded_results(path: str) -> None:
     )[0])(arrays, xi_placed)
     element = _element_operator(K_elem, fe_problem, arrays)
     arrays_0 = _on_device_0(arrays)
-    K_bcoo_0, _, _ = jax.jit(lambda arrs, xi_p: assemble_global(
+    K_bcoo_0, _, _, _ = jax.jit(lambda arrs, xi_p: assemble_global(
         fe_problem, arrs, params, U, U_prev, step_time, xi_prev_by_block=xi_p,
     ))(arrays_0, _on_device_0(xi_prev))
     K_enforced_0, _ = _embedded_bc_enforce(

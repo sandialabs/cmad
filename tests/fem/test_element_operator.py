@@ -43,7 +43,7 @@ def _operators(fe_problem, params, U, U_prev, xi_prev, step_time):
     """``(assembled, element, K_bcoo)`` at one state."""
     arrays = fe_problem.kernel_arrays
     presc = arrays.prescribed_indices
-    K_bcoo, R, _ = assemble_global(
+    K_bcoo, R, _, _ = assemble_global(
         fe_problem, arrays, params, U, U_prev, step_time,
         xi_prev_by_block=xi_prev,
     )
@@ -51,7 +51,7 @@ def _operators(fe_problem, params, U, U_prev, xi_prev, step_time):
     assembled = AssembledOperator(
         K, arrays.embedded_sparsity, arrays.block_sparsity,
     )
-    K_elem, R_elem, _ = assemble_element_tangent(
+    K_elem, R_elem, _, _ = assemble_element_tangent(
         fe_problem, arrays, params, U, U_prev, step_time,
         xi_prev_by_block=xi_prev,
     )

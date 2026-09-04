@@ -189,14 +189,14 @@ def build_fe_quasistatic_trajectory(
 
             def solve(state):
                 U_at, xi_at = state
-                U_new, xi_new, r_norm, r_norm_0, iters = _fe_newton_solve_ad(
+                U_new, xi_new, r_norm, reference_norm, iters = _fe_newton_solve_ad(
                     fe_problem, fe_arrays, params_by_block,
                     U_at, xi_at, step_time, U_guess, nls_frozen, lss_frozen,
                 )
                 # xi_new only carries keys for element blocks whose
                 # model has time-evolving state; the others keep the
                 # values they already had.
-                return U_new, {**xi_at, **xi_new}, r_norm, r_norm_0, iters
+                return U_new, {**xi_at, **xi_new}, r_norm, reference_norm, iters
 
             def skip(state):
                 U_at, xi_at = state
@@ -205,20 +205,20 @@ def build_fe_quasistatic_trajectory(
                     jnp.zeros((), dtype=jnp.int32),
                 )
 
-            U_solved, xi, r_norm, r_norm_0, iters = lax.cond(
+            U_solved, xi, r_norm, reference_norm, iters = lax.cond(
                 already_failed, skip, solve, (U_prev, xi_prev),
             )
             failed_here = jnp.logical_and(
                 jnp.logical_not(already_failed),
                 jnp.logical_not(newton_converged(
-                    r_norm, r_norm_0, nls["abs tol"], nls["rel tol"],
+                    r_norm, reference_norm, nls["abs tol"], nls["rel tol"],
                 )),
             )
             first_failed_step = jnp.where(
                 failed_here, step_idx, first_failed_step,
             )
             first_failed_rel_norm = jnp.where(
-                failed_here, r_norm / r_norm_0, first_failed_rel_norm,
+                failed_here, r_norm / reference_norm, first_failed_rel_norm,
             )
 
             if qoi_step_contribution is not None:

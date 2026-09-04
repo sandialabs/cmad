@@ -57,11 +57,11 @@ class TestElementTangentMatchesAssembled(unittest.TestCase):
     def _check(self, fe_problem, U, U_prev, xi_prev, step_time) -> None:
         params = params_by_block_from_models(fe_problem)
         arrays = fe_problem.kernel_arrays
-        K_bcoo, R, xi = assemble_global(
+        K_bcoo, R, xi, _ = assemble_global(
             fe_problem, arrays, params, U, U_prev, step_time,
             xi_prev_by_block=xi_prev,
         )
-        K_elem_by_block, R_elem, xi_elem = assemble_element_tangent(
+        K_elem_by_block, R_elem, xi_elem, _ = assemble_element_tangent(
             fe_problem, arrays, params, U, U_prev, step_time,
             xi_prev_by_block=xi_prev,
         )

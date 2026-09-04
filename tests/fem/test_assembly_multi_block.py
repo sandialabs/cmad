@@ -156,7 +156,7 @@ class TestAssemblyMultiBlock(unittest.TestCase):
         self.n_dofs_p = 4
 
     def test_R_block_scatter_lands_in_correct_field_eqs(self) -> None:
-        R_block, _, _ = assemble_element_block(
+        R_block, _, _, _ = assemble_element_block(
             self.fe_problem, self.fe_problem.kernel_arrays, {"all": {}},
             "all", self.U, self.U_prev, step_time=StepTime(1.0, 0.0),
         )
@@ -167,7 +167,7 @@ class TestAssemblyMultiBlock(unittest.TestCase):
 
     def test_K_scatter_populates_all_four_block_pairs(self) -> None:
         fe_arrays = self.fe_problem.kernel_arrays
-        _, vals_jax, _ = assemble_element_block(
+        _, vals_jax, _, _ = assemble_element_block(
             self.fe_problem, fe_arrays, {"all": {}}, "all",
             self.U, self.U_prev, step_time=StepTime(1.0, 0.0),
         )
