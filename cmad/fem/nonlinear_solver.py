@@ -38,7 +38,7 @@ _DEFAULT_NONLINEAR_SOLVER_SETTINGS: dict[str, Any] = {
     "rel tol": 1.0e-10,
     "print convergence": False,
     "line search": DEFAULT_LINE_SEARCH_SETTINGS,
-    "initial guess": "previous",
+    "initial guess": "extrapolate",
     "extrapolation max ratio": 10.0,
 }
 _DEFAULT_LINEAR_SOLVER_SETTINGS: dict[str, Any] = {
