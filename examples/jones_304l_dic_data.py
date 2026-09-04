@@ -36,9 +36,11 @@ intended boundary values.
 
 Usage:
     python examples/jones_304l_dic_data.py \\
-        --mesh examples/meshes/jones_304l_2d_y65_179_h2.msh \\
-        --y-min 65 --y-max 179 \\
-        --frame-min 11 --frame-max 510 --num-steps 20
+        --geometry data/jones_304l/O5-NominalGeometry.mat \\
+        --data data/jones_304l/O5-4-Data.mat \\
+        --mesh examples/meshes/jones_304l_o5_2d_y40_132_h3.msh \\
+        --y-min 40 --y-max 132 \\
+        --frame-min 3 --frame-max 700 --num-steps 50 --roi-band 1.7
 """
 from __future__ import annotations
 
@@ -531,7 +533,7 @@ def main() -> None:
     stem.parent.mkdir(parents=True, exist_ok=True)
     archive = Path(f"{stem}_calibration_data.npz")
     data.write(archive)
-    np.savetxt(f"{stem}_times.txt", schedule)
+    np.savetxt(f"{stem}_solve_times.txt", schedule)
     np.savetxt(f"{stem}_match_times.txt", schedule)
 
     print(f"load channel: {channel}, scaled by {args.force_scale:g}")
@@ -560,7 +562,7 @@ def main() -> None:
         f"{archive.stat().st_size / 1e6:.2f} MB stored against "
         f"{data.values.nbytes / 1e6:.2f} MB raw"
     )
-    print(f"      {stem}_times.txt, {stem}_match_times.txt")
+    print(f"      {stem}_solve_times.txt, {stem}_match_times.txt")
     print(
         f"      region of interest {int(kept.sum())} of {kept.size} "
         f"{entity_kind}; free edge band {band:.3f} mm from a largest gap of "

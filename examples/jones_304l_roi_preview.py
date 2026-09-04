@@ -16,8 +16,10 @@ the load preview's.
 
 Usage:
     python examples/jones_304l_roi_preview.py \\
-        --mesh examples/meshes/jones_304l_2d_y65_179_h3.msh \\
-        --y-min 65 --y-max 179 --frame-min 11 --frame-max 510
+        --geometry data/jones_304l/O5-NominalGeometry.mat \\
+        --data data/jones_304l/O5-4-Data.mat \\
+        --mesh examples/meshes/jones_304l_o5_2d_y40_132_h3.msh \\
+        --y-min 40 --y-max 132 --frame-min 3 --frame-max 700
     ... --roi-band 1 1.5 2 --zoom -14 -20 14 20
 """
 from __future__ import annotations

@@ -1,0 +1,95 @@
+# Per specimen choices for the Jones 304L pipeline: the arguments the
+# previews, the mesh generator, and the converter run with, settled by
+# eye on the preview figures. One entry per specimen; the mesh and
+# archive names derive from the cut values, h, and thickness.
+
+# Every specimen shares the sheet thickness.
+thickness: 1.5
+
+xt10:
+  geometry: data/jones_304l/X-Specimen-NominalGeometry.mat
+  data: data/jones_304l/XT10-Data.mat
+  frame min: 12
+  frame max: 510
+  drop threshold: 0.1
+  exclude frames: [309, 498]
+  y min: 63
+  y max: 181
+  h: 3
+  curvature elements: 20
+  num steps: 50
+  roi band: 1.4
+
+o1:
+  geometry: data/jones_304l/O1-NominalGeometry.mat
+  data: data/jones_304l/O1-3-Data.mat
+  frame min: 8
+  frame max: 505
+  drop threshold: 0.1
+  exclude frames: []
+  y min: 37
+  y max: 137
+  h: 3
+  curvature elements: 20
+  num steps: 50
+  roi band: 1.888
+
+o5:
+  geometry: data/jones_304l/O5-NominalGeometry.mat
+  data: data/jones_304l/O5-4-Data.mat
+  frame min: 3
+  frame max: 700
+  drop threshold: 0.1
+  exclude frames: []
+  y min: 40
+  y max: 132
+  h: 3
+  curvature elements: 20
+  num steps: 50
+  roi band: 1.7
+
+# The range stops at frame 290 of 572: the detector flags 53 frames in
+# the region past it.
+o14:
+  geometry: data/jones_304l/O14-NominalGeometry.mat
+  data: data/jones_304l/O14-3-Data.mat
+  frame min: 4
+  frame max: 290
+  drop threshold: 0.1
+  exclude frames: []
+  y min: 42
+  y max: 135
+  h: 3
+  curvature elements: 20
+  num steps: 50
+  roi band: 1.5
+
+o15:
+  geometry: data/jones_304l/O15-NominalGeometry.mat
+  data: data/jones_304l/O15-3-Data.mat
+  frame min: 6
+  frame max: 1070
+  drop threshold: 0.1
+  exclude frames: [90, 300, 447]
+  y min: 49
+  y max: 135
+  h: 3
+  curvature elements: 20
+  num steps: 50
+  roi band: 1.4
+
+# The detector runs at 0.05 here: at 0.1 several of this record's
+# artifact events go undetected.
+o18:
+  geometry: data/jones_304l/O18-NominalGeometry.mat
+  data: data/jones_304l/O18-3-Data.mat
+  frame min: 5
+  frame max: 2130
+  drop threshold: 0.05
+  exclude frames: []
+  y min: 44
+  y max: 135
+  h: 3
+  curvature elements: 20
+  num steps: 50
+  roi band: 1.4
