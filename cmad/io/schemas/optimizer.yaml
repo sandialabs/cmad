@@ -13,4 +13,3 @@ properties:
     type: object
     default: {}
   log_params: {type: boolean, default: true}
-  guard gradient: {type: string, enum: [inward, zero], default: inward}
