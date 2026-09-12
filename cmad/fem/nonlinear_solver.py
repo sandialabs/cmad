@@ -45,7 +45,7 @@ _DEFAULT_LINEAR_SOLVER_SETTINGS: dict[str, Any] = {
     "type": "direct",
     "rtol": 1.0e-10,
     "max iters": None,
-    "restart": 20,
+    "restart": 500,
     "preconditioner": {"type": "jacobi"},
     "operator": "assembled",
     "print convergence": False,

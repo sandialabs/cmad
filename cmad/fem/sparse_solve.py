@@ -862,7 +862,7 @@ def jax_cg_with_iters(
 def jax_gmres(
         K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
         rtol: float = 1e-10, max_iters: int | None = None,
-        restart: int = 20,
+        restart: int = 500,
 ) -> JaxArray:
     """Solve ``K x = b`` for general (possibly non-symmetric) K via GMRES.
 
@@ -1300,7 +1300,7 @@ def jax_block_gmres(
         coupling: str = "lower", diagonal_block: str = "assembled",
         inner: str = "jacobi", degree: int | None = None,
         rtol: float = 1e-10, max_iters: int | None = None,
-        restart: int = 20,
+        restart: int = 500,
 ) -> JaxArray:
     """Solve ``K x = b`` with GMRES and a block preconditioner.
 
@@ -1429,7 +1429,7 @@ def scipy_block_gmres(
         near_null_by_field: list[np.ndarray | None] | None = None, *,
         coupling: str = "lower", diagonal_block: str = "schur",
         rtol: float = 1e-10, max_iters: int | None = None,
-        restart: int = 20, pyamg_kwargs: dict | None = None,
+        restart: int = 500, pyamg_kwargs: dict | None = None,
 ) -> JaxArray:
     """Solve ``K x = b`` with GMRES and a block preconditioner, using AMG.
 
