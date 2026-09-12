@@ -2,14 +2,16 @@
 checks of ``test_sparse_solve.py`` on the cuDSS solve. They run only
 where CuPy, nvmath with cuDSS, and a CUDA device are present.
 """
+import contextlib
 import importlib
+import io
 import unittest
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from cmad.fem.sparse_solve import cudss_lu
+from cmad.fem.sparse_solve import EmbeddedSparsity, cudss_lu
 from tests.fem.test_sparse_solve import (
     _dense_to_cache,
     _fd_jvp,
@@ -208,6 +210,65 @@ class TestCudssLuJit(unittest.TestCase):
         x_ref = jnp.linalg.solve(jnp.asarray(K), b)
         np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
                                    rtol=1e-10, atol=1e-12)
+
+
+def _pattern_to_cache(
+        rows: np.ndarray, cols: np.ndarray, n: int,
+) -> EmbeddedSparsity:
+    """:class:`EmbeddedSparsity` for an explicit pattern given as sorted
+    unique ``(row, col)`` pairs, every row holding its diagonal; the
+    ``K_data`` positions follow the pairs. The sparse counterpart of
+    ``_dense_to_cache``."""
+    nnz = rows.shape[0]
+    indptr = np.searchsorted(rows, np.arange(n + 1), side="left")
+    return EmbeddedSparsity(
+        perm=jnp.asarray(np.arange(nnz, dtype=np.intp)),
+        segment_ids=jnp.asarray(np.arange(nnz, dtype=np.intp)),
+        indptr=jnp.asarray(indptr.astype(np.intp)),
+        col_indices=jnp.asarray(cols.astype(np.intp)),
+        diag_idx=jnp.asarray(np.where(rows == cols)[0].astype(np.intp)),
+    )
+
+
+@unittest.skipUnless(cudss_available(), SKIP_REASON)
+class TestCudssLuPlanReuse(unittest.TestCase):
+    """One jitted solve called three times: new values on the same
+    pattern reuse the plan, a different pattern with the same array
+    shapes remakes it; every solve against a dense solve."""
+
+    def test_same_and_changed_pattern(self) -> None:
+        n = 6
+        diagonal = {(i, i) for i in range(n)}
+        pattern_a = sorted(diagonal | {(0, 1), (1, 0), (2, 3), (3, 2)})
+        pattern_b = sorted(diagonal | {(0, 2), (2, 0), (4, 5), (5, 4)})
+        rng = np.random.default_rng(90)
+
+        @jax.jit
+        def solve(K_data: jax.Array, sparsity: EmbeddedSparsity,
+                  b: jax.Array) -> jax.Array:
+            return cudss_lu(K_data, sparsity, b, print_convergence=True)
+
+        for pattern, reused in ((pattern_a, False), (pattern_a, True),
+                                (pattern_b, False)):
+            rows = np.array([r for r, _ in pattern], dtype=np.intp)
+            cols = np.array([c for _, c in pattern], dtype=np.intp)
+            values = np.where(rows == cols, float(n), 0.5)
+            values = values * rng.uniform(0.5, 1.5, rows.shape[0])
+            K = np.zeros((n, n))
+            K[rows, cols] = values
+            b = rng.standard_normal(n)
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                x = solve(
+                    jnp.asarray(values), _pattern_to_cache(rows, cols, n),
+                    jnp.asarray(b),
+                )
+                x = np.asarray(x)
+            with self.subTest(pattern=pattern, reused=reused):
+                np.testing.assert_allclose(
+                    x, np.linalg.solve(K, b), rtol=1e-10, atol=1e-12,
+                )
+                self.assertEqual("plan reused" in printed.getvalue(), reused)
 
 
 if __name__ == "__main__":

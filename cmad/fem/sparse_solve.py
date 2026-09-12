@@ -30,7 +30,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import jax
 import jax.numpy as jnp
@@ -557,71 +557,131 @@ def _cudss_threading_lib() -> str | None:
     return str(found[0]) if found else None
 
 
-def _cudss_solve(
-        unique_data_np: np.ndarray, col_np: np.ndarray,
-        indptr_np: np.ndarray, b_np: np.ndarray, *,
-        n: int, transpose: bool, print_convergence: bool,
-        threading_lib: str | None,
-) -> np.ndarray:
-    """Solve ``K x = b`` (``K^T x = b`` with ``transpose``) with cuDSS from
-    the host operands of :func:`cudss_lu`'s callback: the CSR is rebuilt
-    on the device, factored once, and applied to every column of ``b``,
-    whose leading batch axes (see :func:`scipy_lu`) become the columns.
-    ``print_convergence`` prints the true relative residual, the factor
-    nonzero count, and the time of each phase.
+class _CudssFactorization:
+    """The cuDSS solves of one :func:`cudss_lu` callback, the plan kept
+    across calls: a solve reuses the held plan when the sparsity pattern
+    and the right hand side shape match the ones it was made on, and
+    makes a new one otherwise. ``transpose`` factors ``K^T``.
     """
-    import cupy
-    import cupyx.scipy.sparse
-    from nvmath.sparse.advanced import DirectSolver, DirectSolverOptions
 
-    device = cupy.cuda.Device()
+    def __init__(
+            self, n: int, *, transpose: bool, print_convergence: bool,
+            threading_lib: str | None,
+    ) -> None:
+        self.n = n
+        self.transpose = transpose
+        self.print_convergence = print_convergence
+        self.threading_lib = threading_lib
+        self.solver: Any = None
+        # The plan holds only for the buffers it was made on (nvmath drops
+        # it when an operand arrives in other buffers), so the CSR and the
+        # right hand side it was planned with are kept and refilled in
+        # place; ``perm`` turns the data of K into the data of K^T.
+        self.K: Any = None
+        self.b_dev: Any = None
+        self.perm: Any = None
+        self.indptr: Any = None
+        self.col_indices: Any = None
 
-    def clock() -> float:
-        device.synchronize()
-        return time.perf_counter()
+    def _free(self) -> None:
+        if self.solver is not None:
+            self.solver.free()
+            self.solver = None
 
-    t_start = clock()
-    K = cupyx.scipy.sparse.csr_matrix(
-        (
-            cupy.asarray(np.reshape(unique_data_np, -1)),
-            cupy.asarray(np.reshape(col_np, -1).astype(np.int32)),
-            cupy.asarray(np.reshape(indptr_np, -1).astype(np.int32)),
-        ),
-        shape=(n, n),
-    )
-    if transpose:
-        K = K.T.tocsr()
-    b_arr = np.asarray(b_np)
-    batch_shape = b_arr.shape[:-1]
-    # The (k, n) batch's transposed view is the column major (n, k) right
-    # hand side cuDSS takes, with no copy.
-    b_dev = cupy.asarray(b_arr.reshape(-1, n)).T
-    t_uploaded = clock()
-    options = DirectSolverOptions(multithreading_lib=threading_lib)
-    with DirectSolver(K, b_dev, options=options) as solver:
-        solver.plan()
-        t_planned = clock()
-        solver.factorize()
-        t_factored = clock()
-        x_dev = solver.solve()
-        t_solved = clock()
-        lu_nnz = int(solver.factorization_info.lu_nnz) if print_convergence else 0
-    x = cupy.asnumpy(x_dev.T).reshape(*batch_shape, n)
-    t_downloaded = clock()
-    if print_convergence:
-        b_norm = float(cupy.linalg.norm(b_dev))
-        residual = float(cupy.linalg.norm(b_dev - K @ x_dev))
-        rel = residual / (b_norm if b_norm > 0.0 else 1.0)
-        print(
-            f" > linear solve: cudss, relative residual {rel:.3e}, factor "
-            f"nonzeros {lu_nnz}, upload {1e3 * (t_uploaded - t_start):.0f} ms, "
-            f"plan {1e3 * (t_planned - t_uploaded):.0f} ms, factorize "
-            f"{1e3 * (t_factored - t_planned):.0f} ms, solve "
-            f"{1e3 * (t_solved - t_factored):.0f} ms, download "
-            f"{1e3 * (t_downloaded - t_solved):.0f} ms",
-            flush=True,
+    def __del__(self) -> None:
+        self._free()
+
+    def solve(
+            self, unique_data_np: np.ndarray, col_np: np.ndarray,
+            indptr_np: np.ndarray, b_np: np.ndarray,
+    ) -> np.ndarray:
+        """Solve ``K x = b`` (``K^T x = b`` with ``transpose``) from the
+        callback's host operands: the CSR is rebuilt on the device,
+        factored once, and applied to every column of ``b``, whose leading
+        batch axes (see :func:`scipy_lu`) become the columns.
+        ``print_convergence`` prints the true relative residual, the factor
+        nonzero count, and the time of each phase.
+        """
+        import cupy
+        import cupyx.scipy.sparse
+        from nvmath.sparse.advanced import DirectSolver, DirectSolverOptions
+
+        device = cupy.cuda.Device()
+
+        def clock() -> float:
+            device.synchronize()
+            return time.perf_counter()
+
+        n = self.n
+        t_start = clock()
+        data = cupy.asarray(np.reshape(unique_data_np, -1))
+        col_indices = cupy.asarray(np.reshape(col_np, -1).astype(np.int32))
+        indptr = cupy.asarray(np.reshape(indptr_np, -1).astype(np.int32))
+        b_arr = np.asarray(b_np)
+        batch_shape = b_arr.shape[:-1]
+        # The (k, n) batch's transposed view is the column major (n, k) right
+        # hand side cuDSS takes, with no copy.
+        b_dev = cupy.asarray(b_arr.reshape(-1, n)).T
+        t_uploaded = clock()
+        reuse = (
+            self.solver is not None
+            and self.b_dev.shape == b_dev.shape
+            and bool(cupy.array_equal(self.indptr, indptr))
+            and bool(cupy.array_equal(self.col_indices, col_indices))
         )
-    return x
+        if reuse:
+            self.K.data[...] = data if self.perm is None else data[self.perm]
+            self.b_dev[...] = b_dev
+        else:
+            self._free()
+            if self.transpose:
+                # Transposing the pattern with its data numbered by position
+                # gives the permutation from the data of K to the data of K^T.
+                numbered = cupyx.scipy.sparse.csr_matrix(
+                    (cupy.arange(data.shape[0], dtype=cupy.float64),
+                     col_indices, indptr),
+                    shape=(n, n),
+                ).T.tocsr()
+                self.perm = numbered.data.astype(cupy.int64)
+                self.K = cupyx.scipy.sparse.csr_matrix(
+                    (data[self.perm], numbered.indices, numbered.indptr),
+                    shape=(n, n),
+                )
+            else:
+                self.perm = None
+                self.K = cupyx.scipy.sparse.csr_matrix(
+                    (data, col_indices, indptr), shape=(n, n),
+                )
+            self.b_dev = b_dev
+            self.indptr, self.col_indices = indptr, col_indices
+            options = DirectSolverOptions(multithreading_lib=self.threading_lib)
+            self.solver = DirectSolver(self.K, self.b_dev, options=options)
+            self.solver.plan()
+        t_planned = clock()
+        self.solver.factorize()
+        t_factored = clock()
+        x_dev = self.solver.solve()
+        t_solved = clock()
+        x = cupy.asnumpy(x_dev.T).reshape(*batch_shape, n)
+        t_downloaded = clock()
+        if self.print_convergence:
+            lu_nnz = int(self.solver.factorization_info.lu_nnz)
+            b_norm = float(cupy.linalg.norm(self.b_dev))
+            residual = float(cupy.linalg.norm(self.b_dev - self.K @ x_dev))
+            rel = residual / (b_norm if b_norm > 0.0 else 1.0)
+            plan = (
+                "plan reused" if reuse
+                else f"plan {1e3 * (t_planned - t_uploaded):.0f} ms"
+            )
+            print(
+                f" > linear solve: cudss, relative residual {rel:.3e}, factor "
+                f"nonzeros {lu_nnz}, upload {1e3 * (t_uploaded - t_start):.0f} "
+                f"ms, {plan}, factorize {1e3 * (t_factored - t_planned):.0f} ms, "
+                f"solve {1e3 * (t_solved - t_factored):.0f} ms, download "
+                f"{1e3 * (t_downloaded - t_solved):.0f} ms",
+                flush=True,
+            )
+        return x
 
 
 def cudss_lu(
@@ -631,8 +691,9 @@ def cudss_lu(
     """Solve ``K x = b`` with cuDSS on the GPU, the counterpart of
     :func:`scipy_lu`: the same operands and the same
     :func:`jax.lax.custom_linear_solve` rules over the same matvec, with
-    one :func:`jax.pure_callback` per solve running :func:`_cudss_solve`
-    and the transpose solve factoring ``K^T``. The operands cross to the
+    one :func:`jax.pure_callback` per solve running
+    :meth:`_CudssFactorization.solve`, the plan kept across solves, and
+    the transpose solve factoring ``K^T``. The operands cross to the
     host and back each solve, a cost the ``print_convergence`` line
     reports. CuPy and nvmath with cuDSS are imported here, so the module
     loads without them and a missing one fails at trace time.
@@ -643,23 +704,19 @@ def cudss_lu(
     unique_data, matvec = op.unique_data, op.matvec
     n = sparsity.n
     threading_lib = _cudss_threading_lib()
-
-    def make_callback(transpose: bool) -> Callable[..., np.ndarray]:
-        def callback(
-                unique_data_np: np.ndarray, col_np: np.ndarray,
-                indptr_np: np.ndarray, b_np: np.ndarray,
-        ) -> np.ndarray:
-            return _cudss_solve(
-                unique_data_np, col_np, indptr_np, b_np, n=n,
-                transpose=transpose, print_convergence=print_convergence,
-                threading_lib=threading_lib,
-            )
-        return callback
+    forward = _CudssFactorization(
+        n, transpose=False, print_convergence=print_convergence,
+        threading_lib=threading_lib,
+    )
+    transposed = _CudssFactorization(
+        n, transpose=True, print_convergence=print_convergence,
+        threading_lib=threading_lib,
+    )
 
     def solve(_unused_matvec: Callable[[JaxArray], JaxArray],
               rhs: JaxArray) -> JaxArray:
         return jax.pure_callback(
-            make_callback(False),
+            forward.solve,
             jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
             unique_data, sparsity.col_indices, sparsity.indptr, rhs,
             vmap_method="expand_dims",
@@ -668,7 +725,7 @@ def cudss_lu(
     def transpose_solve(_unused_vecmat: Callable[[JaxArray], JaxArray],
                         rhs: JaxArray) -> JaxArray:
         return jax.pure_callback(
-            make_callback(True),
+            transposed.solve,
             jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
             unique_data, sparsity.col_indices, sparsity.indptr, rhs,
             vmap_method="expand_dims",
