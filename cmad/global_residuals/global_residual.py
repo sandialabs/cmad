@@ -30,14 +30,15 @@ class GlobalResidual(ABC):
     pass it to super().__init__(). See :data:`cmad.typing.ResidualFnGR`
     for the required underlying-callable signature:
 
-      (xi, xi_prev, params, U, U_prev, model, mode, shapes_ip, w,
+      (xi, xi_prev, params, U_ip, U_ip_prev, model, mode, shapes_ip, w,
        dv, h, step_time) -> Sequence[Array]
 
     where xi/xi_prev are Model's per-integration-point local state
     (threaded through GR's call to model.cauchy; GR has no xi of its
-    own), U/U_prev are per-residual-block lists of element-local
-    basis-coefficient arrays with ``U[i].shape ==
-    (num_basis_fns[i], num_eqs[i])``, model is the bound
+    own), U_ip/U_ip_prev are the global fields interpolated at the
+    integration point (:class:`GlobalFieldsAtPoint`, built once per
+    call by the ``for_model`` closures from the element-local basis
+    coefficients), model is the bound
     :class:`Model`, mode is the :class:`GlobalResidualMode` value the
     closure was built for (the body branches on it to dispatch the
     per-physics flux call), shapes_ip is a per-block list of
@@ -315,8 +316,11 @@ class GlobalResidual(ABC):
         # Public-closure argnums: params=0, U=1, U_prev=2,
         # shapes_ip=3, w=4, dv=5, h=6, step_time=7.
         def r_at_ip(params, U, U_prev, shapes_ip, w, dv, h, step_time):
+            U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
+            U_ip_prev = self.interpolate_global_fields_at_ip(
+                U_prev, shapes_ip)
             return residual_fn(
-                xi_zeros, xi_zeros, params, U, U_prev,
+                xi_zeros, xi_zeros, params, U_ip, U_ip_prev,
                 model, GlobalResidualMode.CLOSED_FORM,
                 shapes_ip, w, dv, h, step_time,
             )
@@ -362,7 +366,7 @@ class GlobalResidual(ABC):
                 U_prev, shapes_ip)
             xi = local_newton(xi_prev, params, U_ip, U_ip_prev, step_time)
             R = residual_fn(
-                xi, xi_prev, params, U, U_prev,
+                xi, xi_prev, params, U_ip, U_ip_prev,
                 model, GlobalResidualMode.COUPLED,
                 shapes_ip, w, dv, h, step_time,
             )

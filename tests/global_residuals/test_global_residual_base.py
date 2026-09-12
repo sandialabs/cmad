@@ -26,7 +26,7 @@ class _StubGR(GlobalResidual):
         self.resid_names[0] = "equilibrium"
         self.var_names[0] = "u"
 
-        def residual_fn(xi, xi_prev, params, U, U_prev,
+        def residual_fn(xi, xi_prev, params, U_ip, U_ip_prev,
                         model, mode, shapes_ip, w, dv, h, step_time):
             raise AssertionError(  # pragma: no cover - never reached
                 "_StubGR.residual_fn must not be called in base-API tests"

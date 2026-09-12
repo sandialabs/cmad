@@ -100,7 +100,7 @@ QoIFn: TypeAlias = Callable[
 
 ResidualFnGR: TypeAlias = Callable[
     [StateList, StateList, Params,
-     Sequence[JaxArray], Sequence[JaxArray],
+     "GlobalFieldsAtPoint", "GlobalFieldsAtPoint",
      "Model", "GlobalResidualMode",
      Sequence["ShapeFunctionsAtIP"],
      Scalar, Scalar, Scalar,
@@ -111,7 +111,11 @@ ResidualFnGR: TypeAlias = Callable[
 GlobalResidual.__init__. Returns a per-residual-block sequence:
 entry ``r`` has shape ``(n_basis_fns_r, n_eqs_r)``, allowing
 different blocks to have different shapes (Taylor-Hood u/p, etc.).
-U/U_prev and shapes_ip are also per-residual-block sequences.
+``U_ip`` / ``U_ip_prev`` are the global fields interpolated at the IP
+(``GlobalFieldsAtPoint``, built once per call by the
+``GlobalResidual.for_model`` closures from the element-local basis
+coefficients); shapes_ip is a per-residual-block sequence carrying
+the test functions.
 ``mode`` is the operational mode (CLOSED_FORM or COUPLED); the
 body branches on it to dispatch the per-physics flux call.
 ``GlobalResidual.for_model`` captures one mode per closure, so
