@@ -230,6 +230,87 @@ def trace_summary(trace_dir: Path, top: int) -> list[str]:
     )
     for name, us in sorted(totals.items(), key=lambda kv: -kv[1])[:top]:
         lines.append(f"  {us / 1e3:9.2f} ms  {counts[name]:6d} x  {name}")
+    lines.extend(copy_details(events, device_pids))
+    return lines
+
+
+def event_bytes(e: dict[str, Any]) -> int | None:
+    """The byte count a copy event's arguments record, if any."""
+    args = e.get("args") or {}
+    for key, value in args.items():
+        if "byte" in str(key).lower():
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                pass
+    text = json.dumps(args)
+    marker = text.find("size")
+    if marker >= 0:
+        digits = ""
+        for ch in text[marker + 4:]:
+            if ch.isdigit():
+                digits += ch
+            elif digits:
+                break
+        if digits:
+            return int(digits)
+    return None
+
+
+def copy_details(events: list[dict[str, Any]], device_pids: set[int]) -> list[str]:
+    """The copy events by kind and size class, and the ten longest with
+    the innermost host Python span (the ``$file:line name`` events) that
+    contains each, so a copy can be placed inside or outside a callback."""
+    classes = (
+        (2 ** 20, "under 1 MiB"), (16 * 2 ** 20, "1 to 16 MiB"),
+        (64 * 2 ** 20, "16 to 64 MiB"), (256 * 2 ** 20, "64 to 256 MiB"),
+    )
+
+    def size_class(nbytes: int | None) -> str:
+        if nbytes is None:
+            return "unknown size"
+        for bound, label in classes:
+            if nbytes < bound:
+                return label
+        return "over 256 MiB"
+
+    by_class: dict[tuple[str, str], tuple[float, int]] = {}
+    copies: list[tuple[float, float, int | None, str]] = []
+    host_spans: list[tuple[float, float, float, str]] = []
+    t0 = min(
+        (float(e["ts"]) for e in events if e.get("ph") == "X" and "ts" in e),
+        default=0.0,
+    )
+    for e in events:
+        if e.get("ph") != "X":
+            continue
+        name = str(e.get("name", ""))
+        pid = e.get("pid")
+        if name.startswith("Memcpy") and (not device_pids or pid in device_pids):
+            nbytes = event_bytes(e)
+            dur = float(e.get("dur", 0.0))
+            key = (name, size_class(nbytes))
+            us, count = by_class.get(key, (0.0, 0))
+            by_class[key] = (us + dur, count + 1)
+            copies.append((dur, float(e["ts"]), nbytes, name))
+        elif name.startswith("$") and pid not in device_pids:
+            ts = float(e["ts"])
+            dur = float(e.get("dur", 0.0))
+            host_spans.append((ts, ts + dur, dur, name))
+    lines = ["copies by kind and size:"]
+    for (name, label), (us, count) in sorted(by_class.items()):
+        lines.append(f"  {name} {label}: {count} copies, {us / 1e3:.1f} ms")
+    lines.append("longest copies (start s, ms, MiB, innermost host span):")
+    for dur, ts, nbytes, name in sorted(copies, reverse=True)[:10]:
+        containing = [
+            s for s in host_spans if s[0] <= ts and s[1] >= ts + dur
+        ]
+        span = min(containing, key=lambda s: s[2])[3] if containing else "none"
+        size = "?" if nbytes is None else f"{nbytes / 2 ** 20:.1f}"
+        lines.append(
+            f"  {name} at {(ts - t0) / 1e6:8.3f} s, {dur / 1e3:7.1f} ms, "
+            f"{size} MiB, {span}",
+        )
     return lines
 
 
