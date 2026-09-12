@@ -19,6 +19,8 @@ properties:
   operator:
     type: string
     enum: [assembled, element]
+  print convergence:
+    type: boolean
   preconditioner:
     type: object
     required: [type]

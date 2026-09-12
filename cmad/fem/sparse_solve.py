@@ -593,6 +593,9 @@ def _pcg_loop(
     return x_final, i_final
 
 
+_GMRES_DEFAULT_MAX_KRYLOV_ITERS = 10000
+
+
 def _gmres_loop(
         matvec: Callable[[JaxArray], JaxArray],
         precon: Callable[[JaxArray], JaxArray],
@@ -601,6 +604,7 @@ def _gmres_loop(
         restart: int,
         max_iters: int | None,
         device_mesh: Mesh | None = None,
+        print_convergence: bool = False,
 ) -> tuple[JaxArray, JaxArray]:
     """Right preconditioned restarted GMRES, returning ``(x, iterations)``.
 
@@ -615,21 +619,24 @@ def _gmres_loop(
     so a cycle exits the step it converges, and each cycle ends by
     recomputing the true residual. ``restart`` is the Krylov dimension per
     cycle; ``max_iters`` is the cycle count cap, as for
-    :func:`scipy.sparse.linalg.gmres` (``None`` selects ``10 *
-    b.shape[0]``). A breakdown (new basis vector below roundoff of the
-    vector it came from) ends the cycle with the exact solution of that
-    Krylov space.
+    :func:`scipy.sparse.linalg.gmres`, and ``None`` selects the cycle
+    count that holds ``_GMRES_DEFAULT_MAX_KRYLOV_ITERS`` Krylov
+    iterations, so a stagnating solve ends. When the new basis vector is
+    at roundoff relative to the vector it was orthogonalized from, the
+    Krylov space has stopped growing (a breakdown) and the cycle ends with
+    its solution, which is then exact.
 
     ``iterations`` is the total Krylov iteration count over all cycles, for
     diagnostics; :func:`_gmres_solve` drops it for
-    :func:`jax.lax.custom_linear_solve`. With a ``device_mesh`` the Krylov
-    basis and the vectors are split across its devices
-    (:func:`_dof_sharded`).
+    :func:`jax.lax.custom_linear_solve`. ``print_convergence`` prints that
+    count, the cycle count, the final relative residual, and whether the
+    solve converged. With a ``device_mesh`` the Krylov basis and the
+    vectors are split across its devices (:func:`_dof_sharded`).
     """
     n = b.shape[0]
     restart = min(restart, n)
     if max_iters is None:
-        max_iters = 10 * n
+        max_iters = (_GMRES_DEFAULT_MAX_KRYLOV_ITERS + restart - 1) // restart
     dtype = b.dtype
     eps = jnp.finfo(dtype).eps
     split = partial(_dof_sharded, device_mesh=device_mesh)
@@ -702,9 +709,17 @@ def _gmres_loop(
         return (r_norm > tol) & (cycles < max_iters)
 
     x0 = jnp.zeros_like(b)
-    x, _r, _r_norm, _cycles, iterations = lax.while_loop(
+    x, _r, r_norm, cycles, iterations = lax.while_loop(
         cycle_cond, cycle, (x0, b, b_norm, jnp.int32(0), jnp.int32(0)),
     )
+    if print_convergence:
+        jax.debug.print(
+            " > linear solve: {k} Krylov iterations in {c} cycles, relative "
+            "residual {res:.3e}, converged {ok}",
+            k=iterations, c=cycles,
+            res=r_norm / jnp.where(b_norm > 0.0, b_norm, 1.0),
+            ok=r_norm <= tol, ordered=True,
+        )
     return x, iterations
 
 
@@ -716,11 +731,13 @@ def _gmres_solve(
         restart: int,
         max_iters: int | None,
         device_mesh: Mesh | None = None,
+        print_convergence: bool = False,
 ) -> JaxArray:
     """:func:`_gmres_loop` without the iteration count, the shape
     :func:`jax.lax.custom_linear_solve`'s ``solve`` callbacks need."""
     return _gmres_loop(
         matvec, precon, b, rtol, restart, max_iters, device_mesh,
+        print_convergence,
     )[0]
 
 
@@ -744,7 +761,7 @@ def _jacobi_cg(
 
 def _jacobi_gmres(
         op: TangentOperator, b: JaxArray, rtol: float, restart: int,
-        max_iters: int | None,
+        max_iters: int | None, print_convergence: bool = False,
 ) -> JaxArray:
     """Jacobi preconditioned GMRES on ``op`` (:func:`_gmres_loop`),
     differentiable through :func:`jax.lax.custom_linear_solve`; the adjoint
@@ -756,12 +773,14 @@ def _jacobi_gmres(
               rhs: JaxArray) -> JaxArray:
         return _gmres_solve(
             matvec_, precon, rhs, rtol, restart, max_iters, op.device_mesh,
+            print_convergence,
         )
 
     def transpose_solve(vecmat: Callable[[JaxArray], JaxArray],
                         rhs: JaxArray) -> JaxArray:
         return _gmres_solve(
             vecmat, precon, rhs, rtol, restart, max_iters, op.device_mesh,
+            print_convergence,
         )
 
     return lax.custom_linear_solve(
@@ -1227,6 +1246,7 @@ def _block_gmres(
         op: TangentOperator, b: JaxArray, *,
         coupling: str, diagonal_block: str, inner: str, degree: int | None,
         rtol: float, max_iters: int | None, restart: int,
+        print_convergence: bool = False,
 ) -> JaxArray:
     """GMRES on ``op`` with the block preconditioner
     (:func:`_block_precon_apply` over ``op``'s field blocks), differentiable
@@ -1259,14 +1279,14 @@ def _block_gmres(
               rhs: JaxArray) -> JaxArray:
         return _gmres_solve(
             matvec_, precon_forward, rhs, rtol, restart, max_iters,
-            op.device_mesh,
+            op.device_mesh, print_convergence,
         )
 
     def transpose_solve(vecmat: Callable[[JaxArray], JaxArray],
                         rhs: JaxArray) -> JaxArray:
         return _gmres_solve(
             vecmat, precon_transpose, rhs, rtol, restart, max_iters,
-            op.device_mesh,
+            op.device_mesh, print_convergence,
         )
 
     return lax.custom_linear_solve(

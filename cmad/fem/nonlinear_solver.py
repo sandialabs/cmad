@@ -48,6 +48,7 @@ _DEFAULT_LINEAR_SOLVER_SETTINGS: dict[str, Any] = {
     "restart": 20,
     "preconditioner": {"type": "jacobi"},
     "operator": "assembled",
+    "print convergence": False,
 }
 _OPERATORS = ("assembled", "element")
 
@@ -272,12 +273,16 @@ def _solve_linear(
             f"expected 'jacobi' or 'pyamg'"
         )
     if kind == "gmres":
+        print_convergence = linear_solver_settings.get(
+            "print convergence", False,
+        )
         if precon == "jacobi":
             return _jacobi_gmres(
                 tangent_operator(), rhs,
                 rtol=linear_solver_settings["rtol"],
                 restart=linear_solver_settings["restart"],
                 max_iters=linear_solver_settings["max iters"],
+                print_convergence=print_convergence,
             )
         if precon == "block":
             block_sparsity = fe_arrays.block_sparsity
@@ -297,6 +302,7 @@ def _solve_linear(
                     rtol=linear_solver_settings["rtol"],
                     max_iters=linear_solver_settings["max iters"],
                     restart=linear_solver_settings["restart"],
+                    print_convergence=print_convergence,
                 )
             if inner == "amg":
                 require_assembled("'gmres' with the block amg preconditioner")
@@ -435,12 +441,13 @@ def _fe_newton_primal(
     def _print_line(k, r, ref):
         if print_global_convergence:
             R_norm = jnp.linalg.norm(r)
-            jax.debug.print(" > ({k}) Newton iteration", k=k)
+            jax.debug.print(" > ({k}) Newton iteration", k=k, ordered=True)
             jax.debug.print(
-                " > absolute ||R|| = {abs_r:.6e}", abs_r=R_norm,
+                " > absolute ||R|| = {abs_r:.6e}", abs_r=R_norm, ordered=True,
             )
             jax.debug.print(
                 " > relative ||R|| = {rel_r:.6e}", rel_r=R_norm / ref,
+                ordered=True,
             )
 
     _print_line(1, r_init, ref_init)

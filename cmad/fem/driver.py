@@ -175,6 +175,7 @@ def build_fe_quasistatic_trajectory(
                     "ON PRIMAL STEP ({step}) at t={t:.6e}",
                     step=step_idx + 1,
                     t=t,
+                    ordered=True,
                 )
 
             # Newton starts from the previous state, or from the previous
