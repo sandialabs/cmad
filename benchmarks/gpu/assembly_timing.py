@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import yaml
@@ -114,6 +115,42 @@ def solve_first_step(
         U_steps[0], {b: xi[0] for b, xi in xi_steps.items()},
         np.asarray(iters).tolist(), traced_wall,
     )
+
+
+def time_gradient_over_steps(
+        fe_problem: Any, inputs: tuple[Any, ...], nls: dict[str, Any],
+        lss: dict[str, Any], step_counts: list[int],
+) -> None:
+    """The gradient of a trajectory cost (the sum of ``U ** 2`` over the
+    steps, the shape of a calibration QoI) with respect to the parameters
+    for each step count: compile time, executable memory, and the wall of
+    one warm evaluation, so the growth with the step count shows."""
+    params_by_block, state_init, fe_arrays, t_schedule_jax = inputs
+    t_schedule_np = np.asarray(t_schedule_jax)
+    dt = float(t_schedule_np[1] - t_schedule_np[0])
+    for num_steps in step_counts:
+        t_schedule = jnp.asarray(t_schedule_np[0] + dt * np.arange(num_steps + 1))
+        trajectory = build_fe_quasistatic_trajectory(
+            fe_problem, nonlinear_solver_settings=nls, linear_solver_settings=lss,
+        )
+
+        def cost(params: Any, arrays: Any, t_schedule: Any = t_schedule,
+                 trajectory: Any = trajectory) -> Any:
+            U_steps, _, _, _, _, _ = trajectory(
+                arrays, params, state_init, t_schedule,
+            )
+            return jnp.sum(U_steps ** 2)
+
+        start = time.perf_counter()
+        compiled = jit(jax.grad(cost)).lower(params_by_block, fe_arrays).compile()
+        compile_s = time.perf_counter() - start
+        start = time.perf_counter()
+        block_until_ready(compiled(params_by_block, fe_arrays))
+        wall_s = time.perf_counter() - start
+        print(
+            f"gradient over {num_steps} steps: compile {compile_s:.1f} s, "
+            f"warm {wall_s:.1f} s, {executable_summary(compiled)}", flush=True,
+        )
 
 
 def assembly_fns(fe_problem: Any) -> dict[str, Any]:
@@ -353,7 +390,7 @@ def copy_details(events: list[dict[str, Any]], device_pids: set[int]) -> list[st
 def run_size(
         h: float, base: dict[str, Any], work_dir: Path,
         linear_solver: dict[str, Any], repeats: int, trace_step: bool,
-        chunk: int | None,
+        chunk: int | None, grad_steps: list[int] | None,
 ) -> None:
     mesh_path = work_dir / f"notch_h{h:.3f}.msh"
     n_elem = generate_notch_msh(mesh_path, h)
@@ -367,6 +404,9 @@ def run_size(
         f"\nh={h:.3f}: {n_elem} tets, {int(fe_problem.num_dofs_padded)} "
         f"equations, elements per chunk {chunk}", flush=True,
     )
+    if grad_steps:
+        time_gradient_over_steps(fe_problem, inputs, nls, lss, grad_steps)
+        return
 
     start = time.perf_counter()
     step_trace_dir = work_dir / f"trace_step_h{h:.3f}" if trace_step else None
@@ -490,6 +530,11 @@ def main() -> None:
         "--chunk", type=int, default=None,
         help="elements per chunk of the assembly (default: a block at once)",
     )
+    parser.add_argument(
+        "--grad-steps", type=int, nargs="+", default=None,
+        help="instead of the assembly rows, the gradient of a trajectory "
+             "cost over each of these step counts",
+    )
     args, _unknown = parser.parse_known_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     base = yaml.safe_load(args.input.read_text())
@@ -502,7 +547,7 @@ def main() -> None:
     for h in args.sizes:
         run_size(
             h, base, args.work_dir, linear_solver, args.repeats, args.trace_step,
-            args.chunk,
+            args.chunk, args.grad_steps,
         )
 
 

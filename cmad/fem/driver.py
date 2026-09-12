@@ -24,7 +24,8 @@ from typing import Any, TypeAlias
 
 import jax.numpy as jnp
 import numpy as np
-from jax import debug, jit, lax
+from jax import checkpoint, checkpoint_policies, debug, jit, lax
+from jax.ad_checkpoint import checkpoint_name
 from numpy.typing import NDArray
 
 from cmad.fem.assembly import params_by_block_from_models
@@ -44,6 +45,10 @@ from cmad.typing import JaxArray, Params
 
 # (U_init, xi_init_by_block): the initial state seeding the trajectory.
 StateInit: TypeAlias = tuple[JaxArray, dict[str, JaxArray]]
+
+# The checkpoint name of a step's solved state, the one thing the reverse
+# pass over the step scan stores per step.
+_STEP_STATE = "step state"
 
 
 @dataclass(frozen=True)
@@ -209,6 +214,10 @@ def build_fe_quasistatic_trajectory(
             U_solved, xi, r_norm, reference_norm, iters = lax.cond(
                 already_failed, skip, solve, (U_prev, xi_prev),
             )
+            # The reverse pass keeps only the solved state of each step and
+            # recomputes the residual's linearization at it (one assembly),
+            # never the Newton solve.
+            U_solved, xi = checkpoint_name((U_solved, xi), _STEP_STATE)
             failed_here = jnp.logical_and(
                 jnp.logical_not(already_failed),
                 jnp.logical_not(newton_converged(
@@ -249,7 +258,11 @@ def build_fe_quasistatic_trajectory(
         )
         step_inputs = (jnp.arange(n_steps), t_schedule_jax[1:])
         final_carry, history = lax.scan(
-            step_fn, initial_carry, step_inputs,
+            checkpoint(
+                step_fn,
+                policy=checkpoint_policies.save_only_these_names(_STEP_STATE),
+            ),
+            initial_carry, step_inputs,
         )
         U_steps, xi_steps_by_block, iters_per_step = history
         (_, _, _, J, first_failed_step, first_failed_rel_norm,
