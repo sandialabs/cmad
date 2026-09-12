@@ -3,7 +3,7 @@
 Deck-driven port of ``tests/fem/test_mms_cube_3d.py``: the body-force
 component expressions are derived symbolically from the manufactured
 solution ``u = sin(pi*x) * sin(pi*y) * sin(pi*z)`` (all 3 components),
-stringified, and dropped into the deck's ``body forces.expression``
+stringified, and dropped into the deck's ``volumetric sources.expression``
 slot. The CLI's sympy parser re-parses each component string into a
 JAX callable and feeds them through the assembly. After the primal
 completes and writes Exodus, displacement is read back and reduced
@@ -46,7 +46,7 @@ def _derive_body_force_strs(
     Mirrors the symbolic derivation in
     :func:`tests.fem._mms_helpers.build_mms_callables` but exposes the
     per-component strings instead of a lambdified callable, so the deck
-    builder can drop them into ``body forces.expression``.
+    builder can drop them into ``volumetric sources.expression``.
     """
     n = len(coord_syms)
     grad_u_sym = u_sym.jacobian(list(coord_syms))
@@ -93,7 +93,7 @@ def _make_mms_deck(
             },
         },
         "dirichlet bcs": {"expression": dbc_entries},
-        "body forces": {
+        "volumetric sources": {
             "expression": {
                 "mms_body_force": ["equilibrium", *body_force_strs],
             },

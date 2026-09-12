@@ -8,7 +8,7 @@ with aggregated errors formatted as ``path: reason`` lines per the
 driver error-reporting convention.
 
 Section names with spaces (FE convention: ``dirichlet bcs``,
-``surface flux bcs``, ``body forces``) map to underscored fragment
+``surface flux bcs``, ``volumetric sources``) map to underscored fragment
 filenames (``dirichlet_bcs.yaml``, ...) at fragment-load time.
 
 Two normalization passes run before validation, mirroring the same
@@ -69,27 +69,27 @@ _SECTIONS: dict[tuple[str, str], tuple[list[str], list[str]]] = {
     ),
     ("fe", "primal"): (
         ["problem", "discretization", "residuals"],
-        ["output", "dirichlet bcs", "surface flux bcs", "body forces",
+        ["output", "dirichlet bcs", "surface flux bcs", "volumetric sources",
          "initial conditions", "linear solver", "qoi"],
     ),
     ("fe", "objective"): (
         ["problem", "discretization", "residuals", "qoi"],
-        ["output", "dirichlet bcs", "surface flux bcs", "body forces",
+        ["output", "dirichlet bcs", "surface flux bcs", "volumetric sources",
          "initial conditions", "linear solver"],
     ),
     ("fe", "gradient"): (
         ["problem", "discretization", "residuals", "qoi"],
-        ["output", "dirichlet bcs", "surface flux bcs", "body forces",
+        ["output", "dirichlet bcs", "surface flux bcs", "volumetric sources",
          "initial conditions", "linear solver"],
     ),
     ("fe", "hessian"): (
         ["problem", "discretization", "residuals", "qoi"],
-        ["output", "dirichlet bcs", "surface flux bcs", "body forces",
+        ["output", "dirichlet bcs", "surface flux bcs", "volumetric sources",
          "initial conditions", "linear solver"],
     ),
     ("fe", "calibrate"): (
         ["problem", "discretization", "residuals", "qoi", "optimizer"],
-        ["output", "dirichlet bcs", "surface flux bcs", "body forces",
+        ["output", "dirichlet bcs", "surface flux bcs", "volumetric sources",
          "initial conditions", "linear solver"],
     ),
 }

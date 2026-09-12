@@ -19,8 +19,9 @@ class HeatTransfer(GlobalResidual):
     (residual name "energy balance"); the body is
     :func:`cmad.global_residuals.balance_laws.energy_balance`.
 
-    A source comes from the body forces section and a prescribed flux
-    from the surface flux bcs section, both keyed by "energy balance". A
+    A source comes from the volumetric sources section and a prescribed
+    flux from the surface flux bcs section, both keyed by "energy
+    balance". A
     model without a heat capacity makes every step steady.
     """
 

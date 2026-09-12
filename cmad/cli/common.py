@@ -470,7 +470,7 @@ def build_fe_problem_from_deck(
     neumann_bcs = _build_neumann_bcs(
         resolved.get("surface flux bcs"), gr,
     )
-    forcing_fns = _build_forcing_fns(resolved.get("body forces"), gr)
+    forcing_fns = _build_forcing_fns(resolved.get("volumetric sources"), gr)
 
     assembly_quadrature, side_quadrature = _build_quadrature_overrides(
         resolved["discretization"], mesh.element_family,
@@ -879,7 +879,7 @@ def _build_forcing_fns(
         NDArray[np.floating] | JaxArray,
     ]] = {}
     for entry_name, entry in body_section.get("expression", {}).items():
-        where = f"body forces.expression.{entry_name}"
+        where = f"volumetric sources.expression.{entry_name}"
         resid_name = entry[0]
         component_exprs = entry[1:]
         r = _resolve_resid_idx(resid_name, gr, where)
@@ -898,7 +898,7 @@ def _build_forcing_fns(
             parse_scalar_expression(e, _BC_COORD_NAMES)
             for e in component_exprs
         ]
-        fns_by_idx[r] = _make_body_force_callable(component_fns)
+        fns_by_idx[r] = _make_volumetric_source_callable(component_fns)
     return fns_by_idx
 
 
@@ -1003,7 +1003,7 @@ def _make_nbc_value_callable(
     return fn
 
 
-def _make_body_force_callable(
+def _make_volumetric_source_callable(
         component_fns: list[Callable[..., Any]],
 ) -> Callable[
     [NDArray[np.floating] | JaxArray, Scalar],

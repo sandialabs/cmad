@@ -1,7 +1,7 @@
 """Sympy-backed scalar expression parser for deck values.
 
-Used by the FE deck builder to turn string-form DBC / SFB / body-force
-values (``"0.01 * t"``, ``"sin(pi*x) * cos(pi*y)"``, etc.) into
+Used by the FE deck builder to turn string-form DBC / SFB / volumetric
+source values (``"0.01 * t"``, ``"sin(pi*x) * cos(pi*y)"``, etc.) into
 JAX-traceable callables. Each parsed expression is compiled once at
 parse time via ``sympy.parse_expr`` + ``sympy.lambdify(modules="jax")``;
 the returned callable accepts the named variables as keyword
@@ -25,10 +25,10 @@ ever invoked, since sympy's ``parse_expr`` uses an AST parser rather
 than ``eval()``.
 
 Returned callables are JAX-traceable: they work both inside ``vmap``
-(NBC + body force) and at the Python boundary (DBC, where
+(NBC + volumetric source) and at the Python boundary (DBC, where
 ``np.asarray()`` coerces JAX scalars to NumPy at the materialization
 site). Vector-shape composition (DBC ``(N_set, len(dofs))``, NBC
-``(N_side_ips, num_components)``, body-force ``(num_eqs,)``) is
+``(N_side_ips, num_components)``, volumetric source ``(num_eqs,)``) is
 built inline in FE-builder helpers via ``jnp.stack`` of per-component
 scalar callables — this module parses one scalar slot at a time.
 """

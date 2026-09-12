@@ -226,7 +226,7 @@ class TestBoundaryConditions(unittest.TestCase):
 
     def test_body_force_string_components(self) -> None:
         bundle = self._build({
-            "body forces": {"expression": {
+            "volumetric sources": {"expression": {
                 "bf 1": ["equilibrium", "0.0", "0.0", "-9.81"],
             }},
         })
@@ -259,7 +259,7 @@ class TestBoundaryConditions(unittest.TestCase):
     def test_duplicate_body_force_for_resid_raises(self) -> None:
         with self.assertRaises(ValueError) as ctx:
             self._build({
-                "body forces": {"expression": {
+                "volumetric sources": {"expression": {
                     "bf 1": ["equilibrium", "0.0", "0.0", "-9.81"],
                     "bf 2": ["equilibrium", "1.0", "0.0", "0.0"],
                 }},
@@ -398,7 +398,7 @@ class TestModelBlockMatching(unittest.TestCase):
 class TestJitTraceability(unittest.TestCase):
     def test_forcing_fn_jit_traces(self) -> None:
         deck = _minimal_fe_deck()
-        deck["body forces"] = {"expression": {
+        deck["volumetric sources"] = {"expression": {
             "bf 1": ["equilibrium", "x + t", "0.0", "y * z"],
         }}
         with tempfile.TemporaryDirectory() as tmpdir:

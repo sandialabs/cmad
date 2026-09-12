@@ -116,7 +116,7 @@ class TestFEDeckSchema(unittest.TestCase):
         deck = _minimal_fe_deck()
         self.assertNotIn("dirichlet bcs", deck)
         self.assertNotIn("surface flux bcs", deck)
-        self.assertNotIn("body forces", deck)
+        self.assertNotIn("volumetric sources", deck)
         validate_deck(apply_deck_defaults(deck), "primal")
 
     def test_dbc_well_formed_validates(self) -> None:
