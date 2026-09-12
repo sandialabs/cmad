@@ -27,7 +27,7 @@ from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.elastic_stress import two_mu_scale_factor
 from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
-from cmad.models.kinematics import gather_F
+from cmad.models.kinematics import det_3x3, gather_F, inv_3x3
 from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
 from cmad.models.var_types import (
@@ -53,8 +53,8 @@ def relative_be_bar(
     """
     eye = jnp.eye(3)
     be_bar_prev = get_sym_tensor_from_vector(zeta_prev, 3) + Ie_prev * eye
-    rF = F @ jnp.linalg.inv(F_prev)
-    rF_bar = rF / jnp.cbrt(jnp.linalg.det(rF))
+    rF = F @ inv_3x3(F_prev)
+    rF_bar = rF / jnp.cbrt(det_3x3(rF))
     return rF_bar @ be_bar_prev @ rF_bar.T
 
 
@@ -296,7 +296,7 @@ class BeBarElasticPlastic(MechanicsModel):
         # plastic return map
         C_zeta_plastic = get_vector_from_sym_tensor(
             zeta - dev_be_bar_trial + 2. * delta_gamma * Ie * yield_normal, 3)
-        C_Ie_plastic = jnp.linalg.det(zeta + Ie * eye) - 1.
+        C_Ie_plastic = det_3x3(zeta + Ie * eye) - 1.
         C_plastic = jnp.r_[C_zeta_plastic, C_Ie_plastic, yield_fun]
 
         if def_type == DefType.PLANE_STRESS:
@@ -321,7 +321,7 @@ class BeBarElasticPlastic(MechanicsModel):
         elastic = ElasticConstants.from_params(params["elastic"])
         eye = jnp.eye(3)
         F = gather_F(xi, U, def_type, oop_stretch_idx)
-        J = jnp.linalg.det(F)
+        J = det_3x3(F)
         zeta = get_sym_tensor_from_vector(xi[0], 3)
         dev_cauchy = elastic.mu * zeta / J
         hydro_cauchy = 0.5 * elastic.kappa * (J - 1. / J)

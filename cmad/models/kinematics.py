@@ -55,7 +55,7 @@ def gather_F(
 def compute_invariants(A: JaxArray) -> tuple[JaxArray, JaxArray, JaxArray]:
     I1 = jnp.trace(A)
     I2 = 0.5 * (I1**2 - jnp.trace(A @ A))
-    I3 = jnp.linalg.det(A)
+    I3 = det_3x3(A)
     return I1, I2, I3
 
 
@@ -65,8 +65,25 @@ def off_axis_idx(uniaxial_stress_idx: int) -> JaxArray:
 
 
 def cofactor(F: JaxArray) -> JaxArray:
-    """Cofactor matrix ``cof(F) = det(F) * F^{-T}``."""
-    return jnp.linalg.det(F) * jnp.linalg.inv(F).T
+    """Cofactor matrix ``cof(F) = det(F) * F^{-T}`` of a 3x3 matrix, row
+    ``i`` the cross product of the other two rows in cyclic order."""
+    assert F.shape == (3, 3), F.shape
+    return jnp.stack([
+        jnp.cross(F[1], F[2]),
+        jnp.cross(F[2], F[0]),
+        jnp.cross(F[0], F[1]),
+    ])
+
+
+def det_3x3(A: JaxArray) -> JaxArray:
+    """Determinant of a 3x3 matrix, ``A[0] . cof(A)[0]``."""
+    return jnp.sum(A[0] * cofactor(A)[0])
+
+
+def inv_3x3(A: JaxArray) -> JaxArray:
+    """Inverse of a 3x3 matrix, ``cof(A)^T / det(A)``."""
+    cof = cofactor(A)
+    return cof.T / jnp.sum(A[0] * cof[0])
 
 
 def polar_rotation(F: JaxArray) -> JaxArray:
@@ -89,6 +106,6 @@ def unrotated_rate_of_deformation(
     the unrotated frame by ``R = polar_rotation(F)``.
     """
     R = polar_rotation(F)
-    L = (F - F_prev) @ jnp.linalg.inv(F) / dt
+    L = (F - F_prev) @ inv_3x3(F) / dt
     D = 0.5 * (L + L.T)
     return R.T @ D @ R

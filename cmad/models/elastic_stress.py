@@ -7,6 +7,7 @@ from typing import Any
 import jax.numpy as jnp
 
 from cmad.models.elastic_constants import ElasticConstants
+from cmad.models.kinematics import det_3x3
 from cmad.typing import JaxArray, Scalar
 
 
@@ -41,7 +42,7 @@ def isotropic_linear_elastic_cauchy_stress(
 def compressible_neohookean_cauchy_stress(
         F: JaxArray, params: dict[str, Any],
 ) -> JaxArray:
-    J = jnp.linalg.det(F)
+    J = det_3x3(F)
     Jm23 = jnp.cbrt(J)**-2
 
     I = jnp.eye(3)

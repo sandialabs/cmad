@@ -11,7 +11,7 @@ from jax import numpy as jnp
 from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
-from cmad.models.kinematics import cofactor
+from cmad.models.kinematics import cofactor, det_3x3
 from cmad.models.mechanics_model import MechanicsModel
 from cmad.models.thermal_model import ThermalModel
 from cmad.typing import JaxArray, Params, Scalar, StateList
@@ -113,7 +113,7 @@ def pressure_equation(
     if model.is_finite_deformation:
         F = model.deformation_gradient(xi, U_ip)
         cof_F = cofactor(F)[:ndims, :ndims]
-        stab = tau * (cof_F.T @ cof_F) / jnp.linalg.det(F)
+        stab = tau * (cof_F.T @ cof_F) / det_3x3(F)
         stab_term = shapes_p.grad_N @ (stab @ grad_p)
     else:
         stab_term = tau * (shapes_p.grad_N @ grad_p)
