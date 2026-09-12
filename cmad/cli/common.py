@@ -364,7 +364,7 @@ def build_fe_problem_from_deck(
     :class:`cmad.fem.fe_problem.FEProblem`, and assembles the time
     schedule. The mode-per-block dispatch (``CLOSED_FORM`` vs
     ``COUPLED``) is decided here from each Model's
-    ``supports_closed_form_cauchy`` flag and threaded explicitly into
+    ``supports_closed_form`` flag and threaded explicitly into
     :func:`build_fe_problem`.
     """
     deck = load_deck(deck_path)
@@ -424,7 +424,7 @@ def build_fe_problem_from_deck(
     modes_by_block = {
         block: (
             GlobalResidualMode.CLOSED_FORM
-            if model.supports_closed_form_cauchy
+            if model.supports_closed_form
             else GlobalResidualMode.COUPLED
         )
         for block, model in models_by_block.items()

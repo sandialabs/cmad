@@ -273,7 +273,7 @@ class GlobalResidual(ABC):
         instance-state contamination.
 
         Raises ``ValueError`` if ``mode == CLOSED_FORM`` and
-        ``model.supports_closed_form_cauchy`` is False, or if
+        ``model.supports_closed_form`` is False, or if
         ``local_newton_settings`` is passed in CLOSED_FORM.
         """
         if mode == GlobalResidualMode.CLOSED_FORM:
@@ -282,10 +282,10 @@ class GlobalResidual(ABC):
                     "local_newton_settings is only valid in COUPLED "
                     "mode; got non-None value with mode=CLOSED_FORM"
                 )
-            if not model.supports_closed_form_cauchy:
+            if not model.supports_closed_form:
                 raise ValueError(
                     f"CLOSED_FORM mode requires "
-                    f"model.supports_closed_form_cauchy; got "
+                    f"model.supports_closed_form; got "
                     f"{type(model).__name__} with the flag False"
                 )
             return self._for_model_closed_form(model)

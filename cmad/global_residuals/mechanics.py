@@ -125,7 +125,7 @@ class Mechanics(GlobalResidual):
         """Bind to a model, rejecting a mixed binding to a model that does
         not support the mixed formulation (``supports_mixed``), as the
         base rejects a CLOSED_FORM binding to one lacking
-        ``supports_closed_form_cauchy``.
+        ``supports_closed_form``.
         """
         if self._mixed and not model.supports_mixed:
             raise ValueError(

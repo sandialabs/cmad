@@ -31,7 +31,7 @@ class Elastic(MechanicsModel):
     General elastic model
     """
 
-    supports_closed_form_cauchy: ClassVar[bool] = True
+    supports_closed_form: ClassVar[bool] = True
     supports_mixed: ClassVar[bool] = True
 
     _def_type: int

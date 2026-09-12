@@ -110,7 +110,7 @@ class TestGlobalResidualABC(unittest.TestCase):
         gr = _ToyEquilibrium()
 
         class _ElasticWithoutClosedForm(Elastic):
-            supports_closed_form_cauchy: ClassVar[bool] = False
+            supports_closed_form: ClassVar[bool] = False
 
         model = _ElasticWithoutClosedForm(
             _make_parameters(), def_type=DefType.FULL_3D)
@@ -119,7 +119,7 @@ class TestGlobalResidualABC(unittest.TestCase):
             gr.for_model(model, mode=GlobalResidualMode.CLOSED_FORM)
         msg = str(ctx.exception)
         self.assertIn("CLOSED_FORM", msg)
-        self.assertIn("supports_closed_form_cauchy", msg)
+        self.assertIn("supports_closed_form", msg)
 
     def test_ad_matches_fd_on_dR_dU_closed_form(self):
         gr = _ToyEquilibrium()
