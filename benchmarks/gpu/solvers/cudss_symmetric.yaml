@@ -1,0 +1,7 @@
+# cuDSS with the tangent asserted symmetric: an LDL^T factorization of
+# the lower triangle, the adjoint on the same factorization. The print
+# per solve adds the asymmetry of the assembled tangent.
+linear solver:
+  type: cudss
+  symmetric: true
+  print convergence: true

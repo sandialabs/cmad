@@ -89,6 +89,7 @@ _LINEAR_SOLVER_DEFAULTS: dict[str, Any] = {
     "preconditioner": {"type": "jacobi"},
     "operator": "assembled",
     "print convergence": False,
+    "symmetric": False,
 }
 
 _CALIBR8_ONLY_SECTIONS: tuple[str, ...] = ("linear algebra", "regression")

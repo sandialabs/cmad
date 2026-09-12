@@ -557,27 +557,42 @@ def _cudss_threading_lib() -> str | None:
     return str(found[0]) if found else None
 
 
+# A symmetric assembled tangent measures ||K - K^T|| / ||K|| near 1e-16,
+# assembly roundoff, and a nonsymmetric one orders of magnitude more;
+# the symmetrized solve's error is about 1e4 times the asymmetry, so
+# this bound keeps it below 1e-8.
+_CUDSS_SYMMETRY_TOLERANCE = 1.0e-12
+
+
 class _CudssFactorization:
     """The cuDSS solves of one :func:`cudss_lu` callback, the plan kept
     across calls: a solve reuses the held plan when the sparsity pattern
     and the right hand side shape match the ones it was made on, and
-    makes a new one otherwise. ``transpose`` factors ``K^T``.
+    makes a new one otherwise. ``transpose`` factors ``K^T``;
+    ``symmetric`` factors the lower triangle as LDL^T, a solve of the
+    symmetrized matrix, and raises when ``||K - K^T|| / ||K||`` exceeds
+    :data:`_CUDSS_SYMMETRY_TOLERANCE` on any solve.
     """
 
     def __init__(
-            self, n: int, *, transpose: bool, print_convergence: bool,
-            threading_lib: str | None,
+            self, n: int, *, transpose: bool, symmetric: bool,
+            print_convergence: bool, threading_lib: str | None,
     ) -> None:
         self.n = n
         self.transpose = transpose
+        self.symmetric = symmetric
         self.print_convergence = print_convergence
         self.threading_lib = threading_lib
         self.solver: Any = None
         # The plan holds only for the buffers it was made on (nvmath drops
         # it when an operand arrives in other buffers), so the CSR and the
         # right hand side it was planned with are kept and refilled in
-        # place; ``perm`` turns the data of K into the data of K^T.
+        # place; ``perm`` maps the data of K to the data of the held CSR
+        # (K^T, or the lower triangle), ``None`` when they are the same.
+        # ``K_full`` is K itself, held for the symmetry check and the
+        # printed residual when the factored matrix is its lower triangle.
         self.K: Any = None
+        self.K_full: Any = None
         self.b_dev: Any = None
         self.perm: Any = None
         self.indptr: Any = None
@@ -604,7 +619,12 @@ class _CudssFactorization:
         """
         import cupy
         import cupyx.scipy.sparse
-        from nvmath.sparse.advanced import DirectSolver, DirectSolverOptions
+        from nvmath.sparse.advanced import (
+            DirectSolver,
+            DirectSolverMatrixType,
+            DirectSolverMatrixViewType,
+            DirectSolverOptions,
+        )
 
         device = cupy.cuda.Device()
 
@@ -631,30 +651,54 @@ class _CudssFactorization:
         )
         if reuse:
             self.K.data[...] = data if self.perm is None else data[self.perm]
+            if self.K_full is not None:
+                self.K_full.data[...] = data
             self.b_dev[...] = b_dev
         else:
             self._free()
-            if self.transpose:
-                # Transposing the pattern with its data numbered by position
-                # gives the permutation from the data of K to the data of K^T.
-                numbered = cupyx.scipy.sparse.csr_matrix(
-                    (cupy.arange(data.shape[0], dtype=cupy.float64),
-                     col_indices, indptr),
-                    shape=(n, n),
-                ).T.tocsr()
-                self.perm = numbered.data.astype(cupy.int64)
-                self.K = cupyx.scipy.sparse.csr_matrix(
-                    (data[self.perm], numbered.indices, numbered.indptr),
-                    shape=(n, n),
-                )
+            # The pattern with its data numbered by position (from 1, so no
+            # entry is an explicit zero), transposed or reduced to its lower
+            # triangle: its data are the positions the held CSR's data come
+            # from.
+            numbered = cupyx.scipy.sparse.csr_matrix(
+                (cupy.arange(1, data.shape[0] + 1, dtype=cupy.float64),
+                 col_indices, indptr),
+                shape=(n, n),
+            )
+            if self.symmetric:
+                held = cupyx.scipy.sparse.tril(numbered, format="csr")
+            elif self.transpose:
+                held = numbered.T.tocsr()
             else:
+                held = None
+            if held is None:
                 self.perm = None
                 self.K = cupyx.scipy.sparse.csr_matrix(
                     (data, col_indices, indptr), shape=(n, n),
                 )
+            else:
+                self.perm = (held.data - 1.0).astype(cupy.int64)
+                self.K = cupyx.scipy.sparse.csr_matrix(
+                    (data[self.perm], held.indices, held.indptr), shape=(n, n),
+                )
+            self.K_full = (
+                cupyx.scipy.sparse.csr_matrix(
+                    (data.copy(), col_indices, indptr), shape=(n, n),
+                )
+                if self.symmetric else None
+            )
             self.b_dev = b_dev
             self.indptr, self.col_indices = indptr, col_indices
-            options = DirectSolverOptions(multithreading_lib=self.threading_lib)
+            if self.symmetric:
+                options = DirectSolverOptions(
+                    multithreading_lib=self.threading_lib,
+                    sparse_system_type=DirectSolverMatrixType.SYMMETRIC,
+                    sparse_system_view=DirectSolverMatrixViewType.LOWER,
+                )
+            else:
+                options = DirectSolverOptions(
+                    multithreading_lib=self.threading_lib,
+                )
             self.solver = DirectSolver(self.K, self.b_dev, options=options)
             self.solver.plan()
         t_planned = clock()
@@ -664,20 +708,35 @@ class _CudssFactorization:
         t_solved = clock()
         x = cupy.asnumpy(x_dev.T).reshape(*batch_shape, n)
         t_downloaded = clock()
+        # The residual and the asymmetry are of the matrix being solved, K
+        # or K^T, never of the lower triangle.
+        full = self.K_full if self.symmetric else self.K
+        asymmetry = 0.0
+        if self.symmetric or self.print_convergence:
+            full_norm = float(cupy.linalg.norm(full.data))
+            asymmetry = float(cupy.linalg.norm((full - full.T.tocsr()).data))
+            asymmetry = asymmetry / (full_norm if full_norm > 0.0 else 1.0)
+        if self.symmetric and asymmetry > _CUDSS_SYMMETRY_TOLERANCE:
+            raise RuntimeError(
+                f"cudss with symmetric: the matrix is not symmetric, "
+                f"||K - K^T|| / ||K|| = {asymmetry:.3e} exceeds "
+                f"{_CUDSS_SYMMETRY_TOLERANCE:.0e}; unset symmetric"
+            )
         if self.print_convergence:
             lu_nnz = int(self.solver.factorization_info.lu_nnz)
             b_norm = float(cupy.linalg.norm(self.b_dev))
-            residual = float(cupy.linalg.norm(self.b_dev - self.K @ x_dev))
+            residual = float(cupy.linalg.norm(self.b_dev - full @ x_dev))
             rel = residual / (b_norm if b_norm > 0.0 else 1.0)
             plan = (
                 "plan reused" if reuse
                 else f"plan {1e3 * (t_planned - t_uploaded):.0f} ms"
             )
             print(
-                f" > linear solve: cudss, relative residual {rel:.3e}, factor "
-                f"nonzeros {lu_nnz}, upload {1e3 * (t_uploaded - t_start):.0f} "
-                f"ms, {plan}, factorize {1e3 * (t_factored - t_planned):.0f} ms, "
-                f"solve {1e3 * (t_solved - t_factored):.0f} ms, download "
+                f" > linear solve: cudss, relative residual {rel:.3e}, "
+                f"asymmetry {asymmetry:.3e}, factor nonzeros {lu_nnz}, upload "
+                f"{1e3 * (t_uploaded - t_start):.0f} ms, {plan}, factorize "
+                f"{1e3 * (t_factored - t_planned):.0f} ms, solve "
+                f"{1e3 * (t_solved - t_factored):.0f} ms, download "
                 f"{1e3 * (t_downloaded - t_solved):.0f} ms",
                 flush=True,
             )
@@ -686,17 +745,22 @@ class _CudssFactorization:
 
 def cudss_lu(
         K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
-        print_convergence: bool = False,
+        print_convergence: bool = False, symmetric: bool = False,
 ) -> JaxArray:
     """Solve ``K x = b`` with cuDSS on the GPU, the counterpart of
     :func:`scipy_lu`: the same operands and the same
     :func:`jax.lax.custom_linear_solve` rules over the same matvec, with
     one :func:`jax.pure_callback` per solve running
     :meth:`_CudssFactorization.solve`, the plan kept across solves, and
-    the transpose solve factoring ``K^T``. The operands cross to the
-    host and back each solve, a cost the ``print_convergence`` line
-    reports. CuPy and nvmath with cuDSS are imported here, so the module
-    loads without them and a missing one fails at trace time.
+    the transpose solve factoring ``K^T``. ``symmetric`` is the caller's
+    assertion that ``K`` is symmetric, checked on every solve against a
+    roundoff tolerance: the lower triangle is factored as LDL^T and the
+    transpose solve uses the same factorization, and a matrix that is
+    not symmetric raises instead of returning the symmetrized solve. The
+    operands cross to the host and back each solve, a cost the
+    ``print_convergence`` line reports. CuPy and nvmath with cuDSS are
+    imported here, so the module loads without them and a missing one
+    fails at trace time.
     """
     for module in ("cupy", "cupyx.scipy.sparse", "nvmath.sparse.advanced"):
         importlib.import_module(module)
@@ -705,12 +769,8 @@ def cudss_lu(
     n = sparsity.n
     threading_lib = _cudss_threading_lib()
     forward = _CudssFactorization(
-        n, transpose=False, print_convergence=print_convergence,
-        threading_lib=threading_lib,
-    )
-    transposed = _CudssFactorization(
-        n, transpose=True, print_convergence=print_convergence,
-        threading_lib=threading_lib,
+        n, transpose=False, symmetric=symmetric,
+        print_convergence=print_convergence, threading_lib=threading_lib,
     )
 
     def solve(_unused_matvec: Callable[[JaxArray], JaxArray],
@@ -721,6 +781,14 @@ def cudss_lu(
             unique_data, sparsity.col_indices, sparsity.indptr, rhs,
             vmap_method="expand_dims",
         )
+
+    if symmetric:
+        return lax.custom_linear_solve(matvec, b, solve, symmetric=True)
+
+    transposed = _CudssFactorization(
+        n, transpose=True, symmetric=False,
+        print_convergence=print_convergence, threading_lib=threading_lib,
+    )
 
     def transpose_solve(_unused_vecmat: Callable[[JaxArray], JaxArray],
                         rhs: JaxArray) -> JaxArray:

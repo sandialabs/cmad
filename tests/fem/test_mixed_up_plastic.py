@@ -187,6 +187,10 @@ class TestMixedUpPlastic(unittest.TestCase):
     def test_small_elastic_plastic_cudss(self) -> None:
         self._run(SmallElasticPlastic, {"type": "cudss"})
 
+    @unittest.skipUnless(cudss_available(), SKIP_REASON)
+    def test_small_elastic_plastic_cudss_symmetric(self) -> None:
+        self._run(SmallElasticPlastic, {"type": "cudss", "symmetric": True})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -533,6 +533,14 @@ class TestMixed(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             bundle = _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
         self.assertEqual(bundle.resolved["linear solver"]["type"], "cudss")
+        self.assertFalse(bundle.resolved["linear solver"]["symmetric"])
+
+    def test_mixed_accepts_cudss_symmetric(self) -> None:
+        deck = self._mixed_deck()
+        deck["linear solver"] = {"type": "cudss", "symmetric": True}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
+        self.assertTrue(bundle.resolved["linear solver"]["symmetric"])
 
     def test_element_operator_accepts_jax_native_solvers(self) -> None:
         for deck, linear_solver in (

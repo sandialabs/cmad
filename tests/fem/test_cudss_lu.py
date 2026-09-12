@@ -11,10 +11,21 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from cmad.fem.nonlinear_solver import fe_newton_solve
 from cmad.fem.sparse_solve import EmbeddedSparsity, cudss_lu
+from cmad.global_residuals.modes import GlobalResidualMode
+from tests.fem.test_fem_fd_checks import (
+    _J2_FD_PARAM_PATHS,
+    _build_fe_problem_2x2x2,
+    _compare_ad_vs_fd,
+    _compare_hessian_ad_vs_fd,
+    _initial_xi_by_block,
+    _make_J2_model,
+)
 from tests.fem.test_sparse_solve import (
     _dense_to_cache,
     _fd_jvp,
+    _random_block_matrix,
     _random_nonsymm,
     _random_spd,
 )
@@ -269,6 +280,126 @@ class TestCudssLuPlanReuse(unittest.TestCase):
                     x, np.linalg.solve(K, b), rtol=1e-10, atol=1e-12,
                 )
                 self.assertEqual("plan reused" in printed.getvalue(), reused)
+
+
+@unittest.skipUnless(cudss_available(), SKIP_REASON)
+class TestCudssLuSymmetric(unittest.TestCase):
+    """The symmetric path: the lower triangle factored as LDL^T, the
+    transpose solve on the same factorization. Forward on a positive
+    definite and on an indefinite matrix against dense solves, and the
+    VJP against central differences along symmetric perturbations of K
+    (the solve reads one triangle, so only symmetric directions have a
+    derivative it can be compared on)."""
+
+    def test_spd_matches_dense(self) -> None:
+        n = 6
+        K = _random_spd(n, seed=95)
+        K_data, sparsity = _dense_to_cache(K)
+        b = jnp.asarray(np.random.default_rng(96).standard_normal(n))
+
+        x = cudss_lu(K_data, sparsity, b, symmetric=True)
+        x_ref = jnp.linalg.solve(jnp.asarray(K), b)
+        np.testing.assert_allclose(np.asarray(x), np.asarray(x_ref),
+                                   rtol=1e-10, atol=1e-12)
+
+    def test_indefinite_matches_dense(self) -> None:
+        K, _ = _random_block_matrix((4, 2), symmetric=True, seed=97)
+        n = K.shape[0]
+        K_data, sparsity = _dense_to_cache(K)
+        b = jnp.asarray(np.random.default_rng(98).standard_normal(n))
+
+        x = cudss_lu(K_data, sparsity, b, symmetric=True)
+        np.testing.assert_allclose(np.asarray(x), np.linalg.solve(K, np.asarray(b)),
+                                   rtol=1e-10, atol=1e-12)
+
+    def test_nonsymmetric_raises(self) -> None:
+        n = 5
+        K = _random_nonsymm(n, seed=102)
+        K_data, sparsity = _dense_to_cache(K)
+        b = jnp.asarray(np.random.default_rng(103).standard_normal(n))
+
+        with self.assertRaises(Exception) as ctx:
+            np.asarray(cudss_lu(K_data, sparsity, b, symmetric=True))
+        self.assertIn("not symmetric", str(ctx.exception))
+
+    def test_vjp_K_and_b(self) -> None:
+        n = 4
+        K = _random_spd(n, seed=99)
+        K_data, sparsity = _dense_to_cache(K)
+        b = jnp.asarray(np.random.default_rng(100).standard_normal(n))
+        x_bar = jnp.asarray(np.random.default_rng(101).standard_normal(n))
+
+        def f(K_data_, b_):
+            return cudss_lu(K_data_, sparsity, b_, symmetric=True)
+
+        _, vjp_fn = jax.vjp(f, K_data, b)
+        gK, gb = vjp_fn(x_bar)
+
+        @jax.jit
+        def J(K_data_, b_):
+            return jnp.dot(x_bar, f(K_data_, b_))
+
+        eps = 1e-6
+        gK_np = np.asarray(gK).reshape(n, n)
+        for i in range(n):
+            for j in range(i, n):
+                direction = np.zeros((n, n))
+                direction[i, j] = 1.0
+                direction[j, i] = 1.0
+                d = jnp.asarray(direction.reshape(-1))
+                fd = (J(K_data + eps * d, b) - J(K_data - eps * d, b)) / (2 * eps)
+                ad = float(np.sum(gK_np * direction))
+                np.testing.assert_allclose(float(fd), ad, rtol=1e-5, atol=1e-7)
+        gb_fd = np.zeros_like(np.asarray(b))
+        for i in range(n):
+            ei = jnp.zeros_like(b).at[i].set(eps)
+            gb_fd[i] = (J(K_data, b + ei) - J(K_data, b - ei)) / (2 * eps)
+        np.testing.assert_allclose(np.asarray(gb), gb_fd, rtol=1e-5, atol=1e-7)
+
+
+@unittest.skipUnless(cudss_available(), SKIP_REASON)
+class TestCudssFeGradient(unittest.TestCase):
+    """The COUPLED single step check of ``test_fem_fd_checks.py`` through
+    the cudss solve, GENERAL and symmetric: the gradient and the Hessian
+    of a QoI of the converged displacement against central differences.
+    """
+
+    def _check(self, linear_solver_settings: dict) -> None:
+        slope = 2e-3
+        t = 1.0
+        model = _make_J2_model()
+        fe_problem = _build_fe_problem_2x2x2(
+            model, GlobalResidualMode.COUPLED, slope,
+        )
+        params_at = model.parameters.values
+        n_dofs = fe_problem.dof_map.num_total_dofs
+
+        def _J(params):
+            U_prev = jnp.zeros(n_dofs)
+            xi_prev = _initial_xi_by_block(fe_problem)
+            U_star, _ = fe_newton_solve(
+                fe_problem, {"all": params},
+                U_prev=U_prev, xi_prev_by_block=xi_prev, t=t,
+                nonlinear_solver_settings={
+                    "max iters": 30, "abs tol": 1e-10, "rel tol": 1e-10,
+                },
+                linear_solver_settings=linear_solver_settings,
+            )
+            return jnp.sum(U_star ** 2)
+
+        J = jax.jit(_J)
+        _compare_ad_vs_fd(
+            self, J, jax.jit(jax.grad(_J)), params_at, _J2_FD_PARAM_PATHS,
+        )
+        _compare_hessian_ad_vs_fd(
+            self, J, jax.jit(jax.hessian(_J)), params_at, _J2_FD_PARAM_PATHS,
+        )
+
+    def test_general(self) -> None:
+        self._check({"type": "cudss"})
+
+    def test_symmetric(self) -> None:
+        self._check({"type": "cudss", "symmetric": True})
 
 
 if __name__ == "__main__":

@@ -50,6 +50,7 @@ _DEFAULT_LINEAR_SOLVER_SETTINGS: dict[str, Any] = {
     "preconditioner": {"type": "jacobi"},
     "operator": "assembled",
     "print convergence": False,
+    "symmetric": False,
 }
 _OPERATORS = ("assembled", "element")
 
@@ -248,6 +249,7 @@ def _solve_linear(
         return cudss_lu(
             K, sparsity, rhs,
             print_convergence=linear_solver_settings.get("print convergence", False),
+            symmetric=linear_solver_settings.get("symmetric", False),
         )
 
     precon_spec = linear_solver_settings.get(
@@ -601,7 +603,9 @@ def fe_newton_solve(
     ``linear_solver_settings`` is a dict with keys
     ``type`` / ``rtol`` / ``max iters`` / ``restart`` / ``preconditioner``
     (``restart`` consumed only by ``gmres``; ``preconditioner`` ignored
-    by ``direct`` and ``cudss``). ``preconditioner`` is itself a dict with
+    by ``direct`` and ``cudss``; ``symmetric``, the assertion that the
+    tangent is symmetric, consumed only by ``cudss``). ``preconditioner``
+    is itself a dict with
     a required ``type`` (``'jacobi'``, ``'pyamg'``, or ``'block'``). pyamg
     takes an optional freeform ``kwargs`` dict forwarded to
     :func:`pyamg.smoothed_aggregation_solver`; block takes ``coupling``

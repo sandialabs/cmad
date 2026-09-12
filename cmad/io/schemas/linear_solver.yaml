@@ -21,6 +21,8 @@ properties:
     enum: [assembled, element]
   print convergence:
     type: boolean
+  symmetric:
+    type: boolean
   preconditioner:
     type: object
     required: [type]
