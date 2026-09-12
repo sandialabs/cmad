@@ -417,22 +417,6 @@ class SmallRateElasticPlastic(MechanicsModel):
         global_cauchy = Q @ get_sym_tensor_from_vector(xi[0], 3) @ Q.T
         return global_cauchy
 
-    def dev_cauchy(
-            self,
-            xi: StateList, xi_prev: StateList, params: dict[str, Any],
-            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
-    ) -> JaxArray:
-        cauchy = self.cauchy(xi, xi_prev, params, U, U_prev)
-        return cauchy - jnp.trace(cauchy) / 3. * jnp.eye(3)
-
-    def hydro_cauchy(
-            self,
-            xi: StateList, xi_prev: StateList, params: dict[str, Any],
-            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
-    ) -> Scalar:
-        cauchy = self.cauchy(xi, xi_prev, params, U, U_prev)
-        return jnp.trace(cauchy) / 3.
-
     @staticmethod
     def pressure_scale_factor(params: dict[str, Any]) -> Scalar:
         return ElasticConstants.from_params(params["elastic"]).kappa

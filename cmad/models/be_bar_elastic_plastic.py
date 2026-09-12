@@ -324,27 +324,6 @@ class BeBarElasticPlastic(MechanicsModel):
         hydro_cauchy = 0.5 * elastic.kappa * (J - 1. / J)
         return dev_cauchy + hydro_cauchy * eye
 
-    def dev_cauchy(
-            self,
-            xi: StateList, xi_prev: StateList, params: dict[str, Any],
-            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
-    ) -> JaxArray:
-        mu = ElasticConstants.from_params(params["elastic"]).mu
-        F = gather_F(xi, U, self._def_type, self._oop_stretch_idx)
-        J = jnp.linalg.det(F)
-        zeta = get_sym_tensor_from_vector(xi[0], 3)
-        return mu * zeta / J
-
-    def hydro_cauchy(
-            self,
-            xi: StateList, xi_prev: StateList, params: dict[str, Any],
-            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
-    ) -> Scalar:
-        kappa = ElasticConstants.from_params(params["elastic"]).kappa
-        F = gather_F(xi, U, self._def_type, self._oop_stretch_idx)
-        J = jnp.linalg.det(F)
-        return 0.5 * kappa * (J - 1. / J)
-
     @staticmethod
     def pressure_scale_factor(params: dict[str, Any]) -> Scalar:
         return ElasticConstants.from_params(params["elastic"]).kappa

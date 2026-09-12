@@ -24,6 +24,7 @@ from numpy.typing import NDArray
 from cmad.fem.assembly import _element_eq_indices
 from cmad.fem.fe_problem import FEProblem, FEState
 from cmad.fem.shapes import ShapeFunctionsAtIP
+from cmad.global_residuals.balance_laws import cauchy_with_pressure
 from cmad.global_residuals.interpolation import (
     interpolate_global_fields_at_ip,
 )
@@ -138,13 +139,9 @@ def evaluate_cauchy_at_ips(
                 U_prev_ip = interpolate_global_fields_at_ip(
                     U_prev_e, shapes_ip, var_names,
                 )
+                sigma = cauchy_fn(params, U_ip, U_prev_ip)
                 if is_mixed:
-                    dev = model.dev_cauchy_closed_form(
-                        params, U_ip, U_prev_ip,
-                    )
-                    sigma = dev - U_ip.fields["p"][0] * jnp.eye(3)
-                else:
-                    sigma = cauchy_fn(params, U_ip, U_prev_ip)
+                    sigma = cauchy_with_pressure(sigma, U_ip.fields["p"][0])
                 cauchy_per_ip = cauchy_per_ip.at[ip_idx].set(
                     get_vector_from_sym_tensor(sigma[:ndims, :ndims], ndims),
                 )
@@ -185,15 +182,11 @@ def evaluate_cauchy_at_ips(
                 )
                 xi_blocks = unravel_xi(xi_per_ip[ip_idx])
                 xi_prev_blocks = unravel_xi(xi_prev_per_ip[ip_idx])
+                sigma = cauchy_fn(
+                    xi_blocks, xi_prev_blocks, params, U_ip, U_prev_ip,
+                )
                 if is_mixed:
-                    dev = model.dev_cauchy(
-                        xi_blocks, xi_prev_blocks, params, U_ip, U_prev_ip,
-                    )
-                    sigma = dev - U_ip.fields["p"][0] * jnp.eye(3)
-                else:
-                    sigma = cauchy_fn(
-                        xi_blocks, xi_prev_blocks, params, U_ip, U_prev_ip,
-                    )
+                    sigma = cauchy_with_pressure(sigma, U_ip.fields["p"][0])
                 cauchy_per_ip = cauchy_per_ip.at[ip_idx].set(
                     get_vector_from_sym_tensor(sigma[:ndims, :ndims], ndims),
                 )

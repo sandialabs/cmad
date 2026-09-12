@@ -207,28 +207,6 @@ class Elastic(MechanicsModel):
         return elastic_stress(F, params)
 
     @staticmethod
-    def dev_cauchy_closed_form(
-            params: dict[str, Any],
-            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
-    ) -> JaxArray:
-        grad_u = U.grad_fields["u"]
-        eps = 0.5 * (grad_u + grad_u.T)
-        # eye(ndims): in 2D this is the plane strain block of the 3D strain
-        # deviator (eps_33 = 0, so the trace is the in plane trace).
-        dev_eps = eps - jnp.trace(eps) / 3. * jnp.eye(grad_u.shape[0])
-        return 2. * ElasticConstants.from_params(params["elastic"]).mu * dev_eps
-
-    @staticmethod
-    def hydro_cauchy_closed_form(
-            params: dict[str, Any],
-            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
-    ) -> Scalar:
-        grad_u = U.grad_fields["u"]
-        eps = 0.5 * (grad_u + grad_u.T)
-        return ElasticConstants.from_params(params["elastic"]).kappa \
-            * jnp.trace(eps)
-
-    @staticmethod
     def pressure_scale_factor(params: dict[str, Any]) -> Scalar:
         return ElasticConstants.from_params(params["elastic"]).kappa
 

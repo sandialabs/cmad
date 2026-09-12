@@ -345,24 +345,6 @@ class SmallElasticPlastic(MechanicsModel):
 
         return global_cauchy
 
-    def dev_cauchy(
-            self,
-            xi: StateList, xi_prev: StateList, params: dict[str, Any],
-            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
-    ) -> JaxArray:
-        cauchy = self.cauchy(xi, xi_prev, params, U, U_prev)
-        return cauchy - jnp.trace(cauchy) / 3. * jnp.eye(3)
-
-    @staticmethod
-    def hydro_cauchy(
-            xi: StateList, xi_prev: StateList, params: dict[str, Any],
-            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
-    ) -> Scalar:
-        grad_u = U.grad_fields["u"]
-        eps = 0.5 * (grad_u + grad_u.T)
-        return ElasticConstants.from_params(params["elastic"]).kappa \
-            * jnp.trace(eps)
-
     @staticmethod
     def pressure_scale_factor(params: dict[str, Any]) -> Scalar:
         return ElasticConstants.from_params(params["elastic"]).kappa

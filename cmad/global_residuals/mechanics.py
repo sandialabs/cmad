@@ -42,10 +42,9 @@ class Mechanics(GlobalResidual):
       and adds a pressure-gradient term ``tau * grad(p).grad(q)`` that
       supplies the inf-sup stability equal-order pairs lack, with
       ``tau = mult * 0.5 * h^2 / mu`` (``mu = model.shear_scale_factor``,
-      ``h`` the element size). The ``dev`` and ``hydro`` parts come from
-      the model's ``dev_cauchy_closed_form`` / ``hydro_cauchy_closed_form``
-      when bound CLOSED_FORM (elastic) and from ``dev_cauchy`` /
-      ``hydro_cauchy`` (reading the converged local state) when bound
+      ``h`` the element size). The ``dev`` and ``hydro`` parts are the
+      trace split of the model's stress, closed form when bound
+      CLOSED_FORM (elastic) and from the converged local state when bound
       COUPLED (plastic). Mixed needs a model with ``supports_mixed`` and
       runs in 3D or, for small strain, 2D plane strain, where the
       momentum stress uses the leading 2x2 deviatoric block. A finite

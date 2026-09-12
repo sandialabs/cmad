@@ -16,6 +16,29 @@ from cmad.models.mechanics_model import MechanicsModel
 from cmad.typing import JaxArray, Params, Scalar, StateList
 
 
+def _cauchy_by_mode(
+        xi: StateList,
+        xi_prev: StateList,
+        params: Params,
+        U_ip: GlobalFieldsAtPoint,
+        U_ip_prev: GlobalFieldsAtPoint,
+        model: MechanicsModel,
+        mode: GlobalResidualMode,
+) -> JaxArray:
+    """The model's 3x3 Cauchy stress, closed form or from the local state."""
+    if mode == GlobalResidualMode.CLOSED_FORM:
+        assert model.cauchy_closed_form is not None
+        return model.cauchy_closed_form(params, U_ip, U_ip_prev)
+    return model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)
+
+
+def cauchy_with_pressure(sigma: JaxArray, p: Scalar) -> JaxArray:
+    """The mixed formulation's stress: the deviatoric part of the 3x3
+    ``sigma`` with the pressure field as its hydrostatic part,
+    ``dev(sigma) - p I``."""
+    return sigma - (jnp.trace(sigma) / 3. + p) * jnp.eye(3)
+
+
 def momentum_balance(
         xi: StateList,
         xi_prev: StateList,
@@ -35,27 +58,17 @@ def momentum_balance(
 
     ``grad_N @ sigma`` in small strain, or ``grad_N @ P.T`` with the first
     Piola-Kirchhoff stress ``P = sigma @ cofactor(F)`` over the reference
-    volume when ``model.is_finite_deformation``, times ``w dv``. The
-    stress is ``model.cauchy_closed_form`` (CLOSED_FORM) or ``model.cauchy``
-    (COUPLED) contracted to its leading ``ndims`` block; when ``mixed`` the
-    model supplies the deviatoric part and the pressure field the
-    hydrostatic part, ``sigma = dev - p I``.
+    volume when ``model.is_finite_deformation``, times ``w dv``. ``sigma``
+    is the model's Cauchy stress (closed form or from the local state per
+    ``mode``) contracted to its leading ``ndims`` block; when ``mixed`` its
+    hydrostatic part is replaced by the pressure field
+    (:func:`cauchy_with_pressure`).
     """
     n = ndims
+    sigma = _cauchy_by_mode(xi, xi_prev, params, U_ip, U_ip_prev, model, mode)
     if mixed:
-        if mode == GlobalResidualMode.CLOSED_FORM:
-            dev = model.dev_cauchy_closed_form(params, U_ip, U_ip_prev)
-        else:
-            dev = model.dev_cauchy(xi, xi_prev, params, U_ip, U_ip_prev)
-        p = U_ip.fields["p"][0]
-        sigma = dev[:n, :n] - p * jnp.eye(n)
-    else:
-        if mode == GlobalResidualMode.CLOSED_FORM:
-            assert model.cauchy_closed_form is not None
-            sigma = model.cauchy_closed_form(params, U_ip, U_ip_prev)
-        else:
-            sigma = model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)
-        sigma = sigma[:n, :n]
+        sigma = cauchy_with_pressure(sigma, U_ip.fields["p"][0])
+    sigma = sigma[:n, :n]
     if model.is_finite_deformation:
         F = model.deformation_gradient(xi, U_ip)
         cof_F = cofactor(F)[:n, :n]
@@ -82,17 +95,15 @@ def pressure_equation(
     """Stabilized pressure equation of the mixed formulation, shape
     ``(n_basis_p, 1)``.
 
-    ``-(p + hydro) / psf N_p - tau grad_N_p . grad p`` times ``w dv``:
-    ``hydro`` is ``model.hydro_cauchy_closed_form`` (CLOSED_FORM) or
-    ``model.hydro_cauchy`` (COUPLED), ``psf = model.pressure_scale_factor``,
+    ``-(p + hydro) / psf N_p - tau grad_N_p . grad p`` times ``w dv``, with
+    ``hydro = tr(sigma) / 3`` of the model's Cauchy stress (closed form or
+    from the local state per ``mode``), ``psf = model.pressure_scale_factor``,
     and ``tau = stabilization_multiplier 0.5 h^2 / mu`` with
     ``mu = model.shear_scale_factor``; in finite deformation the
     stabilization is scaled by ``(cof_F.T @ cof_F) / det F``.
     """
-    if mode == GlobalResidualMode.CLOSED_FORM:
-        hydro = model.hydro_cauchy_closed_form(params, U_ip, U_ip_prev)
-    else:
-        hydro = model.hydro_cauchy(xi, xi_prev, params, U_ip, U_ip_prev)
+    sigma = _cauchy_by_mode(xi, xi_prev, params, U_ip, U_ip_prev, model, mode)
+    hydro = jnp.trace(sigma) / 3.
     p = U_ip.fields["p"][0]
     psf = model.pressure_scale_factor(params)
     mu = model.shear_scale_factor(params)
