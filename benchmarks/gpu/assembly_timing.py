@@ -141,16 +141,23 @@ def time_gradient_over_steps(
             )
             return jnp.sum(U_steps ** 2)
 
-        start = time.perf_counter()
-        compiled = jit(jax.grad(cost)).lower(params_by_block, fe_arrays).compile()
-        compile_s = time.perf_counter() - start
-        start = time.perf_counter()
-        block_until_ready(compiled(params_by_block, fe_arrays))
-        wall_s = time.perf_counter() - start
-        print(
-            f"gradient over {num_steps} steps: compile {compile_s:.1f} s, "
-            f"warm {wall_s:.1f} s, {executable_summary(compiled)}", flush=True,
-        )
+        # The Hessian as cmad hessian forms it: forward over reverse, the
+        # tangent batch as wide as the parameter count.
+        for label, fn in (
+                ("gradient", jax.grad(cost)),
+                ("hessian", jax.jacfwd(jax.grad(cost))),
+        ):
+            start = time.perf_counter()
+            compiled = jit(fn).lower(params_by_block, fe_arrays).compile()
+            compile_s = time.perf_counter() - start
+            start = time.perf_counter()
+            block_until_ready(compiled(params_by_block, fe_arrays))
+            wall_s = time.perf_counter() - start
+            print(
+                f"{label} over {num_steps} steps: compile {compile_s:.1f} s, "
+                f"warm {wall_s:.1f} s, {executable_summary(compiled)}",
+                flush=True,
+            )
 
 
 def assembly_fns(fe_problem: Any) -> dict[str, Any]:
