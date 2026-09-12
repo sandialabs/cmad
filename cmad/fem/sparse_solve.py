@@ -14,6 +14,10 @@ is the assembled sparse matrix behind it. Three further helpers:
 - :func:`cudss_lu` is the same solve with cuDSS on the GPU in the
   callback.
 
+- :func:`petsc_solve` solves with PETSc in the callback, a Krylov
+  method (GMRES, CG, or MINRES) preconditioned by GAMG per field, on
+  the CPU or the GPU.
+
 - :func:`_embedded_bc_enforce` rewrites a global :class:`BCOO`
   tangent ``K`` for the embedded-BC formulation: prescribed rows
   zeroed (off-diagonal entries included), identity entries appended
@@ -561,7 +565,7 @@ def _cudss_threading_lib() -> str | None:
 # assembly roundoff, and a nonsymmetric one orders of magnitude more;
 # the symmetrized solve's error is about 1e4 times the asymmetry, so
 # this bound keeps it below 1e-8.
-_CUDSS_SYMMETRY_TOLERANCE = 1.0e-12
+_SYMMETRY_TOLERANCE = 1.0e-12
 
 
 class _CudssFactorization:
@@ -571,7 +575,7 @@ class _CudssFactorization:
     makes a new one otherwise. ``transpose`` factors ``K^T``;
     ``symmetric`` factors the lower triangle as LDL^T, a solve of the
     symmetrized matrix, and raises when ``||K - K^T|| / ||K||`` exceeds
-    :data:`_CUDSS_SYMMETRY_TOLERANCE` on any solve.
+    :data:`_SYMMETRY_TOLERANCE` on any solve.
     """
 
     def __init__(
@@ -716,11 +720,11 @@ class _CudssFactorization:
             full_norm = float(cupy.linalg.norm(full.data))
             asymmetry = float(cupy.linalg.norm((full - full.T.tocsr()).data))
             asymmetry = asymmetry / (full_norm if full_norm > 0.0 else 1.0)
-        if self.symmetric and asymmetry > _CUDSS_SYMMETRY_TOLERANCE:
+        if self.symmetric and asymmetry > _SYMMETRY_TOLERANCE:
             raise RuntimeError(
                 f"cudss with symmetric: the matrix is not symmetric, "
                 f"||K - K^T|| / ||K|| = {asymmetry:.3e} exceeds "
-                f"{_CUDSS_SYMMETRY_TOLERANCE:.0e}; unset symmetric"
+                f"{_SYMMETRY_TOLERANCE:.0e}; unset symmetric"
             )
         if self.print_convergence:
             lu_nnz = int(self.solver.factorization_info.lu_nnz)
@@ -789,6 +793,429 @@ def cudss_lu(
         n, transpose=True, symmetric=False,
         print_convergence=print_convergence, threading_lib=threading_lib,
     )
+
+    def transpose_solve(_unused_vecmat: Callable[[JaxArray], JaxArray],
+                        rhs: JaxArray) -> JaxArray:
+        return jax.pure_callback(
+            transposed.solve,
+            jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
+            unique_data, sparsity.col_indices, sparsity.indptr, rhs,
+            vmap_method="expand_dims",
+        )
+
+    return lax.custom_linear_solve(
+        matvec, b, solve, transpose_solve=transpose_solve, symmetric=False,
+    )
+
+
+_PETSC_KRYLOV_METHODS = ("gmres", "cg", "minres")
+
+
+class _PetscKrylovSolver:
+    """The PETSc solves of one :func:`petsc_solve` callback: the matrix,
+    the KSP (PETSc's Krylov solver object, which holds the method, the
+    preconditioner, and the tolerances), and the field index sets kept
+    across calls; a solve refills the values in place when the sparsity
+    pattern matches the one they were built on and rebuilds them
+    otherwise. ``transpose`` solves with ``K^T``, PETSc's transpose of
+    the held matrix, refreshed on every refill. ``krylov`` is
+    ``"gmres"``, ``"cg"``, or ``"minres"``; the two symmetric methods
+    raise when ``||K - K^T|| / ||K||`` exceeds :data:`_SYMMETRY_TOLERANCE`
+    on any solve, and ``cg`` raises when PETSc reports the matrix or the
+    preconditioner indefinite.
+    """
+
+    def __init__(
+            self, n: int, *, krylov: str, transpose: bool, device: str,
+            field_rows: Sequence[NDArray[np.integer]],
+            field_names: Sequence[str],
+            field_block_sizes: Sequence[int],
+            near_null_by_field: Sequence[NDArray[np.floating] | None] | None,
+            rtol: float, restart: int, max_iters: int | None,
+            print_convergence: bool, options: str,
+    ) -> None:
+        self.n = n
+        self.krylov = krylov
+        self.transpose = transpose
+        self.device = device
+        self.field_rows = [np.asarray(r, dtype=np.int32) for r in field_rows]
+        self.field_names = list(field_names)
+        self.field_block_sizes = [int(bs) for bs in field_block_sizes]
+        self.near_null_by_field = near_null_by_field
+        self.rtol = rtol
+        self.restart = restart
+        self.max_iters = max_iters
+        self.print_convergence = print_convergence
+        self.options = options
+        self.check_symmetry = krylov in ("cg", "minres")
+        # The objects of the pattern the solver was built on: ``A`` holds
+        # K and wraps ``values``; ``AT`` is K^T, the operator of a
+        # transposed solve and the other side of the symmetry check, held
+        # only when one of those needs it; ``same_pattern`` says whether
+        # the pattern is structurally symmetric, which decides how the
+        # check subtracts the two; ``held`` keeps the index sets, the near
+        # null spaces, and their vectors alive with the KSP.
+        self.A: Any = None
+        self.AT: Any = None
+        self.ksp: Any = None
+        self.b: Any = None
+        self.x: Any = None
+        self.values: NDArray[np.floating] | None = None
+        self.indptr: NDArray[np.int32] | None = None
+        self.col_indices: NDArray[np.int32] | None = None
+        self.same_pattern = False
+        self.held: list[Any] = []
+
+    def _free(self) -> None:
+        for obj in (self.ksp, self.AT, self.A, self.b, self.x, *self.held):
+            if obj is not None:
+                obj.destroy()
+        self.ksp = self.AT = self.A = self.b = self.x = None
+        self.held = []
+
+    def _default_options(self) -> str:
+        """The preconditioner of ``krylov`` for the field count as PETSc
+        options: GAMG on one field; on several, a field split with GAMG
+        per field, block Gauss-Seidel for gmres, block Jacobi (the
+        symmetric sweep) for cg, and the block diagonal Schur
+        factorization with the Schur block negated (PETSc's variant for
+        MINRES) for minres."""
+        if len(self.field_names) == 1:
+            return "-pc_gamg_type agg"
+        split = {
+            "gmres": "multiplicative", "cg": "additive", "minres": "schur",
+        }[self.krylov]
+        parts = [f"-pc_fieldsplit_type {split}"]
+        if self.krylov == "minres":
+            # The Schur block (the last field) is preconditioned from its
+            # assembled approximation alone: GAMG would otherwise smooth
+            # with the Schur complement operator, an inner solve of the
+            # first block per application, and the resulting V cycle is
+            # not definite (measured: one positive eigenvalue), which
+            # breaks MINRES.
+            parts.append(
+                "-pc_fieldsplit_schur_fact_type diag "
+                "-pc_fieldsplit_schur_precondition selfp "
+                f"-fieldsplit_{self.field_names[-1]}_pc_use_amat 0"
+            )
+        for name in self.field_names:
+            parts.append(
+                f"-fieldsplit_{name}_ksp_type preonly "
+                f"-fieldsplit_{name}_pc_type gamg "
+                f"-fieldsplit_{name}_pc_gamg_type agg"
+            )
+        return " ".join(parts)
+
+    def _build(
+            self, PETSc: Any, indptr: NDArray[np.int32],
+            col_indices: NDArray[np.int32], values: np.ndarray,
+    ) -> None:
+        self._free()
+        n = self.n
+        comm = PETSc.COMM_SELF
+        self.values = np.array(values, dtype=np.float64)
+        self.indptr, self.col_indices = indptr, col_indices
+        # The general size form, (local, global) per dimension, and the
+        # explicit comm are what a solve distributed over ranks passes
+        # with its local rows; one process holds every row. The columns
+        # are sorted within each row (EmbeddedSparsity's order), which
+        # the positional subtraction of the symmetry check relies on.
+        A = PETSc.Mat().createAIJWithArrays(
+            size=((n, n), (n, n)), csr=(indptr, col_indices, self.values),
+            comm=comm,
+        )
+        if self.device == "cuda":
+            A.convert("aijcusparse")
+        self.A = A
+        self.AT = None
+        if self.transpose or self.check_symmetry:
+            # A fresh Mat as the target: ``A.transpose()`` with no target
+            # transposes A in place and returns A itself.
+            self.AT = PETSc.Mat()
+            A.transpose(self.AT)
+        self.b = A.createVecRight()
+        self.x = A.createVecLeft()
+        if self.check_symmetry:
+            pattern = scipy.sparse.csr_matrix(
+                (np.ones(col_indices.shape[0]), col_indices, indptr),
+                shape=(n, n),
+            )
+            pattern_t = pattern.T.tocsr()
+            pattern_t.sort_indices()
+            self.same_pattern = bool(
+                np.array_equal(pattern_t.indptr, indptr)
+                and np.array_equal(pattern_t.indices, col_indices)
+            )
+
+        # One near null space per field, its modes orthonormalized (PETSc
+        # requires it) and held in vectors of the matrix's type.
+        vec_type = self.b.getType()
+        null_spaces: list[Any] = []
+        for i, rows in enumerate(self.field_rows):
+            modes = (
+                None if self.near_null_by_field is None
+                else self.near_null_by_field[i]
+            )
+            if modes is None or modes.shape[1] == 0:
+                null_spaces.append(None)
+                continue
+            q, _ = np.linalg.qr(np.asarray(modes, dtype=np.float64))
+            vecs = []
+            for k in range(q.shape[1]):
+                v = PETSc.Vec().create(comm=comm)
+                v.setSizes(rows.shape[0])
+                v.setType(vec_type)
+                v.setArray(np.ascontiguousarray(q[:, k]))
+                vecs.append(v)
+            null_spaces.append(PETSc.NullSpace().create(vectors=vecs, comm=comm))
+            self.held.extend(vecs)
+
+        ksp = PETSc.KSP().create(comm=comm)
+        ksp.setOperators(self.AT if self.transpose else A)
+        ksp.setType(self.krylov)
+        if self.krylov == "gmres":
+            ksp.setGMRESRestart(self.restart)
+            ksp.setPCSide(PETSc.PC.Side.RIGHT)
+        if self.krylov != "minres":  # minres has only the preconditioned norm
+            ksp.setNormType(PETSc.KSP.NormType.UNPRECONDITIONED)
+        if self.max_iters is None:
+            max_it = _GMRES_DEFAULT_MAX_KRYLOV_ITERS
+        else:
+            max_it = self.max_iters * (
+                self.restart if self.krylov == "gmres" else 1
+            )
+        ksp.setTolerances(rtol=self.rtol, max_it=max_it)
+        pc = ksp.getPC()
+        if len(self.field_rows) == 1:
+            pc.setType("gamg")
+            if null_spaces[0] is not None:
+                A.setNearNullSpace(null_spaces[0])
+                if self.AT is not None:
+                    self.AT.setNearNullSpace(null_spaces[0])
+        else:
+            pc.setType("fieldsplit")
+            splits = []
+            for name, rows, bs, ns in zip(
+                    self.field_names, self.field_rows, self.field_block_sizes,
+                    null_spaces, strict=True,
+            ):
+                index_set = PETSc.IS().createGeneral(rows, comm=comm)
+                if bs > 1 and rows.shape[0] % bs == 0:
+                    index_set.setBlockSize(bs)
+                if ns is not None:
+                    # PCFIELDSPLIT attaches it to the field's sub matrix.
+                    index_set.compose("nearnullspace", ns)
+                splits.append((name, index_set))
+                self.held.append(index_set)
+            pc.setFieldSplitIS(*splits)
+        self.held.extend(ns for ns in null_spaces if ns is not None)
+        # The caller's options come last, so they override the defaults.
+        PETSc.Options().insertString(f"{self._default_options()} {self.options}")
+        ksp.setFromOptions()
+        self.ksp = ksp
+
+    def _asymmetry(self, PETSc: Any) -> float:
+        """``||K - K^T||_F / ||K||_F`` from the held ``A`` and ``AT``."""
+        structure = (
+            PETSc.Mat.Structure.SAME_NONZERO_PATTERN if self.same_pattern
+            else PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN
+        )
+        diff = self.A.duplicate(copy=True)
+        diff.axpy(-1.0, self.AT, structure=structure)
+        norm = self.A.norm(PETSc.NormType.FROBENIUS)
+        asymmetry = diff.norm(PETSc.NormType.FROBENIUS)
+        diff.destroy()
+        return float(asymmetry / (norm if norm > 0.0 else 1.0))
+
+    def _relative_residual(self, op: Any) -> float:
+        """``||b - op x|| / ||b||`` of the held vectors."""
+        r = self.b.duplicate()
+        op.mult(self.x, r)
+        r.aypx(-1.0, self.b)
+        b_norm = self.b.norm()
+        rel = r.norm() / (b_norm if b_norm > 0.0 else 1.0)
+        r.destroy()
+        return float(rel)
+
+    def solve(
+            self, unique_data_np: np.ndarray, col_np: np.ndarray,
+            indptr_np: np.ndarray, b_np: np.ndarray,
+    ) -> np.ndarray:
+        """Solve ``K x = b`` (``K^T x = b`` with ``transpose``) from the
+        callback's host operands, every column of ``b`` (its leading batch
+        axes, see :func:`scipy_lu`) on the one KSP. ``print_convergence``
+        prints the Krylov count, the converged reason, the true relative
+        residual, the asymmetry when it is measured, whether the matrix
+        was built or refilled, and the wall time of the call.
+        """
+        PETSc = importlib.import_module("petsc4py.PETSc")
+        n = self.n
+        t_start = time.perf_counter()
+        values = np.reshape(unique_data_np, -1)
+        col_indices = np.reshape(col_np, -1).astype(np.int32, copy=False)
+        indptr = np.reshape(indptr_np, -1).astype(np.int32, copy=False)
+        b_arr = np.asarray(b_np)
+        b_2d = np.ascontiguousarray(b_arr.reshape(-1, n))
+        reuse = (
+            self.ksp is not None
+            and self.indptr is not None
+            and self.col_indices is not None
+            and np.array_equal(self.indptr, indptr)
+            and np.array_equal(self.col_indices, col_indices)
+        )
+        if reuse:
+            self.A.setValuesCSR(indptr, col_indices, values)
+            self.A.assemble()
+            if self.AT is not None:
+                self.A.transpose(self.AT)
+        else:
+            self._build(PETSc, indptr, col_indices, values)
+        op = self.AT if self.transpose else self.A
+        asymmetry = self._asymmetry(PETSc) if self.check_symmetry else 0.0
+        if asymmetry > _SYMMETRY_TOLERANCE:
+            raise RuntimeError(
+                f"petsc {self.krylov}: the matrix is not symmetric, "
+                f"||K - K^T|| / ||K|| = {asymmetry:.3e} exceeds "
+                f"{_SYMMETRY_TOLERANCE:.0e}; use krylov: gmres"
+            )
+        self.ksp.setOperators(op)
+        indefinite = (
+            int(PETSc.KSP.ConvergedReason.DIVERGED_INDEFINITE_MAT),
+            int(PETSc.KSP.ConvergedReason.DIVERGED_INDEFINITE_PC),
+        )
+        x_2d = np.empty_like(b_2d)
+        iterations = 0
+        reason = 0
+        converged = True
+        rel = 0.0
+        for k in range(b_2d.shape[0]):
+            self.b.setArray(b_2d[k])
+            self.ksp.solve(self.b, self.x)
+            x_2d[k] = self.x.getArray()
+            iterations += int(self.ksp.getIterationNumber())
+            reason = int(self.ksp.getConvergedReason())
+            converged = converged and reason > 0
+            if self.krylov == "cg" and reason in indefinite:
+                raise RuntimeError(
+                    f"petsc cg: PETSc reports the matrix or the "
+                    f"preconditioner indefinite (reason {reason}); cg needs "
+                    f"a positive definite tangent, use krylov: minres or "
+                    f"gmres"
+                )
+            if self.print_convergence:
+                rel = max(rel, self._relative_residual(op))
+        if self.print_convergence:
+            method = f"petsc {self.krylov}" + (
+                " transposed" if self.transpose else ""
+            )
+            asym = f", asymmetry {asymmetry:.3e}" if self.check_symmetry else ""
+            print(
+                f" > linear solve: {method}, {iterations} Krylov iterations, "
+                f"reason {reason}, relative residual {rel:.3e}, converged "
+                f"{converged}{asym}, matrix {'refilled' if reuse else 'built'}, "
+                f"{1e3 * (time.perf_counter() - t_start):.0f} ms",
+                flush=True,
+            )
+        return x_2d.reshape(b_arr.shape)
+
+
+def petsc_solve(
+        K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray, *,
+        krylov: str = "gmres",
+        field_rows: Sequence[NDArray[np.integer]] | None = None,
+        field_names: Sequence[str] = ("u",),
+        field_block_sizes: Sequence[int] = (1,),
+        near_null_by_field: Sequence[NDArray[np.floating] | None] | None = None,
+        rtol: float = 1e-10, restart: int = 500, max_iters: int | None = None,
+        print_convergence: bool = False, options: str = "",
+) -> JaxArray:
+    """Solve ``K x = b`` with PETSc, a Krylov method preconditioned by
+    GAMG per field, with full JAX AD support.
+
+    The callback counterpart of :func:`scipy_block_gmres` on PETSc
+    (petsc4py, imported here so the module loads without it): one
+    :func:`jax.pure_callback` per solve runs
+    :meth:`_PetscKrylovSolver.solve`, which keeps the matrix and the KSP
+    (PETSc's Krylov solver object: the method, the preconditioner, and
+    the tolerances) across solves and refills the values on the fixed
+    pattern; the matrix is ``aijcusparse`` with CUDA vectors when JAX
+    runs on a GPU and ``aij`` otherwise. ``krylov`` picks the method and
+    with it the preconditioner and the adjoint:
+
+    - ``"gmres"``: any tangent; a field split (block Gauss-Seidel) with
+      GAMG per field, GAMG alone for one field; the adjoint solves ``K^T``
+      on a second KSP.
+    - ``"cg"``: a symmetric positive definite tangent; GAMG, or an
+      additive field split with GAMG per field; the adjoint reuses the
+      forward KSP.
+    - ``"minres"``: a symmetric indefinite tangent; a block diagonal Schur
+      field split with GAMG per block, or GAMG for one field; the adjoint
+      reuses the forward KSP.
+
+    ``field_rows`` gives each field's rows (one field of all rows when
+    omitted), ``field_names`` the split names (the option prefixes
+    ``-fieldsplit_<name>_``), ``field_block_sizes`` the components per
+    node of each field (the index set block size), and
+    ``near_null_by_field`` each field's near null space
+    (:func:`_near_null_by_field`), orthonormalized and attached for GAMG.
+    ``options`` is a PETSc options string inserted after the defaults, so
+    any of them can be overridden. ``max_iters`` is the cycle count for
+    gmres and the iteration count otherwise, ``None`` being
+    ``_GMRES_DEFAULT_MAX_KRYLOV_ITERS`` Krylov iterations. The operands
+    cross to the host each solve.
+    """
+    if krylov not in _PETSC_KRYLOV_METHODS:
+        raise ValueError(
+            f"unknown krylov method {krylov!r}; expected one of "
+            f"{_PETSC_KRYLOV_METHODS}"
+        )
+    PETSc = importlib.import_module("petsc4py.PETSc")
+    device = "cuda" if jax.default_backend() == "gpu" else "host"
+    if device == "cuda" and not PETSc.Sys.hasExternalPackage("cuda"):
+        raise RuntimeError(
+            "linear solver petsc: JAX runs on a GPU but this PETSc build has "
+            "no CUDA; install the CUDA build (benchmarks/gpu/colab.md)"
+        )
+    op = AssembledOperator(K_data, sparsity)
+    unique_data, matvec = op.unique_data, op.matvec
+    n = sparsity.n
+    rows = (
+        [np.arange(n, dtype=np.int32)] if field_rows is None
+        else [np.asarray(r) for r in field_rows]
+    )
+    num_fields = len(rows)
+    if len(field_names) != num_fields or len(field_block_sizes) != num_fields:
+        raise ValueError(
+            f"petsc_solve: {num_fields} field row sets but "
+            f"{len(field_names)} names and {len(field_block_sizes)} block sizes"
+        )
+    if near_null_by_field is not None and len(near_null_by_field) != num_fields:
+        raise ValueError(
+            f"petsc_solve: {num_fields} field row sets but "
+            f"{len(near_null_by_field)} near null spaces"
+        )
+    common: dict[str, Any] = dict(
+        krylov=krylov, device=device, field_rows=rows,
+        field_names=field_names, field_block_sizes=field_block_sizes,
+        near_null_by_field=near_null_by_field, rtol=rtol, restart=restart,
+        max_iters=max_iters, print_convergence=print_convergence,
+        options=options,
+    )
+    forward = _PetscKrylovSolver(n, transpose=False, **common)
+
+    def solve(_unused_matvec: Callable[[JaxArray], JaxArray],
+              rhs: JaxArray) -> JaxArray:
+        return jax.pure_callback(
+            forward.solve,
+            jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
+            unique_data, sparsity.col_indices, sparsity.indptr, rhs,
+            vmap_method="expand_dims",
+        )
+
+    if krylov != "gmres":
+        return lax.custom_linear_solve(matvec, b, solve, symmetric=True)
+
+    transposed = _PetscKrylovSolver(n, transpose=True, **common)
 
     def transpose_solve(_unused_vecmat: Callable[[JaxArray], JaxArray],
                         rhs: JaxArray) -> JaxArray:

@@ -27,6 +27,8 @@ from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.typing import JaxArray
 from tests.fem.test_cudss_lu import SKIP_REASON, cudss_available
+from tests.fem.test_petsc_solve import SKIP_REASON as PETSC_SKIP_REASON
+from tests.fem.test_petsc_solve import petsc_available
 from tests.support.test_problems import J2AnalyticalProblem
 
 MAX_ALPHA = 0.05
@@ -190,6 +192,14 @@ class TestMixedUpPlastic(unittest.TestCase):
     @unittest.skipUnless(cudss_available(), SKIP_REASON)
     def test_small_elastic_plastic_cudss_symmetric(self) -> None:
         self._run(SmallElasticPlastic, {"type": "cudss", "symmetric": True})
+
+    @unittest.skipUnless(petsc_available(), PETSC_SKIP_REASON)
+    def test_small_elastic_plastic_petsc(self) -> None:
+        self._run(SmallElasticPlastic, {"type": "petsc", "krylov": "gmres"})
+
+    @unittest.skipUnless(petsc_available(), PETSC_SKIP_REASON)
+    def test_small_elastic_plastic_petsc_minres(self) -> None:
+        self._run(SmallElasticPlastic, {"type": "petsc", "krylov": "minres"})
 
 
 if __name__ == "__main__":

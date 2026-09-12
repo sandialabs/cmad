@@ -1,0 +1,14 @@
+# PETSc GMRES with the block Gauss-Seidel field split and GAMG per field,
+# the rigid body modes on u; aijcusparse on a GPU, aij on the CPU. The
+# print per solve reports the Krylov count, the converged reason, the
+# true relative residual, whether the matrix was built or refilled, and
+# the wall time. Extra PETSc options go in `petsc options`, one string in
+# PETSc's command line form that overrides the entry's defaults, for
+# example (hypre on the pressure block and the residual per iteration):
+#   petsc options: "-fieldsplit_p_pc_type hypre -fieldsplit_p_pc_hypre_type boomeramg -ksp_monitor"
+linear solver:
+  type: petsc
+  krylov: gmres
+  rtol: 1.0e-8
+  restart: 500
+  print convergence: true

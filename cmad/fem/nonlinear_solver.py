@@ -25,6 +25,7 @@ from cmad.fem.sparse_solve import (
     _jacobi_gmres,
     _near_null_by_field,
     cudss_lu,
+    petsc_solve,
     scipy_amg_cg,
     scipy_block_gmres,
     scipy_lu,
@@ -51,6 +52,7 @@ _DEFAULT_LINEAR_SOLVER_SETTINGS: dict[str, Any] = {
     "operator": "assembled",
     "print convergence": False,
     "symmetric": False,
+    "krylov": "gmres",
 }
 _OPERATORS = ("assembled", "element")
 
@@ -213,14 +215,16 @@ def _solve_linear(
         rhs: JaxArray,
         linear_solver_settings: dict[str, Any],
 ) -> JaxArray:
-    """Dispatch on ``settings['type']`` to direct / cudss / CG / GMRES, with
-    the iterative arms picking a preconditioner from
+    """Dispatch on ``settings['type']`` to direct / cudss / petsc / CG /
+    GMRES, with the iterative arms picking a preconditioner from
     ``settings['preconditioner']``: Jacobi or pyamg for CG, Jacobi or a
     block preconditioner for GMRES (:func:`_block_gmres` with a Jacobi
     or Chebyshev inner solve, :func:`scipy_block_gmres` with an AMG inner
-    solve). The jax native solvers apply ``K`` through
-    :func:`_tangent_operator`; the direct, cudss, pyamg and AMG solvers
-    need the assembled representation.
+    solve); petsc (:func:`petsc_solve`) takes its Krylov method from
+    ``settings['krylov']``, splits the fields by the padded offsets, and
+    gets the near null space per field. The jax native solvers apply
+    ``K`` through :func:`_tangent_operator`; the direct, cudss, petsc,
+    pyamg, and AMG solvers need the assembled representation.
 
     :attr:`FEProblem.near_null_space` is auto-merged into pyamg
     ``kwargs`` as ``B`` when present and the caller hasn't already set
@@ -250,6 +254,34 @@ def _solve_linear(
             K, sparsity, rhs,
             print_convergence=linear_solver_settings.get("print convergence", False),
             symmetric=linear_solver_settings.get("symmetric", False),
+        )
+    if kind == "petsc":
+        require_assembled("'petsc'")
+        offsets = np.asarray(fe_problem.block_offsets_padded, dtype=np.intp)
+        return petsc_solve(
+            K, sparsity, rhs,
+            krylov=linear_solver_settings["krylov"],
+            field_rows=[
+                np.arange(offsets[i], offsets[i + 1])
+                for i in range(offsets.shape[0] - 1)
+            ],
+            field_names=[
+                layout.name for layout in fe_problem.dof_map.field_layouts
+            ],
+            field_block_sizes=[
+                int(k) for k in fe_problem.dof_map.num_dofs_per_basis_fn
+            ],
+            near_null_by_field=_near_null_by_field(
+                _pad_near_null_space(fe_problem.near_null_space, fe_problem),
+                offsets,
+            ),
+            rtol=linear_solver_settings["rtol"],
+            restart=linear_solver_settings["restart"],
+            max_iters=linear_solver_settings["max iters"],
+            print_convergence=linear_solver_settings.get(
+                "print convergence", False,
+            ),
+            options=linear_solver_settings.get("petsc options", ""),
         )
 
     precon_spec = linear_solver_settings.get(
@@ -552,8 +584,9 @@ def fe_newton_solve(
     ``linear_solver_settings['type']``: ``direct`` (sparse direct
     via :func:`scipy.sparse.linalg.spsolve` through
     :func:`jax.pure_callback`), ``cudss`` (the same with cuDSS on the
-    GPU), ``cg`` (JAX-native CG), or ``gmres`` (JAX-native restarted
-    GMRES).
+    GPU), ``petsc`` (PETSc's Krylov methods with GAMG per field, on the
+    CPU or the GPU), ``cg`` (JAX-native CG), or ``gmres`` (JAX-native
+    restarted GMRES).
 
     AD over the converged ``(U_star, xi_star)`` is provided by an
     inner :func:`jax.custom_jvp` rule. The JVP rule is the IFT
@@ -602,9 +635,13 @@ def fe_newton_solve(
     ``max evals = 0`` disables the search and takes the full Newton step.
     ``linear_solver_settings`` is a dict with keys
     ``type`` / ``rtol`` / ``max iters`` / ``restart`` / ``preconditioner``
-    (``restart`` consumed only by ``gmres``; ``preconditioner`` ignored
-    by ``direct`` and ``cudss``; ``symmetric``, the assertion that the
-    tangent is symmetric, consumed only by ``cudss``). ``preconditioner``
+    (``restart`` consumed only by ``gmres`` and ``petsc``;
+    ``preconditioner`` ignored by ``direct``, ``cudss``, and ``petsc``;
+    ``symmetric``, the assertion that the tangent is symmetric, consumed
+    only by ``cudss``; ``krylov``, the Krylov method ``'gmres'`` /
+    ``'cg'`` / ``'minres'``, and ``petsc options``, a string in PETSc's
+    command line form such as ``"-fieldsplit_p_pc_type hypre
+    -ksp_monitor"``, consumed only by ``petsc``). ``preconditioner``
     is itself a dict with
     a required ``type`` (``'jacobi'``, ``'pyamg'``, or ``'block'``). pyamg
     takes an optional freeform ``kwargs`` dict forwarded to

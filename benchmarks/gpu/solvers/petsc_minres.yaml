@@ -1,0 +1,9 @@
+# PETSc MINRES with the block diagonal Schur field split (GAMG on u with
+# the rigid body modes, GAMG on the assembled Schur approximation of p)
+# for a symmetric indefinite mixed tangent; the solve raises on a tangent
+# that is not symmetric. Same print and `petsc options` as petsc.yaml.
+linear solver:
+  type: petsc
+  krylov: minres
+  rtol: 1.0e-8
+  print convergence: true

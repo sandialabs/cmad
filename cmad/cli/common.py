@@ -408,13 +408,19 @@ def build_fe_problem_from_deck(
     ls_type = ls_section["type"]
     precon_section = ls_section.get("preconditioner", {})
     precon_type = precon_section.get("type")
-    if is_mixed and ls_type not in ("direct", "cudss") and not (
+    if is_mixed and ls_type not in ("direct", "cudss", "petsc") and not (
         ls_type == "gmres" and precon_type == "block"
     ):
         raise ValueError(
             "residuals.global residual: mixed requires linear solver "
-            "type 'direct' or 'cudss', or 'gmres' with a 'block' "
+            "type 'direct', 'cudss', or 'petsc', or 'gmres' with a 'block' "
             f"preconditioner (the mixed tangent is indefinite); got '{ls_type}'",
+        )
+    if is_mixed and ls_type == "petsc" and ls_section.get("krylov") == "cg":
+        raise ValueError(
+            "residuals.global residual: mixed with linear solver type "
+            "'petsc' needs krylov 'gmres' or 'minres' (the mixed tangent is "
+            "indefinite, which cg cannot solve)",
         )
     if ls_section.get("operator", "assembled") == "element":
         jax_native = (

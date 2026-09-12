@@ -5,7 +5,12 @@ additionalProperties: false
 properties:
   type:
     type: string
-    enum: [direct, cudss, cg, gmres]
+    enum: [direct, cudss, petsc, cg, gmres]
+  krylov:
+    type: string
+    enum: [gmres, cg, minres]
+  petsc options:
+    type: string
   rtol:
     type: number
     exclusiveMinimum: 0

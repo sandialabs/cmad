@@ -542,6 +542,36 @@ class TestMixed(unittest.TestCase):
             bundle = _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
         self.assertTrue(bundle.resolved["linear solver"]["symmetric"])
 
+    def test_mixed_accepts_petsc(self) -> None:
+        options = "-fieldsplit_p_pc_type hypre"
+        for linear_solver, krylov in (
+            ({"type": "petsc"}, "gmres"),
+            ({"type": "petsc", "krylov": "minres", "petsc options": options},
+             "minres"),
+        ):
+            deck = self._mixed_deck()
+            deck["linear solver"] = linear_solver
+            with (
+                self.subTest(linear_solver=linear_solver),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                bundle = _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
+            resolved = bundle.resolved["linear solver"]
+            self.assertEqual(resolved["type"], "petsc")
+            self.assertEqual(resolved["krylov"], krylov)
+            self.assertEqual(
+                resolved.get("petsc options"), linear_solver.get("petsc options"),
+            )
+
+    def test_mixed_rejects_petsc_cg(self) -> None:
+        deck = self._mixed_deck()
+        deck["linear solver"] = {"type": "petsc", "krylov": "cg"}
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            self.assertRaisesRegex(ValueError, "minres"),
+        ):
+            _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
+
     def test_element_operator_accepts_jax_native_solvers(self) -> None:
         for deck, linear_solver in (
             (_minimal_fe_deck(),
