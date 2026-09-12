@@ -41,7 +41,7 @@ import cmad
 from cmad.cli.common import build_fe_problem_from_deck, nonlinear_solver_settings
 from cmad.fem.assembly import assemble_element_tangent, assemble_global_residual
 from cmad.fem.driver import build_fe_quasistatic_trajectory
-from cmad.fem.nonlinear_solver import _assemble_tangent_and_residual
+from cmad.fem.nonlinear_solver import _assemble_tangent_and_residual, _solve_linear
 from cmad.models.global_fields import StepTime
 
 REPO_ROOT = Path(cmad.__file__).resolve().parents[1]
@@ -72,10 +72,12 @@ def build_problem(deck: dict[str, Any], deck_path: Path) -> tuple[Any, Any, Any]
 
 def solve_first_step(
         fe_problem: Any, inputs: tuple[Any, ...], nls: dict[str, Any],
-        lss: dict[str, Any],
-) -> tuple[Any, dict[str, Any], list[int]]:
-    """``(U1, xi1, iters)`` after the schedule's first step; raises when
-    it did not converge."""
+        lss: dict[str, Any], trace_dir: Path | None = None,
+) -> tuple[Any, dict[str, Any], list[int], float | None]:
+    """``(U1, xi1, iters, traced_wall)`` after the schedule's first step;
+    raises when it did not converge. With ``trace_dir`` the warm step
+    runs once more under the profiler and ``traced_wall`` is its wall
+    time in seconds, ``None`` otherwise."""
     params_by_block, state_init, fe_arrays, t_schedule_jax = inputs
     trajectory = build_fe_quasistatic_trajectory(
         fe_problem, nonlinear_solver_settings=nls, linear_solver_settings=lss,
@@ -84,7 +86,8 @@ def solve_first_step(
     def run(params: Any, state: Any, arrays: Any) -> Any:
         return trajectory(arrays, params, state, t_schedule_jax)
 
-    out = jit(run)(params_by_block, state_init, fe_arrays)
+    compiled = jit(run).lower(params_by_block, state_init, fe_arrays).compile()
+    out = compiled(params_by_block, state_init, fe_arrays)
     block_until_ready(out)
     U_steps, xi_steps, _J, failed_step, failed_rel_norm, iters = out
     if int(failed_step) >= 0:
@@ -92,9 +95,15 @@ def solve_first_step(
             f"step 1 did not converge: relative residual "
             f"{float(failed_rel_norm):.3e}"
         )
+    traced_wall = None
+    if trace_dir is not None:
+        start = time.perf_counter()
+        with profiler.trace(str(trace_dir)):
+            block_until_ready(compiled(params_by_block, state_init, fe_arrays))
+        traced_wall = time.perf_counter() - start
     return (
         U_steps[0], {b: xi[0] for b, xi in xi_steps.items()},
-        np.asarray(iters).tolist(),
+        np.asarray(iters).tolist(), traced_wall,
     )
 
 
@@ -212,7 +221,13 @@ def trace_summary(trace_dir: Path, top: int) -> list[str]:
         totals[name] = totals.get(name, 0.0) + float(e.get("dur", 0.0))
         counts[name] = counts.get(name, 0) + 1
     total_us = sum(totals.values())
-    lines.append(f"summed op time {total_us / 1e3:.1f} ms")
+    copies = {n: us for n, us in totals.items() if n.startswith("Memcpy")}
+    lines.append(
+        f"summed op time {total_us / 1e3:.1f} ms, of which copies "
+        f"{sum(copies.values()) / 1e3:.1f} ms ("
+        + ", ".join(f"{n} {us / 1e3:.1f}" for n, us in sorted(copies.items()))
+        + ")",
+    )
     for name, us in sorted(totals.items(), key=lambda kv: -kv[1])[:top]:
         lines.append(f"  {us / 1e3:9.2f} ms  {counts[name]:6d} x  {name}")
     return lines
@@ -220,7 +235,7 @@ def trace_summary(trace_dir: Path, top: int) -> list[str]:
 
 def run_size(
         h: float, base: dict[str, Any], work_dir: Path,
-        linear_solver: dict[str, Any], repeats: int,
+        linear_solver: dict[str, Any], repeats: int, trace_step: bool,
 ) -> None:
     mesh_path = work_dir / f"notch_h{h:.3f}.msh"
     n_elem = generate_notch_msh(mesh_path, h)
@@ -236,11 +251,22 @@ def run_size(
     )
 
     start = time.perf_counter()
-    U1, xi1, iters = solve_first_step(fe_problem, inputs, nls, lss)
+    step_trace_dir = work_dir / f"trace_step_h{h:.3f}" if trace_step else None
+    U1, xi1, iters, traced_wall = solve_first_step(
+        fe_problem, inputs, nls, lss, step_trace_dir,
+    )
     print(
         f"step 1: {iters[0]} Newton iterations, {time.perf_counter() - start:.1f} s "
-        f"with the compile", flush=True,
+        f"with the compile{' and the traced run' if trace_step else ''}",
+        flush=True,
     )
+    if step_trace_dir is not None and traced_wall is not None:
+        print(
+            f"step 1 traced: wall {traced_wall:.2f} s over {iters[0]} Newton "
+            f"iterations", flush=True,
+        )
+        for line in trace_summary(step_trace_dir, 25):
+            print(line, flush=True)
     U0, xi0 = state_init
     t0, t1 = float(t_schedule[0]), float(t_schedule[1])
     t2 = t1 + (t1 - t0)
@@ -253,8 +279,13 @@ def run_size(
     }
 
     fns = assembly_fns(fe_problem)
+
+    def solve(K: Any, arrays: Any, rhs: Any) -> Any:
+        return _solve_linear(K, fe_problem, arrays, rhs, lss)
+
     base_residual: dict[str, Any] = {}
     for state_name, (U, U_prev, xi_prev, t, t_prev) in states.items():
+        full_out: Any = None
         for label, fn in fns.items():
             args = (params_by_block, U, U_prev, xi_prev, fe_arrays, t, t_prev)
             ms, compiled, out = time_call(fn, args, repeats)
@@ -262,8 +293,19 @@ def run_size(
                 f"{state_name:8s} {label:9s} {ms:9.1f} ms  "
                 f"{executable_summary(compiled)}", flush=True,
             )
+            if label == "full":
+                full_out = out
             if label == "residual":
                 base_residual[state_name] = out
+        # The linear solve of the assembled system, the whole call: the
+        # operator's segment sum, the copies to and from the host, and the
+        # callback, against the phases the callback prints.
+        r_full, K_full = full_out[0], full_out[1]
+        ms, compiled, _ = time_call(solve, (K_full, fe_arrays, -r_full), repeats)
+        print(
+            f"{state_name:8s} {'solve':9s} {ms:9.1f} ms  "
+            f"{executable_summary(compiled)}", flush=True,
+        )
 
     # The local solver variants, at the plastic state, on a rebuilt problem.
     U, U_prev, xi_prev, t, t_prev = states["plastic"]
@@ -321,6 +363,11 @@ def main() -> None:
     parser.add_argument(
         "--repeats", type=int, default=5, help="timed calls per assembly",
     )
+    parser.add_argument(
+        "--trace-step", action="store_true",
+        help="run the warm step 1 once more under the profiler and sum its "
+             "device ops by name",
+    )
     args, _unknown = parser.parse_known_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     base = yaml.safe_load(args.input.read_text())
@@ -331,7 +378,9 @@ def main() -> None:
     print(f"backend {default_backend()}, devices {devices()}")
     print(f"input file {args.input}, linear solver {linear_solver}")
     for h in args.sizes:
-        run_size(h, base, args.work_dir, linear_solver, args.repeats)
+        run_size(
+            h, base, args.work_dir, linear_solver, args.repeats, args.trace_step,
+        )
 
 
 if __name__ == "__main__":
