@@ -1,4 +1,5 @@
-"""Per-side surface-integral evaluator for Neumann BCs.
+"""Per-side surface integral evaluators for the Neumann and Robin
+conditions.
 
 A :class:`~cmad.fem.bcs.NeumannBC` declares a surface flux on the
 union of named sidesets; this module turns that declaration into an

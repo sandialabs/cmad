@@ -33,10 +33,10 @@ from cmad.fem.assembly import (
     assembled_coo_dedup,
 )
 from cmad.fem.dof import DBCArrays, build_dbc_arrays
-from cmad.fem.neumann import NeumannSideArrays, build_neumann_side_arrays
 from cmad.fem.precompute import BlockIPGeometryCache
 from cmad.fem.sharding import pad_element_leaves
 from cmad.fem.sparse_solve import BlockSparsity, EmbeddedSparsity
+from cmad.fem.surface_bcs import NeumannSideArrays, build_neumann_side_arrays
 from cmad.typing import JaxArray
 
 if TYPE_CHECKING:
@@ -104,7 +104,7 @@ class FEKernelArrays:
     - ``neumann_side_arrays``: the per-NBC cached Neumann side-assembly
       data (surface geometry, side shape values, scatter indices),
       keyed per side group; see
-      :data:`cmad.fem.neumann.NeumannSideArrays`.
+      :data:`cmad.fem.surface_bcs.NeumannSideArrays`.
     - ``robin_side_arrays``: the same per Robin condition, with the
       tangent's positions in the deduped pattern.
     - ``dbc_arrays``: the per-DirichletBC prescribed-value arrays —
@@ -174,7 +174,7 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
     through :func:`cmad.fem.assembly.assembled_coo_dedup`, so the
     carrier's arrays match the in-trace assembly path bit-for-bit;
     the Neumann side arrays come from
-    :func:`cmad.fem.neumann.build_neumann_side_arrays` and the
+    :func:`cmad.fem.surface_bcs.build_neumann_side_arrays` and the
     Dirichlet prescribed-value arrays from
     :func:`cmad.fem.dof.build_dbc_arrays`. The geometry cache and
     embedded-BC sparsity are referenced directly off ``fe_problem`` —

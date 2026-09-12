@@ -1077,7 +1077,7 @@ def _make_nbc_value_callable(
     -> (N_side_ips, num_components)`` callable.
 
     Inputs may be JAX tracers (the surface-scatter step in
-    :mod:`cmad.fem.neumann` runs under jit/vmap), so the closure stays
+    :mod:`cmad.fem.surface_bcs` runs under jit/vmap), so the closure stays
     in ``jax.numpy`` and broadcasts constants up to the per-call IP
     count via ``jnp.broadcast_to``.
     """

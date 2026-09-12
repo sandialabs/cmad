@@ -1,4 +1,4 @@
-"""Unit tests for `cmad.fem.neumann`.
+"""Unit tests for `cmad.fem.surface_bcs`.
 
 Pins the resolver, the per-side surface evaluator, and the surface
 scatter. Resolution validates field/sideset names and the VERTEX-only
@@ -27,12 +27,12 @@ from cmad.fem.finite_element import (
 )
 from cmad.fem.interpolants import hex_linear
 from cmad.fem.mesh import Mesh, StructuredHexMesh
-from cmad.fem.neumann import (
+from cmad.fem.quadrature import quad_quadrature, tri_quadrature
+from cmad.fem.surface_bcs import (
     assemble_side_neumann,
     build_neumann_side_arrays,
     resolve_neumann_bcs,
 )
-from cmad.fem.quadrature import quad_quadrature, tri_quadrature
 from cmad.global_residuals.mechanics import Mechanics
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic

@@ -12,12 +12,6 @@ from cmad.fem.bcs import NeumannBC, RobinBC
 from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.mesh import Mesh
-from cmad.fem.neumann import (
-    ResolvedNeumannBC,
-    ResolvedRobinBC,
-    resolve_neumann_bcs,
-    resolve_robin_bcs,
-)
 from cmad.fem.precompute import (
     BlockIPGeometryCache,
     precompute_block_geometry,
@@ -34,6 +28,12 @@ from cmad.fem.sharding import (
     build_device_mesh,
     padded_count,
     shard_kernel_arrays,
+)
+from cmad.fem.surface_bcs import (
+    ResolvedNeumannBC,
+    ResolvedRobinBC,
+    resolve_neumann_bcs,
+    resolve_robin_bcs,
 )
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
@@ -82,7 +82,7 @@ class FEProblem:
 
     ``neumann_bcs`` is the list of natural-BC (surface-flux)
     declarations applied via the per-side evaluator in
-    :mod:`cmad.fem.neumann`. ``side_quadrature`` is the per-family
+    :mod:`cmad.fem.surface_bcs`. ``side_quadrature`` is the per-family
     quadrature rule consumed by that evaluator (defaults
     degree-2 quad / tri for hex / tet faces). NBCs resolve at
     construction into ``resolved_neumann_bcs`` — per-NBC
@@ -518,7 +518,7 @@ def build_fe_problem(
     defaults to a per-family table: degree-2 Gauss-Legendre on hex and
     quad, 1-point on tet and tri. ``side_quadrature`` defaults to
     degree-2 quad / tri rules for hex / tet face integration consumed by
-    :mod:`cmad.fem.neumann`.
+    :mod:`cmad.fem.surface_bcs`.
 
     Each (block, model, mode) triple is bound via
     ``gr.for_model(model, mode=mode)`` at construction so the
@@ -538,7 +538,7 @@ def build_fe_problem(
     for resolution in :meth:`__post_init__`; resolution failures (unknown
     field / sideset, non-VERTEX FE, sequence-values length mismatch)
     raise eagerly with diagnostic messages from
-    :func:`cmad.fem.neumann.resolve_neumann_bcs`.
+    :func:`cmad.fem.surface_bcs.resolve_neumann_bcs`.
     """
     if modes_by_block is None:
         modes_by_block = {

@@ -28,7 +28,7 @@ the conflicting BCs and the global equation number decoded to
 ``(field, basis_fn, dof)``.
 
 NeumannBC resolves to per-(family, local_side_id) elem-id groups in
-:func:`cmad.fem.neumann.resolve_neumann_bcs` and assembles
+:func:`cmad.fem.surface_bcs.resolve_neumann_bcs` and assembles
 ``R -= ∫_∂Ω N · t̄ dA`` into the global residual at the field's
 basis fns on the named sides. Cross-NBC overlaps are silent-additive
 (surface tractions superpose linearly); no consistency check.
@@ -190,7 +190,7 @@ class RobinBC:
     point, shape ``(num_components,)``, and returns the outward flux
     there with the same shape; convection is ``h (T - T_inf)`` and
     radiation ``eps sigma_B (T^4 - T_inf^4)``. The tangent is taken by
-    AD of the side residual in :mod:`cmad.fem.neumann`.
+    AD of the side residual in :mod:`cmad.fem.surface_bcs`.
     ``sideset_names`` and ``field_name`` are as for :class:`NeumannBC`.
     """
 

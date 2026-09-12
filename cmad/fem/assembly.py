@@ -12,12 +12,12 @@ from numpy.typing import NDArray
 from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.finite_element import EntityType
-from cmad.fem.neumann import assemble_side_neumann, assemble_side_robin
 from cmad.fem.precompute import (
     BlockIPGeometryPerElem,
     BlockIPGeometryShared,
 )
 from cmad.fem.shapes import ShapeFunctionsAtIP
+from cmad.fem.surface_bcs import assemble_side_neumann, assemble_side_robin
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.global_fields import StepTime
 from cmad.typing import (
@@ -893,7 +893,7 @@ def assemble_global(
     ``F`` vector). Body forces accumulate at the per-element level
     inside :func:`per_element_R_and_K` /
     :func:`per_element_R_and_K_coupled`; surface fluxes accumulate
-    via :func:`cmad.fem.neumann.assemble_side_neumann` after the
+    via :func:`cmad.fem.surface_bcs.assemble_side_neumann` after the
     volume walk. The Newton driver in
     :func:`cmad.fem.nonlinear_solver.fe_newton_solve` solves
     ``K · dU = -R``; the linear ``K U = F`` form is the degenerate
@@ -925,7 +925,7 @@ def assemble_global(
     solve, and their AD shadows see only the deduped data. Non-None
     ``xi_solved_per_block`` returns populate the
     ``xi_solved_by_block`` dict. Surface fluxes add into ``R`` via
-    :func:`cmad.fem.neumann.assemble_side_neumann` after the volume
+    :func:`cmad.fem.surface_bcs.assemble_side_neumann` after the volume
     walk.
     """
     xi_prev = xi_prev_by_block or {}
