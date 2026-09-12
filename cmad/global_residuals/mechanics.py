@@ -1,16 +1,18 @@
 """Quasi-static mechanics equilibrium global residual."""
 from typing import Any
 
-import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 
 from cmad.fem.fe_problem import FEProblem, FEState
 from cmad.fem.mesh import Mesh
+from cmad.global_residuals.balance_laws import (
+    momentum_balance,
+    pressure_equation,
+)
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.deformation_types import DefType, def_type_ndims
-from cmad.models.kinematics import cofactor
 from cmad.models.model import Model
 from cmad.models.var_types import VarType
 from cmad.typing import GREvaluators
@@ -51,6 +53,11 @@ class Mechanics(GlobalResidual):
       maps the momentum stress to PK1 (``sigma @ cofactor(F)``) and scales
       the stabilization by ``(cof_F.T @ cof_F) / det F``.
 
+    The residual bodies are
+    :func:`cmad.global_residuals.balance_laws.momentum_balance` and
+    :func:`cmad.global_residuals.balance_laws.pressure_equation`; this
+    class routes its blocks to them.
+
     The body-force contribution ``f_ext = N · b · w · dv`` is applied by
     the assembly layer (not inside residual_fn) so this GR stays
     internal-force only. Per-element basis-fn counts come from each
@@ -89,60 +96,18 @@ class Mechanics(GlobalResidual):
 
         def residual_fn(xi, xi_prev, params, U_ip, U_ip_prev,
                         model, mode, shapes_ip, w, dv, h, step_time):
-            if self._mixed:
-                if mode == GlobalResidualMode.CLOSED_FORM:
-                    dev = model.dev_cauchy_closed_form(
-                        params, U_ip, U_ip_prev)
-                    hydro = model.hydro_cauchy_closed_form(
-                        params, U_ip, U_ip_prev)
-                else:
-                    dev = model.dev_cauchy(
-                        xi, xi_prev, params, U_ip, U_ip_prev)
-                    hydro = model.hydro_cauchy(
-                        xi, xi_prev, params, U_ip, U_ip_prev)
-                p = U_ip.fields["p"][0]
-                sigma = (
-                    dev[:self._ndims, :self._ndims]
-                    - p * jnp.eye(self._ndims)
-                )
-
-                psf = model.pressure_scale_factor(params)
-                mu = model.shear_scale_factor(params)
-                tau = self._stabilization_multiplier * 0.5 * h ** 2 / mu
-                N_p = shapes_ip[1].N
-                grad_p = U_ip.grad_fields["p"][0]
-
-                if model.is_finite_deformation:
-                    F = model.deformation_gradient(xi, U_ip)
-                    cof_F = cofactor(F)[:self._ndims, :self._ndims]
-                    P = sigma @ cof_F
-                    R_u = (shapes_ip[0].grad_N @ P.T) * w * dv
-                    stab = tau * (cof_F.T @ cof_F) / jnp.linalg.det(F)
-                    stab_term = shapes_ip[1].grad_N @ (stab @ grad_p)
-                else:
-                    R_u = (shapes_ip[0].grad_N @ sigma) * w * dv
-                    stab_term = tau * (shapes_ip[1].grad_N @ grad_p)
-
-                R_p = (
-                    -(p + hydro) / psf * N_p
-                    - stab_term
-                ) * w * dv
-                return [R_u, R_p[:, None]]
-
-            if mode == GlobalResidualMode.CLOSED_FORM:
-                sigma = model.cauchy_closed_form(params, U_ip, U_ip_prev)
-            else:
-                sigma = model.cauchy(xi, xi_prev, params, U_ip, U_ip_prev)
-            if model.is_finite_deformation:
-                F = model.deformation_gradient(xi, U_ip)
-                cof_F = cofactor(F)[:self._ndims, :self._ndims]
-                P = sigma[:self._ndims, :self._ndims] @ cof_F
-                R_internal = (shapes_ip[0].grad_N @ P.T) * w * dv
-            else:
-                R_internal = (
-                    shapes_ip[0].grad_N @ sigma[:self._ndims, :self._ndims]
-                ) * w * dv
-            return [R_internal]
+            R_u = momentum_balance(
+                xi, xi_prev, params, U_ip, U_ip_prev, model, mode,
+                shapes_ip[0], w, dv, self._ndims, self._mixed,
+            )
+            if not self._mixed:
+                return [R_u]
+            R_p = pressure_equation(
+                xi, xi_prev, params, U_ip, U_ip_prev, model, mode,
+                shapes_ip[1], w, dv, h, self._ndims,
+                self._stabilization_multiplier,
+            )
+            return [R_u, R_p]
 
         super().__init__(residual_fn)
 

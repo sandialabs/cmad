@@ -6,7 +6,7 @@ relies on from the general :class:`cmad.models.model.Model`.
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.kinematics import gather_F
 from cmad.models.model import Model
-from cmad.typing import JaxArray, StateList
+from cmad.typing import JaxArray, Params, Scalar, StateList
 
 
 class MechanicsModel(Model):
@@ -24,6 +24,10 @@ class MechanicsModel(Model):
       stress function).
     - :meth:`deformation_gradient`: the 3x3 deformation gradient at an
       integration point, used for the finite Cauchy-to-PK1 map.
+
+    It also declares the mixed formulation's contract, the deviatoric and
+    hydrostatic stress splits and the two scale factors, which a model
+    with ``supports_mixed`` True overrides; the base raises.
 
     Subclasses set ``_def_type`` (and ``_oop_stretch_idx`` when they
     carry an out-of-plane stretch unknown) before ``super().__init__()``.
@@ -49,3 +53,42 @@ class MechanicsModel(Model):
         it is ``I + grad_u``.
         """
         return gather_F(xi, U, self._def_type, self._oop_stretch_idx)
+
+    # The mixed formulation's contract; a model with supports_mixed True
+    # overrides these.
+
+    def dev_cauchy(
+            self,
+            xi: StateList, xi_prev: StateList, params: Params,
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+    ) -> JaxArray:
+        raise NotImplementedError
+
+    def hydro_cauchy(
+            self,
+            xi: StateList, xi_prev: StateList, params: Params,
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+    ) -> Scalar:
+        raise NotImplementedError
+
+    @staticmethod
+    def dev_cauchy_closed_form(
+            params: Params,
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+    ) -> JaxArray:
+        raise NotImplementedError
+
+    @staticmethod
+    def hydro_cauchy_closed_form(
+            params: Params,
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+    ) -> Scalar:
+        raise NotImplementedError
+
+    @staticmethod
+    def pressure_scale_factor(params: Params) -> Scalar:
+        raise NotImplementedError
+
+    @staticmethod
+    def shear_scale_factor(params: Params) -> Scalar:
+        raise NotImplementedError
