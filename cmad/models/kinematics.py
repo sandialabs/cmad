@@ -66,7 +66,10 @@ def off_axis_idx(uniaxial_stress_idx: int) -> JaxArray:
 
 def cofactor(F: JaxArray) -> JaxArray:
     """Cofactor matrix ``cof(F) = det(F) * F^{-T}`` of a 3x3 matrix, row
-    ``i`` the cross product of the other two rows in cyclic order."""
+    ``i`` the cross product of the other two rows in cyclic order, or of
+    a 2x2 matrix."""
+    if F.shape == (2, 2):
+        return jnp.array([[F[1, 1], -F[1, 0]], [-F[0, 1], F[0, 0]]])
     assert F.shape == (3, 3), F.shape
     return jnp.stack([
         jnp.cross(F[1], F[2]),
@@ -77,11 +80,13 @@ def cofactor(F: JaxArray) -> JaxArray:
 
 def det_3x3(A: JaxArray) -> JaxArray:
     """Determinant of a 3x3 matrix, ``A[0] . cof(A)[0]``."""
+    assert A.shape == (3, 3), A.shape
     return jnp.sum(A[0] * cofactor(A)[0])
 
 
 def inv_3x3(A: JaxArray) -> JaxArray:
     """Inverse of a 3x3 matrix, ``cof(A)^T / det(A)``."""
+    assert A.shape == (3, 3), A.shape
     cof = cofactor(A)
     return cof.T / jnp.sum(A[0] * cof[0])
 

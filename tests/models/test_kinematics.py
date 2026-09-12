@@ -39,6 +39,15 @@ def test_derivatives_match_linalg() -> None:
         )
 
 
+def test_cofactor_of_2x2() -> None:
+    A = jnp.asarray([[2.0, -1.0], [0.5, 3.0]])
+    np.testing.assert_allclose(
+        cofactor(A), jnp.linalg.det(A) * jnp.linalg.inv(A).T, rtol=1e-14,
+    )
+
+
 def test_shape_is_checked() -> None:
     with pytest.raises(AssertionError):
-        cofactor(jnp.eye(2))
+        det_3x3(jnp.eye(2))
+    with pytest.raises(AssertionError):
+        cofactor(jnp.eye(4))
