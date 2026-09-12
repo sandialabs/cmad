@@ -833,6 +833,7 @@ class _PetscKrylovSolver:
             near_null_by_field: Sequence[NDArray[np.floating] | None] | None,
             rtol: float, restart: int, max_iters: int | None,
             print_convergence: bool, options: str,
+            reuse_preconditioner: bool = False,
     ) -> None:
         self.n = n
         self.krylov = krylov
@@ -848,6 +849,13 @@ class _PetscKrylovSolver:
         self.print_convergence = print_convergence
         self.options = options
         self.check_symmetry = krylov in ("cg", "minres")
+        # The preconditioner is built on P, a copy of the matrix. A refill
+        # changes A and not P, so the preconditioner stays as it was built
+        # while the Krylov matvecs use the new values. P is refreshed from A
+        # before every solve when reuse_preconditioner is off, and otherwise
+        # only after a solve that ran past one restart cycle (rebuild).
+        self.reuse_preconditioner = reuse_preconditioner
+        self.rebuild = False
         # PETSc objects of the pattern the solver was built on. ``A`` holds
         # K and wraps ``values``. ``AT`` holds K^T for a transposed solve
         # and is remade on every refill. ``z`` is the random vector the
@@ -856,6 +864,8 @@ class _PetscKrylovSolver:
         # the KSP.
         self.A: Any = None
         self.AT: Any = None
+        self.P: Any = None
+        self.PT: Any = None
         self.ksp: Any = None
         self.b: Any = None
         self.x: Any = None
@@ -867,11 +877,13 @@ class _PetscKrylovSolver:
 
     def _free(self) -> None:
         for obj in (
-                self.ksp, self.AT, self.A, self.b, self.x, self.z, *self.held,
+                self.ksp, self.PT, self.P, self.AT, self.A, self.b, self.x,
+                self.z, *self.held,
         ):
             if obj is not None:
                 obj.destroy()
-        self.ksp = self.AT = self.A = self.b = self.x = self.z = None
+        self.ksp = self.PT = self.P = self.AT = self.A = None
+        self.b = self.x = self.z = None
         self.held = []
 
     def _default_options(self) -> str:
@@ -926,8 +938,10 @@ class _PetscKrylovSolver:
         if self.device == "cuda":
             A.convert("aijcusparse")
         self.A = A
+        self.P = A.copy()
         if self.transpose:
             self._remake_transpose(PETSc)
+            self.PT = self.AT.copy()
         self.b = A.createVecRight()
         self.x = A.createVecLeft()
         if self.check_symmetry:
@@ -958,7 +972,10 @@ class _PetscKrylovSolver:
             self.held.extend(vecs)
 
         ksp = PETSc.KSP().create(comm=comm)
-        ksp.setOperators(self.AT if self.transpose else A)
+        if self.transpose:
+            ksp.setOperators(self.AT, self.PT)
+        else:
+            ksp.setOperators(A, self.P)
         ksp.setType(self.krylov)
         if self.krylov == "gmres":
             ksp.setGMRESRestart(self.restart)
@@ -976,9 +993,10 @@ class _PetscKrylovSolver:
         if len(self.field_rows) == 1:
             pc.setType("gamg")
             if null_spaces[0] is not None:
-                A.setNearNullSpace(null_spaces[0])
-                if self.AT is not None:
-                    self.AT.setNearNullSpace(null_spaces[0])
+                # GAMG reads it from the matrix it is built on.
+                self.P.setNearNullSpace(null_spaces[0])
+                if self.PT is not None:
+                    self.PT.setNearNullSpace(null_spaces[0])
         else:
             pc.setType("fieldsplit")
             splits = []
@@ -1025,6 +1043,29 @@ class _PetscKrylovSolver:
         w.destroy()
         wt.destroy()
         return float(asymmetry)
+
+    def _solve_columns(
+            self, op: Any, b_2d: np.ndarray,
+    ) -> tuple[np.ndarray, int, int, bool, float]:
+        """Every column of ``b_2d`` solved on the KSP as it is set up:
+        ``(x_2d, iterations, reason, converged, relative residual)``, the
+        iterations summed, the reason the last one's, the residual the
+        largest (computed only with ``print_convergence``)."""
+        x_2d = np.empty_like(b_2d)
+        iterations = 0
+        reason = 0
+        converged = True
+        rel = 0.0
+        for k in range(b_2d.shape[0]):
+            self.b.setArray(b_2d[k])
+            self.ksp.solve(self.b, self.x)
+            x_2d[k] = self.x.getArray()
+            iterations += int(self.ksp.getIterationNumber())
+            reason = int(self.ksp.getConvergedReason())
+            converged = converged and reason > 0
+            if self.print_convergence:
+                rel = max(rel, self._relative_residual(op))
+        return x_2d, iterations, reason, converged, rel
 
     def _relative_residual(self, op: Any) -> float:
         """``||b - op x|| / ||b||`` of the held vectors."""
@@ -1075,7 +1116,15 @@ class _PetscKrylovSolver:
                 self._remake_transpose(PETSc)
         else:
             self._build(PETSc, indptr, col_indices, values)
+        preconditioner_reused = (
+            reuse and self.reuse_preconditioner and not self.rebuild
+        )
         op = self.AT if self.transpose else self.A
+        pmat = self.PT if self.transpose else self.P
+        if reuse and not preconditioner_reused:
+            # Refresh P from A. PETSc sees the changed matrix and sets the
+            # preconditioner up again.
+            op.copy(pmat, structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN)
         asymmetry = self._asymmetry() if self.check_symmetry else 0.0
         if asymmetry > _SYMMETRY_TOLERANCE:
             raise RuntimeError(
@@ -1083,42 +1132,52 @@ class _PetscKrylovSolver:
                 f"||K - K^T|| / ||K|| = {asymmetry:.3e} exceeds "
                 f"{_SYMMETRY_TOLERANCE:.0e}; use krylov: gmres"
             )
-        self.ksp.setOperators(op)
+        self.ksp.setOperators(op, pmat)
         indefinite = (
             int(PETSc.KSP.ConvergedReason.DIVERGED_INDEFINITE_MAT),
             int(PETSc.KSP.ConvergedReason.DIVERGED_INDEFINITE_PC),
         )
-        x_2d = np.empty_like(b_2d)
-        iterations = 0
-        reason = 0
-        converged = True
-        rel = 0.0
-        for k in range(b_2d.shape[0]):
-            self.b.setArray(b_2d[k])
-            self.ksp.solve(self.b, self.x)
-            x_2d[k] = self.x.getArray()
-            iterations += int(self.ksp.getIterationNumber())
-            reason = int(self.ksp.getConvergedReason())
-            converged = converged and reason > 0
-            if self.krylov == "cg" and reason in indefinite:
-                raise RuntimeError(
-                    f"petsc cg: PETSc reports the matrix or the "
-                    f"preconditioner indefinite (reason {reason}); cg needs "
-                    f"a positive definite tangent, use krylov: minres or "
-                    f"gmres"
-                )
-            if self.print_convergence:
-                rel = max(rel, self._relative_residual(op))
+        x_2d, iterations, reason, converged, rel = self._solve_columns(op, b_2d)
+        retried = False
+        if preconditioner_reused and reason in indefinite:
+            # cg and minres reject an indefinite preconditioner within their
+            # first iterations, so a held one that has drifted that far is
+            # rebuilt and the solve repeated. A solve that ran to the cap is
+            # not repeated: it only marks the rebuild.
+            op.copy(pmat, structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN)
+            self.ksp.setOperators(op, pmat)
+            preconditioner_reused = False
+            retried = True
+            x_2d, iterations, reason, converged, rel = self._solve_columns(
+                op, b_2d,
+            )
+        if self.krylov == "cg" and reason in indefinite:
+            raise RuntimeError(
+                f"petsc cg: PETSc reports the matrix or the preconditioner "
+                f"indefinite (reason {reason}); cg needs a positive definite "
+                f"tangent, use krylov: minres or gmres"
+            )
+        # A solve past one restart cycle, or a failed one, shows the
+        # preconditioner has drifted from the matrix: rebuild it next time.
+        self.rebuild = self.reuse_preconditioner and (
+            not converged or iterations >= self.restart
+        )
         if self.print_convergence:
             method = f"petsc {self.krylov}" + (
                 " transposed" if self.transpose else ""
             )
             asym = f", asymmetry {asymmetry:.3e}" if self.check_symmetry else ""
+            if preconditioner_reused:
+                setup = "preconditioner reused"
+            elif retried:
+                setup = "preconditioner rebuilt for a second solve"
+            else:
+                setup = "preconditioner rebuilt" if reuse else "built"
             print(
                 f" > linear solve: {method}, {iterations} Krylov iterations, "
                 f"reason {reason}, relative residual {rel:.3e}, converged "
                 f"{converged}{asym}, matrix {'refilled' if reuse else 'built'}, "
-                f"{1e3 * (time.perf_counter() - t_start):.0f} ms",
+                f"{setup}, {1e3 * (time.perf_counter() - t_start):.0f} ms",
                 flush=True,
             )
         return x_2d.reshape(b_arr.shape)
@@ -1133,6 +1192,7 @@ def petsc_solve(
         near_null_by_field: Sequence[NDArray[np.floating] | None] | None = None,
         rtol: float = 1e-10, restart: int = 500, max_iters: int | None = None,
         print_convergence: bool = False, options: str = "",
+        reuse_preconditioner: bool = False,
 ) -> JaxArray:
     """Solve ``K x = b`` with PETSc, a Krylov method preconditioned by
     GAMG per field, with full JAX AD support.
@@ -1167,7 +1227,9 @@ def petsc_solve(
     any of them can be overridden. ``max_iters`` is the cycle count for
     gmres and the iteration count otherwise, ``None`` being
     ``_GMRES_DEFAULT_MAX_KRYLOV_ITERS`` Krylov iterations. The operands
-    cross to the host each solve.
+    cross to the host each solve. With ``reuse_preconditioner`` a refill
+    keeps the preconditioner as built, and rebuilds it after a solve that
+    did not converge within one restart cycle.
     """
     if krylov not in _PETSC_KRYLOV_METHODS:
         raise ValueError(
@@ -1204,7 +1266,7 @@ def petsc_solve(
         field_names=field_names, field_block_sizes=field_block_sizes,
         near_null_by_field=near_null_by_field, rtol=rtol, restart=restart,
         max_iters=max_iters, print_convergence=print_convergence,
-        options=options,
+        options=options, reuse_preconditioner=reuse_preconditioner,
     )
     forward = _PetscKrylovSolver(n, transpose=False, **common)
 

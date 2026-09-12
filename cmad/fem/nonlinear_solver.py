@@ -53,6 +53,7 @@ _DEFAULT_LINEAR_SOLVER_SETTINGS: dict[str, Any] = {
     "print convergence": False,
     "symmetric": False,
     "krylov": "gmres",
+    "reuse preconditioner": True,
 }
 _OPERATORS = ("assembled", "element")
 
@@ -282,6 +283,9 @@ def _solve_linear(
                 "print convergence", False,
             ),
             options=linear_solver_settings.get("petsc options", ""),
+            reuse_preconditioner=linear_solver_settings.get(
+                "reuse preconditioner", True,
+            ),
         )
 
     precon_spec = linear_solver_settings.get(

@@ -91,6 +91,7 @@ _LINEAR_SOLVER_DEFAULTS: dict[str, Any] = {
     "print convergence": False,
     "symmetric": False,
     "krylov": "gmres",
+    "reuse preconditioner": True,
 }
 
 _CALIBR8_ONLY_SECTIONS: tuple[str, ...] = ("linear algebra", "regression")

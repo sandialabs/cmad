@@ -271,6 +271,56 @@ class TestPetscRefill(unittest.TestCase):
 
 
 @unittest.skipUnless(petsc_available(), SKIP_REASON)
+class TestPetscReusePreconditioner(unittest.TestCase):
+    """The preconditioner built on the first matrix serves the refilled
+    ones until a solve runs past one restart cycle, which rebuilds it."""
+
+    def _solves(self, matrices, restart):
+        rng = np.random.default_rng(91)
+        n = matrices[0].shape[0]
+        b = rng.standard_normal(n)
+
+        @jax.jit
+        def solve(K_data, sparsity, b):
+            return petsc_solve(
+                K_data, sparsity, b, krylov="gmres", print_convergence=True,
+                rtol=1e-12, restart=restart, reuse_preconditioner=True,
+            )
+
+        lines = []
+        for K in matrices:
+            K_data, sparsity = _dense_to_cache(K)
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                x = np.asarray(solve(K_data, sparsity, jnp.asarray(b)))
+            if "converged True" in printed.getvalue():
+                np.testing.assert_allclose(
+                    x, np.linalg.solve(K, b), rtol=1e-8, atol=1e-10,
+                )
+            lines.append(printed.getvalue())
+        return lines
+
+    def test_reused_across_refills(self) -> None:
+        K = _random_spd(6, seed=92)
+        lines = self._solves([K, K + 0.1 * np.eye(6), K + 0.2 * np.eye(6)], 500)
+        self.assertIn("built", lines[0])
+        self.assertIn("preconditioner reused", lines[1])
+        self.assertIn("preconditioner reused", lines[2])
+
+    def test_rebuilt_after_a_failed_solve(self) -> None:
+        # With the preconditioner of K held, GMRES on K D (D forty values
+        # over two decades) does not converge; the solve after it is
+        # rebuilt and does.
+        K = _random_spd(40, seed=93)
+        far = K @ np.diag(np.logspace(0.0, 2.0, 40))
+        lines = self._solves([K, far, far], 500)
+        self.assertIn("preconditioner reused", lines[1])
+        self.assertIn("converged False", lines[1])
+        self.assertIn("preconditioner rebuilt", lines[2])
+        self.assertIn("converged True", lines[2])
+
+
+@unittest.skipUnless(petsc_available(), SKIP_REASON)
 class TestPetscCg(unittest.TestCase):
     """CG with GAMG on a symmetric positive definite matrix, the adjoint
     on the forward KSP, and the two guards."""

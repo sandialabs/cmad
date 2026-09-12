@@ -11,6 +11,8 @@ properties:
     enum: [gmres, cg, minres]
   petsc options:
     type: string
+  reuse preconditioner:
+    type: boolean
   rtol:
     type: number
     exclusiveMinimum: 0

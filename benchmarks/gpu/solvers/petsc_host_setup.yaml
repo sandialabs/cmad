@@ -1,0 +1,11 @@
+# PETSc as in petsc.yaml with GAMG's setup products (the Galerkin triple
+# product and the prolongator smoothing) on the host: the device products
+# form their full intermediate at once and run out of memory beside JAX
+# at 639k equations on a 40 GB card, the host ones do not.
+linear solver:
+  type: petsc
+  krylov: gmres
+  rtol: 1.0e-8
+  restart: 500
+  print convergence: true
+  petsc options: "-matptap_backend_cpu -matmatmult_backend_cpu"
