@@ -35,7 +35,16 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 import yaml
-from jax import block_until_ready, default_backend, devices, jit, profiler
+from jax import (
+    block_until_ready,
+    default_backend,
+    devices,
+    jit,
+    jvp,
+    profiler,
+    tree_util,
+    vjp,
+)
 
 import cmad
 from cmad.cli.common import build_fe_problem_from_deck, nonlinear_solver_settings
@@ -137,7 +146,34 @@ def assembly_fns(fe_problem: Any) -> dict[str, Any]:
             xi_prev_by_block=xi_prev,
         )
 
-    return {"full": full, "element": element, "residual": residual}
+    def r_and_K(params: Any, U: Any, U_prev: Any, xi_prev: Any, arrays: Any,
+                t: Any, t_prev: Any) -> Any:
+        r, K, _, _ = full(params, U, U_prev, xi_prev, arrays, t, t_prev)
+        return r, K
+
+    def full_vjp(params: Any, U: Any, U_prev: Any, xi_prev: Any, arrays: Any,
+                 t: Any, t_prev: Any) -> Any:
+        # The adjoint's shape: the cotangent of (r, K data) pulled back to
+        # the parameters and U, with a fixed unit cotangent.
+        out, pullback = vjp(
+            lambda p, u: r_and_K(p, u, U_prev, xi_prev, arrays, t, t_prev),
+            params, U,
+        )
+        return pullback(tree_util.tree_map(jnp.ones_like, out))
+
+    def full_jvp(params: Any, U: Any, U_prev: Any, xi_prev: Any, arrays: Any,
+                 t: Any, t_prev: Any) -> Any:
+        # The Hessian's inner shape: (r, K data) pushed forward along a
+        # unit tangent of the parameters.
+        return jvp(
+            lambda p: r_and_K(p, U, U_prev, xi_prev, arrays, t, t_prev),
+            (params,), (tree_util.tree_map(jnp.ones_like, params),),
+        )[1]
+
+    return {
+        "full": full, "element": element, "residual": residual,
+        "vjp": full_vjp, "jvp": full_jvp,
+    }
 
 
 def time_call(
@@ -317,10 +353,11 @@ def copy_details(events: list[dict[str, Any]], device_pids: set[int]) -> list[st
 def run_size(
         h: float, base: dict[str, Any], work_dir: Path,
         linear_solver: dict[str, Any], repeats: int, trace_step: bool,
+        chunk: int | None,
 ) -> None:
     mesh_path = work_dir / f"notch_h{h:.3f}.msh"
     n_elem = generate_notch_msh(mesh_path, h)
-    deck = rewrite_input(base, mesh_path, 1, work_dir, linear_solver)
+    deck = rewrite_input(base, mesh_path, 1, work_dir, linear_solver, chunk)
     bundle, nls, lss = build_problem(deck, work_dir / f"assembly_h{h:.3f}.yaml")
     fe_problem = bundle.fe_problem
     t_schedule = bundle.t_schedule.tolist()
@@ -328,7 +365,7 @@ def run_size(
     params_by_block, state_init, fe_arrays, _ = inputs
     print(
         f"\nh={h:.3f}: {n_elem} tets, {int(fe_problem.num_dofs_padded)} "
-        f"equations", flush=True,
+        f"equations, elements per chunk {chunk}", flush=True,
     )
 
     start = time.perf_counter()
@@ -449,6 +486,10 @@ def main() -> None:
         help="run the warm step 1 once more under the profiler and sum its "
              "device ops by name",
     )
+    parser.add_argument(
+        "--chunk", type=int, default=None,
+        help="elements per chunk of the assembly (default: a block at once)",
+    )
     args, _unknown = parser.parse_known_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     base = yaml.safe_load(args.input.read_text())
@@ -461,6 +502,7 @@ def main() -> None:
     for h in args.sizes:
         run_size(
             h, base, args.work_dir, linear_solver, args.repeats, args.trace_step,
+            args.chunk,
         )
 
 

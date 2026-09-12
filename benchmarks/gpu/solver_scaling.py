@@ -45,15 +45,18 @@ MESH_SIZES = (0.06, 0.045, 0.035, 0.028, 0.02)
 
 def rewrite_input(
         base: dict[str, Any], mesh_path: Path, num_steps: int, work_dir: Path,
-        linear_solver: dict[str, Any] | None = None,
+        linear_solver: dict[str, Any] | None = None, chunk: int | None = None,
 ) -> dict[str, Any]:
     """The base input file on ``mesh_path``: its single material block
     renamed to the generated mesh's ``solid``, ``num_steps`` steps, an
-    output section that writes nothing, and ``linear_solver`` in place of
-    its linear solver section when one is given."""
+    output section that writes nothing, ``linear_solver`` in place of
+    its linear solver section when one is given, and ``chunk`` as its
+    elements per chunk when one is given."""
     deck = yaml.safe_load(yaml.safe_dump(base))
     deck["discretization"]["mesh file"] = str(mesh_path)
     deck["discretization"]["num steps"] = num_steps
+    if chunk is not None:
+        deck["discretization"]["elements per chunk"] = chunk
     local = deck["residuals"]["local residual"]
     (_, material), = local["materials"].items()
     local["materials"] = {"solid": material}
@@ -74,7 +77,7 @@ def trajectory_inputs(fe_problem: Any, t_schedule: list[float]) -> tuple[Any, ..
     u_init = jnp.asarray(state.U_at(0), dtype=jnp.float64)
     xi_init = place_element_leaves(
         {b: jnp.asarray(state.xi_at(0, b)) for b in fe_problem.models_by_block},
-        fe_problem.device_mesh,
+        fe_problem,
     )
     t_schedule_jax = jnp.asarray(t_schedule, dtype=jnp.float64)
     return params_by_block, (u_init, xi_init), fe_problem.kernel_arrays, t_schedule_jax
@@ -122,6 +125,7 @@ def run_once(
 def run_sweep(
         sizes: tuple[float, ...], base_path: Path, num_steps: int,
         work_dir: Path, linear_solver_path: Path | None = None,
+        chunk: int | None = None,
 ) -> None:
     """One row per mesh size."""
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -131,13 +135,14 @@ def run_sweep(
         linear_solver = yaml.safe_load(linear_solver_path.read_text())["linear solver"]
     print(f"backend {default_backend()}, devices {devices()}")
     print(f"input file {base_path}, {num_steps} steps")
-    print(f"linear solver {linear_solver_path or 'from the input file'}\n")
+    print(f"linear solver {linear_solver_path or 'from the input file'}")
+    print(f"elements per chunk {chunk}\n")
     for h in sizes:
         mesh_path = work_dir / f"notch_h{h:.3f}.msh"
         n_elem = generate_notch_msh(mesh_path, h)
         deck_path = work_dir / f"notch_h{h:.3f}.yaml"
         deck_path.write_text(yaml.safe_dump(rewrite_input(
-            base, mesh_path, num_steps, work_dir, linear_solver,
+            base, mesh_path, num_steps, work_dir, linear_solver, chunk,
         )))
         bundle = build_fe_problem_from_deck(deck_path, "primal")
         fe_problem = bundle.fe_problem
@@ -186,10 +191,14 @@ def main() -> None:
         "--linear-solver", type=Path, default=None,
         help="yaml file whose 'linear solver' section replaces the input file's",
     )
+    parser.add_argument(
+        "--chunk", type=int, default=None,
+        help="elements per chunk of the assembly (default: a block at once)",
+    )
     args, _unknown = parser.parse_known_args()
     run_sweep(
         tuple(args.sizes), args.input, args.steps, args.work_dir,
-        args.linear_solver,
+        args.linear_solver, args.chunk,
     )
 
 

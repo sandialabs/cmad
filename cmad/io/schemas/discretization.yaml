@@ -8,6 +8,7 @@ properties:
   thickness: {type: number, exclusiveMinimum: 0}
   num steps: {type: integer, minimum: 1}
   step size: {type: number, exclusiveMinimum: 0}
+  elements per chunk: {type: integer, minimum: 1}
   times file: {type: string}
   times:
     type: array

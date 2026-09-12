@@ -247,7 +247,7 @@ def build_fe_trajectory_cost(
     U_init = jnp.asarray(state.U_at(0), dtype=jnp.float64)
     xi_init: dict[str, JaxArray] = place_element_leaves(
         {b: jnp.asarray(state.xi_at(0, b)) for b in fe_problem.models_by_block},
-        fe_problem.device_mesh,
+        fe_problem,
     )
     state_init: StateInit = (U_init, xi_init)
 
@@ -522,6 +522,7 @@ def build_fe_problem_from_deck(
         ),
         local_newton_settings=local_newton_settings,
         thickness=resolved["discretization"].get("thickness"),
+        elements_per_chunk=resolved["discretization"].get("elements per chunk"),
     )
 
     qoi: FEQoI | None = None

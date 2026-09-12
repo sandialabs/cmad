@@ -149,6 +149,14 @@ class FEProblem:
     that length. ``num_dofs_padded`` is the dof count padded the same
     way: the embedded tangent the linear solvers apply has that many
     rows, the padding dofs carrying a unit diagonal and zero residuals.
+
+    ``elements_per_chunk`` makes the assembly walk each block's element
+    axis in chunks of that many elements (:mod:`cmad.fem.assembly`), so
+    its temporaries scale with the chunk rather than the mesh; ``None``
+    walks a block's entire element axis in one chunk. With a
+    ``device_mesh`` every scan step runs one chunk on each device, so the
+    element axis is padded to a multiple of the device count times the
+    chunk.
     """
     mesh: Mesh
     dof_map: GlobalDofMap
@@ -166,6 +174,7 @@ class FEProblem:
     robin_bcs: Sequence[RobinBC] = ()
     thickness: float | None = None
     num_devices: int | None = None
+    elements_per_chunk: int | None = None
 
     field_layouts_per_block: list[GlobalFieldLayout] = field(
         init=False, default_factory=list,
@@ -301,8 +310,12 @@ class FEProblem:
         # axis and the padded dof count.
         device_mesh = build_device_mesh(self.num_devices)
         object.__setattr__(self, "device_mesh", device_mesh)
+        # Every scan step of a chunked assembly runs one chunk per device.
+        group = (1 if device_mesh is None else device_mesh.size) * (
+            self.elements_per_chunk or 1
+        )
         object.__setattr__(self, "n_elems_padded_by_block", {
-            block: padded_count(count, device_mesh)
+            block: -(-count // group) * group
             for block, count in self.n_elems_by_block.items()
         })
         # The dofs are padded per field: each field's block is extended
@@ -508,6 +521,7 @@ def build_fe_problem(
         thickness: float | None = None,
         num_devices: int | None = None,
         robin_bcs: Sequence[RobinBC] = (),
+        elements_per_chunk: int | None = None,
 ) -> FEProblem:
     """Validate FE inputs and build an immutable :class:`FEProblem`.
 
@@ -613,4 +627,5 @@ def build_fe_problem(
         robin_bcs=robin_bcs,
         thickness=thickness,
         num_devices=num_devices,
+        elements_per_chunk=elements_per_chunk,
     )

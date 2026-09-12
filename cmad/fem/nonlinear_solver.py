@@ -669,7 +669,7 @@ def fe_newton_solve(
     xi_prev_jax: dict[str, JaxArray] = (
         place_element_leaves(
             {k: jnp.asarray(v) for k, v in xi_prev_by_block.items()},
-            fe_problem.device_mesh,
+            fe_problem,
         )
         if xi_prev_by_block is not None else {}
     )

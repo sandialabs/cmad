@@ -1,12 +1,14 @@
 """Element + global FE assembly machinery."""
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 import jax.numpy as jnp
 import numpy as np
 from jax import checkpoint, lax, vmap
 from jax.experimental.sparse import BCOO
 from jax.flatten_util import ravel_pytree
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
+from jax.tree_util import tree_map
 from numpy.typing import NDArray
 
 from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
@@ -17,6 +19,7 @@ from cmad.fem.precompute import (
     BlockIPGeometryShared,
 )
 from cmad.fem.shapes import ShapeFunctionsAtIP
+from cmad.fem.sharding import ELEMENT_AXIS
 from cmad.fem.surface_bcs import assemble_side_neumann, assemble_side_robin
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.global_fields import StepTime
@@ -32,6 +35,11 @@ from cmad.typing import (
 
 if TYPE_CHECKING:
     from cmad.fem.kernel_arrays import FEKernelArrays
+
+# The inputs, carry, and outputs of a chunk scan: pytrees of arrays.
+Inputs = TypeVar("Inputs")
+Carry = TypeVar("Carry")
+Outputs = TypeVar("Outputs")
 
 
 def params_by_block_from_models(
@@ -138,6 +146,134 @@ def _gather_element_U(
     return [
         U_jax[eq] for eq in fe_arrays.u_gather_eq_by_block[block_name]
     ]
+
+
+def _chunk_kernel(
+        fe_problem: FEProblem,
+        block_name: str,
+        params: Params,
+        U_global: JaxArray,
+        U_prev_global: JaxArray,
+        step_time: StepTime,
+        u_gather_eq: Sequence[JaxArray],
+        xi_prev: JaxArray | None,
+        geom_per_elem: BlockIPGeometryPerElem,
+        geom_shared: BlockIPGeometryShared,
+        *,
+        tangent: bool,
+) -> tuple[list[JaxArray], list[list[JaxArray]] | None, JaxArray | None]:
+    """``(R_per_elem_blocks, K_per_elem_blocks, xi_solved)`` of the
+    elements whose U gather indices, previous state, and geometry are
+    given: the per element kernel of the block's mode vmapped over them,
+    with the tangent and, for a COUPLED block, the converged state, or
+    ``None`` for each that is not asked for or not there."""
+    U_elem = [U_global[eq] for eq in u_gather_eq]
+    U_prev_elem = [U_prev_global[eq] for eq in u_gather_eq]
+    evaluators = fe_problem.evaluators_by_block[block_name]
+    block_shapes = fe_problem.block_shapes
+    forcing_fns_by_block_idx = fe_problem.forcing_fns_by_block_idx or {}
+
+    if fe_problem.modes_by_block[block_name] == GlobalResidualMode.COUPLED:
+        if xi_prev is None:
+            raise ValueError(
+                f"COUPLED block '{block_name}' requires "
+                f"xi_prev_per_block; got None"
+            )
+        unravel_xi = fe_problem.unravel_xi_by_block[block_name]
+        if tangent:
+            R, K, xi = vmap(
+                lambda U, Up, geom, xp: per_element_R_and_K_coupled(
+                    U, Up, params, xp, geom, geom_shared,
+                    evaluators["R_and_dR_dU_and_xi"], unravel_xi,
+                    forcing_fns_by_block_idx, block_shapes, step_time,
+                ),
+                in_axes=(0, 0, 0, 0), axis_name="elem",
+            )(U_elem, U_prev_elem, geom_per_elem, xi_prev)
+            return R, K, xi
+        R = vmap(
+            lambda U, Up, geom, xp: per_element_R_coupled(
+                U, Up, params, xp, geom, geom_shared, evaluators["R"],
+                unravel_xi, forcing_fns_by_block_idx, block_shapes,
+                step_time,
+            ),
+            in_axes=(0, 0, 0, 0), axis_name="elem",
+        )(U_elem, U_prev_elem, geom_per_elem, xi_prev)
+        return R, None, None
+    if tangent:
+        R, K = vmap(
+            lambda U, Up, geom: per_element_R_and_K(
+                U, Up, params, geom, geom_shared, evaluators["R_and_dR_dU"],
+                forcing_fns_by_block_idx, block_shapes, step_time,
+            ),
+            in_axes=(0, 0, 0), axis_name="elem",
+        )(U_elem, U_prev_elem, geom_per_elem)
+        return R, K, None
+    R = vmap(
+        lambda U, Up, geom: per_element_R(
+            U, Up, params, geom, geom_shared, evaluators["R"],
+            forcing_fns_by_block_idx, block_shapes, step_time,
+        ),
+        in_axes=(0, 0, 0), axis_name="elem",
+    )(U_elem, U_prev_elem, geom_per_elem)
+    return R, None, None
+
+
+def _scan_chunks(
+        chunk: int | None, n_elems: int, device_mesh: Mesh | None, xs: Inputs,
+        body: Callable[[Carry, Inputs], tuple[Carry, Outputs]], carry: Carry,
+) -> tuple[Carry, Outputs]:
+    """Run ``body(carry, xs_chunk) -> (carry, ys_chunk)`` over the element
+    axis, ``chunk`` elements at a time, in a :func:`jax.lax.scan`. The
+    leaves of ``xs`` and of the returned ``ys`` have ``n_elems`` rows,
+    a multiple of ``chunk`` times the device count. The scan body is
+    checkpointed, so the reverse pass stores one chunk's intermediates at
+    a time. With ``chunk`` set to ``None``, or to ``n_elems`` or more,
+    ``body`` runs once on the entire axis.
+
+    With a ``device_mesh`` every scan step runs one chunk on each device:
+    the element axis, sharded across the devices in contiguous ranges,
+    is reshaped to ``(devices, n_chunks, chunk)`` and its first two axes
+    swapped, so a step's slab holds one chunk of every device's range
+    and is sharded along it. The outputs return the same way.
+    """
+    if chunk is None or chunk >= n_elems:
+        return body(carry, xs)
+    num_devices = 1 if device_mesh is None else device_mesh.size
+    n_chunks = n_elems // (num_devices * chunk)
+
+    def constrained(x: JaxArray, spec: PartitionSpec) -> JaxArray:
+        if device_mesh is None:
+            return x
+        return lax.with_sharding_constraint(x, NamedSharding(device_mesh, spec))
+
+    def to_slabs(x: JaxArray) -> JaxArray:
+        x = x.reshape(num_devices, n_chunks, chunk, *x.shape[1:])
+        x = jnp.swapaxes(x, 0, 1).reshape(
+            n_chunks, num_devices * chunk, *x.shape[3:],
+        )
+        return constrained(x, PartitionSpec(None, ELEMENT_AXIS))
+
+    def from_slabs(y: JaxArray) -> JaxArray:
+        y = y.reshape(n_chunks, num_devices, chunk, *y.shape[2:])
+        y = jnp.swapaxes(y, 0, 1).reshape(n_elems, *y.shape[3:])
+        return constrained(y, PartitionSpec(ELEMENT_AXIS))
+
+    carry, ys = lax.scan(checkpoint(body), carry, tree_map(to_slabs, xs))
+    return carry, tree_map(from_slabs, ys)
+
+
+def _scatter_residual(
+        R_block: JaxArray, R_per_elem_blocks: Sequence[JaxArray],
+        r_scatter_eq: Sequence[JaxArray],
+) -> JaxArray:
+    """``R_block`` with the elements' residual blocks added at their global
+    equation numbers."""
+    n_elems = r_scatter_eq[0].shape[0]
+    for r, R_r in enumerate(R_per_elem_blocks):
+        R_block = R_block.at[r_scatter_eq[r].ravel()].add(
+            R_r.reshape(n_elems, -1).ravel(),
+        )
+    return R_block
 
 
 def _element_eq_indices(
@@ -665,83 +801,50 @@ def assemble_element_block_dense(
     total_xi_dofs)``; for CLOSED_FORM blocks the kwarg is ignored and
     may be ``None``.
     """
-    U_elem_block = _gather_element_U(U_global, fe_arrays, block_name)
-    U_prev_elem_block = _gather_element_U(
-        U_prev_global, fe_arrays, block_name,
-    )
-
     params = params_by_block[block_name]
-    evaluators = fe_problem.evaluators_by_block[block_name]
-    mode = fe_problem.modes_by_block[block_name]
-    block_shapes = fe_problem.block_shapes
-    num_blocks = len(block_shapes)
-    forcing_fns_by_block_idx = fe_problem.forcing_fns_by_block_idx or {}
-
+    num_blocks = len(fe_problem.block_shapes)
     geom_cache = fe_arrays.geometry_cache[block_name]
-
-    xi_solved_per_block: JaxArray | None
-    if mode == GlobalResidualMode.COUPLED:
-        if xi_prev_per_block is None:
-            raise ValueError(
-                f"COUPLED block '{block_name}' requires "
-                f"xi_prev_per_block; got None"
-            )
-        unravel_xi = fe_problem.unravel_xi_by_block[block_name]
-        xi_prev_jax = jnp.asarray(xi_prev_per_block)
-        R_per_elem_blocks, K_per_elem_blocks, xi_solved_per_block = vmap(
-            lambda U, Up, geom, xi_prev: per_element_R_and_K_coupled(
-                U, Up, params, xi_prev,
-                geom, geom_cache.shared,
-                evaluators["R_and_dR_dU_and_xi"],
-                unravel_xi,
-                forcing_fns_by_block_idx, block_shapes, step_time,
-            ),
-            in_axes=(0, 0, 0, 0),
-            axis_name="elem",
-        )(
-            U_elem_block, U_prev_elem_block,
-            geom_cache.per_elem, xi_prev_jax,
-        )
-    else:
-        R_per_elem_blocks, K_per_elem_blocks = vmap(
-            lambda U, Up, geom: per_element_R_and_K(
-                U, Up, params,
-                geom, geom_cache.shared,
-                evaluators["R_and_dR_dU"],
-                forcing_fns_by_block_idx, block_shapes, step_time,
-            ),
-            in_axes=(0, 0, 0),
-            axis_name="elem",
-        )(U_elem_block, U_prev_elem_block, geom_cache.per_elem)
-        xi_solved_per_block = None
-
     eq_indices_per_block = fe_arrays.r_scatter_eq_by_block[block_name]
     # The carrier's element axis is the padded one (cmad.fem.sharding);
     # the padding elements carry zero residuals and tangents.
     n_elems = eq_indices_per_block[0].shape[0]
-    n_dofs = fe_problem.dof_map.num_total_dofs
+    n_dofs_per_block = [eq.shape[1] for eq in eq_indices_per_block]
+    U = jnp.asarray(U_global)
+    U_prev = jnp.asarray(U_prev_global)
+    xi_prev = None if xi_prev_per_block is None else jnp.asarray(xi_prev_per_block)
 
-    R_block = jnp.zeros(n_dofs)
-    for r in range(num_blocks):
-        R_flat = R_per_elem_blocks[r].reshape(n_elems, -1)
-        R_block = R_block.at[eq_indices_per_block[r].ravel()].add(
-            R_flat.ravel(),
+    def body(carry, xs):
+        R_block, norm_sq = carry
+        u_gather_eq, r_scatter_eq, geom_per_elem, xi_prev_chunk = xs
+        R_per_elem, K_per_elem, xi = _chunk_kernel(
+            fe_problem, block_name, params, U, U_prev, step_time,
+            u_gather_eq, xi_prev_chunk, geom_per_elem, geom_cache.shared,
+            tangent=True,
         )
-    block_norms = [jnp.linalg.norm(R) for R in R_per_elem_blocks]
-    R_elem_norm = jnp.linalg.norm(jnp.stack(block_norms))
-
-    K_blocks = [
-        [
-            K_per_elem_blocks[r][s].reshape(
-                n_elems,
-                eq_indices_per_block[r].shape[1],
-                eq_indices_per_block[s].shape[1],
-            )
-            for s in range(num_blocks)
+        assert K_per_elem is not None
+        n_chunk = r_scatter_eq[0].shape[0]
+        R_block = _scatter_residual(R_block, R_per_elem, r_scatter_eq)
+        norm_sq = norm_sq + sum(jnp.sum(R_r ** 2) for R_r in R_per_elem)
+        K_blocks = [
+            [
+                K_per_elem[r][s].reshape(
+                    n_chunk, n_dofs_per_block[r], n_dofs_per_block[s],
+                )
+                for s in range(num_blocks)
+            ]
+            for r in range(num_blocks)
         ]
-        for r in range(num_blocks)
-    ]
-    return R_block, K_blocks, xi_solved_per_block, R_elem_norm
+        return (R_block, norm_sq), (K_blocks, xi)
+
+    (R_block, norm_sq), (K_blocks, xi_solved_per_block) = _scan_chunks(
+        fe_problem.elements_per_chunk, n_elems, fe_problem.device_mesh,
+        (
+            fe_arrays.u_gather_eq_by_block[block_name], eq_indices_per_block,
+            geom_cache.per_elem, xi_prev,
+        ),
+        body, (jnp.zeros(fe_problem.dof_map.num_total_dofs), jnp.zeros(())),
+    )
+    return R_block, K_blocks, xi_solved_per_block, jnp.sqrt(norm_sq)
 
 
 def assemble_element_block(
@@ -799,64 +902,107 @@ def assemble_element_block_residual(
     ``xi_prev_per_block`` (shape ``(n_elems_block, n_ips, total_xi_dofs)``)
     is required for COUPLED blocks and ignored for CLOSED_FORM.
     """
-    U_elem_block = _gather_element_U(U_global, fe_arrays, block_name)
-    U_prev_elem_block = _gather_element_U(
-        U_prev_global, fe_arrays, block_name,
-    )
-
     params = params_by_block[block_name]
-    evaluators = fe_problem.evaluators_by_block[block_name]
-    mode = fe_problem.modes_by_block[block_name]
-    block_shapes = fe_problem.block_shapes
-    num_blocks = len(block_shapes)
-    forcing_fns_by_block_idx = fe_problem.forcing_fns_by_block_idx or {}
     geom_cache = fe_arrays.geometry_cache[block_name]
-
-    if mode == GlobalResidualMode.COUPLED:
-        if xi_prev_per_block is None:
-            raise ValueError(
-                f"COUPLED block '{block_name}' requires "
-                f"xi_prev_per_block; got None"
-            )
-        unravel_xi = fe_problem.unravel_xi_by_block[block_name]
-        xi_prev_jax = jnp.asarray(xi_prev_per_block)
-        R_per_elem_blocks = vmap(
-            lambda U, Up, geom, xi_prev: per_element_R_coupled(
-                U, Up, params, xi_prev,
-                geom, geom_cache.shared,
-                evaluators["R"],
-                unravel_xi,
-                forcing_fns_by_block_idx, block_shapes, step_time,
-            ),
-            in_axes=(0, 0, 0, 0),
-            axis_name="elem",
-        )(
-            U_elem_block, U_prev_elem_block,
-            geom_cache.per_elem, xi_prev_jax,
-        )
-    else:
-        R_per_elem_blocks = vmap(
-            lambda U, Up, geom: per_element_R(
-                U, Up, params,
-                geom, geom_cache.shared,
-                evaluators["R"],
-                forcing_fns_by_block_idx, block_shapes, step_time,
-            ),
-            in_axes=(0, 0, 0),
-            axis_name="elem",
-        )(U_elem_block, U_prev_elem_block, geom_cache.per_elem)
-
     eq_indices_per_block = fe_arrays.r_scatter_eq_by_block[block_name]
     n_elems = eq_indices_per_block[0].shape[0]
-    n_dofs = fe_problem.dof_map.num_total_dofs
+    U = jnp.asarray(U_global)
+    U_prev = jnp.asarray(U_prev_global)
+    xi_prev = None if xi_prev_per_block is None else jnp.asarray(xi_prev_per_block)
 
-    R_block = jnp.zeros(n_dofs)
-    for r in range(num_blocks):
-        R_flat = R_per_elem_blocks[r].reshape(n_elems, -1)
-        R_block = R_block.at[eq_indices_per_block[r].ravel()].add(
-            R_flat.ravel(),
+    def body(R_block, xs):
+        u_gather_eq, r_scatter_eq, geom_per_elem, xi_prev_chunk = xs
+        R_per_elem, _, _ = _chunk_kernel(
+            fe_problem, block_name, params, U, U_prev, step_time,
+            u_gather_eq, xi_prev_chunk, geom_per_elem, geom_cache.shared,
+            tangent=False,
         )
+        return _scatter_residual(R_block, R_per_elem, r_scatter_eq), None
+
+    R_block, _ = _scan_chunks(
+        fe_problem.elements_per_chunk, n_elems, fe_problem.device_mesh,
+        (
+            fe_arrays.u_gather_eq_by_block[block_name], eq_indices_per_block,
+            geom_cache.per_elem, xi_prev,
+        ),
+        body, jnp.zeros(fe_problem.dof_map.num_total_dofs),
+    )
     return R_block
+
+
+def _assemble_block_into_unique_data(
+        fe_problem: FEProblem,
+        fe_arrays: "FEKernelArrays",
+        params_by_block: Mapping[str, Params],
+        block_name: str,
+        U_global: NDArray[np.floating] | JaxArray,
+        U_prev_global: NDArray[np.floating] | JaxArray,
+        step_time: StepTime,
+        xi_prev_per_block: NDArray[np.floating] | JaxArray | None,
+        unique_data: JaxArray,
+        dedup_offset: int,
+) -> tuple[JaxArray, JaxArray, JaxArray | None, JaxArray, int]:
+    """One element block's contribution to :func:`assemble_global`:
+    ``(R_block, unique_data, xi_solved_per_block, R_elem_norm,
+    dedup_offset)``, the block's tangent entries added into
+    ``unique_data`` chunk by chunk through its range of
+    ``fe_arrays.coo_dedup_scatter``, which starts at ``dedup_offset``;
+    the returned offset is where the next block's range starts."""
+    params = params_by_block[block_name]
+    num_blocks = len(fe_problem.block_shapes)
+    geom_cache = fe_arrays.geometry_cache[block_name]
+    eq_indices_per_block = fe_arrays.r_scatter_eq_by_block[block_name]
+    n_elems = eq_indices_per_block[0].shape[0]
+    n_dofs_per_block = [eq.shape[1] for eq in eq_indices_per_block]
+    U = jnp.asarray(U_global)
+    U_prev = jnp.asarray(U_prev_global)
+    xi_prev = None if xi_prev_per_block is None else jnp.asarray(xi_prev_per_block)
+
+    # The block's dedup indices per (r, s) pair, each pair's range
+    # contiguous and element major in the emit order of
+    # assembled_coo_indices, as (n_elems, n_dofs_r * n_dofs_s) arrays.
+    dedup_per_pair: list[JaxArray] = []
+    offset = dedup_offset
+    for r in range(num_blocks):
+        for s in range(num_blocks):
+            width = n_dofs_per_block[r] * n_dofs_per_block[s]
+            dedup_per_pair.append(
+                fe_arrays.coo_dedup_scatter[
+                    offset:offset + n_elems * width
+                ].reshape(n_elems, width),
+            )
+            offset += n_elems * width
+
+    def body(carry, xs):
+        R_block, unique_data, norm_sq = carry
+        u_gather_eq, r_scatter_eq, geom_per_elem, xi_prev_chunk, dedup = xs
+        R_per_elem, K_per_elem, xi = _chunk_kernel(
+            fe_problem, block_name, params, U, U_prev, step_time,
+            u_gather_eq, xi_prev_chunk, geom_per_elem, geom_cache.shared,
+            tangent=True,
+        )
+        assert K_per_elem is not None
+        R_block = _scatter_residual(R_block, R_per_elem, r_scatter_eq)
+        norm_sq = norm_sq + sum(jnp.sum(R_r ** 2) for R_r in R_per_elem)
+        k = 0
+        for r in range(num_blocks):
+            for s in range(num_blocks):
+                unique_data = unique_data.at[dedup[k].ravel()].add(
+                    K_per_elem[r][s].ravel(),
+                )
+                k += 1
+        return (R_block, unique_data, norm_sq), xi
+
+    (R_block, unique_data, norm_sq), xi_solved = _scan_chunks(
+        fe_problem.elements_per_chunk, n_elems, fe_problem.device_mesh,
+        (
+            fe_arrays.u_gather_eq_by_block[block_name], eq_indices_per_block,
+            geom_cache.per_elem, xi_prev, dedup_per_pair,
+        ),
+        body,
+        (jnp.zeros(fe_problem.dof_map.num_total_dofs), unique_data, jnp.zeros(())),
+    )
+    return R_block, unique_data, xi_solved, jnp.sqrt(norm_sq), offset
 
 
 def assemble_global(
@@ -910,40 +1056,36 @@ def assemble_global(
     with a clear message; shape mismatches surface as JAX vmap
     leading-axis errors when the kernel runs.
 
-    Implementation note: each block's per-element residual is
-    accumulated into a flat JAX vector via
-    :func:`assemble_element_block`, which also returns the block's
-    per-element-block ``vals`` (the with-duplicates COO data).
-    Per-block residual contributions sum into ``R``; the per-block
-    JAX ``vals`` concatenate into the duplicate-laden COO data
-    buffer, which is then segment-summed into the unique pattern via
-    ``fe_arrays.coo_dedup_scatter`` and paired with the static
+    Implementation note: each block's chunks add their per element
+    residuals into ``R`` and their tangent entries into the unique data
+    buffer through the block's range of ``fe_arrays.coo_dedup_scatter``
+    (:func:`_assemble_block_into_unique_data`), so the with-duplicates COO
+    stream is never materialized; the buffer pairs with the static
     deduped ``fe_arrays.coo_rows`` / ``coo_cols`` (all built once by
-    :func:`assembled_coo_dedup` in the same ``(block, r, s)`` emit
-    order). The concatenated with-duplicates buffer is a transient,
-    freed before return — the embedded-BC enforcement, the linear
-    solve, and their AD shadows see only the deduped data. Non-None
-    ``xi_solved_per_block`` returns populate the
-    ``xi_solved_by_block`` dict. Surface fluxes add into ``R`` via
-    :func:`cmad.fem.surface_bcs.assemble_side_neumann` after the volume
-    walk.
+    :func:`assembled_coo_dedup` in the ``(block, r, s)`` emit order of
+    :func:`assembled_coo_indices`). Non-None ``xi_solved_per_block``
+    returns populate the ``xi_solved_by_block`` dict. Surface fluxes add
+    into ``R`` via :func:`cmad.fem.surface_bcs.assemble_side_neumann` after
+    the volume walk.
     """
     xi_prev = xi_prev_by_block or {}
 
     n_dofs = fe_problem.dof_map.num_total_dofs
-    vals_all: list[JaxArray] = []
     R_elem_norms: list[JaxArray] = []
     R_global = jnp.zeros(n_dofs)
+    unique_data = jnp.zeros(fe_arrays.coo_rows.shape[0])
     xi_solved_by_block: dict[str, JaxArray] = {}
 
+    dedup_offset = 0
     for block_name in fe_problem.evaluators_by_block:
-        R_block, vals, xi_solved, R_elem_norm = assemble_element_block(
-            fe_problem, fe_arrays, params_by_block, block_name,
-            U_global, U_prev_global, step_time,
-            xi_prev_per_block=xi_prev.get(block_name),
+        R_block, unique_data, xi_solved, R_elem_norm, dedup_offset = (
+            _assemble_block_into_unique_data(
+                fe_problem, fe_arrays, params_by_block, block_name,
+                U_global, U_prev_global, step_time,
+                xi_prev.get(block_name), unique_data, dedup_offset,
+            )
         )
         R_global = R_global + R_block
-        vals_all.append(vals)
         R_elem_norms.append(R_elem_norm)
         if xi_solved is not None:
             xi_solved_by_block[block_name] = xi_solved
@@ -964,10 +1106,6 @@ def assemble_global(
     )
     R_global = R_global + R_robin
 
-    vals = jnp.concatenate(vals_all)
-    unique_data = jnp.zeros(
-        fe_arrays.coo_rows.shape[0], dtype=vals.dtype,
-    ).at[fe_arrays.coo_dedup_scatter].add(vals)
     for k_scatter, K_per_elem in robin_tangents:
         unique_data = unique_data.at[k_scatter.ravel()].add(
             K_per_elem.ravel(),

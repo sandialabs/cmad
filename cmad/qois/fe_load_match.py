@@ -194,7 +194,7 @@ class FELoadMatch(FEQoI):
             U_prev = jnp.asarray(fe_state.U_at(kp))
             xi_prev = place_element_leaves(
                 {b: jnp.asarray(fe_state.xi_at(kp, b)) for b in coupled},
-                fe_problem.device_mesh,
+                fe_problem,
             )
             reaction = reaction_at(
                 params, fe_arrays, U, U_prev,

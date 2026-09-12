@@ -29,6 +29,7 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from jax.tree_util import tree_map
 
 if TYPE_CHECKING:
+    from cmad.fem.fe_problem import FEProblem
     from cmad.fem.kernel_arrays import FEKernelArrays
 
 T = TypeVar("T")
@@ -107,22 +108,29 @@ def strip_element_padding(
     }
 
 
-def place_element_leaves(tree: T, device_mesh: Mesh | None) -> T:
-    """``tree`` (JAX array leaves) padded along its leading (element) axis
-    to a multiple of the device count, by repeating each leaf's last row,
-    and sharded across ``device_mesh``; unchanged when there is no
-    mesh."""
-    if device_mesh is None:
-        return tree
+def shard_element_leaves(tree: T, device_mesh: Mesh) -> T:
+    """``tree`` (JAX array leaves whose leading axis is the element axis,
+    padded to a multiple of the device count) sharded across
+    ``device_mesh``."""
     sharding = NamedSharding(device_mesh, PartitionSpec(ELEMENT_AXIS))
+    return tree_map(lambda leaf: device_put(leaf, sharding), tree)
 
-    def place(leaf):
-        padded = pad_element_leaves(
-            leaf, padded_count(leaf.shape[0], device_mesh),
+
+def place_element_leaves(
+        xi_by_block: Mapping[str, T], fe_problem: FEProblem,
+) -> dict[str, T]:
+    """Each block's state array padded along its leading (element) axis to
+    ``fe_problem.n_elems_padded_by_block[block]``, by repeating its last
+    row, and sharded across the problem's device mesh when it has one;
+    the arrays themselves when nothing pads or shards them."""
+    placed: dict[str, T] = {}
+    for block, xi in xi_by_block.items():
+        padded = pad_element_leaves(xi, fe_problem.n_elems_padded_by_block[block])
+        placed[block] = (
+            padded if fe_problem.device_mesh is None
+            else shard_element_leaves(padded, fe_problem.device_mesh)
         )
-        return device_put(padded, sharding)
-
-    return tree_map(place, tree)
+    return placed
 
 
 def shard_kernel_arrays(
@@ -135,16 +143,16 @@ def shard_kernel_arrays(
     ``device_mesh``; the other fields are left as they are."""
     return replace(
         arrays,
-        u_gather_eq_by_block=place_element_leaves(
+        u_gather_eq_by_block=shard_element_leaves(
             arrays.u_gather_eq_by_block, device_mesh,
         ),
-        r_scatter_eq_by_block=place_element_leaves(
+        r_scatter_eq_by_block=shard_element_leaves(
             arrays.r_scatter_eq_by_block, device_mesh,
         ),
         geometry_cache={
             block: replace(
                 cache,
-                per_elem=place_element_leaves(cache.per_elem, device_mesh),
+                per_elem=shard_element_leaves(cache.per_elem, device_mesh),
             )
             for block, cache in arrays.geometry_cache.items()
         },

@@ -338,7 +338,7 @@ def fe_quasistatic_drive(
     U_init_jax = jnp.asarray(state.U_at(0), dtype=jnp.float64)
     xi_init_by_block: dict[str, JaxArray] = place_element_leaves(
         {b: jnp.asarray(state.xi_at(0, b)) for b in fe_problem.models_by_block},
-        fe_problem.device_mesh,
+        fe_problem,
     )
     state_init: StateInit = (U_init_jax, xi_init_by_block)
     t_schedule_jax = jnp.asarray(t_schedule, dtype=jnp.float64)

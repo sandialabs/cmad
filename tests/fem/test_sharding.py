@@ -8,6 +8,7 @@ same computation on one device: this process for the Newton solve, device
 0 of the subprocess for the assembly. The padding helpers and the one
 device path are checked in process.
 """
+import dataclasses
 import subprocess
 import sys
 import tempfile
@@ -247,8 +248,7 @@ def krylov_solves(fe_problem, params, U, U_prev, xi_prev, step_time,
         x, iterations = jax.jit(solve)(
             jnp.asarray(U), jnp.asarray(U_prev),
             place_element_leaves(
-                {b: jnp.asarray(v) for b, v in xi_prev.items()},
-                fe_problem.device_mesh,
+                {b: jnp.asarray(v) for b, v in xi_prev.items()}, fe_problem,
             ),
         )
         out[kind] = (int(iterations), np.asarray(_strip_dofs(x, fe_problem)))
@@ -290,7 +290,7 @@ def save_sharded_results(path: str) -> None:
         arrays.coo_rows, arrays.coo_cols, arrays.coo_dedup_scatter,
         arrays.prescribed_indices,
     ]
-    xi_placed = place_element_leaves(xi_prev, mesh)
+    xi_placed = place_element_leaves(xi_prev, fe_problem)
 
     # The assembly at the plastic state through the sharded carrier, and
     # through the same arrays committed to device 0.
@@ -398,6 +398,24 @@ def save_sharded_results(path: str) -> None:
         for b in ("left", "right")
     )
 
+    # The assembly in chunks on four devices: one element per chunk, so
+    # every scan step runs one element on each device, over two steps for
+    # the mixed cube (8 elements) and for the 7 element bar (padded to 8).
+    fe_chunked = dataclasses.replace(fe_problem, elements_per_chunk=1)
+    K_data_chunked, R_chunked, xi_out_chunked = (
+        np.asarray(a) for a in jax.jit(lambda arrs, xi_p: (
+            lambda out: (out[0].data, out[1], out[2]["all"])
+        )(assemble_global(
+            fe_chunked, arrs, params, U, U_prev, step_time,
+            xi_prev_by_block=xi_p,
+        )))(fe_chunked.kernel_arrays, place_element_leaves(xi_prev, fe_chunked))
+    )
+    fe_7_chunked = dataclasses.replace(fe_7, elements_per_chunk=1)
+    K7_chunked, R7_chunked = assemble_at_random_state(
+        fe_7_chunked, fe_7_chunked.kernel_arrays,
+    )
+    padded_7_chunked = fe_7_chunked.n_elems_padded_by_block["all"]
+
     # num_devices limits the mesh to the first num_devices devices.
     capped_2 = build_device_mesh(num_devices=2)
     capped_1 = build_device_mesh(num_devices=1)
@@ -447,6 +465,10 @@ def save_sharded_results(path: str) -> None:
         capped_2_size=0 if capped_2 is None else int(capped_2.size),
         capped_1_is_none=capped_1 is None, too_many_raises=too_many_raises,
         K7=K7, R7=R7, K12=K12, R12=R12,
+        K_data_chunked=K_data_chunked, R_chunked=R_chunked,
+        xi_out_chunked=xi_out_chunked,
+        K7_chunked=K7_chunked, R7_chunked=R7_chunked,
+        padded_7_chunked=padded_7_chunked,
     )
 
 
@@ -487,11 +509,11 @@ class TestOneDevice(unittest.TestCase):
 
     def test_nothing_is_placed(self) -> None:
         self.assertIsNone(build_device_mesh())
-        xi = {"all": jnp.arange(24.0).reshape(4, 3, 2)}
-        self.assertIs(place_element_leaves(xi, None), xi)
         fe_problem = elastic_problem((2, 1, 1))
         self.assertIsNone(fe_problem.device_mesh)
         self.assertEqual(fe_problem.n_elems_padded_by_block, {"all": 2})
+        xi = {"all": jnp.arange(12.0).reshape(2, 3, 2)}
+        self.assertIs(place_element_leaves(xi, fe_problem)["all"], xi["all"])
         self.assertIs(
             fe_problem.kernel_arrays.geometry_cache, fe_problem.geometry_cache,
         )
@@ -678,6 +700,24 @@ class TestFourDevices(unittest.TestCase):
         _assert_close(
             np.asarray(float(r["qoi_7"])), np.asarray(qoi_7), 1e-12,
             "displacement match with a region of interest, 4 devices vs 1",
+        )
+
+    def test_chunked_assembly_matches_one_device(self) -> None:
+        r = self.sharded
+        for name in ("K_data", "R", "xi_out"):
+            with self.subTest(name=name):
+                _assert_close(
+                    r[f"{name}_chunked"], r[f"{name}_ref"], 1e-14,
+                    f"chunked assembly {name}, 4 devices vs device 0",
+                )
+        self.assertEqual(int(r["padded_7_chunked"]), 8)
+        fe_7 = elastic_problem((7, 1, 1))
+        K7, R7 = assemble_at_random_state(fe_7, fe_7.kernel_arrays)
+        _assert_close(
+            r["K7_chunked"], K7, 1e-14, "chunked 7 element K.data, 4 devices vs 1",
+        )
+        _assert_close(
+            r["R7_chunked"], R7, 1e-14, "chunked 7 element R, 4 devices vs 1",
         )
 
     def test_num_devices_limits_the_mesh(self) -> None:
