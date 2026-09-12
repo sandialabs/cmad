@@ -1,0 +1,72 @@
+# Eighth-symmetry notched plate, J2 plasticity with Voce hardening on the
+# be_bar model, in the mixed u-p formulation. The linear solver is block
+# preconditioned GMRES with the Chebyshev inner, the path with no scipy
+# callback, so it runs on a GPU as it is. The cycle cap is finite so a
+# stagnating solve fails instead of running on.
+#
+# Deck paths resolve against the working directory, so run from here:
+#   cd examples
+#   cmad primal notch_mixed.yaml
+
+problem:
+  type: fe
+  name: notch_mixed
+
+discretization:
+  mesh file: meshes/notch.exo
+  build coordinate sidesets: true
+  num steps: 4
+  step size: 1.0
+
+linear solver:
+  type: gmres
+  rtol: 1.0e-8
+  restart: 500
+  max iters: 20
+  print convergence: true
+  preconditioner:
+    type: block
+    coupling: lower
+    diagonal_block: schur
+    inner: chebyshev
+    degree: 3
+
+residuals:
+  global residual:
+    type: mechanics
+    def_type: full_3d
+    mixed: true
+    nonlinear max iters: 100
+    nonlinear absolute tol: 1.0e-11
+    nonlinear relative tol: 1.0e-10
+    print convergence: true
+    line search:
+      max evals: 10
+  local residual:
+    type: be_bar_elastic_plastic
+    nonlinear max iters: 100
+    nonlinear absolute tol: 1.0e-11
+    nonlinear relative tol: 1.0e-11
+    materials:
+      block_1:
+        elastic: {E: 1000.0, nu: 0.25}
+        plastic:
+          effective stress: {J2: {}}
+          flow stress:
+            initial yield: {Y: 2.0}
+            hardening: {voce: {S: 10.0, D: 2.0}}
+
+# Symmetry on the three min faces; the y=max face is pulled in +y.
+dirichlet bcs:
+  expression:
+    sym_x:  [equilibrium, 0, xmin_sides, "0.0"]
+    sym_y:  [equilibrium, 1, ymin_sides, "0.0"]
+    sym_z:  [equilibrium, 2, zmin_sides, "0.0"]
+    load_y: [equilibrium, 1, ymax_sides, "0.01 * t"]
+
+output:
+  path: results
+  exodus filename: notch_mixed.exo
+  global residual: [u]
+  local residual:
+    block_1: [cauchy, alpha]
