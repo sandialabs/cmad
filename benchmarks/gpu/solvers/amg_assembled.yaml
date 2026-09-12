@@ -1,0 +1,14 @@
+# Block preconditioned GMRES with one pyamg V-cycle per assembled
+# diagonal block, the host callback path: the pressure block itself, with
+# its mass term, stands in for the Schur complement.
+linear solver:
+  type: gmres
+  rtol: 1.0e-8
+  restart: 500
+  max iters: 20
+  print convergence: true
+  preconditioner:
+    type: block
+    coupling: lower
+    diagonal_block: assembled
+    inner: amg

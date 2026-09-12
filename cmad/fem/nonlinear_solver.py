@@ -318,6 +318,7 @@ def _solve_linear(
                     rtol=linear_solver_settings["rtol"],
                     max_iters=linear_solver_settings["max iters"],
                     restart=linear_solver_settings["restart"],
+                    print_convergence=print_convergence,
                 )
             raise ValueError(
                 f"unknown inner solve {inner!r} for the block "

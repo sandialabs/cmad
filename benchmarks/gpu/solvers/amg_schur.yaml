@@ -1,0 +1,14 @@
+# Block preconditioned GMRES with one pyamg V-cycle per diagonal block on
+# the approximate Schur complement, the host callback path. The count it
+# prints per solve is the outer iteration count with a multilevel inner.
+linear solver:
+  type: gmres
+  rtol: 1.0e-8
+  restart: 500
+  max iters: 20
+  print convergence: true
+  preconditioner:
+    type: block
+    coupling: lower
+    diagonal_block: schur
+    inner: amg

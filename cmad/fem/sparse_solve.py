@@ -367,7 +367,7 @@ def fill_reducing_permutation(
     """A symmetric fill reducing permutation for the CSR pattern, or
     ``None`` when ``scikit-sparse`` is absent or declines it."""
     try:
-        from sksparse import cholmod  # type: ignore[import-untyped]
+        from sksparse import cholmod
     except ImportError:
         return None
     pattern = scipy.sparse.csr_matrix(
@@ -1430,6 +1430,7 @@ def scipy_block_gmres(
         coupling: str = "lower", diagonal_block: str = "schur",
         rtol: float = 1e-10, max_iters: int | None = None,
         restart: int = 500, pyamg_kwargs: dict | None = None,
+        print_convergence: bool = False,
 ) -> JaxArray:
     """Solve ``K x = b`` with GMRES and a block preconditioner, using AMG.
 
@@ -1444,6 +1445,8 @@ def scipy_block_gmres(
     other solvers use, so the scipy preconditioner stays inside the solve
     callbacks and never enters the derivative rules. The adjoint solve runs
     GMRES on ``K^T`` with the transpose of the block sweep.
+    ``print_convergence`` prints each solve's Krylov iteration count, final
+    relative residual, and whether it converged, from the host.
     """
     op = AssembledOperator(K_data, sparsity)
     unique_data, matvec = op.unique_data, op.matvec
@@ -1466,9 +1469,29 @@ def scipy_block_gmres(
                 coupling=coupling, diagonal_block=diagonal_block,
                 pyamg_kwargs=pyamg_kwargs, transpose=transpose,
             )
-            x, _info = scipy.sparse.linalg.gmres(
-                K_csr, np.reshape(b_np, -1), M=precon, rtol=rtol,
+            b_flat = np.reshape(b_np, -1)
+            if not print_convergence:
+                x, _info = scipy.sparse.linalg.gmres(
+                    K_csr, b_flat, M=precon, rtol=rtol,
+                    maxiter=maxiter, restart=restart,
+                )
+                return np.asarray(x).reshape(b_np.shape)
+            iterations = [0]
+
+            def count(_pr_norm: float) -> None:
+                iterations[0] += 1
+
+            x, info = scipy.sparse.linalg.gmres(
+                K_csr, b_flat, M=precon, rtol=rtol,
                 maxiter=maxiter, restart=restart,
+                callback=count, callback_type="pr_norm",
+            )
+            b_norm = np.linalg.norm(b_flat)
+            rel = np.linalg.norm(b_flat - K_csr @ x) / (b_norm if b_norm > 0.0 else 1.0)
+            print(
+                f" > linear solve: {iterations[0]} Krylov iterations, "
+                f"relative residual {rel:.3e}, converged {info == 0}",
+                flush=True,
             )
             return np.asarray(x).reshape(b_np.shape)
         return callback

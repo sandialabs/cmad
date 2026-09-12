@@ -45,10 +45,12 @@ MESH_SIZES = (0.06, 0.045, 0.035, 0.028, 0.02)
 
 def rewrite_input(
         base: dict[str, Any], mesh_path: Path, num_steps: int, work_dir: Path,
+        linear_solver: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The base input file on ``mesh_path``: its single material block
-    renamed to the generated mesh's ``solid``, ``num_steps`` steps, and an
-    output section that writes nothing."""
+    renamed to the generated mesh's ``solid``, ``num_steps`` steps, an
+    output section that writes nothing, and ``linear_solver`` in place of
+    its linear solver section when one is given."""
     deck = yaml.safe_load(yaml.safe_dump(base))
     deck["discretization"]["mesh file"] = str(mesh_path)
     deck["discretization"]["num steps"] = num_steps
@@ -56,6 +58,8 @@ def rewrite_input(
     (_, material), = local["materials"].items()
     local["materials"] = {"solid": material}
     deck["output"] = {"path": str(work_dir), "write exodus": False}
+    if linear_solver is not None:
+        deck["linear solver"] = linear_solver
     return deck
 
 
@@ -94,6 +98,15 @@ def run_once(
     start = time.perf_counter()
     compiled = jit(run).lower(params_by_block, state_init, fe_arrays).compile()
     compile_s = time.perf_counter() - start
+    memory = compiled.memory_analysis()
+    if memory is not None:
+        gib = 1024.0 ** 3
+        print(
+            f"executable memory: temporaries {memory.temp_size_in_bytes / gib:.2f} GiB, "
+            f"arguments {memory.argument_size_in_bytes / gib:.2f} GiB, "
+            f"outputs {memory.output_size_in_bytes / gib:.2f} GiB",
+            flush=True,
+        )
 
     start = time.perf_counter()
     out = compiled(params_by_block, state_init, fe_arrays)
@@ -108,20 +121,24 @@ def run_once(
 
 def run_sweep(
         sizes: tuple[float, ...], base_path: Path, num_steps: int,
-        work_dir: Path,
+        work_dir: Path, linear_solver_path: Path | None = None,
 ) -> None:
     """One row per mesh size."""
     work_dir.mkdir(parents=True, exist_ok=True)
     base = yaml.safe_load(base_path.read_text())
+    linear_solver = None
+    if linear_solver_path is not None:
+        linear_solver = yaml.safe_load(linear_solver_path.read_text())["linear solver"]
     print(f"backend {default_backend()}, devices {devices()}")
-    print(f"input file {base_path}, {num_steps} steps\n")
+    print(f"input file {base_path}, {num_steps} steps")
+    print(f"linear solver {linear_solver_path or 'from the input file'}\n")
     for h in sizes:
         mesh_path = work_dir / f"notch_h{h:.3f}.msh"
         n_elem = generate_notch_msh(mesh_path, h)
         deck_path = work_dir / f"notch_h{h:.3f}.yaml"
-        deck_path.write_text(
-            yaml.safe_dump(rewrite_input(base, mesh_path, num_steps, work_dir)),
-        )
+        deck_path.write_text(yaml.safe_dump(rewrite_input(
+            base, mesh_path, num_steps, work_dir, linear_solver,
+        )))
         bundle = build_fe_problem_from_deck(deck_path, "primal")
         fe_problem = bundle.fe_problem
         gr_section = bundle.resolved["residuals"]["global residual"]
@@ -165,8 +182,15 @@ def main() -> None:
         "--work-dir", type=Path, default=REPO_ROOT / "benchmarks" / "gpu" / "run",
         help="where the meshes and input files go (default benchmarks/gpu/run)",
     )
+    parser.add_argument(
+        "--linear-solver", type=Path, default=None,
+        help="yaml file whose 'linear solver' section replaces the input file's",
+    )
     args, _unknown = parser.parse_known_args()
-    run_sweep(tuple(args.sizes), args.input, args.steps, args.work_dir)
+    run_sweep(
+        tuple(args.sizes), args.input, args.steps, args.work_dir,
+        args.linear_solver,
+    )
 
 
 if __name__ == "__main__":
