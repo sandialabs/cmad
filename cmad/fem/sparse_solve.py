@@ -1063,7 +1063,13 @@ class _PetscKrylovSolver:
             and np.array_equal(self.col_indices, col_indices)
         )
         if reuse:
-            self.A.setValuesCSR(indptr, col_indices, values)
+            assert self.values is not None
+            self.values[...] = values
+            # The insert marks the values changed so PETSc uploads them.
+            self.A.setValue(
+                0, int(col_indices[0]), float(self.values[0]),
+                addv=PETSc.InsertMode.INSERT,
+            )
             self.A.assemble()
             if self.transpose:
                 self._remake_transpose(PETSc)
