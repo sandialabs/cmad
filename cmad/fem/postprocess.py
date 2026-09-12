@@ -29,6 +29,7 @@ from cmad.global_residuals.interpolation import (
     interpolate_global_fields_at_ip,
 )
 from cmad.global_residuals.modes import GlobalResidualMode
+from cmad.models.mechanics_model import MechanicsModel
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -98,6 +99,11 @@ def evaluate_cauchy_at_ips(
     U_prev_elem_block = gather(U_prev_global)
 
     model = fe_problem.models_by_block[block_name]
+    if not isinstance(model, MechanicsModel):
+        raise TypeError(
+            f"cauchy output on block '{block_name}' needs a mechanics "
+            f"model; got {type(model).__name__}"
+        )
     params = model.parameters.values
     mode = fe_problem.modes_by_block[block_name]
     var_names = fe_problem.gr.var_names

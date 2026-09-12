@@ -6,6 +6,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from cmad.models.global_fields import GlobalFieldsAtPoint
+from cmad.models.mechanics_model import MechanicsModel
 from cmad.models.model import Model
 from cmad.qois.qoi import QoI
 from cmad.typing import (
@@ -19,7 +20,7 @@ from cmad.typing import (
 
 class UniaxialCalibration(QoI):
     def __init__(
-            self, model: Model,
+            self, model: MechanicsModel,
             data: NDArray[np.floating], weight: NDArray[np.floating],
             uniaxial_stress_idx: int, stretch_var_idx: int,
     ) -> None:
@@ -42,6 +43,11 @@ class UniaxialCalibration(QoI):
             data: NDArray[np.floating],
             weight: NDArray[np.floating],
     ) -> "UniaxialCalibration":
+        if not isinstance(model, MechanicsModel):
+            raise ValueError(
+                f"qoi.name 'uniaxial_calibration' matches a Cauchy stress "
+                f"and needs a mechanics model; got {type(model).__name__}",
+            )
         return cls(
             model=model,
             data=data,

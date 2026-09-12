@@ -3,10 +3,16 @@
 Separates the mechanics-specific contract the mechanics global residual
 relies on from the general :class:`cmad.models.model.Model`.
 """
+from collections.abc import Callable
+
+import numpy as np
+from jax import jit
+from numpy.typing import NDArray
+
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.kinematics import gather_F
 from cmad.models.model import Model
-from cmad.typing import JaxArray, Params, Scalar, StateList
+from cmad.typing import CauchyFn, JaxArray, Params, ResidualFn, Scalar, StateList
 
 
 class MechanicsModel(Model):
@@ -14,8 +20,12 @@ class MechanicsModel(Model):
 
     The base the mechanics global residual binds to: the model maps the
     local deformation to a stress, which the residual assembles as the
-    flux of the (quasi-static) momentum balance. On top of
-    :class:`Model` it adds the two pieces that residual reads:
+    flux of the (quasi-static) momentum balance. Subclasses pass the
+    Cauchy stress function (see CauchyFn in cmad.typing) beside the
+    residual function to ``super().__init__()``, and the closed form
+    stress function when the model has one; both are jit-compiled at
+    construction and reached as ``cauchy`` and ``cauchy_closed_form``.
+    On top of :class:`Model` it adds the two pieces the residual reads:
 
     - ``is_finite_deformation``: selects the form the GR assembles --
       finite (first Piola-Kirchhoff, ``sigma @ cof(F)``) or small strain
@@ -40,6 +50,28 @@ class MechanicsModel(Model):
     # when the model has no such unknown (FULL_3D, plane strain), where
     # gather_F ignores it.
     _oop_stretch_idx: int = -1
+
+    cauchy_closed_form: Callable[..., JaxArray] | None
+    _Sigma: NDArray[np.floating]
+
+    def __init__(
+            self, residual_fun: ResidualFn, cauchy_fun: CauchyFn,
+            cauchy_closed_form_fun: Callable[..., JaxArray] | None = None,
+    ) -> None:
+        self.cauchy = jit(cauchy_fun)
+        self.cauchy_closed_form = (
+            jit(cauchy_closed_form_fun)
+            if cauchy_closed_form_fun is not None else None
+        )
+        super().__init__(residual_fun)
+
+    def evaluate_cauchy(self) -> None:
+        """Evaluate the Cauchy stress at the gathered state, read by Sigma."""
+        self._Sigma = np.asarray(
+            self.cauchy(*self.variables()), dtype=np.float64)
+
+    def Sigma(self) -> NDArray[np.floating]:
+        return self._Sigma
 
     def deformation_gradient(
             self, xi: StateList, U: GlobalFieldsAtPoint,

@@ -12,7 +12,6 @@ from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.var_types import VarType
 from cmad.parameters.parameters import Parameters
 from cmad.typing import (
-    CauchyFn,
     JaxArray,
     Params,
     PyTree,
@@ -23,16 +22,15 @@ from cmad.typing import (
 
 
 class Model(ABC):
-    """Material-point constitutive model contract.
+    """Material point constitutive model contract.
 
-    Subclasses set up a residual function and a Cauchy stress function
-    (both pure, no side effects) and pass them to super().__init__().
-    See ResidualFn and CauchyFn in cmad.typing for the required callable
-    signatures.
-
-    Both functions take (xi, xi_prev, params, U, U_prev) and return a
-    JaxArray. They are jit-compiled and AD-derivative-cached at
-    construction; access via self._residual / self.cauchy.
+    Subclasses set up a residual function (pure, no side effects) and
+    pass it to super().__init__(); see ResidualFn in cmad.typing for the
+    signature. It takes (xi, xi_prev, params, U, U_prev, step_time) and
+    returns a JaxArray. It is jit-compiled and its derivatives cached at
+    construction; access via self._residual. The flux a global residual
+    assembles is added by a subclass; the Cauchy stress is on
+    :class:`cmad.models.mechanics_model.MechanicsModel`.
     """
 
     # ---- class configuration (subclasses may override) ----
@@ -68,22 +66,18 @@ class Model(ABC):
     _step_time: StepTime
 
     # ---- attributes set by Model.__init__() ----
-    # _residual and cauchy are documented in the class docstring; their
-    # types come from ResidualFn / CauchyFn in cmad.typing.
+    # _residual is documented in the class docstring; its type comes
+    # from ResidualFn in cmad.typing.
     _jacobian: list[Callable[..., PyTree]]
     _hessian_states: Callable[..., PyTree]
     _hessian_xi_params: Callable[..., PyTree]
     _hessian_xi_prev_params: Callable[..., PyTree]
     _hessian_params_params: Callable[..., PyTree]
-    dcauchy: list[Callable[..., PyTree]]
-    cauchy_closed_form: Callable[..., JaxArray] | None
     _deriv_mode: int  # backed by DerivType
 
     # ---- attributes populated by evaluate* methods ----
     _C: NDArray[np.floating]
     _Jac: NDArray[np.floating] | None
-    _Sigma: NDArray[np.floating]
-    _dSigma: NDArray[np.floating] | None
     d2C_dxi2: NDArray[np.floating]
     d2C_dxi_dxi_prev: NDArray[np.floating]
     d2C_dxi_prev2: NDArray[np.floating]
@@ -122,10 +116,7 @@ class Model(ABC):
         """
         return {}
 
-    def __init__(
-            self, residual_fun: ResidualFn, cauchy_fun: CauchyFn,
-            cauchy_closed_form_fun: Callable[..., JaxArray] | None = None,
-    ) -> None:
+    def __init__(self, residual_fun: ResidualFn) -> None:
         self._residual = jit(residual_fun)
         self._jacobian = [jit(jacfwd(residual_fun, argnums=DerivType.DXI,
                           holomorphic=self._is_complex)),
@@ -150,16 +141,6 @@ class Model(ABC):
 
         self._hessian_params_params = jit(hessian(residual_fun,
                                           argnums=DerivType.DPARAMS))
-
-        self.cauchy = jit(cauchy_fun)
-        self.dcauchy = [jit(jacfwd(cauchy_fun, argnums=DerivType.DXI)),
-                        jit(jacfwd(cauchy_fun, argnums=DerivType.DXI_PREV)),
-                        jit(jacrev(cauchy_fun, argnums=DerivType.DPARAMS))]
-
-        self.cauchy_closed_form = (
-            jit(cauchy_closed_form_fun)
-            if cauchy_closed_form_fun is not None else None
-        )
 
         self._deriv_mode = DerivType.DNONE
         self._step_time = StepTime(1.0, 0.0)
@@ -276,28 +257,6 @@ class Model(ABC):
             DerivType.DXI_PREV)
 
 
-    def evaluate_cauchy(self) -> None:
-        """
-        Evaluate the cauchy stress (Sigma) or its derivatives (dSigma).
-        """
-
-        variables = self.variables()
-        deriv_mode = self._deriv_mode
-
-        if deriv_mode == DerivType.DNONE:
-            self._Sigma = np.asarray(self.cauchy(*variables), dtype=np.float64)
-            self._dSigma = None
-        elif deriv_mode == DerivType.DPARAMS:
-            dSigma = self.dcauchy[deriv_mode](*variables)
-            self._dSigma = np.asarray(
-                self.parameters.model_active_params_jacobian(dSigma, 9),
-                dtype=np.float64)
-        else:
-            dsigma_pytree = cast(
-                list[JaxArray], self.dcauchy[deriv_mode](*variables),
-            )
-            self._dSigma = np.dstack(dsigma_pytree)
-
     def set_xi_to_init_vals(self) -> None:
         for ii in range(self.num_residuals):
             self._xi[ii] = self._init_xi[ii].copy().astype(self.dtype)
@@ -329,14 +288,6 @@ class Model(ABC):
         assert self._Jac is not None, \
             "Jac() requires a non-DNONE deriv mode (seed_xi/xi_prev/params)"
         return self._Jac
-
-    def Sigma(self) -> NDArray[np.floating]:
-        return self._Sigma
-
-    def dSigma(self) -> NDArray[np.floating]:
-        assert self._dSigma is not None, \
-            "dSigma() requires a non-DNONE deriv mode (seed_xi/xi_prev/params)"
-        return self._dSigma
 
     def dC_dxi(
             self,

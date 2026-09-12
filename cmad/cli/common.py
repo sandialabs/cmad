@@ -62,6 +62,7 @@ from cmad.io.registry import (
 )
 from cmad.io.schema import validate_deck
 from cmad.models.deformation_types import DefType
+from cmad.models.mechanics_model import MechanicsModel
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
 from cmad.qois.fe_qoi import FEQoI
@@ -73,7 +74,7 @@ from cmad.typing import JaxArray, Scalar
 class MPProblem:
     resolved: dict[str, Any]
     parameters: Parameters
-    model: Model
+    model: MechanicsModel
     F: NDArray[np.float64]
     qoi: QoI | None
 
@@ -112,6 +113,11 @@ def build_mp_problem(
     )
     def_type = DefType[resolved["model"]["def_type"].upper()]
     model = model_cls.from_deck(resolved["model"], parameters, def_type)
+    if not isinstance(model, MechanicsModel):
+        raise ValueError(
+            f"model.name '{resolved['model']['name']}': a material point "
+            f"problem drives a mechanics model; got {type(model).__name__}",
+        )
 
     F = load_history(
         resolved["deformation"], expected_ndims=model.ndims,

@@ -398,8 +398,9 @@ class FEState:
                 fe_problem.mesh.element_family
             ]
             n_ips = int(quad_rule.xi.shape[0])
-            init_xi_flat = np.concatenate(
-                [np.asarray(b) for b in model._init_xi],
+            init_xi_flat = (
+                np.concatenate([np.asarray(b) for b in model._init_xi])
+                if model._init_xi else np.zeros(0)
             )
             xi_init = np.tile(init_xi_flat, (n_elems, n_ips, 1))
             xi_init_by_block[block] = [xi_init]
