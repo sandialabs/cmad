@@ -15,7 +15,7 @@ from cmad.models.elastic_stress import (
 )
 from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.kinematics import gather_F
-from cmad.models.mechanics_model import MechanicsModel
+from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -124,12 +124,12 @@ class Elastic(MechanicsModel):
             cls,
             model_section: dict[str, Any],
             parameters: Parameters,
-            def_type: int,
+            def_type: int | None,
     ) -> "Elastic":
         elastic_stress = model_section.get("elastic_stress", "isotropic_linear")
         return cls(
             parameters=parameters,
-            def_type=def_type,
+            def_type=require_def_type(def_type, cls.__name__),
             elastic_stress_fun=conventional_elastic_stress_fun(elastic_stress),
         )
 

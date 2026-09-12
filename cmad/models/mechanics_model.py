@@ -15,6 +15,14 @@ from cmad.models.model import Model
 from cmad.typing import CauchyFn, JaxArray, Params, ResidualFn, Scalar, StateList
 
 
+def require_def_type(def_type: int | None, model_name: str) -> int:
+    if def_type is None:
+        raise ValueError(
+            f"{model_name} needs residuals.global residual.def_type",
+        )
+    return def_type
+
+
 class MechanicsModel(Model):
     """Constitutive model whose flux is stress.
 

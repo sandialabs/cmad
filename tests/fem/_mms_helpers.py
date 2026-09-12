@@ -67,6 +67,78 @@ def make_elastic_parameters(kappa: float, mu: float) -> Parameters:
     return Parameters(values, active_flags, transforms)
 
 
+def make_conduction_parameters(
+        k: float, rho: float | None = None, c: float | None = None,
+) -> Parameters:
+    """Build a Parameters tree for ``cmad.models.conduction.Conduction``;
+    without ``rho`` and ``c`` the model is steady."""
+    thermal: dict[str, float] = {"conductivity": k}
+    if rho is not None and c is not None:
+        thermal["density"] = rho
+        thermal["specific heat"] = c
+    values: Params = {"thermal": thermal}
+    active_flags = tree_map(lambda _: True, values)
+    transforms = tree_map(lambda _: None, values)
+    return Parameters(values, active_flags, transforms)
+
+
+def build_heat_mms_callables(
+        T_sym: Any,
+        coord_syms: Sequence[Any],
+        k: float,
+        rho_c: float = 0.0,
+        t_sym: Any = None,
+) -> tuple[
+    Callable[
+        [NDArray[np.floating] | JaxArray, float | JaxArray],
+        NDArray[np.floating] | JaxArray,
+    ],
+    Callable[..., NDArray[np.floating]],
+    Callable[..., NDArray[np.floating]],
+]:
+    """Lambdify ``(source_fn, T_exact, grad_T_exact)`` for the energy balance.
+
+    The source is ``r = rho_c dT/dt - div(k grad T)`` of the manufactured
+    scalar ``T_sym`` (the rate term is zero without ``t_sym``), lambdified
+    into jax as a ``(coords, t)`` callable returning shape ``(1,)``; the
+    exact callables lambdify into numpy, return shapes ``(1,)`` and
+    ``(1, ndims)``, and take the time as an optional second argument.
+    """
+    n = len(coord_syms)
+    grad_T_sym = Matrix([T_sym.diff(s) for s in coord_syms])
+    laplacian = sum(T_sym.diff(s, 2) for s in coord_syms)
+    dT_dt = T_sym.diff(t_sym) if t_sym is not None else 0
+    r_sym = sympy.simplify(rho_c * dT_dt - k * laplacian)
+    args = tuple(coord_syms) + ((t_sym,) if t_sym is not None else ())
+    r_callable = lambdify(args, r_sym, modules="jax")
+    T_callable = lambdify(args, T_sym, modules="numpy")
+    grad_T_callable = lambdify(args, grad_T_sym, modules="numpy")
+
+    def time_args(t: Any) -> tuple[Any, ...]:
+        return (t,) if t_sym is not None else ()
+
+    def source_fn(
+            coords: NDArray[np.floating] | JaxArray,
+            t: float | JaxArray,
+    ) -> NDArray[np.floating] | JaxArray:
+        args = tuple(coords[i] for i in range(n)) + time_args(t)
+        return jnp.asarray(r_callable(*args)).reshape(1)
+
+    def T_exact(
+            coords: NDArray[np.floating], t: float = 0.0,
+    ) -> NDArray[np.floating]:
+        args = tuple(coords[i] for i in range(n)) + time_args(t)
+        return np.asarray(T_callable(*args), dtype=float).reshape(1)
+
+    def grad_T_exact(
+            coords: NDArray[np.floating], t: float = 0.0,
+    ) -> NDArray[np.floating]:
+        args = tuple(coords[i] for i in range(n)) + time_args(t)
+        return np.asarray(grad_T_callable(*args), dtype=float).reshape(1, n)
+
+    return source_fn, T_exact, grad_T_exact
+
+
 def build_mms_callables(
         u_sym: sympy.Matrix,
         coord_syms: Sequence[Any],

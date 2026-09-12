@@ -234,7 +234,7 @@ class Parameters:
                 list[bool],
                 flatten_by_value_size(cast(PyTree, values),
                                       cast(PyTree, active_flags)),
-            )).squeeze()
+            )).reshape(-1)
             self.num_active_params = int(np.sum(self._flat_active_flags))
             self.active_idx = \
                 np.arange(self.num_params)[self._flat_active_flags]

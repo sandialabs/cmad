@@ -90,13 +90,14 @@ class Model(ABC):
             cls,
             model_section: dict[str, Any],
             parameters: Parameters,
-            def_type: int,
+            def_type: int | None,
     ) -> "Model":
         """Build a :class:`Model` from its deck section and ``def_type``.
 
         ``def_type`` is passed in by the deck builder rather than read from
         the section: for FE problems it is the single source of truth on
-        the global residual; for material-point problems it comes from the
+        the global residual, ``None`` when that section names none; for
+        material point problems it comes from the
         model section. Subclasses translate the remaining deck fields
         (``uniaxial_stress_idx``, ``elastic_stress``, ...) into constructor
         kwargs. The base stub exists so the registry's ``type[Model]``

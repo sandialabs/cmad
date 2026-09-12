@@ -10,9 +10,10 @@ from jax import numpy as jnp
 
 from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.global_residuals.modes import GlobalResidualMode
-from cmad.models.global_fields import GlobalFieldsAtPoint
+from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.kinematics import cofactor
 from cmad.models.mechanics_model import MechanicsModel
+from cmad.models.thermal_model import ThermalModel
 from cmad.typing import JaxArray, Params, Scalar, StateList
 
 
@@ -118,3 +119,41 @@ def pressure_equation(
         stab_term = tau * (shapes_p.grad_N @ grad_p)
     R_p = (-(p + hydro) / psf * shapes_p.N - stab_term) * w * dv
     return R_p[:, None]
+
+
+def _heat_flux_by_mode(
+        xi: StateList,
+        xi_prev: StateList,
+        params: Params,
+        U_ip: GlobalFieldsAtPoint,
+        U_ip_prev: GlobalFieldsAtPoint,
+        model: ThermalModel,
+        mode: GlobalResidualMode,
+) -> JaxArray:
+    """The model's heat flux, closed-form or from the local state."""
+    if mode == GlobalResidualMode.CLOSED_FORM:
+        return model.heat_flux_closed_form(params, U_ip, U_ip_prev)
+    return model.heat_flux(xi, xi_prev, params, U_ip, U_ip_prev)
+
+
+def energy_balance(
+        xi: StateList,
+        xi_prev: StateList,
+        params: Params,
+        U_ip: GlobalFieldsAtPoint,
+        U_ip_prev: GlobalFieldsAtPoint,
+        model: ThermalModel,
+        mode: GlobalResidualMode,
+        shapes_T: ShapeFunctionsAtIP,
+        w: Scalar,
+        dv: Scalar,
+        step_time: StepTime,
+) -> JaxArray:
+    """Residual block of the energy balance, shape ``(n_basis_T, 1)``:
+    ``N rho c (T - T_prev) / dt - grad_N . q`` times ``w dv``, with the
+    heat capacity rate and the heat flux ``q`` from the model
+    (closed-form or from the local state per ``mode``)."""
+    q = _heat_flux_by_mode(xi, xi_prev, params, U_ip, U_ip_prev, model, mode)
+    c_rate = model.heat_capacity_rate(params, U_ip, U_ip_prev, step_time)
+    R = (shapes_T.N * c_rate - shapes_T.grad_N @ q) * w * dv
+    return R[:, None]

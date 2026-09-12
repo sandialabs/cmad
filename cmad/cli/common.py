@@ -431,7 +431,10 @@ def build_fe_problem_from_deck(
                 f"'{ls_type}' with preconditioner '{precon_type}'",
             )
 
-    def_type = DefType[gr_section["def_type"].upper()]
+    def_type_name = gr_section.get("def_type")
+    def_type = (
+        DefType[def_type_name.upper()] if def_type_name is not None else None
+    )
     local_section = resolved["residuals"]["local residual"]
     models_by_block = _build_models_by_block(local_section, mesh, def_type)
     modes_by_block = {
@@ -636,7 +639,7 @@ def _quad_rule(
 
 
 def _build_models_by_block(
-        local_section: dict[str, Any], mesh: Any, def_type: int,
+        local_section: dict[str, Any], mesh: Any, def_type: int | None,
 ) -> dict[str, Model]:
     materials = local_section["materials"]
     mesh_blocks = set(mesh.element_blocks.keys())

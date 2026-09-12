@@ -16,7 +16,7 @@ from cmad.models.elastic_stress import (
 from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F, off_axis_idx
-from cmad.models.mechanics_model import MechanicsModel
+from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
 from cmad.models.var_types import (
     VarType,
@@ -230,11 +230,11 @@ class SmallElasticPlastic(MechanicsModel):
             cls,
             model_section: dict[str, Any],
             parameters: Parameters,
-            def_type: int,
+            def_type: int | None,
     ) -> "SmallElasticPlastic":
         return cls(
             parameters=parameters,
-            def_type=def_type,
+            def_type=require_def_type(def_type, cls.__name__),
             uniaxial_stress_idx=model_section.get("uniaxial_stress_idx", 0),
         )
 

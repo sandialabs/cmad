@@ -31,7 +31,7 @@ from cmad.models.kinematics import (
     polar_rotation,
     unrotated_rate_of_deformation,
 )
-from cmad.models.mechanics_model import MechanicsModel
+from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
 from cmad.models.var_types import (
     VarType,
@@ -186,9 +186,12 @@ class HypoElasticPlastic(MechanicsModel):
             cls,
             model_section: dict[str, Any],
             parameters: Parameters,
-            def_type: int,
+            def_type: int | None,
     ) -> "HypoElasticPlastic":
-        return cls(parameters=parameters, def_type=def_type)
+        return cls(
+            parameters=parameters,
+            def_type=require_def_type(def_type, cls.__name__),
+        )
 
     def derived_output_field_names(self) -> list[str]:
         return ["cauchy"]

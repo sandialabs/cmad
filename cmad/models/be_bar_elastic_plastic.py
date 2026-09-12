@@ -28,7 +28,7 @@ from cmad.models.elastic_stress import two_mu_scale_factor
 from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import gather_F
-from cmad.models.mechanics_model import MechanicsModel
+from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
 from cmad.models.var_types import (
     VarType,
@@ -254,9 +254,12 @@ class BeBarElasticPlastic(MechanicsModel):
             cls,
             model_section: dict[str, Any],
             parameters: Parameters,
-            def_type: int,
+            def_type: int | None,
     ) -> "BeBarElasticPlastic":
-        return cls(parameters=parameters, def_type=def_type)
+        return cls(
+            parameters=parameters,
+            def_type=require_def_type(def_type, cls.__name__),
+        )
 
     def derived_output_field_names(self) -> list[str]:
         return ["cauchy"]
