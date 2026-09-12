@@ -59,11 +59,11 @@ from typing import TypeAlias
 
 import jax.numpy as jnp
 import numpy as np
-from jax import vmap
+from jax import jacfwd, vmap
 from jax.tree_util import register_pytree_node_class
 from numpy.typing import NDArray
 
-from cmad.fem.bcs import NeumannBC
+from cmad.fem.bcs import NeumannBC, RobinBC
 from cmad.fem.dof import GlobalDofMap
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.finite_element import EntityType, FiniteElement
@@ -121,23 +121,30 @@ class NeumannSidePerElem:
     - ``eq_flat``: ``(n_side_elems, num_basis_fns * num_components)`` —
       flat global equation indices the per-element side residual
       scatters into.
+    - ``k_scatter``: ``(n_side_elems, (num_basis_fns * num_components)^2)``
+      positions in the deduped COO pattern of every pair of the element's
+      equation numbers, where a Robin condition's side tangent is added;
+      ``None`` for a Neumann condition, which has no tangent.
     """
     dA: JaxArray
     coords_ip: JaxArray
     eq_flat: JaxArray
+    k_scatter: JaxArray | None = None
 
     def tree_flatten(
             self,
-    ) -> tuple[tuple[JaxArray, JaxArray, JaxArray], None]:
-        return (self.dA, self.coords_ip, self.eq_flat), None
+    ) -> tuple[tuple[JaxArray, JaxArray, JaxArray, JaxArray | None], None]:
+        return (self.dA, self.coords_ip, self.eq_flat, self.k_scatter), None
 
     @classmethod
     def tree_unflatten(
             cls, aux_data: None,
-            children: tuple[JaxArray, JaxArray, JaxArray],
+            children: tuple[JaxArray, JaxArray, JaxArray, JaxArray | None],
     ) -> "NeumannSidePerElem":
-        dA, coords_ip, eq_flat = children
-        return cls(dA=dA, coords_ip=coords_ip, eq_flat=eq_flat)
+        dA, coords_ip, eq_flat, k_scatter = children
+        return cls(
+            dA=dA, coords_ip=coords_ip, eq_flat=eq_flat, k_scatter=k_scatter,
+        )
 
 
 @register_pytree_node_class
@@ -214,6 +221,119 @@ class ResolvedNeumannBC:
     )
 
 
+@dataclass(frozen=True)
+class ResolvedRobinBC:
+    """Build-time-resolved data for one :class:`RobinBC`: the side
+    geometry fields of :class:`ResolvedNeumannBC` and the flux callable."""
+
+    field_idx: int
+    num_components: int
+    finite_element: FiniteElement
+    elem_ids_by_side: dict[
+        tuple[ElementFamily, int], NDArray[np.intp]
+    ]
+    flux: Callable[[JaxArray, JaxArray, Scalar], JaxArray]
+
+
+def _resolve_side_groups(
+        mesh: Mesh,
+        dof_map: GlobalDofMap,
+        field_name: str,
+        sideset_names: Sequence[str],
+        label: str,
+) -> tuple[
+    int, int, FiniteElement,
+    dict[tuple[ElementFamily, int], NDArray[np.intp]],
+]:
+    """The side geometry of one surface BC: the field index and component
+    count, the field's FE (VERTEX only, one DOF per vertex), and the
+    element ids of every listed sideset grouped by ``(family,
+    local_side_id)``."""
+    name_to_field_idx = {
+        fl.name: i for i, fl in enumerate(dof_map.field_layouts)
+    }
+    if field_name not in name_to_field_idx:
+        raise ValueError(
+            f"{label}.field_name='{field_name}' "
+            f"has no matching GlobalFieldLayout (known: "
+            f"{sorted(name_to_field_idx)})"
+        )
+    field_idx = name_to_field_idx[field_name]
+    layout = dof_map.field_layouts[field_idx]
+    fe = layout.finite_element
+
+    non_vertex = sorted(
+        et.name
+        for et, count in fe.dofs_per_entity.items()
+        if et != EntityType.VERTEX and count > 0
+    )
+    if non_vertex:
+        raise NotImplementedError(
+            f"{label} on field '{field_name}' "
+            f"with FE '{fe.name}' has DOFs on {non_vertex} "
+            "entities; side resolution requires VERTEX-only "
+            "placement."
+        )
+    vertex_count = fe.dofs_per_entity.get(EntityType.VERTEX, 0)
+    if vertex_count != 1:
+        raise NotImplementedError(
+            f"{label} on field '{field_name}' "
+            f"with FE '{fe.name}' has dofs_per_entity[VERTEX]"
+            f"={vertex_count}; side resolution requires exactly "
+            "1 DOF per vertex."
+        )
+
+    num_components = int(dof_map.num_dofs_per_basis_fn[field_idx])
+
+    known_sidesets = sorted(mesh.side_sets)
+    elem_ids_by_side_lists: dict[
+        tuple[ElementFamily, int], list[int]
+    ] = {}
+    for sideset_name in sideset_names:
+        if sideset_name not in mesh.side_sets:
+            raise ValueError(
+                f"{label} sideset_name="
+                f"'{sideset_name}' not in mesh.side_sets "
+                f"(known: {known_sidesets})"
+            )
+        pairs = mesh.side_sets[sideset_name]
+        for elem_id, local_side_id in pairs:
+            key = (mesh.element_family, int(local_side_id))
+            elem_ids_by_side_lists.setdefault(key, []).append(
+                int(elem_id),
+            )
+    elem_ids_by_side = {
+        k: np.unique(np.asarray(v, dtype=np.intp))
+        for k, v in elem_ids_by_side_lists.items()
+    }
+    return field_idx, num_components, fe, elem_ids_by_side
+
+
+def resolve_robin_bcs(
+        mesh: Mesh,
+        dof_map: GlobalDofMap,
+        robin_bcs: Sequence[RobinBC],
+) -> list[ResolvedRobinBC]:
+    """Resolve a list of RobinBCs against a mesh + dof_map, the side
+    geometry as for :func:`resolve_neumann_bcs`."""
+    resolved: list[ResolvedRobinBC] = []
+    for bc_idx, bc in enumerate(robin_bcs):
+        field_idx, num_components, fe, elem_ids_by_side = (
+            _resolve_side_groups(
+                mesh, dof_map, bc.field_name, bc.sideset_names,
+                f"RobinBC[{bc_idx}]",
+            )
+        )
+        resolved.append(ResolvedRobinBC(
+            field_idx=field_idx,
+            num_components=num_components,
+            finite_element=fe,
+            elem_ids_by_side=elem_ids_by_side,
+            flux=bc.flux,
+        ))
+    return resolved
+
+
 def resolve_neumann_bcs(
         mesh: Mesh,
         dof_map: GlobalDofMap,
@@ -229,65 +349,14 @@ def resolve_neumann_bcs(
     sequence-form values to ndarrays. Sequence values must have
     length equal to the resolved field's component count.
     """
-    name_to_field_idx = {
-        fl.name: i for i, fl in enumerate(dof_map.field_layouts)
-    }
     resolved: list[ResolvedNeumannBC] = []
     for nbc_idx, bc in enumerate(neumann_bcs):
-        if bc.field_name not in name_to_field_idx:
-            raise ValueError(
-                f"NeumannBC[{nbc_idx}].field_name='{bc.field_name}' "
-                f"has no matching GlobalFieldLayout (known: "
-                f"{sorted(name_to_field_idx)})"
+        field_idx, num_components, fe, elem_ids_by_side = (
+            _resolve_side_groups(
+                mesh, dof_map, bc.field_name, bc.sideset_names,
+                f"NeumannBC[{nbc_idx}]",
             )
-        field_idx = name_to_field_idx[bc.field_name]
-        layout = dof_map.field_layouts[field_idx]
-        fe = layout.finite_element
-
-        non_vertex = sorted(
-            et.name
-            for et, count in fe.dofs_per_entity.items()
-            if et != EntityType.VERTEX and count > 0
         )
-        if non_vertex:
-            raise NotImplementedError(
-                f"NeumannBC[{nbc_idx}] on field '{bc.field_name}' "
-                f"with FE '{fe.name}' has DOFs on {non_vertex} "
-                "entities; side resolution requires VERTEX-only "
-                "placement."
-            )
-        vertex_count = fe.dofs_per_entity.get(EntityType.VERTEX, 0)
-        if vertex_count != 1:
-            raise NotImplementedError(
-                f"NeumannBC[{nbc_idx}] on field '{bc.field_name}' "
-                f"with FE '{fe.name}' has dofs_per_entity[VERTEX]"
-                f"={vertex_count}; side resolution requires exactly "
-                "1 DOF per vertex."
-            )
-
-        num_components = int(dof_map.num_dofs_per_basis_fn[field_idx])
-
-        known_sidesets = sorted(mesh.side_sets)
-        elem_ids_by_side_lists: dict[
-            tuple[ElementFamily, int], list[int]
-        ] = {}
-        for sideset_name in bc.sideset_names:
-            if sideset_name not in mesh.side_sets:
-                raise ValueError(
-                    f"NeumannBC[{nbc_idx}] sideset_name="
-                    f"'{sideset_name}' not in mesh.side_sets "
-                    f"(known: {known_sidesets})"
-                )
-            pairs = mesh.side_sets[sideset_name]
-            for elem_id, local_side_id in pairs:
-                key = (mesh.element_family, int(local_side_id))
-                elem_ids_by_side_lists.setdefault(key, []).append(
-                    int(elem_id),
-                )
-        elem_ids_by_side = {
-            k: np.unique(np.asarray(v, dtype=np.intp))
-            for k, v in elem_ids_by_side_lists.items()
-        }
 
         values: (
             NDArray[np.floating]
@@ -322,9 +391,10 @@ def resolve_neumann_bcs(
 def build_neumann_side_arrays(
         mesh: Mesh,
         dof_map: GlobalDofMap,
-        resolved_neumann_bcs: Sequence[ResolvedNeumannBC],
+        resolved_neumann_bcs: Sequence[ResolvedNeumannBC | ResolvedRobinBC],
         side_quadrature: dict[ElementFamily, QuadratureRule],
         thickness: float | None = None,
+        coo_pattern: tuple[NDArray[np.intp], NDArray[np.intp]] | None = None,
 ) -> NeumannSideArrays:
     """Precompute the per-NBC :class:`NeumannSideGroup` cache.
 
@@ -338,9 +408,20 @@ def build_neumann_side_arrays(
     ``thickness`` for a 2D edge); the lift's orientation is preserved in
     ``(origin, tangents)`` for follower-load extensions that consume the
     signed normal.
+
+    With ``coo_pattern``, the deduped ``(rows, cols)`` of the assembled
+    tangent, each group also carries ``k_scatter``, the positions of
+    every pair of the element's equation numbers in that pattern, for a
+    Robin condition's side tangent.
     """
     if not resolved_neumann_bcs:
         return ()
+    if coo_pattern is not None:
+        coo_rows, coo_cols = coo_pattern
+        n_dofs = dof_map.num_total_dofs
+        pattern_keys = (
+            coo_rows.astype(np.int64) * n_dofs + coo_cols.astype(np.int64)
+        )
     if mesh.geometric_finite_element is None:
         raise ValueError(
             "Mesh.geometric_finite_element is required for "
@@ -410,11 +491,27 @@ def build_neumann_side_arrays(
                 + connectivity_block[:, :, None] * num_components
                 + k_arr[None, None, :]
             )
-            eq_flat = jnp.asarray(eq_3d.reshape(n_elems, -1))
+            eq_per_elem = eq_3d.reshape(n_elems, -1).astype(np.int64)
+            eq_flat = jnp.asarray(eq_per_elem)
+
+            k_scatter = None
+            if coo_pattern is not None:
+                pair_keys = (
+                    eq_per_elem[:, :, None] * n_dofs
+                    + eq_per_elem[:, None, :]
+                ).reshape(n_elems, -1)
+                positions = np.searchsorted(pattern_keys, pair_keys)
+                if not np.array_equal(pattern_keys[positions], pair_keys):
+                    raise ValueError(
+                        "a side's equation pair is missing from the "
+                        "assembled tangent's pattern"
+                    )
+                k_scatter = jnp.asarray(positions)
 
             group_arrays[(family, local_side_id)] = NeumannSideGroup(
                 per_elem=NeumannSidePerElem(
                     dA=dA, coords_ip=coords_ip, eq_flat=eq_flat,
+                    k_scatter=k_scatter,
                 ),
                 shared=NeumannSideShared(N_side=N_side, side_w=side_w),
             )
@@ -516,6 +613,113 @@ def assemble_side_neumann(
             )
 
     return R_neumann
+
+
+def per_side_robin_R_and_K(
+        U_elem_flat: JaxArray,
+        dA_elem: JaxArray,
+        coords_ip_elem: JaxArray,
+        N_side: JaxArray,
+        side_w: JaxArray,
+        side_basis_fns: JaxArray,
+        num_basis_fns: int,
+        num_components: int,
+        flux_fn: Callable[[JaxArray, JaxArray, Scalar], JaxArray],
+        t: Scalar,
+) -> tuple[JaxArray, JaxArray]:
+    """Per-element side residual and tangent of a Robin condition.
+
+    ``U_elem_flat`` holds the element's field values in ``eq_flat``
+    order. The residual adds ``N flux(value, x, t) dA w`` over the side
+    points to the side basis functions (an outward flux, so it is added
+    where a prescribed inward flux is subtracted); the tangent is its
+    derivative in ``U_elem_flat`` by ``jacfwd``, shaped
+    ``(num_basis_fns * num_components,) * 2`` in the same order.
+    """
+    def residual(U_flat: JaxArray) -> JaxArray:
+        U_side = U_flat.reshape(num_basis_fns, num_components)[side_basis_fns]
+
+        def per_ip(N_side_ip, w_ip, dA_ip, coords_ip_ip):
+            value = N_side_ip @ U_side
+            q = jnp.asarray(flux_fn(value, coords_ip_ip, t)).reshape(
+                num_components,
+            )
+            return jnp.einsum("a,c->ac", N_side_ip, q) * dA_ip * w_ip
+
+        contrib_total = vmap(per_ip)(
+            N_side, side_w, dA_elem, coords_ip_elem,
+        ).sum(axis=0)
+        R_elem = jnp.zeros((num_basis_fns, num_components))
+        return R_elem.at[side_basis_fns].add(contrib_total)
+
+    R_elem = residual(U_elem_flat)
+    K_elem = jacfwd(residual)(U_elem_flat).reshape(
+        num_basis_fns * num_components, -1,
+    )
+    return R_elem, K_elem
+
+
+def assemble_side_robin(
+        dof_map: GlobalDofMap,
+        robin_side_arrays: NeumannSideArrays,
+        resolved_robin_bcs: Sequence[ResolvedRobinBC],
+        U_global: NDArray[np.floating] | JaxArray,
+        t: Scalar,
+) -> tuple[JaxArray, list[tuple[JaxArray, JaxArray]]]:
+    """The Robin conditions' residual and tangent data.
+
+    Returns the residual contribution as a flat vector of length
+    ``dof_map.num_total_dofs`` and, per side group, the pair
+    ``(k_scatter, K_per_elem)``: the pattern positions
+    ``(n_side_elems, m * m)`` and the per element side tangents
+    ``(n_side_elems, m, m)`` with ``m = num_basis_fns * num_components``,
+    for the caller to add into the assembled tangent data or into the
+    element tangent blocks. Both are empty (a zero vector, an empty
+    list) without Robin conditions.
+    """
+    n_dofs = dof_map.num_total_dofs
+    R_robin = jnp.zeros(n_dofs)
+    tangents: list[tuple[JaxArray, JaxArray]] = []
+    if not resolved_robin_bcs:
+        return R_robin, tangents
+    U_jax = jnp.asarray(U_global)
+
+    for bc, bc_arrays in zip(
+            resolved_robin_bcs, robin_side_arrays, strict=True,
+    ):
+        fe = bc.finite_element
+        num_basis_fns = fe.num_dofs_per_element
+        num_components = bc.num_components
+
+        for (_family, local_side_id), group in bc_arrays.items():
+            side_basis_fns = jnp.asarray(
+                fe.side_basis_fns(local_side_id), dtype=jnp.int32,
+            )
+            shared = group.shared
+            per_elem = group.per_elem
+            assert per_elem.k_scatter is not None
+
+            side_kernel = partial(
+                per_side_robin_R_and_K,
+                N_side=shared.N_side,
+                side_w=shared.side_w,
+                side_basis_fns=side_basis_fns,
+                num_basis_fns=num_basis_fns,
+                num_components=num_components,
+                flux_fn=bc.flux,
+                t=t,
+            )
+            R_per_elem, K_per_elem = vmap(side_kernel)(
+                U_jax[per_elem.eq_flat], per_elem.dA, per_elem.coords_ip,
+            )
+
+            n_elems = per_elem.dA.shape[0]
+            R_robin = R_robin.at[per_elem.eq_flat.ravel()].add(
+                R_per_elem.reshape(n_elems, -1).ravel(),
+            )
+            tangents.append((per_elem.k_scatter, K_per_elem))
+
+    return R_robin, tangents
 
 
 def _values_fn_for(

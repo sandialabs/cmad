@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.finite_element import EntityType
-from cmad.fem.neumann import assemble_side_neumann
+from cmad.fem.neumann import assemble_side_neumann, assemble_side_robin
 from cmad.fem.precompute import (
     BlockIPGeometryPerElem,
     BlockIPGeometryShared,
@@ -955,11 +955,23 @@ def assemble_global(
         fe_problem.resolved_neumann_bcs,
         step_time.t,
     )
+    R_robin, robin_tangents = assemble_side_robin(
+        fe_problem.dof_map,
+        fe_arrays.robin_side_arrays,
+        fe_problem.resolved_robin_bcs,
+        U_global,
+        step_time.t,
+    )
+    R_global = R_global + R_robin
 
     vals = jnp.concatenate(vals_all)
     unique_data = jnp.zeros(
         fe_arrays.coo_rows.shape[0], dtype=vals.dtype,
     ).at[fe_arrays.coo_dedup_scatter].add(vals)
+    for k_scatter, K_per_elem in robin_tangents:
+        unique_data = unique_data.at[k_scatter.ravel()].add(
+            K_per_elem.ravel(),
+        )
     K = BCOO(
         (unique_data,
          jnp.stack([fe_arrays.coo_rows, fe_arrays.coo_cols], axis=-1)),
@@ -1028,6 +1040,22 @@ def assemble_element_tangent(
         fe_problem.resolved_neumann_bcs,
         step_time.t,
     )
+    R_robin, robin_tangents = assemble_side_robin(
+        fe_problem.dof_map,
+        fe_arrays.robin_side_arrays,
+        fe_problem.resolved_robin_bcs,
+        U_global,
+        step_time.t,
+    )
+    R_global = R_global + R_robin
+    for (_, K_per_elem), entries in zip(
+            robin_tangents, fe_problem.robin_element_blocks, strict=True,
+    ):
+        for block_name, r, group_pos, local_idx in entries:
+            K_blocks = K_elem_by_block[block_name]
+            K_blocks[r][r] = K_blocks[r][r].at[local_idx].add(
+                K_per_elem[group_pos],
+            )
     return K_elem_by_block, R_global, xi_solved_by_block, residual_scale
 
 
@@ -1053,14 +1081,11 @@ def assemble_global_residual(
     backtracks.
 
     Such a QoI reads this ``R`` at the Dirichlet dofs, where it is the
-    consistent-nodal reaction -- the internal force minus the volumetric
-    body force lumped to those nodes. The surface flux never enters a
-    reaction: a dof is either Dirichlet-constrained or Neumann-loaded, never
-    both, so :func:`cmad.fem.neumann.assemble_side_neumann` writes only the
-    Neumann dofs and leaves the Dirichlet dofs untouched. It is added here
-    solely so the returned vector matches ``assemble_global``'s ``R`` value
-    for value. Walks each block via :func:`assemble_element_block_residual`
-    (CLOSED_FORM / COUPLED dispatch).
+    consistent nodal reaction: the internal force minus the volumetric
+    source lumped to those nodes and minus the surface flux a neighboring
+    loaded side puts on them (the constraint carries that load as well). Walks
+    each block via :func:`assemble_element_block_residual` (CLOSED_FORM /
+    COUPLED dispatch).
     """
     xi_prev = xi_prev_by_block or {}
     n_dofs = fe_problem.dof_map.num_total_dofs
@@ -1079,7 +1104,14 @@ def assemble_global_residual(
         fe_problem.resolved_neumann_bcs,
         step_time.t,
     )
-    return R_global
+    R_robin, _ = assemble_side_robin(
+        fe_problem.dof_map,
+        fe_arrays.robin_side_arrays,
+        fe_problem.resolved_robin_bcs,
+        U_global,
+        step_time.t,
+    )
+    return R_global + R_robin
 
 
 def assembled_coo_indices(

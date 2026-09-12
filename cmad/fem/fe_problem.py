@@ -8,11 +8,16 @@ from jax.flatten_util import ravel_pytree
 from jax.sharding import Mesh as DeviceMesh
 from numpy.typing import NDArray
 
-from cmad.fem.bcs import NeumannBC
+from cmad.fem.bcs import NeumannBC, RobinBC
 from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.mesh import Mesh
-from cmad.fem.neumann import ResolvedNeumannBC, resolve_neumann_bcs
+from cmad.fem.neumann import (
+    ResolvedNeumannBC,
+    ResolvedRobinBC,
+    resolve_neumann_bcs,
+    resolve_robin_bcs,
+)
 from cmad.fem.precompute import (
     BlockIPGeometryCache,
     precompute_block_geometry,
@@ -84,6 +89,14 @@ class FEProblem:
     ``(family, local_side_id) -> elem_ids`` groups plus
     materialized values — which the surface-scatter step in
     :func:`cmad.fem.assembly.assemble_global` consumes per call.
+    ``robin_bcs`` are the surface fluxes that depend on the field on the
+    side (:class:`cmad.fem.bcs.RobinBC`), resolved the same way into
+    ``resolved_robin_bcs``. Their tangent is added to the tangent on both
+    paths: the assembled one at positions precomputed with the side
+    arrays, the element one into the blocks of the elements that own
+    the side, which ``robin_element_blocks`` names per side group as
+    ``(block name, residual index, positions in the group, indices in
+    the block)``.
 
     ``field_layouts_per_block`` and ``field_idx_per_block`` resolve
     the ``gr.var_names[r]`` ↔ ``dof_map.field_layouts`` dispatch once
@@ -150,6 +163,7 @@ class FEProblem:
     assembly_quadrature: dict[ElementFamily, QuadratureRule]
     neumann_bcs: Sequence[NeumannBC]
     side_quadrature: dict[ElementFamily, QuadratureRule]
+    robin_bcs: Sequence[RobinBC] = ()
     thickness: float | None = None
     num_devices: int | None = None
 
@@ -162,6 +176,12 @@ class FEProblem:
     resolved_neumann_bcs: list[ResolvedNeumannBC] = field(
         init=False, default_factory=list,
     )
+    resolved_robin_bcs: list[ResolvedRobinBC] = field(
+        init=False, default_factory=list,
+    )
+    robin_element_blocks: list[
+        list[tuple[str, int, NDArray[np.intp], NDArray[np.intp]]]
+    ] = field(init=False, default_factory=list)
     unravel_xi_by_block: dict[str, Callable[[JaxArray], StateList]] = field(
         init=False, default_factory=dict,
     )
@@ -223,6 +243,42 @@ class FEProblem:
             self.mesh, self.dof_map, self.neumann_bcs,
         )
         object.__setattr__(self, "resolved_neumann_bcs", resolved)
+        resolved_robin = resolve_robin_bcs(
+            self.mesh, self.dof_map, self.robin_bcs,
+        )
+        object.__setattr__(self, "resolved_robin_bcs", resolved_robin)
+
+        # Per side group, in the order assemble_side_robin walks them:
+        # the element block of each side element and its index there.
+        n_elems_total = self.mesh.connectivity.shape[0]
+        block_of_elem = np.full(n_elems_total, -1, dtype=np.intp)
+        local_of_elem = np.full(n_elems_total, -1, dtype=np.intp)
+        block_names = list(self.mesh.element_blocks)
+        for b, block_name in enumerate(block_names):
+            elems = np.asarray(self.mesh.element_blocks[block_name])
+            block_of_elem[elems] = b
+            local_of_elem[elems] = np.arange(elems.shape[0])
+        robin_element_blocks: list[
+            list[tuple[str, int, NDArray[np.intp], NDArray[np.intp]]]
+        ] = []
+        for bc in resolved_robin:
+            r = idxs.index(bc.field_idx)
+            for elem_ids in bc.elem_ids_by_side.values():
+                entries: list[
+                    tuple[str, int, NDArray[np.intp], NDArray[np.intp]]
+                ] = []
+                for b in np.unique(block_of_elem[elem_ids]):
+                    group_pos = np.flatnonzero(
+                        block_of_elem[elem_ids] == b,
+                    ).astype(np.intp)
+                    entries.append((
+                        block_names[int(b)], r, group_pos,
+                        local_of_elem[elem_ids[group_pos]],
+                    ))
+                robin_element_blocks.append(entries)
+        object.__setattr__(
+            self, "robin_element_blocks", robin_element_blocks,
+        )
 
         unravel_xi_by_block: dict[
             str, Callable[[JaxArray], StateList],
@@ -451,6 +507,7 @@ def build_fe_problem(
         local_newton_settings: dict[str, Any] | None = None,
         thickness: float | None = None,
         num_devices: int | None = None,
+        robin_bcs: Sequence[RobinBC] = (),
 ) -> FEProblem:
     """Validate FE inputs and build an immutable :class:`FEProblem`.
 
@@ -477,10 +534,10 @@ def build_fe_problem(
     outside a jit context are silently skipped — the trace-time error
     will still catch the shape mismatch.
 
-    ``neumann_bcs`` is forwarded to :func:`FEProblem` for resolution
-    in :meth:`__post_init__`; resolution failures (unknown field /
-    sideset, non-VERTEX FE, sequence-values length mismatch) raise
-    eagerly with diagnostic messages from
+    ``neumann_bcs`` and ``robin_bcs`` are forwarded to :func:`FEProblem`
+    for resolution in :meth:`__post_init__`; resolution failures (unknown
+    field / sideset, non-VERTEX FE, sequence-values length mismatch)
+    raise eagerly with diagnostic messages from
     :func:`cmad.fem.neumann.resolve_neumann_bcs`.
     """
     if modes_by_block is None:
@@ -553,6 +610,7 @@ def build_fe_problem(
         assembly_quadrature=assembly_quadrature,
         neumann_bcs=neumann_bcs,
         side_quadrature=side_quadrature,
+        robin_bcs=robin_bcs,
         thickness=thickness,
         num_devices=num_devices,
     )

@@ -54,6 +54,7 @@ _FEKernelArraysChildren = tuple[
     BlockSparsity | None,
     JaxArray,
     NeumannSideArrays,
+    NeumannSideArrays,
     DBCArrays,
 ]
 
@@ -104,6 +105,8 @@ class FEKernelArrays:
       data (surface geometry, side shape values, scatter indices),
       keyed per side group; see
       :data:`cmad.fem.neumann.NeumannSideArrays`.
+    - ``robin_side_arrays``: the same per Robin condition, with the
+      tangent's positions in the deduped pattern.
     - ``dbc_arrays``: the per-DirichletBC prescribed-value arrays —
       flat-vector scatter positions and boundary-vertex coordinates;
       see :data:`cmad.fem.dof.DBCArrays`.
@@ -118,6 +121,7 @@ class FEKernelArrays:
     block_sparsity: BlockSparsity | None
     prescribed_indices: JaxArray
     neumann_side_arrays: NeumannSideArrays
+    robin_side_arrays: NeumannSideArrays
     dbc_arrays: DBCArrays
 
     def tree_flatten(self) -> tuple[_FEKernelArraysChildren, None]:
@@ -132,6 +136,7 @@ class FEKernelArrays:
             self.block_sparsity,
             self.prescribed_indices,
             self.neumann_side_arrays,
+            self.robin_side_arrays,
             self.dbc_arrays,
         )
         return children, None
@@ -142,7 +147,8 @@ class FEKernelArrays:
     ) -> FEKernelArrays:
         (u_gather_eq_by_block, r_scatter_eq_by_block, coo_rows, coo_cols,
          coo_dedup_scatter, geometry_cache, embedded_sparsity, block_sparsity,
-         prescribed_indices, neumann_side_arrays, dbc_arrays) = children
+         prescribed_indices, neumann_side_arrays, robin_side_arrays,
+         dbc_arrays) = children
         return cls(
             u_gather_eq_by_block=u_gather_eq_by_block,
             r_scatter_eq_by_block=r_scatter_eq_by_block,
@@ -154,6 +160,7 @@ class FEKernelArrays:
             block_sparsity=block_sparsity,
             prescribed_indices=prescribed_indices,
             neumann_side_arrays=neumann_side_arrays,
+            robin_side_arrays=robin_side_arrays,
             dbc_arrays=dbc_arrays,
         )
 
@@ -247,6 +254,11 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
         mesh, dof_map, fe_problem.resolved_neumann_bcs,
         fe_problem.side_quadrature, fe_problem.thickness,
     )
+    robin_side_arrays = build_neumann_side_arrays(
+        mesh, dof_map, fe_problem.resolved_robin_bcs,
+        fe_problem.side_quadrature, fe_problem.thickness,
+        coo_pattern=(coo_rows, coo_cols),
+    )
     dbc_arrays = build_dbc_arrays(dof_map)
 
     return FEKernelArrays(
@@ -260,5 +272,6 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
         block_sparsity=fe_problem.block_sparsity,
         prescribed_indices=jnp.asarray(dof_map.prescribed_indices),
         neumann_side_arrays=neumann_side_arrays,
+        robin_side_arrays=robin_side_arrays,
         dbc_arrays=dbc_arrays,
     )

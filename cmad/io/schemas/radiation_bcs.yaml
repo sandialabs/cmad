@@ -1,0 +1,23 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+additionalProperties: false
+properties:
+  stefan boltzmann constant:
+    type: number
+    exclusiveMinimum: 0
+  expression:
+    type: object
+    additionalProperties:
+      type: array
+      minItems: 4
+      maxItems: 4
+      prefixItems:
+        - type: string
+        - type: string
+        - oneOf:
+            - type: number
+            - type: string
+        - oneOf:
+            - type: number
+            - type: string
+      items: false

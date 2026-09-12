@@ -23,6 +23,7 @@ from numpy.typing import NDArray
 from cmad.fem.bcs import (
     DirichletBC,
     NeumannBC,
+    RobinBC,
     make_nodal_field_values,
 )
 from cmad.fem.dof import (
@@ -470,6 +471,9 @@ def build_fe_problem_from_deck(
     neumann_bcs = _build_neumann_bcs(
         resolved.get("surface flux bcs"), gr,
     )
+    robin_bcs = _build_robin_bcs(
+        resolved.get("convection bcs"), resolved.get("radiation bcs"), gr,
+    )
     forcing_fns = _build_forcing_fns(resolved.get("volumetric sources"), gr)
 
     assembly_quadrature, side_quadrature = _build_quadrature_overrides(
@@ -506,6 +510,7 @@ def build_fe_problem_from_deck(
         assembly_quadrature=assembly_quadrature,
         neumann_bcs=neumann_bcs,
         side_quadrature=side_quadrature,
+        robin_bcs=robin_bcs,
         print_local_convergence=bool(
             local_section.get("print convergence", False),
         ),
@@ -864,6 +869,95 @@ def _build_neumann_bcs(
             values=_make_nbc_value_callable(component_fns),
         ))
     return bcs
+
+
+def _build_robin_bcs(
+        convection_section: dict[str, Any] | None,
+        radiation_section: dict[str, Any] | None,
+        gr: GlobalResidual,
+) -> list[RobinBC]:
+    """The Robin conditions of the ``convection bcs`` and ``radiation bcs``
+    sections, on a scalar field: ``h (T - T_inf)`` and
+    ``emissivity sigma_B (T^4 - T_inf^4)`` as outward fluxes, with ``h``,
+    ``emissivity``, and ``T_inf`` numbers or expressions in ``x``, ``y``,
+    ``z``, and ``t``."""
+    bcs: list[RobinBC] = []
+    for entry_name, entry in (convection_section or {}).get(
+            "expression", {}).items():
+        where = f"convection bcs.expression.{entry_name}"
+        resid_name, sideset, h_expr, T_inf_expr = entry
+        r = _resolve_resid_idx(resid_name, gr, where)
+        _check_scalar_field(r, resid_name, gr, where)
+        bcs.append(RobinBC(
+            sideset_names=[str(sideset)],
+            field_name=str(gr.var_names[r]),
+            flux=_convection_flux(
+                parse_scalar_expression(h_expr, _BC_COORD_NAMES),
+                parse_scalar_expression(T_inf_expr, _BC_COORD_NAMES),
+            ),
+        ))
+    radiation = radiation_section or {}
+    entries = radiation.get("expression", {})
+    if entries and "stefan boltzmann constant" not in radiation:
+        raise KeyError(
+            "radiation bcs: 'stefan boltzmann constant' is required, in "
+            "the input file's units",
+        )
+    for entry_name, entry in entries.items():
+        where = f"radiation bcs.expression.{entry_name}"
+        resid_name, sideset, emissivity_expr, T_inf_expr = entry
+        r = _resolve_resid_idx(resid_name, gr, where)
+        _check_scalar_field(r, resid_name, gr, where)
+        bcs.append(RobinBC(
+            sideset_names=[str(sideset)],
+            field_name=str(gr.var_names[r]),
+            flux=_radiation_flux(
+                parse_scalar_expression(emissivity_expr, _BC_COORD_NAMES),
+                parse_scalar_expression(T_inf_expr, _BC_COORD_NAMES),
+                float(radiation["stefan boltzmann constant"]),
+            ),
+        ))
+    return bcs
+
+
+def _check_scalar_field(
+        r: int, resid_name: str, gr: GlobalResidual, where: str,
+) -> None:
+    """The convection and radiation forms give one coefficient and one
+    ambient value, a scalar flux law, so the block must be a scalar field."""
+    if int(gr._num_eqs[r]) != 1:
+        raise ValueError(
+            f"{where}: residual '{resid_name}' is not a scalar field",
+        )
+
+
+def _point_kwargs(
+        coords: NDArray[np.floating] | JaxArray, t: Scalar,
+) -> dict[str, Any]:
+    return {"x": coords[0], "y": coords[1], "z": coords[2], "t": t}
+
+
+def _convection_flux(
+        h_fn: Callable[..., Any], T_inf_fn: Callable[..., Any],
+) -> Callable[[JaxArray, JaxArray, Scalar], JaxArray]:
+    def flux(value: JaxArray, coords: JaxArray, t: Scalar) -> JaxArray:
+        kwargs = _point_kwargs(coords, t)
+        return jnp.asarray(h_fn(**kwargs)) * (
+            value - jnp.asarray(T_inf_fn(**kwargs))
+        )
+    return flux
+
+
+def _radiation_flux(
+        emissivity_fn: Callable[..., Any], T_inf_fn: Callable[..., Any],
+        stefan_boltzmann: float,
+) -> Callable[[JaxArray, JaxArray, Scalar], JaxArray]:
+    def flux(value: JaxArray, coords: JaxArray, t: Scalar) -> JaxArray:
+        kwargs = _point_kwargs(coords, t)
+        return jnp.asarray(emissivity_fn(**kwargs)) * stefan_boltzmann * (
+            value ** 4 - jnp.asarray(T_inf_fn(**kwargs)) ** 4
+        )
+    return flux
 
 
 def _build_forcing_fns(

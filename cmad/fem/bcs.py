@@ -182,6 +182,27 @@ class NeumannBC:
             raise ValueError("NeumannBC.values must be non-empty")
 
 
+@dataclass(frozen=True)
+class RobinBC:
+    """A surface flux that depends on the field on the side.
+
+    ``flux(field_value, coords, t)`` takes the field value at one side
+    point, shape ``(num_components,)``, and returns the outward flux
+    there with the same shape; convection is ``h (T - T_inf)`` and
+    radiation ``eps sigma_B (T^4 - T_inf^4)``. The tangent is taken by
+    AD of the side residual in :mod:`cmad.fem.neumann`.
+    ``sideset_names`` and ``field_name`` are as for :class:`NeumannBC`.
+    """
+
+    sideset_names: Sequence[str]
+    field_name: str
+    flux: Callable[[JaxArray, JaxArray, Scalar], JaxArray]
+
+    def __post_init__(self) -> None:
+        if len(self.sideset_names) == 0:
+            raise ValueError("RobinBC.sideset_names must be non-empty")
+
+
 def make_nodal_field_values(
         values_by_step: NDArray[np.floating] | JaxArray,
         data_times: Sequence[float] | NDArray[np.floating],
