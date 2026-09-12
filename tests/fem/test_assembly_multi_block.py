@@ -85,7 +85,7 @@ class _MockModel:
 
 
 def _mock_R_and_dR_dU(
-        params, U, U_prev, shapes_ip, w, dv, h, ip_set, step_time,
+        params, U, U_prev, shapes_ip, w, dv, h, step_time,
 ):
     R_u = jnp.ones((4, 3)) * _R_U_PER_IP
     R_p = jnp.ones((4, 1)) * _R_P_PER_IP

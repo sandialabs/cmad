@@ -88,7 +88,7 @@ class Mechanics(GlobalResidual):
         self.var_names[0] = "u"
 
         def residual_fn(xi, xi_prev, params, U, U_prev,
-                        model, mode, shapes_ip, w, dv, h, ip_set, step_time):
+                        model, mode, shapes_ip, w, dv, h, step_time):
             U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
             U_ip_prev = self.interpolate_global_fields_at_ip(U_prev, shapes_ip)
 

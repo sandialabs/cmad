@@ -104,7 +104,7 @@ ResidualFnGR: TypeAlias = Callable[
      "Model", "GlobalResidualMode",
      Sequence["ShapeFunctionsAtIP"],
      Scalar, Scalar, Scalar,
-     int, "StepTime"],
+     "StepTime"],
     Sequence[JaxArray],
 ]
 """Signature of the per-element-IP residual function passed to
@@ -119,19 +119,14 @@ independent bindings on the same GR don't share state. ``w``
 and ``dv`` are the quadrature weight and reference-volume
 factor at the IP; ``h`` is the characteristic element size
 (RMS edge length), an IP-invariant scalar the stabilized mixed
-formulation reads for its pressure term and other GRs ignore.
-The trailing int is the integration-point-set index dispatched
-by the assembly layer; single-ip_set GRs ignore it, multi-ip_set
-GRs (e.g. mixed u-p with two quadrature orders for divergence +
-pressure-mass terms) read it to dispatch term-specific residual
-contributions via lax.switch or per-ip_set branches."""
+formulation reads for its pressure term and other GRs ignore."""
 
 REvaluator: TypeAlias = Callable[
     [Params,
      Sequence[JaxArray], Sequence[JaxArray],
      Sequence["ShapeFunctionsAtIP"],
      Scalar, Scalar, Scalar,
-     int],
+     "StepTime"],
     Sequence[JaxArray],
 ]
 """Signature of the model-closed R-only evaluator returned by
@@ -144,7 +139,7 @@ consults state. Returns the per-residual-block ``R_blocks`` list.
 or 0-d JaxArrays (assembly-side quadrature weights, Jacobian
 determinants, and element sizes). In COUPLED mode the ``R``
 evaluator (``coupled_r_total``) instead takes ``(params, U,
-U_prev, xi_prev, shapes_ip, w, dv, h, ip_set)`` — xi internally
+U_prev, xi_prev, shapes_ip, w, dv, h, step_time)`` — xi internally
 solved from xi_prev — and that signature is not captured by this
 alias."""
 
@@ -153,7 +148,7 @@ RAndDRDUEvaluator: TypeAlias = Callable[
      Sequence[JaxArray], Sequence[JaxArray],
      Sequence["ShapeFunctionsAtIP"],
      Scalar, Scalar, Scalar,
-     int],
+     "StepTime"],
     tuple[Sequence[JaxArray], Sequence[Sequence[JaxArray]]],
 ]
 """Signature of the fused R + dR/dU evaluator returned by
@@ -172,7 +167,7 @@ RAndDRDUAndXiEvaluator: TypeAlias = Callable[
      StateList,
      Sequence["ShapeFunctionsAtIP"],
      Scalar, Scalar, Scalar,
-     int, int | JaxArray],
+     "StepTime", int | JaxArray],
     tuple[
         Sequence[JaxArray],
         Sequence[Sequence[JaxArray]],
@@ -187,7 +182,7 @@ runs the per-IP local Newton once and returns
 converged xi exposed as a free side-product so state-history
 storage at FE-Newton convergence is the bundled call's third
 element (no extra solve). 10-arg call shape ``(params, U, U_prev,
-xi_prev, shapes_ip, w, dv, h, ip_set, ip_idx)``; the trailing
+xi_prev, shapes_ip, w, dv, h, step_time, ip_idx)``; the trailing
 ``ip_idx`` integration-point index defaults to 0 and is consumed
 only to label the optional per-IP local-convergence print. xi is
 internally solved from
@@ -202,7 +197,7 @@ class GREvaluators(TypedDict, total=False):
     populates two.
 
     CLOSED_FORM (both U-only, the 8-arg sig ``(params, U, U_prev,
-    shapes_ip, w, dv, h, ip_set)``): ``R`` (residual only — linesearch
+    shapes_ip, w, dv, h, step_time)``): ``R`` (residual only — linesearch
     trial points and finite-difference probes) and ``R_and_dR_dU``
     (fused R + tangent for the Newton step, XLA CSEs interpolation /
     kinematics / Cauchy-stress between R and its tangent).
