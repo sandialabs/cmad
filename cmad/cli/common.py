@@ -5,7 +5,8 @@ parameters / deformation-history / (optional) QoI construction prelude
 and an output-location resolution tail. The FE primal subcommand has
 its own builder (:func:`build_fe_problem_from_deck`) that mirrors the
 shape: deck → mesh → GR → per-block Models → DBCs / NBCs / forcing →
-:class:`cmad.fem.fe_problem.FEProblem` plus a time schedule.
+:class:`cmad.fem.fe_problem.FEProblem` plus a time schedule and the
+initial condition.
 """
 
 from __future__ import annotations
@@ -25,8 +26,10 @@ from cmad.fem.bcs import (
     make_nodal_field_values,
 )
 from cmad.fem.dof import (
+    GlobalDofMap,
     GlobalFieldLayout,
     build_dof_map,
+    dof_physical_coords,
     sideset_basis_fns,
 )
 from cmad.fem.driver import StateInit, build_fe_quasistatic_trajectory
@@ -213,7 +216,8 @@ def build_fe_trajectory_cost(
     :func:`cmad.fem.driver.build_fe_quasistatic_trajectory`; the
     schedule is an argument so that a refined one only retraces.
     ``state_init`` is the ``(U_init, xi_init_by_block)`` pair the time
-    loop starts from; callers source ``fe_arrays`` (the
+    loop starts from, ``U_init`` being the input file's initial condition
+    (``bundle.U_init``) or zeros; callers source ``fe_arrays`` (the
     :class:`FEKernelArrays` carrier) from
     ``bundle.fe_problem.kernel_arrays``.
 
@@ -231,7 +235,7 @@ def build_fe_trajectory_cost(
     gr_section = bundle.resolved["residuals"]["global residual"]
 
     state = FEState.from_problem(
-        fe_problem, t_init=float(bundle.t_schedule[0]),
+        fe_problem, t_init=float(bundle.t_schedule[0]), U_init=bundle.U_init,
     )
     U_init = jnp.asarray(state.U_at(0), dtype=jnp.float64)
     xi_init: dict[str, JaxArray] = place_element_leaves(
@@ -350,6 +354,7 @@ class FEProblemBundle:
     fe_problem: FEProblem
     t_schedule: NDArray[np.float64]
     qoi: FEQoI | None = None
+    U_init: NDArray[np.float64] | None = None
 
 
 def build_fe_problem_from_deck(
@@ -365,7 +370,9 @@ def build_fe_problem_from_deck(
     schedule. The mode-per-block dispatch (``CLOSED_FORM`` vs
     ``COUPLED``) is decided here from each Model's
     ``supports_closed_form`` flag and threaded explicitly into
-    :func:`build_fe_problem`.
+    :func:`build_fe_problem`. The optional ``initial conditions``
+    section becomes the bundle's ``U_init``
+    (:func:`_build_initial_condition`).
     """
     deck = load_deck(deck_path)
     resolved = apply_deck_defaults(deck)
@@ -446,6 +453,10 @@ def build_fe_problem_from_deck(
     dof_map = build_dof_map(
         mesh, field_layouts, dirichlet_bcs, components_by_field,
     )
+    U_init = _build_initial_condition(
+        resolved.get("initial conditions"), gr, mesh, dof_map,
+        float(t_schedule[0]),
+    )
 
     neumann_bcs = _build_neumann_bcs(
         resolved.get("surface flux bcs"), gr,
@@ -509,7 +520,7 @@ def build_fe_problem_from_deck(
 
     return FEProblemBundle(
         resolved=resolved, fe_problem=fe_problem, t_schedule=t_schedule,
-        qoi=qoi,
+        qoi=qoi, U_init=U_init,
     )
 
 
@@ -880,6 +891,51 @@ def _build_forcing_fns(
         ]
         fns_by_idx[r] = _make_body_force_callable(component_fns)
     return fns_by_idx
+
+
+def _build_initial_condition(
+        ic_section: dict[str, Any] | None,
+        gr: GlobalResidual,
+        mesh: Mesh,
+        dof_map: GlobalDofMap,
+        t_init: float,
+) -> NDArray[np.float64] | None:
+    """The initial global vector from the ``initial conditions`` section,
+    or ``None`` when the section is absent (every field starts at zero).
+
+    Entries are keyed by the field's var name: one number or expression
+    for a scalar field, a list of one per component for a vector field.
+    An expression may use ``x``, ``y``, ``z``, and ``t``, as a boundary
+    condition expression does; the field's basis coefficients take its
+    values at their coordinates (:func:`cmad.fem.dof.dof_physical_coords`)
+    at ``t_init``. A field without an entry stays zero.
+    """
+    if not ic_section:
+        return None
+    U_init = np.zeros(dof_map.num_total_dofs, dtype=np.float64)
+    var_names = [str(name) for name in gr.var_names]
+    for field_name, entry in ic_section.items():
+        where = f"initial conditions.{field_name}"
+        if field_name not in var_names:
+            raise ValueError(
+                f"{where}: unknown field; the global residual's fields are "
+                f"{var_names}",
+            )
+        num_eqs = int(gr._num_eqs[var_names.index(field_name)])
+        component_exprs = entry if isinstance(entry, list) else [entry]
+        if len(component_exprs) != num_eqs:
+            raise ValueError(
+                f"{where}: field '{field_name}' has {num_eqs} components, "
+                f"got {len(component_exprs)} entries",
+            )
+        coords, eq = dof_physical_coords(mesh, dof_map, field_name)
+        coords_jax = jnp.asarray(coords)
+        for c, expr in enumerate(component_exprs):
+            values = _make_dbc_value_callable(
+                parse_scalar_expression(expr, _BC_COORD_NAMES),
+            )(coords_jax, t_init)
+            U_init[eq[:, c]] = np.asarray(values)[:, 0]
+    return U_init
 
 
 def _make_dbc_value_callable(

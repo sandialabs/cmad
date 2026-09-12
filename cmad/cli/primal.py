@@ -105,6 +105,7 @@ def _run_primal_fe(deck_path: Path) -> int:
         fe_state, J, status = fe_quasistatic_drive(
             bundle.fe_problem,
             schedule.tolist(),
+            U_init=bundle.U_init,
             nonlinear_solver_settings=solver_settings,
             linear_solver_settings=linear_solver_settings,
             qoi=None if write_qoi is not None else qoi,

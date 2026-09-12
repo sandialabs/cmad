@@ -70,27 +70,27 @@ _SECTIONS: dict[tuple[str, str], tuple[list[str], list[str]]] = {
     ("fe", "primal"): (
         ["problem", "discretization", "residuals"],
         ["output", "dirichlet bcs", "surface flux bcs", "body forces",
-         "linear solver", "qoi"],
+         "initial conditions", "linear solver", "qoi"],
     ),
     ("fe", "objective"): (
         ["problem", "discretization", "residuals", "qoi"],
         ["output", "dirichlet bcs", "surface flux bcs", "body forces",
-         "linear solver"],
+         "initial conditions", "linear solver"],
     ),
     ("fe", "gradient"): (
         ["problem", "discretization", "residuals", "qoi"],
         ["output", "dirichlet bcs", "surface flux bcs", "body forces",
-         "linear solver"],
+         "initial conditions", "linear solver"],
     ),
     ("fe", "hessian"): (
         ["problem", "discretization", "residuals", "qoi"],
         ["output", "dirichlet bcs", "surface flux bcs", "body forces",
-         "linear solver"],
+         "initial conditions", "linear solver"],
     ),
     ("fe", "calibrate"): (
         ["problem", "discretization", "residuals", "qoi", "optimizer"],
         ["output", "dirichlet bcs", "surface flux bcs", "body forces",
-         "linear solver"],
+         "initial conditions", "linear solver"],
     ),
 }
 
