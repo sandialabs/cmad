@@ -5,7 +5,7 @@ additionalProperties: false
 properties:
   type:
     type: string
-    enum: [direct, cg, gmres]
+    enum: [direct, cudss, cg, gmres]
   rtol:
     type: number
     exclusiveMinimum: 0

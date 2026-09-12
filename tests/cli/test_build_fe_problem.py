@@ -527,6 +527,13 @@ class TestMixed(unittest.TestCase):
         self.assertTrue(bundle.fe_problem.gr.mixed)
         self.assertIsNotNone(bundle.fe_problem.block_sparsity)
 
+    def test_mixed_accepts_cudss(self) -> None:
+        deck = self._mixed_deck()
+        deck["linear solver"] = {"type": "cudss"}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
+        self.assertEqual(bundle.resolved["linear solver"]["type"], "cudss")
+
     def test_element_operator_accepts_jax_native_solvers(self) -> None:
         for deck, linear_solver in (
             (_minimal_fe_deck(),

@@ -24,6 +24,7 @@ from cmad.fem.sparse_solve import (
     _jacobi_cg,
     _jacobi_gmres,
     _near_null_by_field,
+    cudss_lu,
     scipy_amg_cg,
     scipy_block_gmres,
     scipy_lu,
@@ -211,14 +212,14 @@ def _solve_linear(
         rhs: JaxArray,
         linear_solver_settings: dict[str, Any],
 ) -> JaxArray:
-    """Dispatch on ``settings['type']`` to direct / CG / GMRES, with the
-    iterative arms picking a preconditioner from
+    """Dispatch on ``settings['type']`` to direct / cudss / CG / GMRES, with
+    the iterative arms picking a preconditioner from
     ``settings['preconditioner']``: Jacobi or pyamg for CG, Jacobi or a
     block preconditioner for GMRES (:func:`_block_gmres` with a Jacobi
     or Chebyshev inner solve, :func:`scipy_block_gmres` with an AMG inner
     solve). The jax native solvers apply ``K`` through
-    :func:`_tangent_operator`; the direct, pyamg and AMG solvers need the
-    assembled representation.
+    :func:`_tangent_operator`; the direct, cudss, pyamg and AMG solvers
+    need the assembled representation.
 
     :attr:`FEProblem.near_null_space` is auto-merged into pyamg
     ``kwargs`` as ``B`` when present and the caller hasn't already set
@@ -242,6 +243,12 @@ def _solve_linear(
     if kind == "direct":
         require_assembled("'direct'")
         return scipy_lu(K, sparsity, rhs, fe_problem.fill_permutation)
+    if kind == "cudss":
+        require_assembled("'cudss'")
+        return cudss_lu(
+            K, sparsity, rhs,
+            print_convergence=linear_solver_settings.get("print convergence", False),
+        )
 
     precon_spec = linear_solver_settings.get(
         "preconditioner", {"type": "jacobi"},
@@ -335,7 +342,7 @@ def _solve_linear(
         )
     raise ValueError(
         f"unknown linear solver type {kind!r}; "
-        f"expected 'direct', 'cg', or 'gmres'"
+        f"expected 'direct', 'cudss', 'cg', or 'gmres'"
     )
 
 
@@ -399,7 +406,7 @@ def _fe_newton_primal(
     :func:`_embedded_bc_enforce` and the matching residual ``r`` via
     :func:`_embedded_residual`, and solves ``K · dU = -r`` via the
     linear solver named in ``linear_solver_settings['type']`` (one of
-    ``direct``, ``cg``, ``gmres``). ``cond`` checks the residual norm
+    ``direct``, ``cudss``, ``cg``, ``gmres``). ``cond`` checks the residual norm
     against the absolute and relative tolerances.
 
     Returns ``(U_star, xi_star, residual_norm, reference_norm,
@@ -542,8 +549,9 @@ def fe_newton_solve(
     ``K · dU = -r`` via the linear solver chosen by
     ``linear_solver_settings['type']``: ``direct`` (sparse direct
     via :func:`scipy.sparse.linalg.spsolve` through
-    :func:`jax.pure_callback`), ``cg`` (JAX-native CG), or ``gmres``
-    (JAX-native restarted GMRES).
+    :func:`jax.pure_callback`), ``cudss`` (the same with cuDSS on the
+    GPU), ``cg`` (JAX-native CG), or ``gmres`` (JAX-native restarted
+    GMRES).
 
     AD over the converged ``(U_star, xi_star)`` is provided by an
     inner :func:`jax.custom_jvp` rule. The JVP rule is the IFT
@@ -593,7 +601,7 @@ def fe_newton_solve(
     ``linear_solver_settings`` is a dict with keys
     ``type`` / ``rtol`` / ``max iters`` / ``restart`` / ``preconditioner``
     (``restart`` consumed only by ``gmres``; ``preconditioner`` ignored
-    when ``type='direct'``). ``preconditioner`` is itself a dict with
+    by ``direct`` and ``cudss``). ``preconditioner`` is itself a dict with
     a required ``type`` (``'jacobi'``, ``'pyamg'``, or ``'block'``). pyamg
     takes an optional freeform ``kwargs`` dict forwarded to
     :func:`pyamg.smoothed_aggregation_solver`; block takes ``coupling``

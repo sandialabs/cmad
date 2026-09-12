@@ -2,7 +2,7 @@
 
 The jax native Krylov solvers and the block preconditioner apply the tangent
 through the :class:`TangentOperator` interface; :class:`AssembledOperator`
-is the assembled sparse matrix behind it. Two further helpers:
+is the assembled sparse matrix behind it. Three further helpers:
 
 - :func:`scipy_lu` solves ``K x = b`` via
   :func:`scipy.sparse.linalg.spsolve` through :func:`jax.pure_callback`,
@@ -10,6 +10,9 @@ is the assembled sparse matrix behind it. Two further helpers:
   :func:`jax.lax.custom_linear_solve`. ``K`` is given by its data
   buffer + a pre-built :class:`EmbeddedSparsity` describing its
   static CSR structure.
+
+- :func:`cudss_lu` is the same solve with cuDSS on the GPU in the
+  callback.
 
 - :func:`_embedded_bc_enforce` rewrites a global :class:`BCOO`
   tangent ``K`` for the embedded-BC formulation: prescribed rows
@@ -20,10 +23,13 @@ is the assembled sparse matrix behind it. Two further helpers:
 """
 from __future__ import annotations
 
+import importlib
+import time
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 import jax
@@ -537,6 +543,139 @@ def scipy_lu(
     return lax.custom_linear_solve(
         matvec, b, solve, transpose_solve=transpose_solve,
         symmetric=False,
+    )
+
+
+def _cudss_threading_lib() -> str | None:
+    """Path of cuDSS's OpenMP threading layer, the file beside the
+    ``libcudss`` nvmath loads, or ``None`` when it is not there; without
+    it the host side analysis runs on one thread."""
+    from cuda.pathfinder import load_nvidia_dynamic_lib
+
+    lib_dir = Path(load_nvidia_dynamic_lib("cudss").abs_path).parent
+    found = sorted(lib_dir.glob("libcudss_mtlayer_gomp.so*"))
+    return str(found[0]) if found else None
+
+
+def _cudss_solve(
+        unique_data_np: np.ndarray, col_np: np.ndarray,
+        indptr_np: np.ndarray, b_np: np.ndarray, *,
+        n: int, transpose: bool, print_convergence: bool,
+        threading_lib: str | None,
+) -> np.ndarray:
+    """Solve ``K x = b`` (``K^T x = b`` with ``transpose``) with cuDSS from
+    the host operands of :func:`cudss_lu`'s callback: the CSR is rebuilt
+    on the device, factored once, and applied to every column of ``b``,
+    whose leading batch axes (see :func:`scipy_lu`) become the columns.
+    ``print_convergence`` prints the true relative residual, the factor
+    nonzero count, and the time of each phase.
+    """
+    import cupy
+    import cupyx.scipy.sparse
+    from nvmath.sparse.advanced import DirectSolver, DirectSolverOptions
+
+    device = cupy.cuda.Device()
+
+    def clock() -> float:
+        device.synchronize()
+        return time.perf_counter()
+
+    t_start = clock()
+    K = cupyx.scipy.sparse.csr_matrix(
+        (
+            cupy.asarray(np.reshape(unique_data_np, -1)),
+            cupy.asarray(np.reshape(col_np, -1).astype(np.int32)),
+            cupy.asarray(np.reshape(indptr_np, -1).astype(np.int32)),
+        ),
+        shape=(n, n),
+    )
+    if transpose:
+        K = K.T.tocsr()
+    b_arr = np.asarray(b_np)
+    batch_shape = b_arr.shape[:-1]
+    # The (k, n) batch's transposed view is the column major (n, k) right
+    # hand side cuDSS takes, with no copy.
+    b_dev = cupy.asarray(b_arr.reshape(-1, n)).T
+    t_uploaded = clock()
+    options = DirectSolverOptions(multithreading_lib=threading_lib)
+    with DirectSolver(K, b_dev, options=options) as solver:
+        solver.plan()
+        t_planned = clock()
+        solver.factorize()
+        t_factored = clock()
+        x_dev = solver.solve()
+        t_solved = clock()
+        lu_nnz = int(solver.factorization_info.lu_nnz) if print_convergence else 0
+    x = cupy.asnumpy(x_dev.T).reshape(*batch_shape, n)
+    t_downloaded = clock()
+    if print_convergence:
+        b_norm = float(cupy.linalg.norm(b_dev))
+        residual = float(cupy.linalg.norm(b_dev - K @ x_dev))
+        rel = residual / (b_norm if b_norm > 0.0 else 1.0)
+        print(
+            f" > linear solve: cudss, relative residual {rel:.3e}, factor "
+            f"nonzeros {lu_nnz}, upload {1e3 * (t_uploaded - t_start):.0f} ms, "
+            f"plan {1e3 * (t_planned - t_uploaded):.0f} ms, factorize "
+            f"{1e3 * (t_factored - t_planned):.0f} ms, solve "
+            f"{1e3 * (t_solved - t_factored):.0f} ms, download "
+            f"{1e3 * (t_downloaded - t_solved):.0f} ms",
+            flush=True,
+        )
+    return x
+
+
+def cudss_lu(
+        K_data: JaxArray, sparsity: EmbeddedSparsity, b: JaxArray,
+        print_convergence: bool = False,
+) -> JaxArray:
+    """Solve ``K x = b`` with cuDSS on the GPU, the counterpart of
+    :func:`scipy_lu`: the same operands and the same
+    :func:`jax.lax.custom_linear_solve` rules over the same matvec, with
+    one :func:`jax.pure_callback` per solve running :func:`_cudss_solve`
+    and the transpose solve factoring ``K^T``. The operands cross to the
+    host and back each solve, a cost the ``print_convergence`` line
+    reports. CuPy and nvmath with cuDSS are imported here, so the module
+    loads without them and a missing one fails at trace time.
+    """
+    for module in ("cupy", "cupyx.scipy.sparse", "nvmath.sparse.advanced"):
+        importlib.import_module(module)
+    op = AssembledOperator(K_data, sparsity)
+    unique_data, matvec = op.unique_data, op.matvec
+    n = sparsity.n
+    threading_lib = _cudss_threading_lib()
+
+    def make_callback(transpose: bool) -> Callable[..., np.ndarray]:
+        def callback(
+                unique_data_np: np.ndarray, col_np: np.ndarray,
+                indptr_np: np.ndarray, b_np: np.ndarray,
+        ) -> np.ndarray:
+            return _cudss_solve(
+                unique_data_np, col_np, indptr_np, b_np, n=n,
+                transpose=transpose, print_convergence=print_convergence,
+                threading_lib=threading_lib,
+            )
+        return callback
+
+    def solve(_unused_matvec: Callable[[JaxArray], JaxArray],
+              rhs: JaxArray) -> JaxArray:
+        return jax.pure_callback(
+            make_callback(False),
+            jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
+            unique_data, sparsity.col_indices, sparsity.indptr, rhs,
+            vmap_method="expand_dims",
+        )
+
+    def transpose_solve(_unused_vecmat: Callable[[JaxArray], JaxArray],
+                        rhs: JaxArray) -> JaxArray:
+        return jax.pure_callback(
+            make_callback(True),
+            jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
+            unique_data, sparsity.col_indices, sparsity.indptr, rhs,
+            vmap_method="expand_dims",
+        )
+
+    return lax.custom_linear_solve(
+        matvec, b, solve, transpose_solve=transpose_solve, symmetric=False,
     )
 
 

@@ -1,0 +1,6 @@
+# Sparse direct solve on the GPU with cuDSS. The print per solve reports
+# the relative residual, the factor nonzero count, and the upload, plan,
+# factorize, solve, and download times.
+linear solver:
+  type: cudss
+  print convergence: true

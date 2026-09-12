@@ -26,6 +26,7 @@ from cmad.models.model import Model
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.typing import JaxArray
+from tests.fem.test_cudss_lu import SKIP_REASON, cudss_available
 from tests.support.test_problems import J2AnalyticalProblem
 
 MAX_ALPHA = 0.05
@@ -181,6 +182,10 @@ class TestMixedUpPlastic(unittest.TestCase):
             SmallElasticPlastic,
             {**_JAX_BLOCK_CHEBYSHEV_SETTINGS, "operator": "element"},
         )
+
+    @unittest.skipUnless(cudss_available(), SKIP_REASON)
+    def test_small_elastic_plastic_cudss(self) -> None:
+        self._run(SmallElasticPlastic, {"type": "cudss"})
 
 
 if __name__ == "__main__":
