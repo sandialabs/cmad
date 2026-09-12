@@ -848,29 +848,30 @@ class _PetscKrylovSolver:
         self.print_convergence = print_convergence
         self.options = options
         self.check_symmetry = krylov in ("cg", "minres")
-        # The objects of the pattern the solver was built on: ``A`` holds
-        # K and wraps ``values``; ``AT`` is K^T, the operator of a
-        # transposed solve and the other side of the symmetry check, held
-        # only when one of those needs it; ``same_pattern`` says whether
-        # the pattern is structurally symmetric, which decides how the
-        # check subtracts the two; ``held`` keeps the index sets, the near
-        # null spaces, and their vectors alive with the KSP.
+        # PETSc objects of the pattern the solver was built on. ``A`` holds
+        # K and wraps ``values``. ``AT`` holds K^T for a transposed solve
+        # and is remade on every refill. ``z`` is the random vector the
+        # symmetry check multiplies by K and by K^T. ``held`` keeps the
+        # index sets, the near null spaces, and their vectors alive with
+        # the KSP.
         self.A: Any = None
         self.AT: Any = None
         self.ksp: Any = None
         self.b: Any = None
         self.x: Any = None
+        self.z: Any = None
         self.values: NDArray[np.floating] | None = None
         self.indptr: NDArray[np.int32] | None = None
         self.col_indices: NDArray[np.int32] | None = None
-        self.same_pattern = False
         self.held: list[Any] = []
 
     def _free(self) -> None:
-        for obj in (self.ksp, self.AT, self.A, self.b, self.x, *self.held):
+        for obj in (
+                self.ksp, self.AT, self.A, self.b, self.x, self.z, *self.held,
+        ):
             if obj is not None:
                 obj.destroy()
-        self.ksp = self.AT = self.A = self.b = self.x = None
+        self.ksp = self.AT = self.A = self.b = self.x = self.z = None
         self.held = []
 
     def _default_options(self) -> str:
@@ -917,9 +918,7 @@ class _PetscKrylovSolver:
         self.indptr, self.col_indices = indptr, col_indices
         # The general size form, (local, global) per dimension, and the
         # explicit comm are what a solve distributed over ranks passes
-        # with its local rows; one process holds every row. The columns
-        # are sorted within each row (EmbeddedSparsity's order), which
-        # the positional subtraction of the symmetry check relies on.
+        # with its local rows; one process holds every row.
         A = PETSc.Mat().createAIJWithArrays(
             size=((n, n), (n, n)), csr=(indptr, col_indices, self.values),
             comm=comm,
@@ -927,25 +926,13 @@ class _PetscKrylovSolver:
         if self.device == "cuda":
             A.convert("aijcusparse")
         self.A = A
-        self.AT = None
-        if self.transpose or self.check_symmetry:
-            # A fresh Mat as the target: ``A.transpose()`` with no target
-            # transposes A in place and returns A itself.
-            self.AT = PETSc.Mat()
-            A.transpose(self.AT)
+        if self.transpose:
+            self._remake_transpose(PETSc)
         self.b = A.createVecRight()
         self.x = A.createVecLeft()
         if self.check_symmetry:
-            pattern = scipy.sparse.csr_matrix(
-                (np.ones(col_indices.shape[0]), col_indices, indptr),
-                shape=(n, n),
-            )
-            pattern_t = pattern.T.tocsr()
-            pattern_t.sort_indices()
-            self.same_pattern = bool(
-                np.array_equal(pattern_t.indptr, indptr)
-                and np.array_equal(pattern_t.indices, col_indices)
-            )
+            self.z = A.createVecRight()
+            self.z.setArray(np.random.default_rng(0).standard_normal(n))
 
         # One near null space per field, its modes orthonormalized (PETSc
         # requires it) and held in vectors of the matrix's type.
@@ -1014,18 +1001,30 @@ class _PetscKrylovSolver:
         ksp.setFromOptions()
         self.ksp = ksp
 
-    def _asymmetry(self, PETSc: Any) -> float:
-        """``||K - K^T||_F / ||K||_F`` from the held ``A`` and ``AT``."""
-        structure = (
-            PETSc.Mat.Structure.SAME_NONZERO_PATTERN if self.same_pattern
-            else PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN
-        )
-        diff = self.A.duplicate(copy=True)
-        diff.axpy(-1.0, self.AT, structure=structure)
-        norm = self.A.norm(PETSc.NormType.FROBENIUS)
-        asymmetry = diff.norm(PETSc.NormType.FROBENIUS)
-        diff.destroy()
-        return float(asymmetry / (norm if norm > 0.0 else 1.0))
+    def _remake_transpose(self, PETSc: Any) -> None:
+        """``AT`` as a new matrix from ``A``. ``A.transpose()`` with no
+        target transposes ``A`` in place, and a reused target keeps a
+        stale device copy on aijcusparse (measured), so every refill
+        makes a fresh one."""
+        if self.AT is not None:
+            self.AT.destroy()
+        self.AT = PETSc.Mat()
+        self.A.transpose(self.AT)
+
+    def _asymmetry(self) -> float:
+        """``||A z - A^T z|| / ||A z||`` for the held random ``z``, a matvec
+        measure of ``||K - K^T|| / ||K||`` through PETSc's transposed
+        matvec, so no transposed matrix is needed."""
+        w = self.z.duplicate()
+        wt = self.z.duplicate()
+        self.A.mult(self.z, w)
+        self.A.multTranspose(self.z, wt)
+        norm = w.norm()
+        w.axpy(-1.0, wt)
+        asymmetry = w.norm() / (norm if norm > 0.0 else 1.0)
+        w.destroy()
+        wt.destroy()
+        return float(asymmetry)
 
     def _relative_residual(self, op: Any) -> float:
         """``||b - op x|| / ||b||`` of the held vectors."""
@@ -1066,12 +1065,12 @@ class _PetscKrylovSolver:
         if reuse:
             self.A.setValuesCSR(indptr, col_indices, values)
             self.A.assemble()
-            if self.AT is not None:
-                self.A.transpose(self.AT)
+            if self.transpose:
+                self._remake_transpose(PETSc)
         else:
             self._build(PETSc, indptr, col_indices, values)
         op = self.AT if self.transpose else self.A
-        asymmetry = self._asymmetry(PETSc) if self.check_symmetry else 0.0
+        asymmetry = self._asymmetry() if self.check_symmetry else 0.0
         if asymmetry > _SYMMETRY_TOLERANCE:
             raise RuntimeError(
                 f"petsc {self.krylov}: the matrix is not symmetric, "
