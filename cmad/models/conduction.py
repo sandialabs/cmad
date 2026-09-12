@@ -57,6 +57,9 @@ class Conduction(ThermalModel):
     ) -> "Conduction":
         return cls(parameters=parameters)
 
+    def derived_output_field_names(self) -> list[str]:
+        return ["heat flux"]
+
     @staticmethod
     def _residual_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],

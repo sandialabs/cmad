@@ -1,0 +1,47 @@
+# Transient heat conduction in a unit cube with unit diffusivity: 300
+# everywhere at the start, the x = 0 face held at 400 from the first
+# step, a heat flux of 50 into the body through the z = 1 face, the other
+# faces insulated; 20 steps of 0.05 to t = 1, about one diffusion time.
+#
+# Generate the mesh from the repo root, then run cmad from examples/
+# (input file paths resolve against the working directory):
+#   python examples/make_cube_mesh.py --n 10   # writes examples/meshes/cube_hex_10.exo
+#   cd examples
+#   cmad primal heat_transient.yaml
+
+problem:
+  type: fe
+  name: heat_transient
+
+discretization:
+  mesh file: meshes/cube_hex_10.exo
+  num steps: 20
+  step size: 0.05
+
+residuals:
+  global residual:
+    type: heat_transfer
+  local residual:
+    type: conduction
+    materials:
+      all:
+        thermal: {conductivity: 1.0, density: 1.0, specific heat: 1.0}
+
+dirichlet bcs:
+  expression:
+    hot: [energy balance, 0, xmin_sides, 400.0]
+
+# The value is the flux into the body.
+surface flux bcs:
+  expression:
+    heated: [energy balance, zmax_sides, 50.0]
+
+initial conditions:
+  T: 300.0
+
+output:
+  path: results
+  exodus filename: heat_transient.exo
+  global residual: [T]
+  local residual:
+    all: [heat flux]

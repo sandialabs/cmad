@@ -44,6 +44,7 @@ def _make_deck(mesh_filename: str, out_dir: str) -> dict[str, Any]:
             "path": out_dir,
             "exodus filename": "primal.exo",
             "global residual": ["T"],
+            "local residual": {"all": ["heat flux"]},
         },
     }
 
@@ -64,12 +65,19 @@ class TestPrimalFeHeatRoundTrip(unittest.TestCase):
             results = read_results(
                 tmp / "out" / "primal.exo",
                 nodal_field_specs=[FieldSpec("T", VarType.SCALAR)],
+                element_field_specs={
+                    "all": [FieldSpec("heat flux", VarType.VECTOR)],
+                },
             )
             nodes = build_fe_problem_from_deck(
                 deck_path, "primal",
             ).fe_problem.mesh.nodes
             T = results.nodal["T"][-1].reshape(-1)
             np.testing.assert_allclose(T, 400.0 - 100.0 * nodes[:, 0], rtol=1e-6)
+            # q = -k dT/dx = -16 (-100) along x, zero across.
+            q = results.element["all"]["heat flux"][-1]
+            np.testing.assert_allclose(q[:, 0], 1600.0, rtol=1e-6)
+            np.testing.assert_allclose(q[:, 1:], 0.0, atol=1e-6)
 
 
 if __name__ == "__main__":

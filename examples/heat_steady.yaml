@@ -1,0 +1,43 @@
+# Steady heat conduction in a unit cube: the x = 0 face held at 400 and
+# the x = 1 face at 300, the other faces insulated, with a uniform heat
+# source of 200 per unit volume, so T = 400 - 100 x + 100 x (1 - x).
+#
+# Generate the mesh from the repo root, then run cmad from examples/
+# (input file paths resolve against the working directory):
+#   python examples/make_cube_mesh.py --n 10   # writes examples/meshes/cube_hex_10.exo
+#   cd examples
+#   cmad primal heat_steady.yaml
+
+problem:
+  type: fe
+  name: heat_steady
+
+discretization:
+  mesh file: meshes/cube_hex_10.exo
+  num steps: 1
+  step size: 1.0
+
+residuals:
+  global residual:
+    type: heat_transfer
+  local residual:
+    type: conduction
+    materials:
+      all:
+        thermal: {conductivity: 1.0}
+
+dirichlet bcs:
+  expression:
+    hot: [energy balance, 0, xmin_sides, 400.0]
+    cold: [energy balance, 0, xmax_sides, 300.0]
+
+volumetric sources:
+  expression:
+    heating: [energy balance, 200.0]
+
+output:
+  path: results
+  exodus filename: heat_steady.exo
+  global residual: [T]
+  local residual:
+    all: [heat flux]
