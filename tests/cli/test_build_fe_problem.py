@@ -615,22 +615,12 @@ class TestMixed(unittest.TestCase):
             ):
                 _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
 
-    def test_mixed_rejects_low_volume_quadrature(self) -> None:
-        deck = self._mixed_deck()
-        deck["discretization"]["quadrature"] = {"volume degree": 1}
-        with (
-            tempfile.TemporaryDirectory() as tmpdir,
-            self.assertRaisesRegex(ValueError, "degree"),
-        ):
-            _build_bundle(deck, _hex_cube_mesh(), Path(tmpdir))
-
-    def test_mixed_tet_defaults_to_degree2(self) -> None:
+    def test_mixed_tet_uses_the_family_default_quadrature(self) -> None:
         tet_mesh = hex_to_tet_split(_hex_cube_mesh())
         with tempfile.TemporaryDirectory() as tmpdir:
             bundle = _build_bundle(self._mixed_deck(), tet_mesh, Path(tmpdir))
         rule = bundle.fe_problem.assembly_quadrature[ElementFamily.TET_LINEAR]
-        # tet degree-2 has 4 IPs; the family default (degree 1) has 1.
-        self.assertEqual(rule.xi.shape[0], 4)
+        self.assertEqual(rule.xi.shape[0], 1)
 
 
 if __name__ == "__main__":

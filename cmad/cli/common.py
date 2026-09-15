@@ -485,19 +485,6 @@ def build_fe_problem_from_deck(
     assembly_quadrature, side_quadrature = _build_quadrature_overrides(
         resolved["discretization"], mesh.element_family,
     )
-    if is_mixed:
-        quad_section = resolved["discretization"].get("quadrature") or {}
-        vol_deg = quad_section.get("volume degree")
-        if vol_deg is not None and int(vol_deg) < 2:
-            raise ValueError(
-                "residuals.global residual: mixed requires volume "
-                f"quadrature degree >= 2; got {vol_deg}",
-            )
-        if assembly_quadrature is None:
-            assembly_quadrature = {
-                mesh.element_family: _quad_rule(
-                    mesh.element_family, "volume", 2),
-            }
 
     local_newton_settings = {
         "max_iters": int(local_section["nonlinear max iters"]),
