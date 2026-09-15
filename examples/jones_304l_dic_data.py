@@ -102,7 +102,7 @@ def select_frames(
         *,
         by: NDArray[np.float64] | None = None,
 ) -> NDArray[np.intp]:
-    """Pick ``num_steps`` frames from ``candidates``.
+    """Pick ``num_steps`` distinct frames from ``candidates``.
 
     With ``by`` the picks are spread evenly over that quantity, which
     matters because the record is far from uniform in index: the elastic
@@ -121,8 +121,14 @@ def select_frames(
         return candidates[np.unique(picks.astype(np.intp))]
     values = by[candidates]
     targets = np.linspace(values[0], values[-1], num_steps)
-    nearest = np.abs(values[:, None] - targets[None, :]).argmin(axis=0)
-    return candidates[np.unique(nearest)]
+    distance = np.abs(values[:, None] - targets[None, :])
+    taken = np.zeros(candidates.size, dtype=bool)
+    # The ends first, so both are always included; then each interior
+    # target takes the nearest frame not yet taken.
+    for k in (0, num_steps - 1, *range(1, num_steps - 1)):
+        pick = int(np.where(taken, np.inf, distance[:, k]).argmin())
+        taken[pick] = True
+    return candidates[taken]
 
 
 def measured_facets(mesh: Mesh) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
@@ -415,8 +421,8 @@ def main() -> None:
         help="frames to select; the reference adds one (default 20)",
     )
     parser.add_argument(
-        "--select", default="index", choices=("index", "force", "extension"),
-        help="spread the selected frames evenly over this (default index)",
+        "--select", default="force", choices=("index", "force", "extension"),
+        help="spread the selected frames evenly over this (default force)",
     )
     parser.add_argument(
         "--filter", default="per-frame", choices=("per-frame", "union"),

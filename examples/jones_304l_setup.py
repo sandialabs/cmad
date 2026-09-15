@@ -10,6 +10,7 @@ of jones_304l_compare.py. Calibrate weights are placeholders.
 Usage:
     python examples/jones_304l_setup.py --specimens o5
     python examples/jones_304l_setup.py --specimens o5 --dims 2
+    python examples/jones_304l_setup.py --specimens xt10 --h 1.5
     python examples/jones_304l_setup.py --steps inputs
 """
 from __future__ import annotations
@@ -29,8 +30,8 @@ INPUT_DIR = EXAMPLES / "jones_304l_inputs"
 
 GLOBAL_NEWTON: dict[str, Any] = {
     "nonlinear max iters": 30,
-    "nonlinear absolute tol": 1.0e-12,
-    "nonlinear relative tol": 1.0e-10,
+    "nonlinear absolute tol": 1.0e-8,
+    "nonlinear relative tol": 1.0e-6,
     "line search": {"max evals": 5},
     "time refinement": {"max depth": 2},
 }
@@ -250,6 +251,14 @@ def main() -> None:
         "--steps", default="meshes,archives,inputs",
         help="comma separated subset of meshes,archives,inputs",
     )
+    parser.add_argument(
+        "--h", type=float, default=None,
+        help="override the record's element size",
+    )
+    parser.add_argument(
+        "--num-steps", type=int, default=None,
+        help="override the record's number of schedule steps",
+    )
     args = parser.parse_args()
 
     thickness, record = load_record()
@@ -266,7 +275,11 @@ def main() -> None:
         raise SystemExit(f"unknown step(s) {sorted(unknown_steps)}")
 
     for tag in tags:
-        entry = record[tag]
+        entry = dict(record[tag])
+        if args.h is not None:
+            entry["h"] = args.h
+        if args.num_steps is not None:
+            entry["num steps"] = args.num_steps
         if "meshes" in steps:
             make_meshes(tag, entry, thickness, args.dims)
         if "archives" in steps:

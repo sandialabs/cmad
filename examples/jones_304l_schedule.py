@@ -37,9 +37,9 @@ def main() -> None:
              "archive frame time (the t = 0 reference is added when absent)",
     )
     parser.add_argument(
-        "--select", default="index", choices=("index", "force"),
+        "--select", default="force", choices=("index", "force"),
         help="spread the selection evenly over the frame order or over "
-             "the load (default index); extension is not in the archive",
+             "the load (default force); extension is not in the archive",
     )
     parser.add_argument(
         "--out-solve-times", default=None,
