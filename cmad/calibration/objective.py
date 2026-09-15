@@ -12,6 +12,7 @@ from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
+from jax import hessian as jax_hessian
 from jax import jit, value_and_grad
 from jax.tree_util import tree_flatten_with_path
 from numpy.typing import NDArray
@@ -51,6 +52,7 @@ class Objective:
         self._fe_arrays = bundle.fe_problem.kernel_arrays
         self._state_init = state_init
         self._value_and_grad = jit(value_and_grad(cost, argnums=0, has_aux=True))
+        self._hessian = jit(jax_hessian(cost, argnums=0, has_aux=True))
         self._refinement = (
             refinement if refinement is not None else TimeRefinement()
         )
@@ -109,6 +111,18 @@ class Objective:
             x, f"step {failed + 1} failed at refinement depth {depth}",
             inserted,
         )
+
+    def hessian(self, x: NDArray[np.floating]) -> NDArray[np.float64]:
+        """The Hessian at ``x`` on the current schedule, for the optimizers
+        that take one; raises when a step fails or the result is not
+        finite, since a Hessian has no guard."""
+        H, (first_failed, _iters) = self._hessian(
+            x, self._state_init, self._fe_arrays, jnp.asarray(self.schedule),
+        )
+        H_np = np.asarray(H, dtype=np.float64)
+        if int(first_failed) >= 0 or not bool(np.all(np.isfinite(H_np))):
+            raise RuntimeError("the Hessian evaluation failed")
+        return H_np
 
     def _accept(
             self,

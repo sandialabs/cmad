@@ -9,6 +9,16 @@ from scipy.optimize import OptimizeResult, minimize
 
 from cmad.calibration.objective import Objective
 
+# scipy reads the method name case insensitively.
+_HESSIAN_METHODS = frozenset({
+    "NEWTON-CG", "DOGLEG", "TRUST-NCG", "TRUST-KRYLOV", "TRUST-EXACT",
+    "TRUST-CONSTR",
+})
+_BOUNDED_METHODS = frozenset({
+    "L-BFGS-B", "TNC", "SLSQP", "POWELL", "NELDER-MEAD", "COBYLA",
+    "TRUST-CONSTR",
+})
+
 
 def minimize_objective(
         objective: Objective,
@@ -18,14 +28,17 @@ def minimize_objective(
         x0: NDArray[np.floating] | None = None,
 ) -> OptimizeResult:
     """``scipy.optimize.minimize`` over ``objective.evaluate`` with
-    ``jac=True`` and the objective's bounds; ``x0`` defaults to the
-    objective's."""
+    ``jac=True``, the objective's Hessian for the methods that take one,
+    and its bounds for the methods that accept them; ``x0`` defaults to
+    the objective's."""
+    method = algorithm.upper()
     return minimize(
         objective.evaluate,
         objective.x0 if x0 is None else np.asarray(x0, dtype=np.float64),
         jac=True,
+        hess=objective.hessian if method in _HESSIAN_METHODS else None,
         method=algorithm,
-        bounds=objective.bounds,
+        bounds=objective.bounds if method in _BOUNDED_METHODS else None,
         options=options,
     )
 
