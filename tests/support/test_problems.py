@@ -192,3 +192,35 @@ def finite_uniaxial_j2_voce(E, nu, Y, S, D, alpha):
     cauchy_axial = flow_stress / J
 
     return lambda_axial, lambda_lateral, cauchy_axial
+
+
+def finite_uniaxial_j2_voce_perzyna(E, nu, Y, S, D, alpha, eta, alpha_dot):
+    """Continuous finite uniaxial J2 + Voce + Perzyna reference, at a
+    constant equivalent plastic strain rate.
+
+    Perzyna takes the plastic multiplier rate from the overstress,
+    ``gamma_dot = f / eta`` with ``f = phi - sigma_flow``, so the stress
+    sits an overstress above the yield surface rather than on it::
+
+        phi = Y + S (1 - exp(-D alpha)) + eta * alpha_dot
+
+    (``gamma_dot`` is ``alpha_dot`` under the be_bar model's convention,
+    where the flow normal is the gradient of the effective stress rather
+    than a unit tensor, so ``alpha`` is the equivalent plastic strain.)
+
+    Everything :func:`finite_uniaxial_j2_voce` computes downstream -- the
+    cubic for ``Ie``, the volumetric relation for ``J``, both stretches,
+    the axial Cauchy stress -- depends on the stress state only through
+    that flow stress, and ``Y`` enters it purely additively. So at a
+    constant ``alpha_dot`` the overstress is a constant shift of the
+    initial yield, and the viscoplastic path is the rate independent one
+    at ``Y + eta * alpha_dot``. Only the product ``eta * alpha_dot``
+    matters, not either factor alone.
+
+    Constant rate is what makes the shift constant: this is not a
+    reference for a varying one, and a caller stepping it must space its
+    times so that ``delta_alpha / dt`` is fixed.
+
+    Returns ``(lambda_axial, lambda_lateral, cauchy_axial)``.
+    """
+    return finite_uniaxial_j2_voce(E, nu, Y + eta * alpha_dot, S, D, alpha)

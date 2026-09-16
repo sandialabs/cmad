@@ -12,10 +12,21 @@ so the 3D return map carries the out of plane ``be_bar`` with no extra
 local unknown. Plane stress instead solves for ``F_33`` as a fourth
 local unknown, fixed by ``sigma_33 = 0``, which the return map cannot
 supply on its own.
+
+The flow is rate independent unless the deck's flow stress carries a
+``rate_dependence`` subtree, in which case the consistency condition
+``f = 0`` is replaced by that law's overstress residual (see
+:mod:`cmad.models.rate_dependence`) and the stress may sit outside the
+yield surface by an amount set by the loading rate. Only that one
+equation changes: the ``be_bar`` deviator and unimodularity equations,
+and the plane stress ``sigma_33 = 0`` equation, are the same either way.
+Note that a rate dependent flow rule needs a real step size, which only
+the FE driver supplies; material point decks carry no time axis, so
+``step_time`` there keeps its default and every step sees ``dt = 1``.
 """
 from collections.abc import Callable
 from functools import partial
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import jax.numpy as jnp
 import numpy as np
@@ -30,6 +41,7 @@ from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.kinematics import det_3x3, gather_F, inv_3x3
 from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
+from cmad.models.rate_dependence import resolve_rate_dependence
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -106,9 +118,10 @@ def initial_guess(
     other root, the one on the yield surface with a negative plastic
     increment.
 
-    ``step_time`` is unused; this model has no rate dependence. It is in the
-    signature because ``make_newton_solve`` calls the initial guess with the
-    residual's trailing arguments.
+    ``step_time`` is unused: the guess is the elastic predictor, which is
+    rate independent even when the model is not, since plastic flow is
+    frozen there. It is in the signature because ``make_newton_solve``
+    calls the initial guess with the residual's trailing arguments.
     """
     return elastic_predictor(
         xi_prev, xi_prev, params, U, U_prev, def_type, oop_stretch_idx)
@@ -154,8 +167,9 @@ class BeBarElasticPlastic(MechanicsModel):
     """Finite deformation elastic-plastic model via the be_bar return map.
 
     Elastic: neohookean. Plastic: J2 yield on the Kirchhoff stress +
-    modular hardening. State ``[zeta (deviatoric be_bar), Ie (hydrostatic
-    be_bar), alpha]``.
+    modular hardening, rate independent unless the deck's flow stress
+    names a rate dependence law. State ``[zeta (deviatoric be_bar), Ie
+    (hydrostatic be_bar), alpha]``.
     """
 
     supports_mixed: ClassVar[bool] = True
@@ -163,11 +177,15 @@ class BeBarElasticPlastic(MechanicsModel):
 
     _def_type: int
     _ndims: int
+    # Name of the rate dependence law the deck selected, None when the
+    # flow is rate independent.
+    _rate_dependence: str | None
 
     def __init__(
             self, parameters: Parameters,
             def_type: int = DefType.FULL_3D,
             hardening_funs: dict | None = None,
+            rate_dependence_funs: dict | None = None,
             yield_tol: float = 1e-12,
             is_complex: bool = False,
     ) -> None:
@@ -232,11 +250,20 @@ class BeBarElasticPlastic(MechanicsModel):
 
         self.parameters = parameters
 
+        flow_stress_params = cast(
+            dict[str, Any],
+            parameters.values["plastic"])["flow stress"]
+        rate_dependence = resolve_rate_dependence(
+            flow_stress_params, rate_dependence_funs)
+        self._rate_dependence, rate_fun = (
+            rate_dependence if rate_dependence is not None else (None, None))
+
         residual = partial(
             self._residual_fn,
             def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
             hardening=partial(
                 combined_hardening_fun, hardening_funs=hardening_funs),
+            rate_fun=rate_fun,
             yield_tol=yield_tol, is_complex=is_complex)
 
         cauchy = partial(
@@ -271,6 +298,7 @@ class BeBarElasticPlastic(MechanicsModel):
             step_time: StepTime,
             def_type: int, oop_stretch_idx: int,
             hardening: Callable[..., JaxArray],
+            rate_fun: Callable[..., JaxArray] | None,
             yield_tol: float, is_complex: bool,
     ) -> JaxArray:
 
@@ -297,7 +325,21 @@ class BeBarElasticPlastic(MechanicsModel):
         C_zeta_plastic = get_vector_from_sym_tensor(
             zeta - dev_be_bar_trial + 2. * delta_gamma * Ie * yield_normal, 3)
         C_Ie_plastic = det_3x3(zeta + Ie * eye) - 1.
-        C_plastic = jnp.r_[C_zeta_plastic, C_Ie_plastic, yield_fun]
+        # Rate independent flow closes the map with consistency, f = 0. A
+        # rate dependent law replaces that with its overstress relation
+        # between delta_gamma and f, which is the only equation that
+        # changes: the flow direction and the be_bar constraint above hold
+        # either way. delta_gamma is the equivalent plastic strain
+        # increment here, since the flow normal is the gradient of the
+        # effective stress rather than a unit tensor.
+        if rate_fun is None:
+            C_alpha_plastic = yield_fun
+        else:
+            C_alpha_plastic = rate_fun(
+                delta_gamma, yield_fun, step_time.dt,
+                two_mu_scale_factor(params),
+                params["plastic"]["flow stress"])
+        C_plastic = jnp.r_[C_zeta_plastic, C_Ie_plastic, C_alpha_plastic]
 
         if def_type == DefType.PLANE_STRESS:
             # The out of plane stretch is fixed by sigma_33 = 0, which holds
@@ -309,6 +351,11 @@ class BeBarElasticPlastic(MechanicsModel):
             C_elastic = jnp.r_[C_elastic, C_oop]
             C_plastic = jnp.r_[C_plastic, C_oop]
 
+        # The trial state selects the branch under a rate dependent law
+        # too: a trial inside the yield surface has delta_gamma = 0 as its
+        # exact solution there (the state stays elastic, so f = the trial
+        # value, and zero flow reproduces it), and selecting on the trial
+        # is what keeps delta_gamma non-negative without bracketing f.
         return cond_residual(trial_yield_fun, C_elastic, C_plastic,
                              yield_threshold(yield_tol, params))
 
