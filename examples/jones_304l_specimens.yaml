@@ -6,6 +6,20 @@
 # Every specimen shares the sheet thickness.
 thickness: 1.5
 
+xr5:
+  geometry: data/jones_304l/X-Specimen-NominalGeometry.mat
+  data: data/jones_304l/XR5-Data.mat
+  frame min: 12
+  frame max: 510
+  drop threshold: 0.1
+  exclude frames: []
+  y min: 63
+  y max: 181
+  h: 3
+  curvature elements: 20
+  num steps: 50
+  roi band: 1.4
+
 xt10:
   geometry: data/jones_304l/X-Specimen-NominalGeometry.mat
   data: data/jones_304l/XT10-Data.mat
