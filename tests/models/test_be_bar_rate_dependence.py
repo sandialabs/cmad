@@ -29,7 +29,7 @@ from cmad.models.be_bar_elastic_plastic import (
     BeBarElasticPlastic,
     compute_yield_fun,
 )
-from cmad.models.deformation_types import DefType
+from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.global_fields import StepTime, mp_U_from_F
 from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
 from cmad.models.nonlinear_solver import newton_solve
@@ -71,6 +71,7 @@ def _parameters(eta: float | None) -> Parameters:
 def _drive_along_path(
         eta: float | None, alpha_dot: float, num_steps: int,
         max_alpha: float = _MAX_ALPHA,
+        def_type: int = DefType.FULL_3D,
 ) -> BeBarElasticPlastic:
     """Step along the constant rate uniaxial stress path in ``num_steps``.
 
@@ -80,21 +81,27 @@ def _drive_along_path(
     which is what makes the reference's constant overstress the right one
     to compare against.
 
+    ``def_type`` sets how much of that path is prescribed: FULL_3D drives
+    all three stretches, uniaxial stress only the axial one and solves the
+    other two.
+
     Returns the model at the end of the last step, before ``advance_xi``,
     so a caller can read both ``xi`` and ``xi_prev`` of that step.
     """
     Y_shift = eta * alpha_dot if eta is not None else 0.0
-    model = BeBarElasticPlastic(_parameters(eta), def_type=DefType.FULL_3D)
+    model = BeBarElasticPlastic(_parameters(eta), def_type=def_type)
     model.set_xi_to_init_vals()
 
+    ndims = def_type_ndims(def_type)
     dt = (max_alpha / num_steps) / alpha_dot
-    F_prev = np.eye(3)
+    F_prev = np.eye(ndims)
     for step in range(1, num_steps + 1):
         alpha = max_alpha * step / num_steps
         lambda_axial, lambda_lateral, _ = finite_uniaxial_j2_voce(
             _E, _NU, _Y + Y_shift, _S, _D, alpha,
         )
-        F = np.diag([lambda_axial, lambda_lateral, lambda_lateral])
+        F = np.diag(
+            [lambda_axial, lambda_lateral, lambda_lateral][:ndims])
         t = alpha / alpha_dot
         model.gather_global(mp_U_from_F(F), mp_U_from_F(F_prev))
         model.gather_time(StepTime(t, t - dt))
@@ -259,6 +266,22 @@ class TestBeBarPerzyna(unittest.TestCase):
         model.evaluate_cauchy()
         cauchy = np.asarray(model.Sigma())
         self.assertLess(abs(cauchy[2, 2]) / abs(cauchy[0, 0]), 1e-10)
+
+    def test_uniaxial_stress_carries_rate_dependence(self) -> None:
+        """The off-axis stretches are orthogonal to the flow rule too, so
+        the viscoplastic path is still the rate independent one at the
+        raised yield -- with the lateral response solved rather than
+        prescribed."""
+        eta, alpha_dot = 1e4, 1e-3
+        _l_ax, _l_lat, cauchy_ref = finite_uniaxial_j2_voce_perzyna(
+            _E, _NU, _Y, _S, _D, _MAX_ALPHA, eta, alpha_dot,
+        )
+        cauchy = _cauchy(_drive_along_path(
+            eta, alpha_dot, 40, def_type=DefType.UNIAXIAL_STRESS))
+
+        self.assertLess(abs(cauchy[0, 0] - cauchy_ref) / cauchy_ref, 5e-4)
+        self.assertLess(abs(cauchy[1, 1]) / cauchy_ref, 1e-10)
+        self.assertLess(abs(cauchy[2, 2]) / cauchy_ref, 1e-10)
 
 
 class TestRateDependenceResolution(unittest.TestCase):

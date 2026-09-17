@@ -40,6 +40,7 @@ class TestMaterialPointInitialGuess(unittest.TestCase):
         expected = elastic_predictor(
             model.xi_prev(), model.xi_prev(), model.parameters.values,
             model._U, model._U_prev, DefType.FULL_3D, model._oop_stretch_idx,
+            0,
         )
         for block, expected_block in zip(model.xi(), expected, strict=True):
             np.testing.assert_allclose(
