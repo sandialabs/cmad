@@ -82,7 +82,12 @@ class _JVPDriver:
     Constructs the model-specific Newton solver helper
     (``make_newton_solve(model._residual, **newton_kwargs)``) so the
     JVP-internal forward pass uses the same convergence tolerances as
-    the driver-level Newton loop.
+    the driver-level Newton loop, and starts it from the model's own
+    initial guess, the way the imperative ``newton_solve`` does through
+    ``apply_initial_guess`` and the FE path does in
+    :meth:`GlobalResidual._for_model_coupled`. Without that, a model
+    whose return map needs an elastic predictor to be viable (be_bar)
+    starts from ``xi_prev`` and diverges to NaN.
     """
 
     def __init__(
@@ -94,7 +99,9 @@ class _JVPDriver:
         # imperative newton_solve and is not relevant to the traced
         # make_newton_solve. Pluck the traced solver's kwargs by name.
         # Cast narrows the static return type to MPJVPObjective's
-        # tighter StateList.
+        # tighter StateList. initial_guess_fn is None for models that
+        # define none, which is what make_newton_solve already defaults
+        # to, so passing it is a no-op for those.
         update_fun = cast(
             Callable[..., StateList],
             make_newton_solve(
@@ -102,6 +109,7 @@ class _JVPDriver:
                 max_iters=newton_kwargs["max_iters"],
                 abs_tol=newton_kwargs["abs_tol"],
                 rel_tol=newton_kwargs["rel_tol"],
+                initial_guess_fn=model.initial_guess_fn,
             ),
         )
         self._jvp_obj = MPJVPObjective(qoi, global_state, update_fun)
