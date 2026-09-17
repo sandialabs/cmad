@@ -117,6 +117,22 @@ class Model(ABC):
         """
         return {}
 
+    @property
+    def requires_step_time(self) -> bool:
+        """Whether this model's residual needs real step sizes to be meaningful.
+
+        Every residual takes a ``step_time``, but most only pass it
+        through. A model answers ``True`` when a wrong ``dt`` silently
+        gives a wrong answer rather than an obvious one — a viscoplastic
+        flow rule, say, whose viscosity is only defined against a real
+        step size. The FE driver always supplies a schedule, so this
+        exists for the material point path, where the deck's time history
+        is optional: the deck builder refuses to run a model that answers
+        ``True`` against a deck that gives no times, instead of quietly
+        defaulting every step to ``dt = 1``. Base: ``False``.
+        """
+        return False
+
     def __init__(self, residual_fun: ResidualFn) -> None:
         self._residual = jit(residual_fun)
         self._jacobian = [jit(jacfwd(residual_fun, argnums=DerivType.DXI,

@@ -1,4 +1,4 @@
-"""Deformation-gradient history loader for the CMAD deck driver.
+"""Deformation-gradient (and time) history loader for the CMAD deck driver.
 
 The primary public entry is :func:`load_history`, which accepts the deck's
 ``deformation:`` section along with the model's expected ``ndims`` and
@@ -31,6 +31,16 @@ Two input modes are supported:
 ``def_type_ndims`` in every registered model's ``__init__``). Any shape
 mismatch raises with the expected ``n`` and the loaded ``n`` both named,
 before the array is handed to the primal or sensitivity loop.
+
+The section may also carry a time history, read by :func:`load_times`,
+spelled the three ways the FE ``discretization`` section spells its own
+(``times``, ``times file``, or ``num steps`` + ``step size``; see
+:mod:`cmad.io.times`). It lives here rather than in a section of its own
+because its length is tied to the deformation history's: one time per
+column of ``F``. Time is optional — a deck that omits it drives every
+step at ``dt = 1``, which is all a rate independent model needs. A model
+whose flow is rate dependent does need real step sizes, and the deck
+builder refuses to run one without them.
 """
 
 from __future__ import annotations
@@ -40,6 +50,8 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
+
+from cmad.io.times import TIME_KEYS, load_time_schedule
 
 
 def load_history(
@@ -68,6 +80,40 @@ def load_history(
         )
     _check_ndims(arr, expected_ndims)
     return arr
+
+
+def load_times(
+        deformation_section: dict[str, Any],
+        num_steps: int,
+) -> NDArray[np.float64] | None:
+    """Load the step times, or ``None`` when the section carries no time.
+
+    ``num_steps`` is ``F.shape[2] - 1``; the schedule must hold one time
+    per column of ``F``, i.e. ``num_steps + 1`` entries. Times must
+    increase strictly: a viscoplastic flow rule divides by ``dt``
+    (:mod:`cmad.models.rate_dependence`), so a zero or backwards step is
+    an error here rather than a divide by zero inside a traced residual.
+    """
+    if not any(key in deformation_section for key in TIME_KEYS):
+        return None
+
+    times = load_time_schedule(deformation_section, context="deformation")
+
+    if times.size != num_steps + 1:
+        raise ValueError(
+            f"deformation: the time history holds {times.size} times but "
+            f"the deformation gradient history holds {num_steps + 1} steps "
+            f"(shape (n, n, {num_steps + 1})); one time per column of F "
+            f"is required",
+        )
+    if times.size > 1 and not np.all(np.diff(times) > 0.):
+        bad = int(np.argmin(np.diff(times) > 0.))
+        raise ValueError(
+            f"deformation: the time history must increase strictly; "
+            f"times[{bad}]={times[bad]:g} is not less than "
+            f"times[{bad + 1}]={times[bad + 1]:g}",
+        )
+    return times
 
 
 def _load_from_file(path: Path) -> NDArray[np.float64]:

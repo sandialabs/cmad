@@ -34,7 +34,7 @@ from cmad.io.writers import (
     write_solver_log,
     write_xi,
 )
-from cmad.models.global_fields import mp_U_from_F
+from cmad.models.global_fields import StepTime, mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
 from cmad.qois.qoi import QoI
 from cmad.remap.locate import sample_fe_displacement_cloud
@@ -72,7 +72,7 @@ def _run_primal_mp(deck_path: Path) -> int:
 
     newton_kwargs = graph.resolved["solver"]["newton"]
     cauchy, xi_trajectory, solver_log, _ = run_primal_pass(
-        graph.model, graph.F, num_steps, newton_kwargs,
+        graph.model, graph.F, num_steps, newton_kwargs, times=graph.times,
     )
 
     if "output" in graph.resolved:
@@ -165,6 +165,7 @@ def run_primal_pass(
         num_steps: int,
         newton_kwargs: dict[str, Any],
         qoi: QoI | None = None,
+        times: NDArray[np.floating] | None = None,
 ) -> tuple[
     NDArray[np.floating],
     list[list[NDArray[np.floating]]],
@@ -179,6 +180,10 @@ def run_primal_pass(
     any subcommand that needs primal outputs; the optional-QoI path is
     what ``cmad objective`` uses to get J alongside cauchy/xi/solver_log
     in a single forward pass.
+
+    ``times`` holds one time per column of ``F``; step sizes are free to
+    vary over the history. Leaving it ``None`` leaves the model at its
+    default ``step_time``, so every step runs at ``dt = 1``.
     """
     cauchy = np.zeros((3, 3, num_steps + 1))
     model.set_xi_to_init_vals()
@@ -193,6 +198,8 @@ def run_primal_pass(
             mp_U_from_F(F[:, :, step]),
             mp_U_from_F(F[:, :, step - 1]),
         )
+        if times is not None:
+            model.gather_time(StepTime(times[step], times[step - 1]))
         iters, final_res = newton_solve(model, **newton_kwargs)
         model.advance_xi()
         model.evaluate_cauchy()

@@ -1,4 +1,5 @@
-"""Round-trip checks for the text-file paths of ``load_history``."""
+"""Round-trip checks for the text-file paths of ``load_history``,
+and for the optional time history ``load_times`` reads beside it."""
 
 import tempfile
 import unittest
@@ -6,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from cmad.io.deformation import load_history
+from cmad.io.deformation import load_history, load_times
 
 
 class TestDeformationTextFiles(unittest.TestCase):
@@ -58,6 +59,62 @@ class TestDeformationTextFiles(unittest.TestCase):
                 )
             self.assertIn("5 columns", str(cm.exception))
             self.assertIn("n*n", str(cm.exception))
+
+
+class TestLoadTimes(unittest.TestCase):
+    """The three spellings of a time history, and the checks around them."""
+
+    def test_no_time_keys_returns_none(self) -> None:
+        self.assertIsNone(
+            load_times({"history_file": "F.npy"}, num_steps=4),
+        )
+
+    def test_inline_times(self) -> None:
+        times = load_times(
+            {"times": [0.0, 0.1, 0.3, 0.6]}, num_steps=3,
+        )
+        np.testing.assert_allclose(times, [0.0, 0.1, 0.3, 0.6])
+
+    def test_num_steps_and_step_size(self) -> None:
+        times = load_times(
+            {"num steps": 4, "step size": 0.25}, num_steps=4,
+        )
+        np.testing.assert_allclose(times, [0.0, 0.25, 0.5, 0.75, 1.0])
+
+    def test_times_file_npy_and_txt(self) -> None:
+        expected = np.array([0.0, 0.5, 1.5, 3.0])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            np.save(tmp / "t.npy", expected)
+            np.savetxt(tmp / "t.txt", expected)
+
+            for name in ("t.npy", "t.txt"):
+                times = load_times(
+                    {"times file": str(tmp / name)}, num_steps=3,
+                )
+                np.testing.assert_allclose(times, expected)
+
+    def test_times_file_unsupported_extension_raises(self) -> None:
+        with self.assertRaises(ValueError) as cm:
+            load_times({"times file": "t.xml"}, num_steps=3)
+        self.assertIn(".xml", str(cm.exception))
+        self.assertIn("deformation.times file", str(cm.exception))
+
+    def test_length_mismatch_with_F_raises(self) -> None:
+        with self.assertRaises(ValueError) as cm:
+            load_times({"times": [0.0, 1.0, 2.0]}, num_steps=5)
+        self.assertIn("3 times", str(cm.exception))
+        self.assertIn("6 steps", str(cm.exception))
+
+    def test_non_increasing_times_raise(self) -> None:
+        # A repeated time is dt = 0, which a viscoplastic law divides by.
+        with self.assertRaises(ValueError) as cm:
+            load_times({"times": [0.0, 0.5, 0.5, 1.0]}, num_steps=3)
+        self.assertIn("increase strictly", str(cm.exception))
+        self.assertIn("times[1]", str(cm.exception))
+
+        with self.assertRaises(ValueError):
+            load_times({"times": [0.0, 0.5, 0.25]}, num_steps=2)
 
 
 if __name__ == "__main__":

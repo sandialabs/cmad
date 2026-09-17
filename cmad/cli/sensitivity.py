@@ -93,6 +93,7 @@ class _JVPDriver:
     def __init__(
             self, qoi: QoI, global_state: NDArray[np.floating],
             newton_kwargs: dict[str, Any],
+            times: NDArray[np.floating] | None = None,
     ) -> None:
         model = qoi.model()
         # The deck's solver.newton dict carries max_ls_evals for the
@@ -112,7 +113,7 @@ class _JVPDriver:
                 initial_guess_fn=model.initial_guess_fn,
             ),
         )
-        self._jvp_obj = MPJVPObjective(qoi, global_state, update_fun)
+        self._jvp_obj = MPJVPObjective(qoi, global_state, update_fun, times)
 
     def evaluate_grad(
             self, x: NDArray[np.floating],
@@ -141,6 +142,7 @@ def build_sensitivity_driver(
         global_state: NDArray[np.floating],
         newton_kwargs: dict[str, Any],
         subcommand: str,
+        times: NDArray[np.floating] | None = None,
 ) -> SensitivityDriver:
     """Build the right driver for ``sensitivity.type`` and ``subcommand``.
 
@@ -150,6 +152,11 @@ def build_sensitivity_driver(
     produce a Hessian), and ``cmad gradient`` accepts all four but
     warns on ``direct_adjoint`` since it computes a Hessian as a
     side effect (use ``cmad hessian`` instead to get it).
+
+    ``times`` is the deck's step times, one per column of
+    ``global_state``; all four strategies default it to ``0, 1, 2, ...``
+    (``dt = 1``) so a deck that names no time history behaves as it
+    always has.
     """
     stype = sensitivity_section["type"]
 
@@ -176,13 +183,17 @@ def build_sensitivity_driver(
         )
 
     if stype == "adjoint":
-        return _ObjectiveFamilyDriver(MPAdjointObjective(qoi, global_state))
+        return _ObjectiveFamilyDriver(
+            MPAdjointObjective(qoi, global_state, times),
+        )
     if stype == "direct":
-        return _ObjectiveFamilyDriver(MPDirectObjective(qoi, global_state))
+        return _ObjectiveFamilyDriver(
+            MPDirectObjective(qoi, global_state, times),
+        )
     if stype == "direct_adjoint":
         return _ObjectiveFamilyDriver(
-            MPDirectAdjointObjective(qoi, global_state),
+            MPDirectAdjointObjective(qoi, global_state, times),
         )
     if stype == "jvp":
-        return _JVPDriver(qoi, global_state, newton_kwargs)
+        return _JVPDriver(qoi, global_state, newton_kwargs, times)
     raise ValueError(f"sensitivity.type: unknown value {stype!r}")

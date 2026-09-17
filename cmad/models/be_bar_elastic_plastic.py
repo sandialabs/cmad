@@ -25,9 +25,14 @@ The flow is rate independent unless the deck's flow stress carries a
 yield surface by an amount set by the loading rate. Only that one
 equation changes: the ``be_bar`` deviator and unimodularity equations,
 and the plane stress ``sigma_33 = 0`` equation, are the same either way.
-Note that a rate dependent flow rule needs a real step size, which only
-the FE driver supplies; material point decks carry no time axis, so
-``step_time`` there keeps its default and every step sees ``dt = 1``.
+A rate dependent flow rule needs real step sizes. The FE driver always
+supplies them from the deck's time schedule; a material point deck
+supplies them through its ``deformation`` section, beside the
+deformation gradient history (see :mod:`cmad.io.deformation`). Those
+times are optional in general — omitting them leaves every step at
+``dt = 1``, which is all the rate independent flow needs — but this
+model reports ``requires_step_time`` once a rate dependence law is
+selected, and the deck builder then refuses a deck that gives none.
 """
 from collections.abc import Callable
 from functools import partial
@@ -309,6 +314,18 @@ class BeBarElasticPlastic(MechanicsModel):
             uniaxial_stress_idx=uniaxial_stress_idx))
 
         super().__init__(residual, cauchy)
+
+    @property
+    def requires_step_time(self) -> bool:
+        """True once the deck selects a rate dependence law.
+
+        The rate independent return map is a function of the strain
+        increment alone, so it is indifferent to ``dt``. A viscoplastic
+        law is not: it reads ``step_time.dt`` directly, and a viscosity
+        calibrated against a placeholder ``dt = 1`` would just absorb the
+        real step size.
+        """
+        return self._rate_dependence is not None
 
     @classmethod
     def from_deck(

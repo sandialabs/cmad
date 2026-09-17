@@ -19,6 +19,15 @@ Selected by the deck, which nests the law under its name the way
         rate_dependence:
           perzyna:
             eta: 100.0
+
+These laws read the step size off the residual's ``step_time``, so a deck
+that selects one has to say what the step sizes actually are: the FE path
+takes them from ``discretization``, the material point path from
+``deformation`` (see :mod:`cmad.io.deformation`). A model reports that
+need through ``Model.requires_step_time``, and the material point deck
+builder refuses a rate dependent deck that carries no times rather than
+running it at a placeholder ``dt = 1``, which would silently fold the
+real step size into the calibrated viscosity.
 """
 from collections.abc import Callable
 from typing import Any

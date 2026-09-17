@@ -59,7 +59,7 @@ def _run_gradient_mp(deck_path: Path) -> int:
     newton_kwargs = graph.resolved["solver"]["newton"]
     driver = build_sensitivity_driver(
         graph.resolved["sensitivity"], qoi, graph.F, newton_kwargs,
-        subcommand="gradient",
+        subcommand="gradient", times=graph.times,
     )
     x = graph.parameters.flat_active_values(return_canonical=True)
     result = driver.evaluate_grad(x)

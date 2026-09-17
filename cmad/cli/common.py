@@ -51,7 +51,7 @@ from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.calibration_data import CalibrationData, is_calibration_data
 from cmad.io.deck import apply_deck_defaults, load_deck
-from cmad.io.deformation import load_history
+from cmad.io.deformation import load_history, load_times
 from cmad.io.expressions import parse_scalar_expression
 from cmad.io.mesh_io import read_mesh_file
 from cmad.io.params_builder import build_parameters
@@ -62,6 +62,7 @@ from cmad.io.registry import (
     resolve_qoi,
 )
 from cmad.io.schema import validate_deck
+from cmad.io.times import load_time_schedule
 from cmad.models.deformation_types import DefType
 from cmad.models.mechanics_model import MechanicsModel
 from cmad.models.model import Model
@@ -77,6 +78,7 @@ class MPProblem:
     parameters: Parameters
     model: MechanicsModel
     F: NDArray[np.float64]
+    times: NDArray[np.float64]
     qoi: QoI | None
 
 
@@ -101,8 +103,14 @@ def build_mp_problem(
 
     Runs deck load + defaults + schema validation, resolves the
     registered model and (for all subcommands except ``primal``) QoI,
-    builds parameters, and loads the deformation history. The returned
-    problem's ``qoi`` is ``None`` iff ``subcommand == "primal"``.
+    builds parameters, and loads the deformation and time histories. The
+    returned problem's ``qoi`` is ``None`` iff ``subcommand == "primal"``.
+
+    The time history is optional in the deck; when it is absent the
+    returned ``times`` is ``0, 1, 2, ...``, so every step runs at
+    ``dt = 1`` exactly as it did before decks carried time at all. A
+    model that reports ``requires_step_time`` (a viscoplastic flow rule,
+    say) is refused rather than defaulted.
     """
     deck = load_deck(deck_path)
     resolved = apply_deck_defaults(deck)
@@ -124,6 +132,20 @@ def build_mp_problem(
         resolved["deformation"], expected_ndims=model.ndims,
     )
 
+    num_steps = F.shape[2] - 1
+    loaded_times = load_times(resolved["deformation"], num_steps)
+    if loaded_times is None and model.requires_step_time:
+        raise ValueError(
+            f"deformation: model.name '{resolved['model']['name']}' needs "
+            f"real step sizes (its flow is rate dependent), but the "
+            f"deformation section carries no time history; supply one as "
+            f"'times', 'times file', or 'num steps' + 'step size'",
+        )
+    times = (
+        np.arange(num_steps + 1, dtype=np.float64)
+        if loaded_times is None else loaded_times
+    )
+
     qoi: QoI | None = None
     if subcommand != "primal":
         qoi_cls = resolve_qoi(resolved["qoi"]["name"])
@@ -139,7 +161,7 @@ def build_mp_problem(
 
     return MPProblem(
         resolved=resolved, parameters=parameters,
-        model=model, F=F, qoi=qoi,
+        model=model, F=F, times=times, qoi=qoi,
     )
 
 
@@ -1127,25 +1149,8 @@ def _load_t_schedule(
     ``discretization.yaml``: ``num steps`` + ``step size`` produces an
     arithmetic sweep including the initial time; ``times file`` reads a
     1D array from disk (``.npy`` via ``np.load``, ``.txt`` / ``.csv``
-    via ``np.loadtxt``); ``times`` consumes an inline list.
+    via ``np.loadtxt``); ``times`` consumes an inline list. The material
+    point path spells the same three the same way inside ``deformation``,
+    so the branch dispatch is shared in :mod:`cmad.io.times`.
     """
-    if "times" in disc_section:
-        return np.asarray(
-            disc_section["times"], dtype=np.float64,
-        ).ravel()
-    if "times file" in disc_section:
-        path = Path(disc_section["times file"])
-        suffix = path.suffix.lower()
-        if suffix == ".npy":
-            data = np.load(path)
-        elif suffix in (".txt", ".csv"):
-            data = np.loadtxt(path)
-        else:
-            raise ValueError(
-                f"discretization.times file: unsupported extension "
-                f"'{suffix}' for path {path}; expected .npy/.txt/.csv",
-            )
-        return np.asarray(data, dtype=np.float64).ravel()
-    n = int(disc_section["num steps"])
-    dt = float(disc_section["step size"])
-    return np.arange(n + 1, dtype=np.float64) * dt
+    return load_time_schedule(disc_section, context="discretization")

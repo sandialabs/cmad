@@ -59,6 +59,7 @@ def _run_objective_mp(deck_path: Path) -> int:
     newton_kwargs = graph.resolved["solver"]["newton"]
     cauchy, xi_trajectory, solver_log, J = run_primal_pass(
         graph.model, graph.F, num_steps, newton_kwargs, qoi=qoi,
+        times=graph.times,
     )
 
     out_dir, prefix, fmt = resolve_output(graph.resolved)

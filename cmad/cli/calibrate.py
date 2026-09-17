@@ -79,7 +79,7 @@ def _run_calibrate_mp(deck_path: Path) -> int:
     newton_kwargs = graph.resolved["solver"]["newton"]
     driver = build_sensitivity_driver(
         graph.resolved["sensitivity"], qoi, graph.F, newton_kwargs,
-        subcommand="calibrate",
+        subcommand="calibrate", times=graph.times,
     )
 
     optimizer_section = graph.resolved["optimizer"]
