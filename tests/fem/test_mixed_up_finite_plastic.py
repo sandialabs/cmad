@@ -9,6 +9,7 @@ import unittest
 from collections.abc import Mapping
 
 import numpy as np
+import pytest
 from numpy.typing import NDArray
 
 from cmad.fem.assembly import params_by_block_from_models
@@ -29,6 +30,7 @@ _ALPHA = 0.15
 _NUM_STEPS = 25
 
 
+@pytest.mark.slow
 class TestMixedUpFinitePlastic(unittest.TestCase):
 
     def test_uniaxial_axial_cauchy(self) -> None:

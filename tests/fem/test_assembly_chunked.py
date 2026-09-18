@@ -10,6 +10,7 @@ import unittest
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from jax.flatten_util import ravel_pytree
 
 from cmad.fem.assembly import (
@@ -106,6 +107,7 @@ class TestChunkedAssembly(unittest.TestCase):
         np.testing.assert_allclose(R_c, R_ref, rtol=1e-13, atol=1e-13)
         np.testing.assert_allclose(R_only_c, R_only_ref, rtol=1e-13, atol=1e-13)
 
+    @pytest.mark.slow
     def test_trajectory_gradient_matches(self) -> None:
         """The gradient through the checkpointed chunk scan, on the J2
         cube of the FD checks (its boundary conditions trace) over an

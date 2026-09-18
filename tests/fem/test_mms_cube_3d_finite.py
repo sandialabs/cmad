@@ -18,6 +18,7 @@ import unittest
 from collections.abc import Callable
 
 import numpy as np
+import pytest
 from numpy.typing import NDArray
 from sympy import Matrix, pi, sin, symbols
 
@@ -111,6 +112,7 @@ class TestMmsCube3DFinite(unittest.TestCase):
             fe_problem, type(self).u_exact, type(self).grad_u_exact,
         )
 
+    @pytest.mark.slow
     def test_hex_convergence_rates(self) -> None:
         Ns = (4, 8, 16)
         L2_errs: list[float] = []

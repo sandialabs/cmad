@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from numpy.typing import NDArray
 
 from cmad.fem.assembly import params_by_block_from_models
@@ -161,15 +162,19 @@ class TestMixedUpPlastic(unittest.TestCase):
     def test_small_rate_elastic_plastic(self) -> None:
         self._run(SmallRateElasticPlastic)
 
+    @pytest.mark.slow
     def test_small_elastic_plastic_block_solver(self) -> None:
         self._run(SmallElasticPlastic, _BLOCK_SOLVER_SETTINGS)
 
+    @pytest.mark.slow
     def test_small_rate_elastic_plastic_block_solver(self) -> None:
         self._run(SmallRateElasticPlastic, _BLOCK_SOLVER_SETTINGS)
 
+    @pytest.mark.slow
     def test_small_elastic_plastic_jax_block_jacobi(self) -> None:
         self._run(SmallElasticPlastic, _JAX_BLOCK_JACOBI_SETTINGS)
 
+    @pytest.mark.slow
     def test_small_elastic_plastic_jax_block_chebyshev(self) -> None:
         self._run(SmallElasticPlastic, _JAX_BLOCK_CHEBYSHEV_SETTINGS)
 
@@ -179,24 +184,29 @@ class TestMixedUpPlastic(unittest.TestCase):
             {**_JAX_BLOCK_JACOBI_SETTINGS, "operator": "element"},
         )
 
+    @pytest.mark.slow
     def test_small_elastic_plastic_jax_block_chebyshev_element(self) -> None:
         self._run(
             SmallElasticPlastic,
             {**_JAX_BLOCK_CHEBYSHEV_SETTINGS, "operator": "element"},
         )
 
+    @pytest.mark.slow
     @unittest.skipUnless(cudss_available(), SKIP_REASON)
     def test_small_elastic_plastic_cudss(self) -> None:
         self._run(SmallElasticPlastic, {"type": "cudss"})
 
+    @pytest.mark.slow
     @unittest.skipUnless(cudss_available(), SKIP_REASON)
     def test_small_elastic_plastic_cudss_symmetric(self) -> None:
         self._run(SmallElasticPlastic, {"type": "cudss", "symmetric": True})
 
+    @pytest.mark.slow
     @unittest.skipUnless(petsc_available(), PETSC_SKIP_REASON)
     def test_small_elastic_plastic_petsc(self) -> None:
         self._run(SmallElasticPlastic, {"type": "petsc", "krylov": "gmres"})
 
+    @pytest.mark.slow
     @unittest.skipUnless(petsc_available(), PETSC_SKIP_REASON)
     def test_small_elastic_plastic_petsc_minres(self) -> None:
         self._run(SmallElasticPlastic, {"type": "petsc", "krylov": "minres"})

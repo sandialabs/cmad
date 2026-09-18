@@ -12,6 +12,7 @@ from typing import cast
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from jax.flatten_util import ravel_pytree
 from jax.tree_util import tree_map
 
@@ -329,6 +330,7 @@ class TestPerElementCoupledClosedFormEquivalence(unittest.TestCase):
             rtol=0., atol=1e-10))
 
 
+@pytest.mark.slow
 class TestPerElementCoupledJVPvsFD(unittest.TestCase):
     """Forward-mode AD on the kernel's accumulated dR/dU at a J2
     plastic-loading point matches central-difference FD across all

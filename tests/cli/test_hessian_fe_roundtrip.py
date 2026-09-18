@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 import yaml
 
 from cmad.cli.main import main as cmad_main
@@ -66,6 +67,7 @@ def _make_fe_hessian_deck(mesh_filename: str) -> dict[str, Any]:
     }
 
 
+@pytest.mark.slow
 class TestHessianFeRoundTrip(unittest.TestCase):
     def test_writes_hess_and_resolved_deck(self) -> None:
         solver_configs: list[dict[str, Any]] = [

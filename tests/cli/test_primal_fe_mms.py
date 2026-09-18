@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 import yaml
 from sympy import Matrix, eye, pi, simplify, sin, symbols
 
@@ -189,6 +190,7 @@ class TestPrimalFeMmsCube3D(unittest.TestCase):
         for r in H1_rates:
             self.assertGreaterEqual(r, h1_floor, f"H1 rates {H1_rates}")
 
+    @pytest.mark.slow
     def test_hex_convergence_rates(self) -> None:
         self._sweep_and_check_rates(
             build_mesh=lambda N: StructuredHexMesh(

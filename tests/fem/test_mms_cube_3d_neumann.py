@@ -28,6 +28,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from numpy.typing import NDArray
 from sympy import Matrix, lambdify, pi, sin, symbols
 
@@ -146,6 +147,7 @@ def _build_fe_problem(
     )
 
 
+@pytest.mark.slow
 class TestMmsCube3DNeumann(unittest.TestCase):
 
     body_force_fn: Callable[

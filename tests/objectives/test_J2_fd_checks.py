@@ -2,6 +2,7 @@ import unittest
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 from jax.tree_util import tree_map
 
 from cmad.models.deformation_types import DefType, def_type_ndims
@@ -426,6 +427,7 @@ def plane_stress_fd_checks_johnson_cook(Model):
     return grad_log10_error_drop, hessian_log10_error_drop
 
 
+@pytest.mark.slow
 class TestJ2FDChecks(unittest.TestCase):
 
     def test_J2_finite_difference_checks(self):

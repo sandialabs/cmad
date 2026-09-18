@@ -18,6 +18,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from jax.sharding import NamedSharding, PartitionSpec
 from jax.tree_util import tree_leaves, tree_map
 
@@ -522,6 +523,7 @@ class TestOneDevice(unittest.TestCase):
             build_device_mesh(num_devices=2)
 
 
+@pytest.mark.slow
 @unittest.skipUnless(
     len(jax.devices()) == 1, "the suite's process has several devices",
 )
