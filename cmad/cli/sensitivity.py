@@ -184,12 +184,10 @@ def build_sensitivity_driver(
 
     if stype == "adjoint":
         return _ObjectiveFamilyDriver(
-            MPAdjointObjective(qoi, global_state, times),
-        )
+            MPAdjointObjective(qoi, global_state, times))
     if stype == "direct":
         return _ObjectiveFamilyDriver(
-            MPDirectObjective(qoi, global_state, times),
-        )
+            MPDirectObjective(qoi, global_state, times))
     if stype == "direct_adjoint":
         return _ObjectiveFamilyDriver(
             MPDirectAdjointObjective(qoi, global_state, times),

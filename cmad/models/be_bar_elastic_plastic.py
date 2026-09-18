@@ -18,21 +18,18 @@ off-axis stretches are a fourth local unknown, a vector fixed by the two
 off-axis normal stresses vanishing. Nothing there has to suppress shear:
 the uniaxial ``gather_F`` is diagonal, so ``be_bar`` stays diagonal.
 
-The flow is rate independent unless the deck's flow stress carries a
-``rate_dependence`` subtree, in which case the consistency condition
-``f = 0`` is replaced by that law's overstress residual (see
-:mod:`cmad.models.rate_dependence`) and the stress may sit outside the
-yield surface by an amount set by the loading rate. Only that one
-equation changes: the ``be_bar`` deviator and unimodularity equations,
-and the plane stress ``sigma_33 = 0`` equation, are the same either way.
-A rate dependent flow rule needs real step sizes. The FE driver always
-supplies them from the deck's time schedule; a material point deck
-supplies them through its ``deformation`` section, beside the
-deformation gradient history (see :mod:`cmad.io.deformation`). Those
-times are optional in general — omitting them leaves every step at
-``dt = 1``, which is all the rate independent flow needs — but this
-model reports ``requires_step_time`` once a rate dependence law is
-selected, and the deck builder then refuses a deck that gives none.
+The yield surface equation closes with the yield function the deck's
+``flow stress`` subtree names (see :mod:`cmad.models.flow_stress`),
+evaluated at the backward Euler hardening rate
+``alpha_dot = (alpha - alpha_prev) / dt``. A rate-dependent relation
+written as a flow stress — Peric, Perzyna — lets the stress sit outside
+the rate-independent yield surface by an amount set by the loading rate;
+only that one equation sees it. The ``be_bar`` deviator and unimodularity
+equations, and the plane or uniaxial stress equations, are the same
+either way. A rate-dependent relation needs real step sizes: the FE
+driver takes them from the deck's time schedule, a material point deck
+from its ``deformation`` section (see :mod:`cmad.io.deformation`), and a
+deck that names no times leaves every step at ``dt = 1``.
 """
 from collections.abc import Callable
 from functools import partial
@@ -46,12 +43,15 @@ from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.effective_stress import J2_effective_stress
 from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.elastic_stress import two_mu_scale_factor
-from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
-from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
+from cmad.models.flow_stress import make_yield_function
+from cmad.models.global_fields import (
+    GlobalFieldsAtPoint,
+    StepTime,
+    temperature_at_point,
+)
 from cmad.models.kinematics import det_3x3, gather_F, inv_3x3, off_axis_idx
 from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
-from cmad.models.rate_dependence import resolve_rate_dependence
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -142,47 +142,51 @@ def initial_guess(
 
 
 def compute_yield_fun(
-        zeta: StateBlock, alpha: StateBlock, params: dict[str, Any],
-        hardening: Callable[..., JaxArray],
+        zeta: JaxArray, alpha: StateBlock, alpha_prev: StateBlock,
+        params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
+        yield_function: Callable[..., JaxArray],
 ) -> JaxArray:
     """Von Mises yield function on the Kirchhoff stress.
 
-    The deviatoric Kirchhoff stress is ``s = mu * zeta``; the J2 effective
-    stress is evaluated on it, and the flow stress is the modular
-    hardening.
+    ``zeta`` is the deviator of ``be_bar`` as a tensor; the deviatoric
+    Kirchhoff stress is ``s = mu * zeta``, and the J2 effective stress is
+    evaluated on it.
     """
     plastic_params = params["plastic"]
-    Y = plastic_params["flow stress"]["initial yield"]["Y"]
-    hardening_params = plastic_params["flow stress"]["hardening"]
     mu = ElasticConstants.from_params(params["elastic"]).mu
 
-    s = mu * get_sym_tensor_from_vector(zeta, 3)
+    s = mu * zeta
     phi = J2_effective_stress(s, None)
-    sigma_flow = Y + hardening(alpha, hardening_params)
+    alpha_dot = (alpha - alpha_prev) / step_time.dt
+    yield_fun = yield_function(phi, alpha, alpha_dot, temperature_at_point(U),
+                               plastic_params["flow stress"])
 
-    return (phi - sigma_flow) / two_mu_scale_factor(params)
+    return yield_fun / two_mu_scale_factor(params)
 
 
 def compute_yield_fun_and_normal(
-        zeta: StateBlock, alpha: StateBlock, params: dict[str, Any],
-        hardening: Callable[..., JaxArray], is_complex: bool,
+        zeta: JaxArray, alpha: StateBlock, alpha_prev: StateBlock,
+        params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
+        yield_function: Callable[..., JaxArray], is_complex: bool,
 ) -> tuple[JaxArray, JaxArray]:
     """Yield function and flow normal, the gradient of the J2 effective
     stress at the deviatoric Kirchhoff stress.
     """
     mu = ElasticConstants.from_params(params["elastic"]).mu
-    s = mu * get_sym_tensor_from_vector(zeta, 3)
+    s = mu * zeta
     yield_normal = grad(J2_effective_stress, holomorphic=is_complex)(s, None)
 
-    return compute_yield_fun(zeta, alpha, params, hardening), yield_normal
+    return compute_yield_fun(
+        zeta, alpha, alpha_prev, params, U, step_time, yield_function,
+    ), yield_normal
 
 
 class BeBarElasticPlastic(MechanicsModel):
     """Finite deformation elastic-plastic model via the be_bar return map.
 
-    Elastic: neohookean. Plastic: J2 yield on the Kirchhoff stress +
-    modular hardening, rate independent unless the deck's flow stress
-    names a rate dependence law. State ``[zeta (deviatoric be_bar), Ie
+    Elastic: neohookean. Plastic: J2 yield on the Kirchhoff stress, closed
+    with the yield function the deck's ``flow stress`` subtree names, rate
+    independent or not. State ``[zeta (deviatoric be_bar), Ie
     (hydrostatic be_bar), alpha]``, plus the stretches the deformation
     leaves free under plane stress or uniaxial stress.
     """
@@ -193,15 +197,11 @@ class BeBarElasticPlastic(MechanicsModel):
     _def_type: int
     _ndims: int
     _uniaxial_stress_idx: int
-    # Name of the rate dependence law the deck selected, None when the
-    # flow is rate independent.
-    _rate_dependence: str | None
 
     def __init__(
             self, parameters: Parameters,
             def_type: int = DefType.FULL_3D,
             hardening_funs: dict | None = None,
-            rate_dependence_funs: dict | None = None,
             yield_tol: float = 1e-12,
             uniaxial_stress_idx: int = 0,
             is_complex: bool = False,
@@ -214,8 +214,6 @@ class BeBarElasticPlastic(MechanicsModel):
                 "be_bar_elastic_plastic supports FULL_3D, PLANE_STRAIN, "
                 "PLANE_STRESS and UNIAXIAL_STRESS",
             )
-        if hardening_funs is None:
-            hardening_funs = get_hardening_funs()
 
         self._is_complex = is_complex
         self.dtype = complex if is_complex else float
@@ -286,21 +284,15 @@ class BeBarElasticPlastic(MechanicsModel):
 
         self.parameters = parameters
 
-        flow_stress_params = cast(
-            dict[str, Any],
-            parameters.values["plastic"])["flow stress"]
-        rate_dependence = resolve_rate_dependence(
-            flow_stress_params, rate_dependence_funs)
-        self._rate_dependence, rate_fun = (
-            rate_dependence if rate_dependence is not None else (None, None))
+        plastic_subtree = cast(dict[str, Any], parameters.values["plastic"])
+        yield_function = make_yield_function(
+            plastic_subtree["flow stress"], hardening_funs)
 
         residual = partial(
             self._residual_fn,
             def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
             uniaxial_stress_idx=uniaxial_stress_idx,
-            hardening=partial(
-                combined_hardening_fun, hardening_funs=hardening_funs),
-            rate_fun=rate_fun,
+            yield_function=yield_function,
             yield_tol=yield_tol, is_complex=is_complex)
 
         cauchy = partial(
@@ -314,18 +306,6 @@ class BeBarElasticPlastic(MechanicsModel):
             uniaxial_stress_idx=uniaxial_stress_idx))
 
         super().__init__(residual, cauchy)
-
-    @property
-    def requires_step_time(self) -> bool:
-        """True once the deck selects a rate dependence law.
-
-        The rate independent return map is a function of the strain
-        increment alone, so it is indifferent to ``dt``. A viscoplastic
-        law is not: it reads ``step_time.dt`` directly, and a viscosity
-        calibrated against a placeholder ``dt = 1`` would just absorb the
-        real step size.
-        """
-        return self._rate_dependence is not None
 
     @classmethod
     def from_deck(
@@ -349,8 +329,7 @@ class BeBarElasticPlastic(MechanicsModel):
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             step_time: StepTime,
             def_type: int, oop_stretch_idx: int, uniaxial_stress_idx: int,
-            hardening: Callable[..., JaxArray],
-            rate_fun: Callable[..., JaxArray] | None,
+            yield_function: Callable[..., JaxArray],
             yield_tol: float, is_complex: bool,
     ) -> JaxArray:
 
@@ -366,9 +345,11 @@ class BeBarElasticPlastic(MechanicsModel):
         dev_be_bar_trial = get_sym_tensor_from_vector(xi_elastic[0], 3)
 
         yield_fun, yield_normal = compute_yield_fun_and_normal(
-            xi[0], alpha, params, hardening, is_complex)
+            zeta, alpha, alpha_prev, params, U, step_time, yield_function,
+            is_complex)
         trial_yield_fun = compute_yield_fun(
-            xi_elastic[0], alpha_prev, params, hardening)
+            dev_be_bar_trial, alpha_prev, alpha_prev, params, U, step_time,
+            yield_function)
         delta_gamma = alpha - alpha_prev
 
         C_elastic = jnp.concatenate(
@@ -378,20 +359,14 @@ class BeBarElasticPlastic(MechanicsModel):
         C_zeta_plastic = get_vector_from_sym_tensor(
             zeta - dev_be_bar_trial + 2. * delta_gamma * Ie * yield_normal, 3)
         C_Ie_plastic = det_3x3(zeta + Ie * eye) - 1.
-        # Rate independent flow closes the map with consistency, f = 0. A
-        # rate dependent law replaces that with its overstress relation
-        # between delta_gamma and f, which is the only equation that
-        # changes: the flow direction and the be_bar constraint above hold
-        # either way. delta_gamma is the equivalent plastic strain
-        # increment here, since the flow normal is the gradient of the
-        # effective stress rather than a unit tensor.
-        if rate_fun is None:
-            C_alpha_plastic = yield_fun
-        else:
-            C_alpha_plastic = rate_fun(
-                delta_gamma, yield_fun, step_time.dt,
-                two_mu_scale_factor(params),
-                params["plastic"]["flow stress"])
+        # The map closes with consistency, f = 0, whether or not the
+        # relation is rate dependent: a rate dependent flow stress puts
+        # alpha_dot inside f rather than replacing this equation, so the
+        # flow direction and the be_bar constraint above are untouched.
+        # delta_gamma is the equivalent plastic strain increment here,
+        # since the flow normal is the gradient of the effective stress
+        # rather than a unit tensor.
+        C_alpha_plastic = yield_fun
         C_plastic = jnp.r_[C_zeta_plastic, C_Ie_plastic, C_alpha_plastic]
 
         if def_type in (DefType.PLANE_STRESS, DefType.UNIAXIAL_STRESS):
@@ -418,7 +393,7 @@ class BeBarElasticPlastic(MechanicsModel):
         # value, and zero flow reproduces it), and selecting on the trial
         # is what keeps delta_gamma non-negative without bracketing f.
         return cond_residual(trial_yield_fun, C_elastic, C_plastic,
-                             yield_threshold(yield_tol, params))
+                             yield_threshold(yield_tol, params, yield_function))
 
     @staticmethod
     def _cauchy_fn(

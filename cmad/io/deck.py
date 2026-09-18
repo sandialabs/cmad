@@ -44,8 +44,8 @@ import yaml
 _SOLVER_DEFAULTS: dict[str, dict[str, Any]] = {
     "newton": {
         "max_iters": 10,
-        "abs_tol": 1e-14,
-        "rel_tol": 1e-14,
+        "abs_tol": 1e-12,
+        "rel_tol": 1e-12,
         "max_ls_evals": 0,
     },
 }

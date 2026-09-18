@@ -45,25 +45,15 @@ class MPObjective(ABC):
         self._global_state = global_state
 
         self._num_steps = qoi.data().shape[-1] - 1
+        self._times = (
+            np.arange(self._num_steps + 1, dtype=np.float64)
+            if times is None else np.asarray(times, dtype=np.float64)
+        )
         self._xi_at_step = cast(
             list[StateList],
             [[None] * self._model.num_residuals
              for ii in range(self._num_steps + 1)],
         )
-
-        # One time per step of the deformation history. Left unset, the
-        # steps are numbered 0, 1, 2, ..., so dt = 1 throughout: the same
-        # step size a rate independent residual sees either way.
-        if times is None:
-            times = np.arange(self._num_steps + 1, dtype=np.float64)
-        times = np.asarray(times, dtype=np.float64)
-        if times.size != self._num_steps + 1:
-            raise ValueError(
-                f"times holds {times.size} entries but the history runs "
-                f"{self._num_steps} steps; {self._num_steps + 1} times "
-                f"are required (one per step, including the initial one)",
-            )
-        self._times = times
 
     def evaluate(
         self, flat_active_values: NDArray[np.floating]
@@ -75,23 +65,14 @@ class MPObjective(ABC):
     def _evaluate(self) -> GradientResult | HessianResult: ...
 
     def _gather_step(self, step: int) -> None:
-        """Put the model in the context of ``step``: its F pair and its times.
-
-        Every pass — forward, adjoint, and the direct-adjoint Hessian
-        sweep — goes through here, which is what keeps the reverse passes
-        evaluating the residual and its derivatives at the same ``dt``
-        the forward pass solved with. A mismatch there would leave the
-        gradient consistent with no problem at all.
-        """
+        """Set the model's global state and time for ``step``."""
         F = self._global_state
         times = self._times
         self._model.gather_global(
             mp_U_from_F(F[:, :, step]),
             mp_U_from_F(F[:, :, step - 1]),
         )
-        self._model.gather_time(
-            StepTime(times[step], times[step - 1]),
-        )
+        self._model.gather_time(StepTime(times[step], times[step - 1]))
 
     def _forward_pass_with_storage(self) -> float:
         """Forward time-step loop with xi_at_step storage. Returns J."""

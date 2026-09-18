@@ -62,24 +62,17 @@ class TestDeformationTextFiles(unittest.TestCase):
 
 
 class TestLoadTimes(unittest.TestCase):
-    """The three spellings of a time history, and the checks around them."""
+    """The two spellings of a time history, and the unit-step default."""
 
-    def test_no_time_keys_returns_none(self) -> None:
-        self.assertIsNone(
-            load_times({"history_file": "F.npy"}, num_steps=4),
-        )
+    def test_no_time_keys_are_unit_steps(self) -> None:
+        times = load_times({"history_file": "F.npy"}, num_steps=4)
+        np.testing.assert_allclose(times, [0.0, 1.0, 2.0, 3.0, 4.0])
 
     def test_inline_times(self) -> None:
         times = load_times(
             {"times": [0.0, 0.1, 0.3, 0.6]}, num_steps=3,
         )
         np.testing.assert_allclose(times, [0.0, 0.1, 0.3, 0.6])
-
-    def test_num_steps_and_step_size(self) -> None:
-        times = load_times(
-            {"num steps": 4, "step size": 0.25}, num_steps=4,
-        )
-        np.testing.assert_allclose(times, [0.0, 0.25, 0.5, 0.75, 1.0])
 
     def test_times_file_npy_and_txt(self) -> None:
         expected = np.array([0.0, 0.5, 1.5, 3.0])
@@ -100,21 +93,18 @@ class TestLoadTimes(unittest.TestCase):
         self.assertIn(".xml", str(cm.exception))
         self.assertIn("deformation.times file", str(cm.exception))
 
+    def test_both_time_sources_raise(self) -> None:
+        with self.assertRaises(ValueError) as cm:
+            load_times(
+                {"times": [0.0, 1.0], "times file": "t.npy"}, num_steps=1,
+            )
+        self.assertIn("not both", str(cm.exception))
+
     def test_length_mismatch_with_F_raises(self) -> None:
         with self.assertRaises(ValueError) as cm:
             load_times({"times": [0.0, 1.0, 2.0]}, num_steps=5)
         self.assertIn("3 times", str(cm.exception))
-        self.assertIn("6 steps", str(cm.exception))
-
-    def test_non_increasing_times_raise(self) -> None:
-        # A repeated time is dt = 0, which a viscoplastic law divides by.
-        with self.assertRaises(ValueError) as cm:
-            load_times({"times": [0.0, 0.5, 0.5, 1.0]}, num_steps=3)
-        self.assertIn("increase strictly", str(cm.exception))
-        self.assertIn("times[1]", str(cm.exception))
-
-        with self.assertRaises(ValueError):
-            load_times({"times": [0.0, 0.5, 0.25]}, num_steps=2)
+        self.assertIn("6 entries", str(cm.exception))
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import unittest
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from cmad.fem.nonlinear_solver import fe_newton_solve
 from cmad.fem.sparse_solve import petsc_solve
@@ -450,6 +451,7 @@ class TestPetscMinres(unittest.TestCase):
         self.assertIn("not symmetric", str(ctx.exception))
 
 
+@pytest.mark.slow
 @unittest.skipUnless(petsc_available(), SKIP_REASON)
 class TestPetscFEGradient(unittest.TestCase):
     """The COUPLED single step check of ``test_fem_fd_checks.py`` through

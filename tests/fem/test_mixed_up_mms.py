@@ -11,6 +11,7 @@ import unittest
 from collections.abc import Callable
 
 import numpy as np
+import pytest
 from numpy.typing import NDArray
 from sympy import Matrix, pi, sin, symbols
 
@@ -69,6 +70,7 @@ def _build_mixed(
     )
 
 
+@pytest.mark.slow
 class TestMixedUpMms(unittest.TestCase):
 
     body_force_fn: Callable[..., NDArray[np.floating]]

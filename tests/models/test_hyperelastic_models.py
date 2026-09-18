@@ -78,7 +78,7 @@ class TestHyperelasticModels(unittest.TestCase):
                     mp_U_from_F(F[:1, :1, step - 1]),
                 )
 
-                newton_solve(model)
+                newton_solve(model, abs_tol=1e-14, rel_tol=1e-14)
                 model.store_xi(xi_at_step, model.xi(), step)
 
                 model.evaluate_cauchy()
@@ -135,7 +135,7 @@ class TestHyperelasticModels(unittest.TestCase):
                     mp_U_from_F(F_3D[:, :, step - 1]),
                 )
 
-                newton_solve(model)
+                newton_solve(model, abs_tol=1e-14, rel_tol=1e-14)
 
                 model.evaluate_cauchy()
                 cauchy[:, :, step] = model.Sigma().copy()

@@ -18,6 +18,7 @@ from collections.abc import Mapping
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from numpy.typing import NDArray
 
 from cmad.fem.assembly import params_by_block_from_models
@@ -74,6 +75,7 @@ def _build_fe(model: BeBarElasticPlastic) -> FEProblem:
     )
 
 
+@pytest.mark.slow
 class TestPlaneStressFinitePlastic2D(unittest.TestCase):
 
     def test_converges_and_thins(self) -> None:

@@ -45,6 +45,7 @@ from typing import Any, cast
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from jax.flatten_util import ravel_pytree
 from jax.tree_util import tree_map
 
@@ -503,6 +504,7 @@ class TestCoupledSingleStep(unittest.TestCase):
             _J2_FD_PARAM_PATHS,
         )
 
+    @pytest.mark.slow
     def test_hessian_matches_fd(self) -> None:
         _compare_hessian_ad_vs_fd(
             self, self.J, self.hess_J, self.params_at,

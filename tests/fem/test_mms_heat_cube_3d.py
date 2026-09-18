@@ -12,6 +12,7 @@ import unittest
 from collections.abc import Callable
 
 import numpy as np
+import pytest
 from numpy.typing import NDArray
 from sympy import pi, sin, symbols
 
@@ -69,6 +70,7 @@ def _build_fe_problem(
     )
 
 
+@pytest.mark.slow
 class TestMmsHeatCube3D(unittest.TestCase):
 
     source_fn: Callable[

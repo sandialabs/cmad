@@ -174,17 +174,14 @@ def run_primal_pass(
 ]:
     """Run a forward pass and return ``(cauchy, xi_trajectory, solver_log, J)``.
 
-    One primal time-step loop with stress and state-variable recording,
-    optionally accumulating the scalar QoI value ``J`` when ``qoi`` is
-    supplied. Without a QoI the returned ``J`` is ``0.0``. Callable by
-    any subcommand that needs primal outputs; the optional-QoI path is
-    what ``cmad objective`` uses to get J alongside cauchy/xi/solver_log
-    in a single forward pass.
-
-    ``times`` holds one time per column of ``F``; step sizes are free to
-    vary over the history. Leaving it ``None`` leaves the model at its
-    default ``step_time``, so every step runs at ``dt = 1``.
+    One time step loop recording the stress, the state, and the local
+    Newton's iteration count and final residual per step; ``J``
+    accumulates the QoI when one is given and is ``0.0`` otherwise.
+    ``times`` are the step times, one per entry of ``F``, unit steps when
+    omitted.
     """
+    if times is None:
+        times = np.arange(num_steps + 1, dtype=np.float64)
     cauchy = np.zeros((3, 3, num_steps + 1))
     model.set_xi_to_init_vals()
     xi_trajectory: list[list[NDArray[np.floating]]] = [
@@ -198,8 +195,7 @@ def run_primal_pass(
             mp_U_from_F(F[:, :, step]),
             mp_U_from_F(F[:, :, step - 1]),
         )
-        if times is not None:
-            model.gather_time(StepTime(times[step], times[step - 1]))
+        model.gather_time(StepTime(times[step], times[step - 1]))
         iters, final_res = newton_solve(model, **newton_kwargs)
         model.advance_xi()
         model.evaluate_cauchy()

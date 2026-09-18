@@ -14,8 +14,8 @@ from cmad.util.line_search import DEFAULT_LINE_SEARCH_SETTINGS, line_search
 def newton_solve(
         model: SupportsNewton,
         max_iters: int = 10,
-        abs_tol: float = 1e-14,
-        rel_tol: float = 1e-14,
+        abs_tol: float = 1e-12,
+        rel_tol: float = 1e-12,
         max_ls_evals: int = 0,
 ) -> tuple[int, float]:
 
@@ -90,8 +90,8 @@ def newton_solve(
 def make_newton_solve(
         residual: Callable[..., JaxArray],
         max_iters: int = 10,
-        abs_tol: float = 1e-14,
-        rel_tol: float = 1e-14,
+        abs_tol: float = 1e-12,
+        rel_tol: float = 1e-12,
         print_local_convergence: bool = False,
         line_search_settings: dict[str, Any] | None = None,
         initial_guess_fn: Callable[..., StateList] | None = None,

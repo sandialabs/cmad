@@ -62,7 +62,7 @@ from cmad.io.registry import (
     resolve_qoi,
 )
 from cmad.io.schema import validate_deck
-from cmad.io.times import load_time_schedule
+from cmad.io.times import read_times
 from cmad.models.deformation_types import DefType
 from cmad.models.mechanics_model import MechanicsModel
 from cmad.models.model import Model
@@ -103,14 +103,8 @@ def build_mp_problem(
 
     Runs deck load + defaults + schema validation, resolves the
     registered model and (for all subcommands except ``primal``) QoI,
-    builds parameters, and loads the deformation and time histories. The
-    returned problem's ``qoi`` is ``None`` iff ``subcommand == "primal"``.
-
-    The time history is optional in the deck; when it is absent the
-    returned ``times`` is ``0, 1, 2, ...``, so every step runs at
-    ``dt = 1`` exactly as it did before decks carried time at all. A
-    model that reports ``requires_step_time`` (a viscoplastic flow rule,
-    say) is refused rather than defaulted.
+    builds parameters, and loads the deformation history. The returned
+    problem's ``qoi`` is ``None`` iff ``subcommand == "primal"``.
     """
     deck = load_deck(deck_path)
     resolved = apply_deck_defaults(deck)
@@ -131,20 +125,7 @@ def build_mp_problem(
     F = load_history(
         resolved["deformation"], expected_ndims=model.ndims,
     )
-
-    num_steps = F.shape[2] - 1
-    loaded_times = load_times(resolved["deformation"], num_steps)
-    if loaded_times is None and model.requires_step_time:
-        raise ValueError(
-            f"deformation: model.name '{resolved['model']['name']}' needs "
-            f"real step sizes (its flow is rate dependent), but the "
-            f"deformation section carries no time history; supply one as "
-            f"'times', 'times file', or 'num steps' + 'step size'",
-        )
-    times = (
-        np.arange(num_steps + 1, dtype=np.float64)
-        if loaded_times is None else loaded_times
-    )
+    times = load_times(resolved["deformation"], F.shape[2] - 1)
 
     qoi: QoI | None = None
     if subcommand != "primal":
@@ -1146,11 +1127,13 @@ def _load_t_schedule(
     """Materialize the time schedule from the ``discretization`` section.
 
     Three branches mirror the schema's ``oneOf`` in
-    ``discretization.yaml``: ``num steps`` + ``step size`` produces an
-    arithmetic sweep including the initial time; ``times file`` reads a
-    1D array from disk (``.npy`` via ``np.load``, ``.txt`` / ``.csv``
-    via ``np.loadtxt``); ``times`` consumes an inline list. The material
-    point path spells the same three the same way inside ``deformation``,
-    so the branch dispatch is shared in :mod:`cmad.io.times`.
+    ``discretization.yaml``: ``times`` and ``times file`` through
+    :func:`cmad.io.times.read_times`, and ``num steps`` + ``step size``
+    as an arithmetic sweep including the initial time.
     """
-    return load_time_schedule(disc_section, context="discretization")
+    times = read_times(disc_section, "discretization")
+    if times is not None:
+        return times
+    n = int(disc_section["num steps"])
+    dt = float(disc_section["step size"])
+    return np.arange(n + 1, dtype=np.float64) * dt
