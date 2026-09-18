@@ -61,6 +61,13 @@ class StepTime:
         return cls(t=t, t_prev=t_prev)
 
 
+def temperature_at_point(U: GlobalFieldsAtPoint) -> Scalar | None:
+    """``None`` when the point carries no ``T`` field."""
+    if "T" in U.fields:
+        return U.fields["T"][0]
+    return None
+
+
 def mp_U_from_F(F: NDArray[np.floating] | JaxArray) -> GlobalFieldsAtPoint:
     """Build the MP-level U from a prescribed F: grad_fields['u'] = F - I."""
     F_jax = jnp.asarray(F)

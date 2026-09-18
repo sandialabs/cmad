@@ -118,7 +118,7 @@ def run_test(R_matrices, Y, diff_tol):
                     mp_U_from_F(R_matrix.T @ F[:, :, step - 1] @ R_matrix),
                 )
 
-                newton_solve(model)
+                newton_solve(model, abs_tol=1e-14, rel_tol=1e-14)
                 model.store_xi(xi_at_step, model.xi(), step)
 
                 model.seed_none()
@@ -144,7 +144,7 @@ def run_test(R_matrices, Y, diff_tol):
                     mp_U_from_F(F[:, :, step - 1]),
                 )
 
-                newton_solve(model)
+                newton_solve(model, abs_tol=1e-14, rel_tol=1e-14)
                 model.store_xi(xi_at_step, model.xi(), step)
 
                 model.seed_none()

@@ -15,7 +15,7 @@ supply on its own.
 """
 from collections.abc import Callable
 from functools import partial
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import jax.numpy as jnp
 import numpy as np
@@ -25,8 +25,12 @@ from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.effective_stress import J2_effective_stress
 from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.elastic_stress import two_mu_scale_factor
-from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
-from cmad.models.hardening import combined_hardening_fun, get_hardening_funs
+from cmad.models.flow_stress import make_yield_function
+from cmad.models.global_fields import (
+    GlobalFieldsAtPoint,
+    StepTime,
+    temperature_at_point,
+)
 from cmad.models.kinematics import det_3x3, gather_F, inv_3x3
 from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
@@ -115,39 +119,43 @@ def initial_guess(
 
 
 def compute_yield_fun(
-        zeta: StateBlock, alpha: StateBlock, params: dict[str, Any],
-        hardening: Callable[..., JaxArray],
+        zeta: JaxArray, alpha: StateBlock, alpha_prev: StateBlock,
+        params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
+        yield_function: Callable[..., JaxArray],
 ) -> JaxArray:
     """Von Mises yield function on the Kirchhoff stress.
 
-    The deviatoric Kirchhoff stress is ``s = mu * zeta``; the J2 effective
-    stress is evaluated on it, and the flow stress is the modular
-    hardening.
+    ``zeta`` is the deviator of ``be_bar`` as a tensor; the deviatoric
+    Kirchhoff stress is ``s = mu * zeta``, and the J2 effective stress is
+    evaluated on it.
     """
     plastic_params = params["plastic"]
-    Y = plastic_params["flow stress"]["initial yield"]["Y"]
-    hardening_params = plastic_params["flow stress"]["hardening"]
     mu = ElasticConstants.from_params(params["elastic"]).mu
 
-    s = mu * get_sym_tensor_from_vector(zeta, 3)
+    s = mu * zeta
     phi = J2_effective_stress(s, None)
-    sigma_flow = Y + hardening(alpha, hardening_params)
+    alpha_dot = (alpha - alpha_prev) / step_time.dt
+    yield_fun = yield_function(phi, alpha, alpha_dot, temperature_at_point(U),
+                               plastic_params["flow stress"])
 
-    return (phi - sigma_flow) / two_mu_scale_factor(params)
+    return yield_fun / two_mu_scale_factor(params)
 
 
 def compute_yield_fun_and_normal(
-        zeta: StateBlock, alpha: StateBlock, params: dict[str, Any],
-        hardening: Callable[..., JaxArray], is_complex: bool,
+        zeta: JaxArray, alpha: StateBlock, alpha_prev: StateBlock,
+        params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
+        yield_function: Callable[..., JaxArray], is_complex: bool,
 ) -> tuple[JaxArray, JaxArray]:
     """Yield function and flow normal, the gradient of the J2 effective
     stress at the deviatoric Kirchhoff stress.
     """
     mu = ElasticConstants.from_params(params["elastic"]).mu
-    s = mu * get_sym_tensor_from_vector(zeta, 3)
+    s = mu * zeta
     yield_normal = grad(J2_effective_stress, holomorphic=is_complex)(s, None)
 
-    return compute_yield_fun(zeta, alpha, params, hardening), yield_normal
+    return compute_yield_fun(
+        zeta, alpha, alpha_prev, params, U, step_time, yield_function,
+    ), yield_normal
 
 
 class BeBarElasticPlastic(MechanicsModel):
@@ -178,8 +186,6 @@ class BeBarElasticPlastic(MechanicsModel):
                 "be_bar_elastic_plastic supports FULL_3D, PLANE_STRAIN and "
                 "PLANE_STRESS",
             )
-        if hardening_funs is None:
-            hardening_funs = get_hardening_funs()
 
         self._is_complex = is_complex
         self.dtype = complex if is_complex else float
@@ -232,11 +238,14 @@ class BeBarElasticPlastic(MechanicsModel):
 
         self.parameters = parameters
 
+        plastic_subtree = cast(dict[str, Any], parameters.values["plastic"])
+        yield_function = make_yield_function(
+            plastic_subtree["flow stress"], hardening_funs)
+
         residual = partial(
             self._residual_fn,
             def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
-            hardening=partial(
-                combined_hardening_fun, hardening_funs=hardening_funs),
+            yield_function=yield_function,
             yield_tol=yield_tol, is_complex=is_complex)
 
         cauchy = partial(
@@ -270,7 +279,7 @@ class BeBarElasticPlastic(MechanicsModel):
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             step_time: StepTime,
             def_type: int, oop_stretch_idx: int,
-            hardening: Callable[..., JaxArray],
+            yield_function: Callable[..., JaxArray],
             yield_tol: float, is_complex: bool,
     ) -> JaxArray:
 
@@ -285,9 +294,11 @@ class BeBarElasticPlastic(MechanicsModel):
         dev_be_bar_trial = get_sym_tensor_from_vector(xi_elastic[0], 3)
 
         yield_fun, yield_normal = compute_yield_fun_and_normal(
-            xi[0], alpha, params, hardening, is_complex)
+            zeta, alpha, alpha_prev, params, U, step_time, yield_function,
+            is_complex)
         trial_yield_fun = compute_yield_fun(
-            xi_elastic[0], alpha_prev, params, hardening)
+            dev_be_bar_trial, alpha_prev, alpha_prev, params, U, step_time,
+            yield_function)
         delta_gamma = alpha - alpha_prev
 
         C_elastic = jnp.concatenate(
@@ -310,7 +321,7 @@ class BeBarElasticPlastic(MechanicsModel):
             C_plastic = jnp.r_[C_plastic, C_oop]
 
         return cond_residual(trial_yield_fun, C_elastic, C_plastic,
-                             yield_threshold(yield_tol, params))
+                             yield_threshold(yield_tol, params, yield_function))
 
     @staticmethod
     def _cauchy_fn(

@@ -113,6 +113,37 @@ def params_J2_voce(flat_param_values, scale_params):
     return J2_parameters, hill_parameters, hosford_parameters
 
 
+def params_J2_johnson_cook(flat_param_values):
+    """J2 with the Johnson-Cook relation, ``A``, ``B``, ``n``, and ``C``
+    active; the reference rate sits below the plastic rate of a unit step
+    so the rate term's logarithm is exercised.
+    """
+    E, nu, A, B, n, C = flat_param_values
+
+    values = {
+        "rotation matrix": np.eye(3),
+        "elastic": {"E": E, "nu": nu},
+        "plastic": {
+            "effective stress": {"J2": 0.},
+            "flow stress": {
+                "johnson_cook": {
+                    "A": A, "B": B, "n": n, "C": C,
+                    "reference rate": 1e-5,
+                    "reference temperature": 294.,
+                    "melt temperature": 1793.,
+                    "m": 1.03,
+                },
+            },
+        },
+    }
+    active_flags = tree_map(lambda a: False, values)
+    for name in ("A", "B", "n", "C"):
+        active_flags["plastic"]["flow stress"]["johnson_cook"][name] = True
+    transforms = tree_map(lambda a: None, values)
+
+    return Parameters(values, active_flags, transforms)
+
+
 def params_hyperelastic(flat_param_values):
 
     kappa, mu = flat_param_values

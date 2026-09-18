@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Any
 
 import jax.numpy as jnp
@@ -6,16 +7,22 @@ from cmad.models.elastic_stress import two_mu_scale_factor
 from cmad.typing import JaxArray, Scalar
 
 
-def yield_threshold(yield_tol: float, params: dict[str, Any]) -> Scalar:
+def yield_threshold(
+        yield_tol: float, params: dict[str, Any],
+        yield_function: Callable[..., JaxArray],
+) -> Scalar:
     """Threshold on the yield function for :func:`cond_residual`.
 
-    ``yield_tol`` is relative to the initial yield stress, so one number
-    means the same thing across materials and unit systems. The models
-    divide the yield function by ``two_mu_scale_factor``, so the threshold
+    ``yield_tol`` is relative to the flow stress at the relation's
+    reference state (zero strain, zero rate, the reference temperature),
+    the negated yield function at zero stress, so a single number means
+    the same thing across materials and unit systems. The models divide
+    the yield function by ``two_mu_scale_factor``, so the threshold
     carries that factor too.
     """
-    Y = params["plastic"]["flow stress"]["initial yield"]["Y"]
-    return yield_tol * Y / two_mu_scale_factor(params)
+    flow_params = params["plastic"]["flow stress"]
+    reference_flow_stress = -yield_function(0.0, 0.0, 0.0, None, flow_params)
+    return yield_tol * reference_flow_stress / two_mu_scale_factor(params)
 
 
 def cond_residual(

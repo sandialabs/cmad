@@ -16,7 +16,10 @@ from cmad.objectives.mp_objective import (
 )
 from cmad.parameters.parameters import Parameters
 from cmad.qois.calibration import Calibration
-from tests.support.test_problems import J2AnalyticalProblem
+from tests.support.test_problems import (
+    J2AnalyticalProblem,
+    params_J2_johnson_cook,
+)
 
 
 def compute_cauchy(model, F):
@@ -386,6 +389,43 @@ def plane_stress_fd_checks(Model, scale_params):
     assert complex_hessian_log10_error_drop > error_drop_tol
 
 
+def plane_stress_fd_checks_johnson_cook(Model):
+    """Real finite differences only: the relation's clips are not
+    holomorphic, so the complex step does not apply.
+    """
+    flat_param_values = np.array([200e3, 0.3, 200., 300., 0.3, 0.014])
+    parameters = params_J2_johnson_cook(flat_param_values)
+    F = get_plane_stress_deformation_gradient()
+    model = Model(parameters, DefType.PLANE_STRESS)
+    cauchy = compute_cauchy(model, F)
+    data, weight = get_plane_stress_data_and_weight(cauchy)
+    qoi = Calibration(model, data, weight)
+
+    true_active_param_values = model.parameters.flat_active_values(False)
+    offset_param_values = 1.1 * true_active_param_values
+    error_drop_tol = 5.
+
+    model.parameters.set_active_values_from_flat(offset_param_values, False)
+    fs_fd_error, adjoint_fd_error = fd_grad_check(qoi, F)
+    assert np.allclose(fs_fd_error, adjoint_fd_error)
+    grad_log10_error_drop = \
+        np.log10(np.max(fs_fd_error) / np.min(fs_fd_error))
+    assert grad_log10_error_drop > error_drop_tol
+
+    model.parameters.set_active_values_from_flat(offset_param_values, False)
+    fs_component_error, adjoint_component_error = \
+        fd_grad_check_components(qoi, F)
+    assert np.linalg.norm(fs_component_error - adjoint_component_error) < 5e-8
+
+    model.parameters.set_active_values_from_flat(offset_param_values, False)
+    hessian_fd_error = fd_hessian_check(qoi, F)
+    hessian_log10_error_drop = \
+        np.log10(np.max(hessian_fd_error) / np.min(hessian_fd_error))
+    assert hessian_log10_error_drop > error_drop_tol
+
+    return grad_log10_error_drop, hessian_log10_error_drop
+
+
 class TestJ2FDChecks(unittest.TestCase):
 
     def test_J2_finite_difference_checks(self):
@@ -394,6 +434,10 @@ class TestJ2FDChecks(unittest.TestCase):
 
         for Model, scale_params in zip(Models, scale_params_list, strict=True):
             plane_stress_fd_checks(Model, scale_params)
+
+    def test_johnson_cook_finite_difference_checks(self):
+        for Model in (SmallElasticPlastic, SmallRateElasticPlastic):
+            plane_stress_fd_checks_johnson_cook(Model)
 
 if __name__ == "__main__":
     J2_FD_checks_test_suite = unittest.TestLoader().loadTestsFromTestCase(
