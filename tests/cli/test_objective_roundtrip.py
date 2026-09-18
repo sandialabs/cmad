@@ -20,6 +20,13 @@ from cmad.models.deformation_types import DefType
 from cmad.models.global_fields import mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
+from tests.cli.test_primal_roundtrip import johnson_cook_deck, two_rate_schedule
+from tests.models.test_rate_dependent_uniaxial import (
+    NUM_STEPS,
+    johnson_cook_flow_stress,
+    return_map,
+    stress_bound,
+)
 from tests.support.test_problems import J2AnalyticalProblem
 
 
@@ -103,6 +110,46 @@ class TestObjectiveRoundTrip(unittest.TestCase):
                 J_out = json.load(f)["J"]
 
             self.assertAlmostEqual(J_out, 0.0, places=10)
+
+
+class TestObjectiveRoundTripTimes(unittest.TestCase):
+    """The data is the return map's stresses on the two rate schedule.
+
+    With the schedule's times in the input file, J at the truth is zero
+    to the local Newton tolerance; with unit steps instead, the model
+    sees a different plastic strain rate at every step and J is large.
+    """
+
+    def test_johnson_cook_two_rates(self) -> None:
+        strains, times = two_rate_schedule()
+        sigma_ref, _, _ = return_map(johnson_cook_flow_stress, strains, times)
+        cauchy_data = np.zeros((3, 3, NUM_STEPS + 1))
+        cauchy_data[0, 0, :] = sigma_ref
+
+        def J_from(deck: dict, tmp: Path, name: str) -> float:
+            deck["qoi"] = {
+                "name": "calibration",
+                "data_file": str(tmp / "cauchy_data.npy"),
+                "weight": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            }
+            deck["output"] = {"path": str(tmp / name)}
+            deck_path = tmp / f"{name}.yaml"
+            deck_path.write_text(yaml.safe_dump(deck, sort_keys=False))
+            self.assertEqual(cmad_main(["objective", str(deck_path)]), 0)
+            with (tmp / name / "J.json").open("r") as f:
+                return float(json.load(f)["J"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            np.save(tmp / "F.npy", (1.0 + strains)[None, None, :])
+            np.save(tmp / "cauchy_data.npy", cauchy_data)
+            J_with = J_from(johnson_cook_deck(tmp, times), tmp, "with_times")
+            J_without = J_from(johnson_cook_deck(tmp, None), tmp, "unit_steps")
+
+        # J sums the squared stress mismatch over the steps, each under
+        # the stress agreement the local Newton tolerance permits.
+        self.assertLess(J_with, NUM_STEPS * stress_bound() ** 2)
+        self.assertGreater(J_without, 1.0)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,12 @@ additionalProperties: false
 properties:
   history_file:
     type: string
+  times:
+    type: array
+    minItems: 2
+    items: {type: number}
+  times file:
+    type: string
   inline:
     type: array
     minItems: 2

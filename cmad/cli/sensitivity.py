@@ -88,6 +88,7 @@ class _JVPDriver:
     def __init__(
             self, qoi: QoI, global_state: NDArray[np.floating],
             newton_kwargs: dict[str, Any],
+            times: NDArray[np.floating] | None = None,
     ) -> None:
         model = qoi.model()
         # The deck's solver.newton dict carries max_ls_evals for the
@@ -104,7 +105,7 @@ class _JVPDriver:
                 rel_tol=newton_kwargs["rel_tol"],
             ),
         )
-        self._jvp_obj = MPJVPObjective(qoi, global_state, update_fun)
+        self._jvp_obj = MPJVPObjective(qoi, global_state, update_fun, times)
 
     def evaluate_grad(
             self, x: NDArray[np.floating],
@@ -133,6 +134,7 @@ def build_sensitivity_driver(
         global_state: NDArray[np.floating],
         newton_kwargs: dict[str, Any],
         subcommand: str,
+        times: NDArray[np.floating] | None = None,
 ) -> SensitivityDriver:
     """Build the right driver for ``sensitivity.type`` and ``subcommand``.
 
@@ -168,13 +170,15 @@ def build_sensitivity_driver(
         )
 
     if stype == "adjoint":
-        return _ObjectiveFamilyDriver(MPAdjointObjective(qoi, global_state))
+        return _ObjectiveFamilyDriver(
+            MPAdjointObjective(qoi, global_state, times))
     if stype == "direct":
-        return _ObjectiveFamilyDriver(MPDirectObjective(qoi, global_state))
+        return _ObjectiveFamilyDriver(
+            MPDirectObjective(qoi, global_state, times))
     if stype == "direct_adjoint":
         return _ObjectiveFamilyDriver(
-            MPDirectAdjointObjective(qoi, global_state),
+            MPDirectAdjointObjective(qoi, global_state, times),
         )
     if stype == "jvp":
-        return _JVPDriver(qoi, global_state, newton_kwargs)
+        return _JVPDriver(qoi, global_state, newton_kwargs, times)
     raise ValueError(f"sensitivity.type: unknown value {stype!r}")

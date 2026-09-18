@@ -51,7 +51,7 @@ from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.calibration_data import CalibrationData, is_calibration_data
 from cmad.io.deck import apply_deck_defaults, load_deck
-from cmad.io.deformation import load_history
+from cmad.io.deformation import load_history, load_times
 from cmad.io.expressions import parse_scalar_expression
 from cmad.io.mesh_io import read_mesh_file
 from cmad.io.params_builder import build_parameters
@@ -62,6 +62,7 @@ from cmad.io.registry import (
     resolve_qoi,
 )
 from cmad.io.schema import validate_deck
+from cmad.io.times import read_times
 from cmad.models.deformation_types import DefType
 from cmad.models.mechanics_model import MechanicsModel
 from cmad.models.model import Model
@@ -77,6 +78,7 @@ class MPProblem:
     parameters: Parameters
     model: MechanicsModel
     F: NDArray[np.float64]
+    times: NDArray[np.float64]
     qoi: QoI | None
 
 
@@ -123,6 +125,7 @@ def build_mp_problem(
     F = load_history(
         resolved["deformation"], expected_ndims=model.ndims,
     )
+    times = load_times(resolved["deformation"], F.shape[2] - 1)
 
     qoi: QoI | None = None
     if subcommand != "primal":
@@ -139,7 +142,7 @@ def build_mp_problem(
 
     return MPProblem(
         resolved=resolved, parameters=parameters,
-        model=model, F=F, qoi=qoi,
+        model=model, F=F, times=times, qoi=qoi,
     )
 
 
@@ -1124,28 +1127,13 @@ def _load_t_schedule(
     """Materialize the time schedule from the ``discretization`` section.
 
     Three branches mirror the schema's ``oneOf`` in
-    ``discretization.yaml``: ``num steps`` + ``step size`` produces an
-    arithmetic sweep including the initial time; ``times file`` reads a
-    1D array from disk (``.npy`` via ``np.load``, ``.txt`` / ``.csv``
-    via ``np.loadtxt``); ``times`` consumes an inline list.
+    ``discretization.yaml``: ``times`` and ``times file`` through
+    :func:`cmad.io.times.read_times`, and ``num steps`` + ``step size``
+    as an arithmetic sweep including the initial time.
     """
-    if "times" in disc_section:
-        return np.asarray(
-            disc_section["times"], dtype=np.float64,
-        ).ravel()
-    if "times file" in disc_section:
-        path = Path(disc_section["times file"])
-        suffix = path.suffix.lower()
-        if suffix == ".npy":
-            data = np.load(path)
-        elif suffix in (".txt", ".csv"):
-            data = np.loadtxt(path)
-        else:
-            raise ValueError(
-                f"discretization.times file: unsupported extension "
-                f"'{suffix}' for path {path}; expected .npy/.txt/.csv",
-            )
-        return np.asarray(data, dtype=np.float64).ravel()
+    times = read_times(disc_section, "discretization")
+    if times is not None:
+        return times
     n = int(disc_section["num steps"])
     dt = float(disc_section["step size"])
     return np.arange(n + 1, dtype=np.float64) * dt

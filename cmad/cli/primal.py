@@ -34,7 +34,7 @@ from cmad.io.writers import (
     write_solver_log,
     write_xi,
 )
-from cmad.models.global_fields import mp_U_from_F
+from cmad.models.global_fields import StepTime, mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
 from cmad.qois.qoi import QoI
 from cmad.remap.locate import sample_fe_displacement_cloud
@@ -72,7 +72,7 @@ def _run_primal_mp(deck_path: Path) -> int:
 
     newton_kwargs = graph.resolved["solver"]["newton"]
     cauchy, xi_trajectory, solver_log, _ = run_primal_pass(
-        graph.model, graph.F, num_steps, newton_kwargs,
+        graph.model, graph.F, num_steps, newton_kwargs, times=graph.times,
     )
 
     if "output" in graph.resolved:
@@ -165,6 +165,7 @@ def run_primal_pass(
         num_steps: int,
         newton_kwargs: dict[str, Any],
         qoi: QoI | None = None,
+        times: NDArray[np.floating] | None = None,
 ) -> tuple[
     NDArray[np.floating],
     list[list[NDArray[np.floating]]],
@@ -173,13 +174,14 @@ def run_primal_pass(
 ]:
     """Run a forward pass and return ``(cauchy, xi_trajectory, solver_log, J)``.
 
-    One primal time-step loop with stress and state-variable recording,
-    optionally accumulating the scalar QoI value ``J`` when ``qoi`` is
-    supplied. Without a QoI the returned ``J`` is ``0.0``. Callable by
-    any subcommand that needs primal outputs; the optional-QoI path is
-    what ``cmad objective`` uses to get J alongside cauchy/xi/solver_log
-    in a single forward pass.
+    One time step loop recording the stress, the state, and the local
+    Newton's iteration count and final residual per step; ``J``
+    accumulates the QoI when one is given and is ``0.0`` otherwise.
+    ``times`` are the step times, one per entry of ``F``, unit steps when
+    omitted.
     """
+    if times is None:
+        times = np.arange(num_steps + 1, dtype=np.float64)
     cauchy = np.zeros((3, 3, num_steps + 1))
     model.set_xi_to_init_vals()
     xi_trajectory: list[list[NDArray[np.floating]]] = [
@@ -193,6 +195,7 @@ def run_primal_pass(
             mp_U_from_F(F[:, :, step]),
             mp_U_from_F(F[:, :, step - 1]),
         )
+        model.gather_time(StepTime(times[step], times[step - 1]))
         iters, final_res = newton_solve(model, **newton_kwargs)
         model.advance_xi()
         model.evaluate_cauchy()

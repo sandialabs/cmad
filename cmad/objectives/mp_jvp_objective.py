@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from functools import partial
 
+import jax.numpy as jnp
 import numpy as np
 from jax import hessian, jit, value_and_grad
 from jax.lax import fori_loop
@@ -20,10 +21,15 @@ class MPJVPObjective:
     def __init__(
             self, qoi: QoI, global_state: NDArray[np.floating],
             update_fun: Callable[..., StateList],
+            times: NDArray[np.floating] | None = None,
     ) -> None:
 
+        num_steps = global_state.shape[-1] - 1
+        if times is None:
+            times = np.arange(num_steps + 1, dtype=np.float64)
         pt_compute_objective = partial(self._compute_objective_fun,
-            qoi=qoi, F=global_state, update_fun=update_fun
+            qoi=qoi, F=global_state, times=jnp.asarray(times),
+            update_fun=update_fun
         )
 
         self.evaluate_objective = jit(pt_compute_objective)
@@ -42,6 +48,7 @@ class MPJVPObjective:
             flat_active_values: NDArray[np.floating],
             qoi: QoI,
             F: NDArray[np.floating],
+            times: JaxArray,
             update_fun: Callable[..., StateList],
     ) -> JaxArray:
 
@@ -59,12 +66,12 @@ class MPJVPObjective:
         )
 
         num_steps = F.shape[-1] - 1
-        step_time = StepTime(1.0, 0.0)
 
         def body_fun(step, carry):
             J, xi, xi_prev, params, F, data, weight = carry
             U = mp_U_from_F(F[:, :, step])
             U_prev = mp_U_from_F(F[:, :, step - 1])
+            step_time = StepTime(times[step], times[step - 1])
             xi = update_fun(xi_prev, params, U, U_prev, step_time)
 
             carry = (qoi._qoi(xi, xi_prev, params, U, U_prev,

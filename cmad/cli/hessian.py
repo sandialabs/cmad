@@ -63,7 +63,7 @@ def _run_hessian_mp(deck_path: Path) -> int:
     newton_kwargs = graph.resolved["solver"]["newton"]
     driver = build_sensitivity_driver(
         graph.resolved["sensitivity"], qoi, graph.F, newton_kwargs,
-        subcommand="hessian",
+        subcommand="hessian", times=graph.times,
     )
     x = graph.parameters.flat_active_values(return_canonical=True)
     result = driver.evaluate_hess(x)

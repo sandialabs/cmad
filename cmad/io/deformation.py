@@ -31,6 +31,11 @@ Two input modes are supported:
 ``def_type_ndims`` in every registered model's ``__init__``). Any shape
 mismatch raises with the expected ``n`` and the loaded ``n`` both named,
 before the array is handed to the primal or sensitivity loop.
+
+:func:`load_times` reads the optional step times, ``times`` inline or
+``times file`` on disk, one per entry of the history; without either the
+steps are unit steps, which a rate-dependent material reads as one
+increment per unit time.
 """
 
 from __future__ import annotations
@@ -40,6 +45,8 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
+
+from cmad.io.times import read_times
 
 
 def load_history(
@@ -68,6 +75,22 @@ def load_history(
         )
     _check_ndims(arr, expected_ndims)
     return arr
+
+
+def load_times(
+        deformation_section: dict[str, Any],
+        num_steps: int,
+) -> NDArray[np.float64]:
+    """The step times, ``(num_steps + 1,)``; unit steps without an entry."""
+    times = read_times(deformation_section, "deformation")
+    if times is None:
+        return np.arange(num_steps + 1, dtype=np.float64)
+    if times.shape[0] != num_steps + 1:
+        raise ValueError(
+            f"deformation: {times.shape[0]} times for a history of "
+            f"{num_steps + 1} entries; one time per entry is required",
+        )
+    return times
 
 
 def _load_from_file(path: Path) -> NDArray[np.float64]:
