@@ -96,15 +96,19 @@ _POLAR_ROTATION_TOL = 1e-14
 _POLAR_ROTATION_MAX_ITERS = 30
 
 
-def _polar_rotation_equations(R_flat: JaxArray, F: JaxArray) -> JaxArray:
-    """The nine equations the polar rotation of ``F`` satisfies: the upper
-    triangle of ``RᵀR - I`` and the three components of ``skew(RᵀF)``."""
-    R = R_flat.reshape(3, 3)
-    orthogonality = R.T @ R - jnp.eye(3)
-    stretch = R.T @ F
+def _skew_matrix(w: JaxArray) -> JaxArray:
+    return jnp.array([[0.0, -w[2], w[1]],
+                      [w[2], 0.0, -w[0]],
+                      [-w[1], w[0], 0.0]])
+
+
+def _polar_rotation_equations(
+        w: JaxArray, R: JaxArray, F: JaxArray,
+) -> JaxArray:
+    """The three components of ``skew(R_wᵀ F)`` for ``R_w = R (I + skew(w))``,
+    zero at ``w = 0`` when ``R`` is the polar rotation of ``F``."""
+    stretch = (R @ (jnp.eye(3) + _skew_matrix(w))).T @ F
     return jnp.stack([
-        orthogonality[0, 0], orthogonality[0, 1], orthogonality[0, 2],
-        orthogonality[1, 1], orthogonality[1, 2], orthogonality[2, 2],
         stretch[0, 1] - stretch[1, 0],
         stretch[0, 2] - stretch[2, 0],
         stretch[1, 2] - stretch[2, 1],
@@ -117,8 +121,8 @@ def polar_rotation(F: JaxArray) -> JaxArray:
 
     The scaled Newton iteration ``R <- (g R + R⁻ᵀ / g) / 2`` from ``R = F``
     (Higham 1986), run until the relative change is under
-    ``_POLAR_ROTATION_TOL``. The derivative comes from the implicit
-    function theorem on ``_polar_rotation_equations``.
+    ``_POLAR_ROTATION_TOL``. The derivative is ``R skew(w)``, ``w`` from the
+    implicit function theorem on ``_polar_rotation_equations``.
     """
     def cond_fun(carry: tuple[JaxArray, JaxArray, JaxArray]) -> JaxArray:
         k, R, R_prev = carry
@@ -146,12 +150,11 @@ def _polar_rotation_jvp(
     F = primals[0]
     dF = tangents[0]
     R = polar_rotation(F)
-    R_flat = R.reshape(-1)
-    dg_dR = jacfwd(_polar_rotation_equations)(R_flat, F)
-    _, dg_dF = jvp(
-        lambda F_: _polar_rotation_equations(R_flat, F_), (F,), (dF,))
-    dR = jnp.linalg.solve(dg_dR, -dg_dF).reshape(3, 3)
-    return R, dR
+    zero = jnp.zeros(3)
+    A = jacfwd(_polar_rotation_equations)(zero, R, F)
+    _, b = jvp(
+        lambda F_: _polar_rotation_equations(zero, R, F_), (F,), (dF,))
+    return R, -R @ _skew_matrix(inv_3x3(A) @ b)
 
 
 def unrotated_rate_of_deformation(
