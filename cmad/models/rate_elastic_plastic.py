@@ -50,9 +50,25 @@ from cmad.models.var_types import (
     get_sym_tensor_from_vector,
     get_vector,
     get_vector_from_sym_tensor,
+    put_2D_tensor_into_3D,
 )
 from cmad.parameters.parameters import Parameters
-from cmad.typing import JaxArray, Scalar, StateList
+from cmad.typing import JaxArray, Scalar, StateBlock, StateList
+
+
+def stress_from_state(xi: StateList, def_type: int) -> JaxArray:
+    """Material frame stress as a 3x3, zero where the def type stores no
+    component."""
+    if def_type == DefType.PLANE_STRESS:
+        return put_2D_tensor_into_3D(get_sym_tensor_from_vector(xi[0], 2))
+    return get_sym_tensor_from_vector(xi[0], 3)
+
+
+def stored_stress_components(A: JaxArray, def_type: int) -> JaxArray:
+    """The components of a 3x3 that the def type stores, as a vector."""
+    if def_type == DefType.PLANE_STRESS:
+        return get_vector_from_sym_tensor(A[:2, :2], 2)
+    return get_vector_from_sym_tensor(A, 3)
 
 
 def material_frame_increment(
@@ -118,11 +134,11 @@ def elastic_predictor(
     increment = material_frame_increment(
         xi, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
         finite_deformation, has_material_rotation)
-    cauchy_prev = get_sym_tensor_from_vector(xi_prev[0], 3)
+    cauchy_prev = stress_from_state(xi_prev, def_type)
     cauchy_trial = cauchy_prev + elastic_stress(increment, params)
 
     return [
-        get_vector_from_sym_tensor(cauchy_trial, 3),
+        stored_stress_components(cauchy_trial, def_type),
         xi_prev[1],
         *xi[2:],
     ]
@@ -145,21 +161,15 @@ def initial_guess(
 
 
 def compute_yield_fun(
-        xi: StateList, xi_prev: StateList, params: dict[str, Any],
-        U: GlobalFieldsAtPoint, step_time: StepTime, def_type: int,
+        cauchy: JaxArray, alpha: StateBlock, alpha_prev: StateBlock,
+        params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
         effective_stress: Callable[..., JaxArray],
         yield_function: Callable[..., JaxArray],
 ) -> JaxArray:
 
-    def_type_ndims(def_type)
-
     plastic_params = params["plastic"]
 
-    cauchy = get_sym_tensor_from_vector(xi[0], 3)
     phi = effective_stress(cauchy, plastic_params)
-
-    alpha = get_scalar(xi[1])
-    alpha_prev = get_scalar(xi_prev[1])
     alpha_dot = (alpha - alpha_prev) / step_time.dt
     yield_fun = yield_function(phi, alpha, alpha_dot, temperature_at_point(U),
                                plastic_params["flow stress"])
@@ -168,19 +178,18 @@ def compute_yield_fun(
 
 
 def compute_yield_fun_and_normal(
-        xi: StateList, xi_prev: StateList, params: dict[str, Any],
-        U: GlobalFieldsAtPoint, step_time: StepTime, def_type: int,
+        cauchy: JaxArray, alpha: StateBlock, alpha_prev: StateBlock,
+        params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
         effective_stress: Callable[..., JaxArray],
         yield_function: Callable[..., JaxArray],
         is_complex: bool,
 ) -> tuple[JaxArray, JaxArray]:
 
-    cauchy = get_sym_tensor_from_vector(xi[0], 3)
     yield_normal = grad(effective_stress, holomorphic=is_complex)(
         cauchy, params["plastic"])
 
     return compute_yield_fun(
-        xi, xi_prev, params, U, step_time, def_type, effective_stress,
+        cauchy, alpha, alpha_prev, params, U, step_time, effective_stress,
         yield_function), yield_normal
 
 
@@ -211,6 +220,13 @@ class RateElasticPlastic(MechanicsModel):
 
         self.is_finite_deformation = finite_deformation
         has_material_rotation = "rotation matrix" in parameters.values
+        is_2D = def_type in (DefType.PLANE_STRAIN, DefType.PLANE_STRESS)
+        if has_material_rotation and is_2D:
+            Q = np.asarray(parameters.values["rotation matrix"])
+            if not (np.allclose(Q[2, :2], 0.0) and np.allclose(Q[:2, 2], 0.0)):
+                raise ValueError(
+                    "rate_elastic_plastic in plane strain or plane stress "
+                    "needs a rotation matrix about the out-of-plane axis")
 
         self._is_complex = is_complex
         self.dtype = float
@@ -235,11 +251,13 @@ class RateElasticPlastic(MechanicsModel):
 
         self._init_residuals(num_residuals)
 
-        # unrotated (material-frame) cauchy stress state
+        # unrotated (material-frame) cauchy stress state, its in-plane
+        # components under plane stress
         self.var_names[0] = "unrotated_cauchy"
         self.resid_names[0] = "material stress"
         self._var_types[0] = VarType.SYM_TENSOR
-        self._num_eqs[0] = get_num_eqs(VarType.SYM_TENSOR, 3)
+        stress_ndims = 2 if def_type == DefType.PLANE_STRESS else 3
+        self._num_eqs[0] = get_num_eqs(VarType.SYM_TENSOR, stress_ndims)
         init_vec_cauchy = np.zeros(self._num_eqs[0])
 
         # isotropic hardening variable
@@ -351,8 +369,8 @@ class RateElasticPlastic(MechanicsModel):
     ) -> JaxArray:
 
         # state variables for the model
-        cauchy = get_sym_tensor_from_vector(xi[0], 3)
-        cauchy_prev = get_sym_tensor_from_vector(xi_prev[0], 3)
+        cauchy = stress_from_state(xi, def_type)
+        cauchy_prev = stress_from_state(xi_prev, def_type)
         alpha = get_scalar(xi[1])
         alpha_prev = get_scalar(xi_prev[1])
 
@@ -367,28 +385,26 @@ class RateElasticPlastic(MechanicsModel):
         C_elastic_cauchy_tensor = cauchy - cauchy_prev \
             - trial_delta_cauchy
         C_elastic_cauchy = \
-            get_vector_from_sym_tensor(C_elastic_cauchy_tensor, 3) \
+            stored_stress_components(C_elastic_cauchy_tensor, def_type) \
             / scale_factor
         C_elastic_alpha = delta_gamma
 
         # plastic residual
         yield_fun, yield_normal = \
-            compute_yield_fun_and_normal(xi, xi_prev, params, U, step_time,
-                                         def_type, effective_stress,
+            compute_yield_fun_and_normal(cauchy, alpha, alpha_prev, params, U,
+                                         step_time, effective_stress,
                                          yield_function, is_complex)
-        xi_elastic = elastic_predictor(
-            xi, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
-            finite_deformation, has_material_rotation, elastic_stress)
         trial_yield_fun = \
-            compute_yield_fun(xi_elastic, xi_prev, params, U, step_time,
-                              def_type, effective_stress, yield_function)
+            compute_yield_fun(cauchy_prev + trial_delta_cauchy, alpha_prev,
+                              alpha_prev, params, U, step_time,
+                              effective_stress, yield_function)
         plastic_increment = delta_gamma * yield_normal
         delta_cauchy = trial_delta_cauchy \
             - elastic_stress(plastic_increment, params)
         C_plastic_cauchy_tensor = cauchy - cauchy_prev \
             - delta_cauchy
         C_plastic_cauchy = \
-            get_vector_from_sym_tensor(C_plastic_cauchy_tensor, 3) \
+            stored_stress_components(C_plastic_cauchy_tensor, def_type) \
             / scale_factor
         C_plastic_alpha = yield_fun
 
@@ -396,52 +412,45 @@ class RateElasticPlastic(MechanicsModel):
             C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha]
             C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha]
 
-        elif def_type == DefType.PLANE_STRESS or \
-                def_type == DefType.UNIAXIAL_STRESS:
+        elif def_type == DefType.PLANE_STRESS:
+            C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha,
+                               C_elastic_cauchy_tensor[2, 2] / scale_factor]
+            C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha,
+                               C_plastic_cauchy_tensor[2, 2] / scale_factor]
 
+        elif def_type == DefType.UNIAXIAL_STRESS:
             global_trial_delta_cauchy = rotate_out_of_material_frame(
                 trial_delta_cauchy, params, has_material_rotation)
             global_delta_cauchy = rotate_out_of_material_frame(
                 delta_cauchy, params, has_material_rotation)
 
-            if def_type == DefType.PLANE_STRESS:
-                C_elastic_stretch = global_trial_delta_cauchy[2, 2] \
-                    / scale_factor
-                C_plastic_stretch = global_delta_cauchy[2, 2] / scale_factor
+            off_axis_stress_idx = off_axis_idx(uniaxial_stress_idx)
+            first_idx = off_axis_stress_idx[0]
+            second_idx = off_axis_stress_idx[1]
 
-                C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha,
-                                   C_elastic_stretch]
-                C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha,
-                                   C_plastic_stretch]
+            C_elastic_stretch = jnp.r_[
+                global_trial_delta_cauchy[first_idx, first_idx],
+                global_trial_delta_cauchy[second_idx, second_idx]] \
+                / scale_factor
+            C_plastic_stretch = jnp.r_[
+                global_delta_cauchy[first_idx, first_idx],
+                global_delta_cauchy[second_idx, second_idx]] \
+                / scale_factor
+            C_elastic_delta_strain = jnp.r_[
+                global_trial_delta_cauchy[0, 1],
+                global_trial_delta_cauchy[0, 2],
+                global_trial_delta_cauchy[1, 2]
+            ] / scale_factor
+            C_plastic_delta_strain = jnp.r_[
+                global_delta_cauchy[0, 1],
+                global_delta_cauchy[0, 2],
+                global_delta_cauchy[1, 2]
+            ] / scale_factor
 
-            elif def_type == DefType.UNIAXIAL_STRESS:
-                off_axis_stress_idx = off_axis_idx(uniaxial_stress_idx)
-                first_idx = off_axis_stress_idx[0]
-                second_idx = off_axis_stress_idx[1]
-
-                C_elastic_stretch = jnp.r_[
-                    global_trial_delta_cauchy[first_idx, first_idx],
-                    global_trial_delta_cauchy[second_idx, second_idx]] \
-                    / scale_factor
-                C_plastic_stretch = jnp.r_[
-                    global_delta_cauchy[first_idx, first_idx],
-                    global_delta_cauchy[second_idx, second_idx]] \
-                    / scale_factor
-                C_elastic_delta_strain = jnp.r_[
-                    global_trial_delta_cauchy[0, 1],
-                    global_trial_delta_cauchy[0, 2],
-                    global_trial_delta_cauchy[1, 2]
-                ] / scale_factor
-                C_plastic_delta_strain = jnp.r_[
-                    global_delta_cauchy[0, 1],
-                    global_delta_cauchy[0, 2],
-                    global_delta_cauchy[1, 2]
-                ] / scale_factor
-
-                C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha,
-                                   C_elastic_stretch, C_elastic_delta_strain]
-                C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha,
-                                   C_plastic_stretch, C_plastic_delta_strain]
+            C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha,
+                               C_elastic_stretch, C_elastic_delta_strain]
+            C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha,
+                               C_plastic_stretch, C_plastic_delta_strain]
 
         return cond_residual(trial_yield_fun, C_elastic, C_plastic,
                              yield_threshold(yield_tol, params, yield_function))
@@ -457,8 +466,7 @@ class RateElasticPlastic(MechanicsModel):
     ) -> JaxArray:
 
         cauchy = rotate_out_of_material_frame(
-            get_sym_tensor_from_vector(xi[0], 3), params,
-            has_material_rotation)
+            stress_from_state(xi, def_type), params, has_material_rotation)
         if finite_deformation:
             R = polar_rotation(gather_F(xi, U, def_type, 2), def_type)
             cauchy = R @ cauchy @ R.T
