@@ -70,7 +70,8 @@ def material_frame_increment(
         uniaxial_stress_idx)
 
     if finite_deformation:
-        increment = unrotated_rate_of_deformation_increment(F, F_prev)
+        increment = unrotated_rate_of_deformation_increment(
+            F, F_prev, def_type)
     else:
         increment = small_strain_increment(F, F_prev)
 
@@ -459,7 +460,7 @@ class RateElasticPlastic(MechanicsModel):
             get_sym_tensor_from_vector(xi[0], 3), params,
             has_material_rotation)
         if finite_deformation:
-            R = polar_rotation(gather_F(xi, U, def_type, 2))
+            R = polar_rotation(gather_F(xi, U, def_type, 2), def_type)
             cauchy = R @ cauchy @ R.T
 
         return cauchy

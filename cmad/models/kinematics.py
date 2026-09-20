@@ -116,7 +116,7 @@ def _polar_rotation_equations(
 
 
 @custom_jvp
-def polar_rotation(F: JaxArray) -> JaxArray:
+def polar_rotation_3d(F: JaxArray) -> JaxArray:
     """Rotation ``R`` from the right polar decomposition ``F = R U``.
 
     The scaled Newton iteration ``R <- (g R + R⁻ᵀ / g) / 2`` from ``R = F``
@@ -143,18 +143,39 @@ def polar_rotation(F: JaxArray) -> JaxArray:
     return while_loop(cond_fun, body_fun, init)[1]
 
 
-@polar_rotation.defjvp
-def _polar_rotation_jvp(
+@polar_rotation_3d.defjvp
+def _polar_rotation_3d_jvp(
         primals: tuple[JaxArray], tangents: tuple[JaxArray],
 ) -> tuple[JaxArray, JaxArray]:
     F = primals[0]
     dF = tangents[0]
-    R = polar_rotation(F)
+    R = polar_rotation_3d(F)
     zero = jnp.zeros(3)
     A = jacfwd(_polar_rotation_equations)(zero, R, F)
     _, b = jvp(
         lambda F_: _polar_rotation_equations(zero, R, F_), (F,), (dF,))
     return R, -R @ _skew_matrix(inv_3x3(A) @ b)
+
+
+def polar_rotation_in_plane(F: JaxArray) -> JaxArray:
+    """Polar rotation of a block diagonal ``F``, the in-plane 2x2 block
+    and ``F_33``. It is a rotation about z by the angle
+    ``atan2(F21 − F12, F11 + F22)``."""
+    x = F[0, 0] + F[1, 1]
+    y = F[1, 0] - F[0, 1]
+    r = jnp.sqrt(x * x + y * y)
+    cos_theta, sin_theta = x / r, y / r
+    return jnp.array([[cos_theta, -sin_theta, 0.0],
+                      [sin_theta, cos_theta, 0.0],
+                      [0.0, 0.0, 1.0]])
+
+
+def polar_rotation(F: JaxArray, def_type: int = DefType.FULL_3D) -> JaxArray:
+    """Rotation ``R`` from the right polar decomposition ``F = R U``, in
+    closed form for the def types whose ``F`` is block diagonal."""
+    if def_type == DefType.FULL_3D:
+        return polar_rotation_3d(F)
+    return polar_rotation_in_plane(F)
 
 
 def small_strain_increment(F: JaxArray, F_prev: JaxArray) -> JaxArray:
@@ -165,15 +186,16 @@ def small_strain_increment(F: JaxArray, F_prev: JaxArray) -> JaxArray:
 
 def unrotated_rate_of_deformation_increment(
         F: JaxArray, F_prev: JaxArray,
+        def_type: int = DefType.FULL_3D,
 ) -> JaxArray:
     """Unrotated rate of deformation times the step,
     ``D Δt = Rᵀ sym((F - F_prev) F_mid⁻¹) R``, with
     ``F_mid = (F + F_prev) / 2`` (Hughes and Winget 1980) and
-    ``R = polar_rotation(F_mid)``. Its trace is replaced by
+    ``R = polar_rotation(F_mid, def_type)``. Its trace is replaced by
     ``ln(det F / det F_prev)``, the exact integral of ``tr D``.
     """
     F_mid = 0.5 * (F + F_prev)
-    R = polar_rotation(F_mid)
+    R = polar_rotation(F_mid, def_type)
     L = (F - F_prev) @ inv_3x3(F_mid)
     midpoint = R.T @ (0.5 * (L + L.T)) @ R
     deviatoric = midpoint - jnp.trace(midpoint) / 3.0 * jnp.eye(3)
