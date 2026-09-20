@@ -1,5 +1,6 @@
 import jax.numpy as jnp
-from jax.scipy.linalg import polar
+from jax import custom_jvp, jacfwd, jvp
+from jax.lax import while_loop
 
 from cmad.models.deformation_types import DefType
 from cmad.models.global_fields import GlobalFieldsAtPoint
@@ -91,14 +92,66 @@ def inv_3x3(A: JaxArray) -> JaxArray:
     return cof.T / jnp.sum(A[0] * cof[0])
 
 
+_POLAR_ROTATION_TOL = 1e-14
+_POLAR_ROTATION_MAX_ITERS = 30
+
+
+def _polar_rotation_equations(R_flat: JaxArray, F: JaxArray) -> JaxArray:
+    """The nine equations the polar rotation of ``F`` satisfies: the upper
+    triangle of ``RᵀR - I`` and the three components of ``skew(RᵀF)``."""
+    R = R_flat.reshape(3, 3)
+    orthogonality = R.T @ R - jnp.eye(3)
+    stretch = R.T @ F
+    return jnp.stack([
+        orthogonality[0, 0], orthogonality[0, 1], orthogonality[0, 2],
+        orthogonality[1, 1], orthogonality[1, 2], orthogonality[2, 2],
+        stretch[0, 1] - stretch[1, 0],
+        stretch[0, 2] - stretch[2, 0],
+        stretch[1, 2] - stretch[2, 1],
+    ])
+
+
+@custom_jvp
 def polar_rotation(F: JaxArray) -> JaxArray:
     """Rotation ``R`` from the right polar decomposition ``F = R U``.
 
-    ``U`` is the symmetric positive definite right stretch. Uses the QDWH
-    iteration (QR + matmul, no singular vectors), which stays
-    differentiable at repeated singular values.
+    The scaled Newton iteration ``R <- (g R + R⁻ᵀ / g) / 2`` from ``R = F``
+    (Higham 1986), run until the relative change is under
+    ``_POLAR_ROTATION_TOL``. The derivative comes from the implicit
+    function theorem on ``_polar_rotation_equations``.
     """
-    return polar(F, side="right", method="qdwh")[0]
+    def cond_fun(carry: tuple[JaxArray, JaxArray, JaxArray]) -> JaxArray:
+        k, R, R_prev = carry
+        change = jnp.linalg.norm(R - R_prev)
+        return jnp.logical_and(
+            k < _POLAR_ROTATION_MAX_ITERS,
+            change > _POLAR_ROTATION_TOL * jnp.linalg.norm(R))
+
+    def body_fun(
+            carry: tuple[JaxArray, JaxArray, JaxArray],
+    ) -> tuple[JaxArray, JaxArray, JaxArray]:
+        k, R, _ = carry
+        R_inv_T = inv_3x3(R).T
+        g = jnp.sqrt(jnp.linalg.norm(R_inv_T) / jnp.linalg.norm(R))
+        return k + 1, 0.5 * (g * R + R_inv_T / g), R
+
+    init = (jnp.zeros((), dtype=jnp.int32), F, jnp.zeros_like(F))
+    return while_loop(cond_fun, body_fun, init)[1]
+
+
+@polar_rotation.defjvp
+def _polar_rotation_jvp(
+        primals: tuple[JaxArray], tangents: tuple[JaxArray],
+) -> tuple[JaxArray, JaxArray]:
+    F = primals[0]
+    dF = tangents[0]
+    R = polar_rotation(F)
+    R_flat = R.reshape(-1)
+    dg_dR = jacfwd(_polar_rotation_equations)(R_flat, F)
+    _, dg_dF = jvp(
+        lambda F_: _polar_rotation_equations(R_flat, F_), (F,), (dF,))
+    dR = jnp.linalg.solve(dg_dR, -dg_dF).reshape(3, 3)
+    return R, dR
 
 
 def unrotated_rate_of_deformation(
