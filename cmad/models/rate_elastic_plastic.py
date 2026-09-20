@@ -208,11 +208,6 @@ class RateElasticPlastic(MechanicsModel):
             finite_deformation: bool = False,
     ) -> None:
 
-        if finite_deformation and def_type != DefType.FULL_3D:
-            raise NotImplementedError(
-                "rate_elastic_plastic with finite deformation currently "
-                "supports FULL_3D")
-
         self.is_finite_deformation = finite_deformation
         has_material_rotation = "rotation matrix" in parameters.values
 
