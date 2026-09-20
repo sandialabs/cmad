@@ -12,7 +12,7 @@ from cmad.models.kinematics import (
     det_3x3,
     inv_3x3,
     polar_rotation,
-    unrotated_rate_of_deformation,
+    unrotated_rate_of_deformation_increment,
 )
 
 
@@ -75,14 +75,15 @@ def test_rate_of_deformation_vanishes_for_a_rigid_rotation_increment() -> None:
     rng = np.random.default_rng(1)
     F_prev = np.eye(3) + 0.1 * rng.standard_normal((3, 3))
     F = _rotation(0.3) @ F_prev
-    D = unrotated_rate_of_deformation(jnp.asarray(F), jnp.asarray(F_prev), 1.0)
+    D = unrotated_rate_of_deformation_increment(
+        jnp.asarray(F), jnp.asarray(F_prev))
     np.testing.assert_allclose(D, 0.0, atol=1e-14)
 
 
 def test_stretch_increment_error_falls_by_eight_when_the_increment_halves() -> None:
     def error(d: float) -> float:
         F = jnp.diag(jnp.asarray([1.0 + d, 1.0, 1.0]))
-        D = unrotated_rate_of_deformation(F, jnp.eye(3), 1.0)
+        D = unrotated_rate_of_deformation_increment(F, jnp.eye(3))
         return abs(float(D[0, 0]) - float(np.log1p(d)))
 
     ratio = error(0.04) / error(0.02)

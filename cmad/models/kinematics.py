@@ -4,7 +4,7 @@ from jax.lax import while_loop
 
 from cmad.models.deformation_types import DefType
 from cmad.models.global_fields import GlobalFieldsAtPoint
-from cmad.typing import JaxArray, Scalar, StateList
+from cmad.typing import JaxArray, StateList
 
 
 def gather_F(
@@ -175,9 +175,3 @@ def unrotated_rate_of_deformation_increment(
     R = polar_rotation(F_mid)
     L = (F - F_prev) @ inv_3x3(F_mid)
     return R.T @ (0.5 * (L + L.T)) @ R
-
-
-def unrotated_rate_of_deformation(
-        F: JaxArray, F_prev: JaxArray, dt: Scalar,
-) -> JaxArray:
-    return unrotated_rate_of_deformation_increment(F, F_prev) / dt

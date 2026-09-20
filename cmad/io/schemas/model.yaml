@@ -7,3 +7,5 @@ properties:
     type: string
   def_type:
     type: string
+  finite deformation:
+    type: boolean

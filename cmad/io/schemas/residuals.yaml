@@ -93,6 +93,7 @@ properties:
     required: [type, materials]
     properties:
       type: {type: string}
+      finite deformation: {type: boolean}
       nonlinear max iters: {type: integer, minimum: 1}
       nonlinear absolute tol: {type: number, exclusiveMinimum: 0}
       nonlinear relative tol: {type: number, exclusiveMinimum: 0}

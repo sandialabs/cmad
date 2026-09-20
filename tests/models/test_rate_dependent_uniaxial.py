@@ -9,6 +9,7 @@ the strain and halves with it, and their rate effect, the difference
 between the two rates, matches the return map's.
 """
 import unittest
+from functools import partial
 
 import numpy as np
 from jax.tree_util import tree_map
@@ -19,7 +20,6 @@ from cmad.models.deformation_types import DefType
 from cmad.models.elastic_stress import two_mu_scale_factor
 from cmad.models.flow_stress import POWER_LAW_OFFSET
 from cmad.models.global_fields import StepTime, mp_U_from_F
-from cmad.models.hypo_elastic_plastic import HypoElasticPlastic
 from cmad.models.nonlinear_solver import newton_solve
 from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
@@ -240,9 +240,10 @@ class TestFiniteModelsAtSmallStrain(unittest.TestCase):
         for error in rate_effect_errors.values():
             self.assertLess(error, 0.05)
 
-    def test_hypoelastic_johnson_cook(self) -> None:
+    def test_rate_finite_johnson_cook(self) -> None:
         self._check(
-            HypoElasticPlastic, 1, JOHNSON_COOK, johnson_cook_flow_stress)
+            partial(RateElasticPlastic, finite_deformation=True), 1,
+            JOHNSON_COOK, johnson_cook_flow_stress)
 
     def test_be_bar_peric(self) -> None:
         self._check(BeBarElasticPlastic, 2, PERIC, peric_flow_stress)

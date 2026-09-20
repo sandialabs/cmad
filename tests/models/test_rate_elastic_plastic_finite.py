@@ -1,4 +1,5 @@
-"""Verification for the hypoelastic (rate form) elastic-plastic model.
+"""Verification for the rate form elastic-plastic model with finite
+deformation.
 
 Four checks: small strain consistency with the J2 analytic solution,
 objectivity under a superposed rigid rotation of the deformation history,
@@ -11,9 +12,14 @@ import numpy as np
 
 from cmad.models.deformation_types import DefType
 from cmad.models.global_fields import StepTime, mp_U_from_F
-from cmad.models.hypo_elastic_plastic import HypoElasticPlastic
 from cmad.models.nonlinear_solver import newton_solve
+from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from tests.support.test_problems import J2AnalyticalProblem
+
+
+def _model(problem):
+    return RateElasticPlastic(
+        problem.J2_parameters, DefType.FULL_3D, finite_deformation=True)
 
 
 def _drive(model, F, times):
@@ -64,13 +70,13 @@ def _rotation():
     return Rz @ Ry
 
 
-class TestHypoElasticPlastic(unittest.TestCase):
+class TestRateElasticPlasticFinite(unittest.TestCase):
 
     def test_small_strain_matches_j2(self):
         problem = J2AnalyticalProblem()
         max_alpha, num_steps = 1e-3, 100
         F, stress, alpha = _uniaxial_F(problem, max_alpha, num_steps)
-        model = HypoElasticPlastic(problem.J2_parameters, DefType.FULL_3D)
+        model = _model(problem)
         times = np.arange(num_steps + 1, dtype=float)
         cauchy, model_alpha = _drive(model, F, times)
 
@@ -88,12 +94,12 @@ class TestHypoElasticPlastic(unittest.TestCase):
         F, _, _ = _uniaxial_F(problem, max_alpha, num_steps)
         times = np.arange(num_steps + 1, dtype=float)
 
-        model = HypoElasticPlastic(problem.J2_parameters, DefType.FULL_3D)
+        model = _model(problem)
         cauchy, alpha = _drive(model, F, times)
 
         Q = _rotation()
         QF = np.einsum("ij,jkt->ikt", Q, F)
-        model_rot = HypoElasticPlastic(problem.J2_parameters, DefType.FULL_3D)
+        model_rot = _model(problem)
         cauchy_rot, alpha_rot = _drive(model_rot, QF, times)
 
         for step in range(1, num_steps + 1):
@@ -113,7 +119,7 @@ class TestHypoElasticPlastic(unittest.TestCase):
         F = np.concatenate([F_stretch, F_turned], axis=2)
         times = np.arange(F.shape[2], dtype=float)
 
-        model = HypoElasticPlastic(problem.J2_parameters, DefType.FULL_3D)
+        model = _model(problem)
         cauchy, alpha = _drive(model, F, times)
 
         stress = cauchy[:, :, num_steps]
@@ -130,10 +136,10 @@ class TestHypoElasticPlastic(unittest.TestCase):
         F, _, _ = _uniaxial_F(problem, max_alpha, num_steps)
         steps = np.arange(num_steps + 1, dtype=float)
 
-        model = HypoElasticPlastic(problem.J2_parameters, DefType.FULL_3D)
+        model = _model(problem)
         cauchy_unit, alpha_unit = _drive(model, F, steps)
 
-        model_half = HypoElasticPlastic(problem.J2_parameters, DefType.FULL_3D)
+        model_half = _model(problem)
         cauchy_half, alpha_half = _drive(model_half, F, 0.5 * steps)
 
         np.testing.assert_allclose(cauchy_half, cauchy_unit, atol=1e-8)

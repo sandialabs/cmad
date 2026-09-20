@@ -29,7 +29,7 @@ class TestResolution(unittest.TestCase):
         self.assertIn("not_a_real_model", msg)
         self.assertIn("not available", msg)
         self.assertIn("elastic", msg)
-        self.assertIn("hypo_elastic_plastic", msg)
+        self.assertIn("rate_elastic_plastic", msg)
 
     def test_unknown_qoi_raises_with_listing(self) -> None:
         with self.assertRaises(ValueError) as ctx:

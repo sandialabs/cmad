@@ -60,7 +60,7 @@ from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
-from cmad.models.hypo_elastic_plastic import HypoElasticPlastic
+from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.parameters.parameters import Parameters
 from cmad.typing import PyTreeDict
@@ -702,10 +702,10 @@ class TestCoupledMultiStepAllPaths(unittest.TestCase):
 # COUPLED multistep, hypoelastic model in shear
 # ============================================================
 
-class TestCoupledMultiStepHypo(unittest.TestCase):
+class TestCoupledMultiStepRateFinite(unittest.TestCase):
     """``jax.grad`` and ``jax.hessian`` through a multistep COUPLED
-    forward solve with ``HypoElasticPlastic`` in simple shear match
-    central difference.
+    forward solve with ``RateElasticPlastic`` with finite deformation in
+    simple shear match central difference.
     """
 
     J: Callable[[PyTreeDict], jax.Array]
@@ -718,8 +718,9 @@ class TestCoupledMultiStepHypo(unittest.TestCase):
         slope = 5e-2
         # Shear 1e-3 (elastic), then 1e-2 to 5e-2 (plastic).
         ts = (0.02, 0.2, 0.4, 0.7, 1.0)
-        model = HypoElasticPlastic(
+        model = RateElasticPlastic(
             J2AnalyticalProblem().J2_parameters, DefType.FULL_3D,
+            finite_deformation=True,
         )
         fe_problem = _build_fe_problem_2x2x2(
             model, GlobalResidualMode.COUPLED, slope,
