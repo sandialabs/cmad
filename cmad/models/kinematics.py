@@ -169,9 +169,13 @@ def unrotated_rate_of_deformation_increment(
     """Unrotated rate of deformation times the step,
     ``D Δt = Rᵀ sym((F - F_prev) F_mid⁻¹) R``, with
     ``F_mid = (F + F_prev) / 2`` (Hughes and Winget 1980) and
-    ``R = polar_rotation(F_mid)``.
+    ``R = polar_rotation(F_mid)``. Its trace is replaced by
+    ``ln(det F / det F_prev)``, the exact integral of ``tr D``.
     """
     F_mid = 0.5 * (F + F_prev)
     R = polar_rotation(F_mid)
     L = (F - F_prev) @ inv_3x3(F_mid)
-    return R.T @ (0.5 * (L + L.T)) @ R
+    midpoint = R.T @ (0.5 * (L + L.T)) @ R
+    deviatoric = midpoint - jnp.trace(midpoint) / 3.0 * jnp.eye(3)
+    volumetric = jnp.log(det_3x3(F) / det_3x3(F_prev))
+    return deviatoric + volumetric / 3.0 * jnp.eye(3)
