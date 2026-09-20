@@ -104,13 +104,16 @@ def polar_rotation(F: JaxArray) -> JaxArray:
 def unrotated_rate_of_deformation(
         F: JaxArray, F_prev: JaxArray, dt: Scalar,
 ) -> JaxArray:
-    """Unrotated rate of deformation ``D = Rᵀ sym(Ḟ F⁻¹) R``.
+    """Unrotated rate of deformation ``D = Rᵀ sym(Ḟ F⁻¹) R`` at the
+    midpoint of the step.
 
-    The velocity gradient ``Ḟ F⁻¹`` is taken as the backward difference
-    ``(F - F_prev) F⁻¹ / dt``; ``D`` is the symmetric part pulled back to
-    the unrotated frame by ``R = polar_rotation(F)``.
+    The velocity gradient ``Ḟ F⁻¹`` is taken as ``(F - F_prev) F_mid⁻¹ / dt``
+    with ``F_mid = (F + F_prev) / 2`` (Hughes and Winget 1980); ``D`` is the
+    symmetric part pulled back to the unrotated frame by
+    ``R = polar_rotation(F_mid)``.
     """
-    R = polar_rotation(F)
-    L = (F - F_prev) @ inv_3x3(F) / dt
+    F_mid = 0.5 * (F + F_prev)
+    R = polar_rotation(F_mid)
+    L = (F - F_prev) @ inv_3x3(F_mid) / dt
     D = 0.5 * (L + L.T)
     return R.T @ D @ R

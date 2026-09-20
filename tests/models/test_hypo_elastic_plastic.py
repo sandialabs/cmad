@@ -1,8 +1,9 @@
 """Verification for the hypoelastic (rate form) elastic-plastic model.
 
-Three checks: small strain consistency with the J2 analytic solution,
+Four checks: small strain consistency with the J2 analytic solution,
 objectivity under a superposed rigid rotation of the deformation history,
-and independence of the converged state from the time step size.
+incremental objectivity under rigid rotation increments, and
+independence of the converged state from the time step size.
 """
 import unittest
 
@@ -100,6 +101,28 @@ class TestHypoElasticPlastic(unittest.TestCase):
             np.testing.assert_allclose(
                 cauchy_rot[:, :, step], expected, atol=1e-8)
         np.testing.assert_allclose(alpha_rot, alpha, atol=1e-10)
+
+    def test_incremental_objectivity_under_rigid_rotation_increments(self):
+        problem = J2AnalyticalProblem()
+        max_alpha, num_steps, num_turns = 0.05, 20, 4
+        F_stretch, _, _ = _uniaxial_F(problem, max_alpha, num_steps)
+        Q = _rotation()
+        turns = [np.linalg.matrix_power(Q, k) for k in range(1, num_turns + 1)]
+        F_turned = np.stack(
+            [Q_k @ F_stretch[:, :, -1] for Q_k in turns], axis=2)
+        F = np.concatenate([F_stretch, F_turned], axis=2)
+        times = np.arange(F.shape[2], dtype=float)
+
+        model = HypoElasticPlastic(problem.J2_parameters, DefType.FULL_3D)
+        cauchy, alpha = _drive(model, F, times)
+
+        stress = cauchy[:, :, num_steps]
+        atol = 1e-10 * np.abs(stress).max()
+        for k, Q_k in enumerate(turns, start=1):
+            np.testing.assert_allclose(
+                cauchy[:, :, num_steps + k], Q_k @ stress @ Q_k.T, atol=atol)
+        np.testing.assert_allclose(
+            alpha[num_steps:], alpha[num_steps], atol=1e-12)
 
     def test_dt_independence(self):
         problem = J2AnalyticalProblem()
