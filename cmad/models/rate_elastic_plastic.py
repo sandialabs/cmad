@@ -61,12 +61,14 @@ def stress_from_state(xi: StateList, def_type: int) -> JaxArray:
     component."""
     if def_type == DefType.PLANE_STRESS:
         return put_2D_tensor_into_3D(get_sym_tensor_from_vector(xi[0], 2))
+    if def_type == DefType.PLANE_STRAIN:
+        in_plane = put_2D_tensor_into_3D(get_sym_tensor_from_vector(xi[0], 2))
+        return in_plane.at[2, 2].set(get_scalar(xi[2])[0])
     return get_sym_tensor_from_vector(xi[0], 3)
 
 
 def stored_stress_components(A: JaxArray, def_type: int) -> JaxArray:
-    """The components of a 3x3 that the def type stores, as a vector."""
-    if def_type == DefType.PLANE_STRESS:
+    if def_type == DefType.PLANE_STRESS or def_type == DefType.PLANE_STRAIN:
         return get_vector_from_sym_tensor(A[:2, :2], 2)
     return get_vector_from_sym_tensor(A, 3)
 
@@ -136,6 +138,13 @@ def elastic_predictor(
         finite_deformation, has_material_rotation)
     cauchy_prev = stress_from_state(xi_prev, def_type)
     cauchy_trial = cauchy_prev + elastic_stress(increment, params)
+
+    if def_type == DefType.PLANE_STRAIN:
+        return [
+            stored_stress_components(cauchy_trial, def_type),
+            xi_prev[1],
+            jnp.array([cauchy_trial[2, 2]]),
+        ]
 
     return [
         stored_stress_components(cauchy_trial, def_type),
@@ -237,10 +246,10 @@ class RateElasticPlastic(MechanicsModel):
         ndims = def_type_ndims(def_type)
         self._ndims = ndims
 
-        if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRAIN:
+        if def_type == DefType.FULL_3D:
             num_residuals = 2
 
-        elif def_type == DefType.PLANE_STRESS:
+        elif is_2D:
             num_residuals = 3
 
         elif def_type == DefType.UNIAXIAL_STRESS:
@@ -252,11 +261,11 @@ class RateElasticPlastic(MechanicsModel):
         self._init_residuals(num_residuals)
 
         # unrotated (material-frame) cauchy stress state, its in-plane
-        # components under plane stress
+        # components in 2D
         self.var_names[0] = "unrotated_cauchy"
         self.resid_names[0] = "material stress"
         self._var_types[0] = VarType.SYM_TENSOR
-        stress_ndims = 2 if def_type == DefType.PLANE_STRESS else 3
+        stress_ndims = 2 if is_2D else 3
         self._num_eqs[0] = get_num_eqs(VarType.SYM_TENSOR, stress_ndims)
         init_vec_cauchy = np.zeros(self._num_eqs[0])
 
@@ -279,6 +288,15 @@ class RateElasticPlastic(MechanicsModel):
             self._oop_stretch_idx = 2
 
             self._init_xi += [init_oop_stretch]
+
+        elif def_type == DefType.PLANE_STRAIN:
+            self.var_names[2] = "unrotated_cauchy_33"
+            self.resid_names[2] = "material stress 33"
+            self._var_types[2] = VarType.SCALAR
+            self._num_eqs[2] = get_num_eqs(VarType.SCALAR, ndims)
+            init_cauchy_33 = np.zeros(self._num_eqs[2])
+
+            self._init_xi += [init_cauchy_33]
 
         elif def_type == DefType.UNIAXIAL_STRESS:
             # off-axis stretches
@@ -408,11 +426,12 @@ class RateElasticPlastic(MechanicsModel):
             / scale_factor
         C_plastic_alpha = yield_fun
 
-        if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRAIN:
+        if def_type == DefType.FULL_3D:
             C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha]
             C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha]
 
-        elif def_type == DefType.PLANE_STRESS:
+        elif def_type == DefType.PLANE_STRAIN or \
+                def_type == DefType.PLANE_STRESS:
             C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha,
                                C_elastic_cauchy_tensor[2, 2] / scale_factor]
             C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha,
