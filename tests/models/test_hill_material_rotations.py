@@ -14,8 +14,8 @@ from cmad.calibrations.al7079.support import (
 from cmad.models.deformation_types import DefType
 from cmad.models.global_fields import mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
+from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
-from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.verification.functions import hill_yield, hill_yield_normal
 from cmad.verification.solutions import compute_elastic_fields, compute_plastic_fields
 
@@ -65,7 +65,7 @@ def run_test(R_matrices, Y, diff_tol):
     pt_hill_yield_normal = partial(hill_yield_normal, hill_params=fit_params)
 
     models = [SmallElasticPlastic(params, DefType.FULL_3D),
-        SmallRateElasticPlastic(params, DefType.FULL_3D)]
+        RateElasticPlastic(params, DefType.FULL_3D)]
     cauchy = np.zeros((3, 3, num_steps + 1))
     min_elastic_stress_scale = 0.1
     max_elastic_stress_scale = 0.99

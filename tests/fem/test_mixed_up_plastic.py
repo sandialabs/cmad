@@ -24,8 +24,8 @@ from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.deformation_types import DefType
 from cmad.models.model import Model
+from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
-from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.typing import JaxArray
 from tests.fem.test_cudss_lu import SKIP_REASON, cudss_available
 from tests.fem.test_petsc_solve import SKIP_REASON as PETSC_SKIP_REASON
@@ -160,7 +160,7 @@ class TestMixedUpPlastic(unittest.TestCase):
         self._run(SmallElasticPlastic)
 
     def test_small_rate_elastic_plastic(self) -> None:
-        self._run(SmallRateElasticPlastic)
+        self._run(RateElasticPlastic)
 
     @pytest.mark.slow
     def test_small_elastic_plastic_block_solver(self) -> None:
@@ -168,7 +168,7 @@ class TestMixedUpPlastic(unittest.TestCase):
 
     @pytest.mark.slow
     def test_small_rate_elastic_plastic_block_solver(self) -> None:
-        self._run(SmallRateElasticPlastic, _BLOCK_SOLVER_SETTINGS)
+        self._run(RateElasticPlastic, _BLOCK_SOLVER_SETTINGS)
 
     @pytest.mark.slow
     def test_small_elastic_plastic_jax_block_jacobi(self) -> None:

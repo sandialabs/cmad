@@ -21,8 +21,8 @@ from cmad.models.flow_stress import POWER_LAW_OFFSET
 from cmad.models.global_fields import StepTime, mp_U_from_F
 from cmad.models.hypo_elastic_plastic import HypoElasticPlastic
 from cmad.models.nonlinear_solver import newton_solve
+from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
-from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.parameters.parameters import Parameters
 
 _E, _NU = 200e3, 0.3
@@ -176,7 +176,7 @@ def stress_bound():
 class TestSmallStrainModelsMatchTheReturnMap(unittest.TestCase):
 
     def _check(self, flow_stress_params, flow_stress):
-        for Model in (SmallElasticPlastic, SmallRateElasticPlastic):
+        for Model in (SmallElasticPlastic, RateElasticPlastic):
             for strain_rate in STRAIN_RATES:
                 (cauchy, alpha, iterations, residuals), sigma_ref, alpha_ref = \
                     run_small_strain(

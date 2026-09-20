@@ -7,7 +7,7 @@ from scipy.optimize import fmin_l_bfgs_b
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.global_fields import mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
-from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
+from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from cmad.objectives.mp_objective import MPAdjointObjective, MPDirectObjective
 from cmad.qois.calibration import Calibration
 from tests.support.test_problems import J2AnalyticalProblem
@@ -83,7 +83,7 @@ class TestJ2Calibrations(unittest.TestCase):
         weight[0, 0] = 1.
         weight[1, 1] = 1.
 
-        model = SmallRateElasticPlastic(J2_analytical_problem.J2_parameters,
+        model = RateElasticPlastic(J2_analytical_problem.J2_parameters,
                                         def_type)
         true_params = model.parameters.flat_active_values()
         num_active_params = model.parameters.num_active_params

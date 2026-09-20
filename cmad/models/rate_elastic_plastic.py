@@ -154,7 +154,7 @@ def compute_yield_fun_and_normal(
         yield_function), yield_normal
 
 
-class SmallRateElasticPlastic(MechanicsModel):
+class RateElasticPlastic(MechanicsModel):
     """
     Small strain rate form elastic-plastic model:
     Elastic: Modular linear elasticity
@@ -285,7 +285,7 @@ class SmallRateElasticPlastic(MechanicsModel):
             model_section: dict[str, Any],
             parameters: Parameters,
             def_type: int | None,
-    ) -> "SmallRateElasticPlastic":
+    ) -> "RateElasticPlastic":
         return cls(
             parameters=parameters,
             def_type=require_def_type(def_type, cls.__name__),

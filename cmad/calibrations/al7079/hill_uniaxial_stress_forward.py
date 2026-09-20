@@ -9,8 +9,8 @@ from cmad.calibrations.al7079.support import (
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.global_fields import mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
+from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
-from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 
 # need to work out how compute global strain for each model
 
@@ -86,7 +86,7 @@ epsilon_11 = np.linspace(0, 5. * 0.02, num_steps + 1)
 F[0, 0, :] += epsilon_11
 
 models = [SmallElasticPlastic(params, def_type, uniaxial_stress_idx=1),
-    SmallRateElasticPlastic(params, def_type, uniaxial_stress_idx=1)]
+    RateElasticPlastic(params, def_type, uniaxial_stress_idx=1)]
 #compute_strain_funs = [compute_strain_small_elastic_plastic,
 #    compute_strain_small_rate_elastic_plastic]
 

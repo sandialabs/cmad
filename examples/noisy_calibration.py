@@ -6,8 +6,8 @@ from scipy.optimize import fmin_l_bfgs_b
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.global_fields import mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
+from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
-from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.neural_networks.simple_neural_network import SimpleNeuralNetwork
 from cmad.objectives.mp_objective import MPAdjointObjective, MPDirectAdjointObjective
 from cmad.parameters.parameters import Parameters
@@ -248,7 +248,7 @@ if nn_hardening:
                                        output_scale=1e2)
     J2_parameters = create_J2_parameters_nn(hardening_nn.params)
     nn_hardening_fun = {"neural network": hardening_nn.evaluate}
-    model = SmallRateElasticPlastic(J2_parameters, def_type,
+    model = RateElasticPlastic(J2_parameters, def_type,
                                     hardening_funs=nn_hardening_fun)
     initial_guess = model.parameters.flat_active_values(True).copy()
 

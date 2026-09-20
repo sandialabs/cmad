@@ -5,8 +5,8 @@ import numpy as np
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.global_fields import mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
+from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
-from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.qois.calibration import Calibration
 from tests.support.plotting import plot_uniaxial_cauchy
 from tests.support.test_problems import J2AnalyticalProblem
@@ -71,11 +71,11 @@ def get_models(problem, model_type, def_type):
             SmallElasticPlastic(problem.hosford_parameters, def_type)
     elif model_type == "small rate":
         J2_model = \
-            SmallRateElasticPlastic(problem.J2_parameters, def_type)
+            RateElasticPlastic(problem.J2_parameters, def_type)
         hill_model = \
-            SmallRateElasticPlastic(problem.hill_parameters, def_type)
+            RateElasticPlastic(problem.hill_parameters, def_type)
         hosford_model = \
-            SmallRateElasticPlastic(problem.hosford_parameters, def_type)
+            RateElasticPlastic(problem.hosford_parameters, def_type)
     else:
         raise NotImplementedError
 

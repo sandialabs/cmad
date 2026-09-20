@@ -103,7 +103,7 @@ models = [SmallElasticPlastic(params, def_type, uniaxial_stress_idx=1,
     effective_stress_fun=scaled_hybrid_effective_stress)]
 
 #models = [SmallElasticPlastic(params, def_type, uniaxial_stress_idx=1),
-#    SmallRateElasticPlastic(params, def_type, uniaxial_stress_idx=1)]
+#    RateElasticPlastic(params, def_type, uniaxial_stress_idx=1)]
 
 fig, ax = plt.subplots(figsize=(22, 8), ncols=2)
 Rmats = R_alphas + R_betas + R_gammas

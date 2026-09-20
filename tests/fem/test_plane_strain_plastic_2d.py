@@ -29,8 +29,8 @@ from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.deformation_types import DefType
 from cmad.models.model import Model
+from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
-from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.typing import JaxArray
 from tests.support.test_problems import J2AnalyticalProblem
 
@@ -132,13 +132,13 @@ class TestPlaneStrainPlastic2D(unittest.TestCase):
         self._run(SmallElasticPlastic, mixed=False)
 
     def test_displacement_small_rate(self) -> None:
-        self._run(SmallRateElasticPlastic, mixed=False)
+        self._run(RateElasticPlastic, mixed=False)
 
     def test_mixed_small(self) -> None:
         self._run(SmallElasticPlastic, mixed=True)
 
     def test_mixed_small_rate(self) -> None:
-        self._run(SmallRateElasticPlastic, mixed=True)
+        self._run(RateElasticPlastic, mixed=True)
 
 
 if __name__ == "__main__":

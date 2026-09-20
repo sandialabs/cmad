@@ -8,8 +8,8 @@ from jax.tree_util import tree_map
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.global_fields import mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
+from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
-from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
 from cmad.objectives.mp_objective import (
     MPAdjointObjective,
     MPDirectAdjointObjective,
@@ -431,14 +431,14 @@ def plane_stress_fd_checks_johnson_cook(Model):
 class TestJ2FDChecks(unittest.TestCase):
 
     def test_J2_finite_difference_checks(self):
-        Models = [SmallElasticPlastic, SmallRateElasticPlastic]
+        Models = [SmallElasticPlastic, RateElasticPlastic]
         scale_params_list = [False, True]
 
         for Model, scale_params in zip(Models, scale_params_list, strict=True):
             plane_stress_fd_checks(Model, scale_params)
 
     def test_johnson_cook_finite_difference_checks(self):
-        for Model in (SmallElasticPlastic, SmallRateElasticPlastic):
+        for Model in (SmallElasticPlastic, RateElasticPlastic):
             plane_stress_fd_checks_johnson_cook(Model)
 
 if __name__ == "__main__":

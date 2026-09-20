@@ -22,7 +22,7 @@ from cmad.io.results import ip_average_to_element
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
 from cmad.models.elastic_stress import isotropic_linear_elastic_cauchy_stress
-from cmad.models.small_rate_elastic_plastic import SmallRateElasticPlastic
+from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from cmad.models.var_types import get_vector_from_sym_tensor
 from cmad.parameters.parameters import Parameters
 from tests.support.test_problems import J2AnalyticalProblem
@@ -57,7 +57,7 @@ def _build_plastic_problem():
         mesh, [layout], [], components_by_field={"u": 3},
     )
     gr = Mechanics(ndims=3)
-    model = SmallRateElasticPlastic(
+    model = RateElasticPlastic(
         J2AnalyticalProblem().J2_parameters,
         def_type=DefType.FULL_3D,
     )
@@ -216,7 +216,7 @@ class TestCauchyAtIpsCoupledDispatch(unittest.TestCase):
 
 
 class TestCauchyAtIpsPlasticAboveYield(unittest.TestCase):
-    """SmallRateElasticPlastic FULL_3D: xi pytree is [vec_cauchy(6),
+    """RateElasticPlastic FULL_3D: xi pytree is [vec_cauchy(6),
     alpha(1)] → 7 flat dofs. Inject a uniaxial 300 MPa stress (Y=200
     for the J2 fixture) and verify Mises > Y at every IP, and that
     the unravel_xi closure correctly handles the 2-block pytree."""
