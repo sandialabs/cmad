@@ -156,6 +156,17 @@ class TestStoragePermutation(unittest.TestCase):
         )
         np.testing.assert_allclose(out, x)
 
+    def test_dev_sym_tensor_3d_writes_the_full_tensor(self):
+        # Internal: [xx, xy, xz, yy, yz]
+        internal = np.array([[1.0, 2.0, 3.0, 4.0, 5.0]])
+        # Exodus:   [xx, yy, zz, xy, xz, yz] with zz = -(xx + yy)
+        expected = np.array([[1.0, 4.0, -5.0, 2.0, 3.0, 5.0]])
+        stored = to_exodus_storage(internal, VarType.DEV_SYM_TENSOR)
+        np.testing.assert_array_equal(stored, expected)
+        np.testing.assert_array_equal(
+            from_exodus_storage(stored, VarType.DEV_SYM_TENSOR), internal,
+        )
+
 
 class TestIpAverageToElement(unittest.TestCase):
 

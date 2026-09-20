@@ -14,6 +14,7 @@ class VarType(IntEnum):
     VECTOR = 1
     SYM_TENSOR = 2
     TENSOR = 3
+    DEV_SYM_TENSOR = 4
 
 # vector <-> var_type conversions act on jax arrays
 
@@ -27,6 +28,8 @@ def get_num_eqs(var_type: int, ndims: int) -> int:
         return (ndims + 1) * ndims // 2
     elif var_type == VarType.TENSOR:
         return ndims**2
+    elif var_type == VarType.DEV_SYM_TENSOR:
+        return {2: 3, 3: 5}[ndims]
     raise ValueError(f"Unknown var_type: {var_type}")
 
 
@@ -80,6 +83,33 @@ def get_vector_from_sym_tensor(tensor: JaxArray, ndims: int) -> JaxArray:
         vec = jnp.array([tensor[0, 0]])
     else:
         raise ValueError("Dimension != 1, 2, or 3")
+
+    return vec
+
+
+def get_dev_sym_tensor_from_vector(vec: StateBlock, ndims: int) -> JaxArray:
+    """3x3 deviatoric symmetric tensor from its stored components,
+    ``[xx, xy, xz, yy, yz]`` in 3D and ``[xx, xy, yy]`` in 2D, with
+    ``zz = -(xx + yy)``."""
+    if ndims == 3:
+        xx, xy, xz, yy, yz = vec
+    elif ndims == 2:
+        xx, xy, yy = vec
+        xz = yz = 0.
+    else:
+        raise ValueError("Dimension != 2 or 3")
+
+    return jnp.array([[xx, xy, xz], [xy, yy, yz], [xz, yz, -(xx + yy)]])
+
+
+def get_vector_from_dev_sym_tensor(tensor: JaxArray, ndims: int) -> JaxArray:
+    if ndims == 3:
+        vec = jnp.array([tensor[0, 0], tensor[0, 1], tensor[0, 2],
+                         tensor[1, 1], tensor[1, 2]])
+    elif ndims == 2:
+        vec = jnp.array([tensor[0, 0], tensor[0, 1], tensor[1, 1]])
+    else:
+        raise ValueError("Dimension != 2 or 3")
 
     return vec
 

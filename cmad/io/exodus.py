@@ -50,6 +50,7 @@ from cmad.io.results import (
     FieldSpec,
     component_names,
     from_exodus_storage,
+    num_exodus_components,
     to_exodus_storage,
 )
 from cmad.models.var_types import VarType, get_num_eqs
@@ -762,7 +763,7 @@ def _write_nodal_var_schema(
     var_indices: dict[str, list[int]] = {}
     next_idx = 0
     for spec in nodal_specs:
-        n_comp = get_num_eqs(spec.var_type, ndims)
+        n_comp = num_exodus_components(spec.var_type, ndims)
         var_indices[spec.name] = list(range(next_idx, next_idx + n_comp))
         next_idx += n_comp
     n_components = next_idx
@@ -813,7 +814,7 @@ def _write_element_var_schema(
     root_to_indices: dict[str, list[int]] = {}
     next_idx = 1
     for root in root_order:
-        n_comp = get_num_eqs(root_var_types[root], ndims)
+        n_comp = num_exodus_components(root_var_types[root], ndims)
         root_to_indices[root] = list(range(next_idx, next_idx + n_comp))
         next_idx += n_comp
     n_components = len(decorated)

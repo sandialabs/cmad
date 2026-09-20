@@ -383,6 +383,41 @@ class TestWriteStepSchema(unittest.TestCase):
                 self.assertEqual(float(vals[0, 4, 0]), 13.0)  # xz
                 self.assertEqual(float(vals[0, 5, 0]), 23.0)  # yz
 
+    def test_dev_sym_tensor_element_field_writes_six_and_reads_five(self):
+        mesh = self._mesh()
+        block = next(iter(mesh.element_blocks))
+        n_elems = len(mesh.element_blocks[block])
+        specs = {block: [FieldSpec("zeta", VarType.DEV_SYM_TENSOR)]}
+        # internal: [xx, xy, xz, yy, yz] = [1, 2, 3, 4, 5]
+        internal = np.broadcast_to(
+            np.array([1.0, 2.0, 3.0, 4.0, 5.0]), (n_elems, 5),
+        ).copy()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "dev_sym.exo"
+            with ExodusWriter(path, mesh, element_field_specs=specs) as w:
+                w.write_step(1.0, element_data={block: {"zeta": internal}})
+            with netCDF4.Dataset(str(path)) as ds:
+                names = [
+                    ds["name_elem_var"][i].tobytes().rstrip(b"\x00").decode()
+                    for i in range(6)
+                ]
+                self.assertEqual(
+                    names,
+                    [
+                        "zeta_xx", "zeta_yy", "zeta_zz",
+                        "zeta_xy", "zeta_xz", "zeta_yz",
+                    ],
+                )
+                # zz = -(xx + yy), the third component on disk
+                np.testing.assert_array_equal(
+                    np.asarray(ds["vals_elem_var3eb1"][:])[0],
+                    np.full(n_elems, -5.0),
+                )
+            results = read_results(path, element_field_specs=specs)
+            np.testing.assert_array_equal(
+                results.element[block]["zeta"][0], internal,
+            )
+
     def test_write_step_rejects_extra_data_keys(self):
         mesh = self._mesh()
         specs = [FieldSpec("u", VarType.VECTOR)]

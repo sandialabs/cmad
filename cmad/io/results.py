@@ -21,7 +21,7 @@ from cmad.fem.precompute import (
     BlockIPGeometryCache,
     compute_ip_quadrature_weights,
 )
-from cmad.models.var_types import VarType
+from cmad.models.var_types import VarType, get_num_eqs
 from cmad.typing import JaxArray
 
 if TYPE_CHECKING:
@@ -96,11 +96,19 @@ _TENSOR_SUFFIXES: dict[int, tuple[str, ...]] = {
 }
 
 
+def num_exodus_components(var_type: VarType, ndims: int) -> int:
+    """Components a field takes on disk. A DEV_SYM_TENSOR is written as the
+    full SYM_TENSOR, its ``zz`` rebuilt."""
+    if var_type == VarType.DEV_SYM_TENSOR:
+        return get_num_eqs(VarType.SYM_TENSOR, ndims)
+    return get_num_eqs(var_type, ndims)
+
+
 def component_names(spec: FieldSpec, ndims: int) -> tuple[str, ...]:
     """Exodus-side decorated component names, in disk order.
 
     SCALAR returns ``(name,)``; VECTOR appends ``_x``/``_y``/``_z``
-    truncated to ``ndims``; SYM_TENSOR uses Exodus order
+    truncated to ``ndims``; SYM_TENSOR and DEV_SYM_TENSOR use Exodus order
     ``_xx``/``_yy``/``_zz``/``_xy``/``_xz``/``_yz`` (cmad's internal
     flat order is ``[xx, xy, xz, yy, yz, zz]``; the writer applies a
     permutation when laying components out on disk); TENSOR appends 9
@@ -114,7 +122,7 @@ def component_names(spec: FieldSpec, ndims: int) -> tuple[str, ...]:
         return (spec.name,)
     if spec.var_type == VarType.VECTOR:
         suffixes = _VECTOR_SUFFIXES[ndims]
-    elif spec.var_type == VarType.SYM_TENSOR:
+    elif spec.var_type in (VarType.SYM_TENSOR, VarType.DEV_SYM_TENSOR):
         suffixes = _SYM_TENSOR_SUFFIXES_EXODUS[ndims]
     elif spec.var_type == VarType.TENSOR:
         suffixes = _TENSOR_SUFFIXES[ndims]
@@ -135,9 +143,16 @@ def to_exodus_storage(
     3D: ``[xx, xy, xz, yy, yz, zz] -> [xx, yy, zz, xy, xz, yz]``;
     2D: ``[xx, xy, yy] -> [xx, yy, xy]``;
     1D: ``[xx] -> [xx]``.
+    A 3D DEV_SYM_TENSOR gets its ``zz = -(xx + yy)`` appended first.
     """
-    if var_type != VarType.SYM_TENSOR:
+    if var_type not in (VarType.SYM_TENSOR, VarType.DEV_SYM_TENSOR):
         return values
+    if var_type == VarType.DEV_SYM_TENSOR and values.shape[-1] == 5:
+        zz = -(values[..., 0:1] + values[..., 3:4])
+        if isinstance(values, np.ndarray):
+            values = np.concatenate([values, zz], axis=-1)
+        else:
+            values = jnp.concatenate([jnp.asarray(values), zz], axis=-1)
     perm = list(_SYM_INTERNAL_TO_EXODUS[values.shape[-1]])
     if isinstance(values, np.ndarray):
         return values[..., perm]
@@ -149,18 +164,23 @@ def from_exodus_storage(
         var_type: VarType,
 ) -> NDArray[np.floating] | JaxArray:
     """Inverse of :func:`to_exodus_storage`."""
-    if var_type != VarType.SYM_TENSOR:
+    if var_type not in (VarType.SYM_TENSOR, VarType.DEV_SYM_TENSOR):
         return values
     n_comp = values.shape[-1]
     if n_comp not in _SYM_EXODUS_TO_INTERNAL:
         raise ValueError(
-            f"SYM_TENSOR component count {n_comp} not in "
+            f"{var_type.name} component count {n_comp} not in "
             f"{sorted(_SYM_EXODUS_TO_INTERNAL)}"
         )
     perm = list(_SYM_EXODUS_TO_INTERNAL[n_comp])
+    internal: NDArray[np.floating] | JaxArray
     if isinstance(values, np.ndarray):
-        return values[..., perm]
-    return jnp.asarray(values)[..., jnp.asarray(perm)]
+        internal = values[..., perm]
+    else:
+        internal = jnp.asarray(values)[..., jnp.asarray(perm)]
+    if var_type == VarType.DEV_SYM_TENSOR and n_comp == 6:
+        return internal[..., :5]
+    return internal
 
 
 def ip_average_to_element(
