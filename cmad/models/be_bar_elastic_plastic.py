@@ -36,18 +36,22 @@ from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
 from cmad.models.var_types import (
     VarType,
+    get_dev_sym_tensor_from_vector,
     get_num_eqs,
     get_scalar,
-    get_sym_tensor_from_vector,
-    get_vector_from_sym_tensor,
+    get_vector_from_dev_sym_tensor,
 )
 from cmad.parameters.parameters import Parameters
 from cmad.typing import JaxArray, Scalar, StateBlock, StateList
 
 
+def zeta_ndims(def_type: int) -> int:
+    return 3 if def_type == DefType.FULL_3D else 2
+
+
 def relative_be_bar(
         zeta_prev: StateBlock, Ie_prev: StateBlock,
-        F: JaxArray, F_prev: JaxArray,
+        F: JaxArray, F_prev: JaxArray, def_type: int,
 ) -> JaxArray:
     """Trial ``be_bar`` advanced from the previous step.
 
@@ -56,7 +60,8 @@ def relative_be_bar(
     ``rF_bar = rF / det(rF)^(1/3)``, ``rF = F @ F_prev^{-1}``.
     """
     eye = jnp.eye(3)
-    be_bar_prev = get_sym_tensor_from_vector(zeta_prev, 3) + Ie_prev * eye
+    be_bar_prev = get_dev_sym_tensor_from_vector(
+        zeta_prev, zeta_ndims(def_type)) + Ie_prev * eye
     rF = F @ inv_3x3(F_prev)
     rF_bar = rF / jnp.cbrt(det_3x3(rF))
     return rF_bar @ be_bar_prev @ rF_bar.T
@@ -82,10 +87,11 @@ def elastic_predictor(
     """
     F = gather_F(xi, U, def_type, oop_stretch_idx)
     F_prev = gather_F(xi_prev, U_prev, def_type, oop_stretch_idx)
-    be_bar_trial = relative_be_bar(xi_prev[0], xi_prev[1], F, F_prev)
+    be_bar_trial = relative_be_bar(
+        xi_prev[0], xi_prev[1], F, F_prev, def_type)
     dev_be_bar_trial = be_bar_trial - jnp.trace(be_bar_trial) / 3. * jnp.eye(3)
     trial = [
-        get_vector_from_sym_tensor(dev_be_bar_trial, 3),
+        get_vector_from_dev_sym_tensor(dev_be_bar_trial, zeta_ndims(def_type)),
         jnp.atleast_1d(jnp.trace(be_bar_trial) / 3.),
         xi_prev[2],
     ]
@@ -199,8 +205,9 @@ class BeBarElasticPlastic(MechanicsModel):
         # deviatoric part of the elastic left Cauchy-Green be_bar
         self.var_names[0] = "zeta"
         self.resid_names[0] = "be_bar deviator"
-        self._var_types[0] = VarType.SYM_TENSOR
-        self._num_eqs[0] = get_num_eqs(VarType.SYM_TENSOR, 3)
+        self._var_types[0] = VarType.DEV_SYM_TENSOR
+        self._num_eqs[0] = get_num_eqs(
+            VarType.DEV_SYM_TENSOR, zeta_ndims(def_type))
 
         # hydrostatic part such that be_bar = zeta + Ie * I, det(be_bar) = 1
         self.var_names[1] = "Ie"
@@ -283,7 +290,8 @@ class BeBarElasticPlastic(MechanicsModel):
             yield_tol: float, is_complex: bool,
     ) -> JaxArray:
 
-        zeta = get_sym_tensor_from_vector(xi[0], 3)
+        ndims = zeta_ndims(def_type)
+        zeta = get_dev_sym_tensor_from_vector(xi[0], ndims)
         Ie = get_scalar(xi[1])
         alpha = get_scalar(xi[2])
         alpha_prev = get_scalar(xi_prev[2])
@@ -291,7 +299,8 @@ class BeBarElasticPlastic(MechanicsModel):
         eye = jnp.eye(3)
         xi_elastic = elastic_predictor(
             xi, xi_prev, params, U, U_prev, def_type, oop_stretch_idx)
-        dev_be_bar_trial = get_sym_tensor_from_vector(xi_elastic[0], 3)
+        dev_be_bar_trial = get_dev_sym_tensor_from_vector(
+            xi_elastic[0], ndims)
 
         yield_fun, yield_normal = compute_yield_fun_and_normal(
             zeta, alpha, alpha_prev, params, U, step_time, yield_function,
@@ -305,8 +314,9 @@ class BeBarElasticPlastic(MechanicsModel):
             [xi[i] - xi_elastic[i] for i in range(3)])
 
         # plastic return map
-        C_zeta_plastic = get_vector_from_sym_tensor(
-            zeta - dev_be_bar_trial + 2. * delta_gamma * Ie * yield_normal, 3)
+        C_zeta_plastic = get_vector_from_dev_sym_tensor(
+            zeta - dev_be_bar_trial + 2. * delta_gamma * Ie * yield_normal,
+            ndims)
         C_Ie_plastic = det_3x3(zeta + Ie * eye) - 1.
         C_plastic = jnp.r_[C_zeta_plastic, C_Ie_plastic, yield_fun]
 
@@ -333,7 +343,7 @@ class BeBarElasticPlastic(MechanicsModel):
         eye = jnp.eye(3)
         F = gather_F(xi, U, def_type, oop_stretch_idx)
         J = det_3x3(F)
-        zeta = get_sym_tensor_from_vector(xi[0], 3)
+        zeta = get_dev_sym_tensor_from_vector(xi[0], zeta_ndims(def_type))
         dev_cauchy = elastic.mu * zeta / J
         hydro_cauchy = 0.5 * elastic.kappa * (J - 1. / J)
         return dev_cauchy + hydro_cauchy * eye
