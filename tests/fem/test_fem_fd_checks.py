@@ -1,8 +1,8 @@
 """FD-vs-AD checks for ``jax.grad`` and ``jax.hessian`` over the
 sparse FE forward solve.
 
-Five test classes (CLOSED_FORM single/multi-step + COUPLED single/
-multi-step simple/all-paths), each with a ``test_grad_matches_fd``
+Six test classes (CLOSED_FORM single/multi-step + COUPLED single/
+multi-step simple/all-paths/hypoelastic), each with a ``test_grad_matches_fd``
 and a ``test_hessian_matches_fd``. Each test compares AD against a
 directional-difference FD across a logspace ``hs`` range, asserting
 the FD-error log10 drop exceeds a threshold (clean V-shaped FD
@@ -60,6 +60,7 @@ from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.deformation_types import DefType
 from cmad.models.elastic import Elastic
+from cmad.models.hypo_elastic_plastic import HypoElasticPlastic
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.parameters.parameters import Parameters
 from cmad.typing import PyTreeDict
@@ -88,6 +89,22 @@ def _uniaxial_dbcs(slope: float) -> list[DirichletBC]:
     ]
 
 
+def _shear_dbcs(slope: float) -> list[DirichletBC]:
+    """The -y face held and the +y face moved in x by ``slope * t`` with
+    its other components held, so the polar rotation of ``F`` differs
+    from the identity and varies over the cube."""
+    def u_x_at_t(coords, t):
+        return jnp.full((coords.shape[0], 1), slope * t)
+    return [
+        DirichletBC(sideset_names=["ymin_sides"], field_name="u",
+                    dofs=(0, 1, 2), values=None),
+        DirichletBC(sideset_names=["ymax_sides"], field_name="u",
+                    dofs=(1, 2), values=None),
+        DirichletBC(sideset_names=["ymax_sides"], field_name="u",
+                    dofs=(0,), values=u_x_at_t),
+    ]
+
+
 def _make_elastic_model(kappa: float = 100.0, mu: float = 50.0) -> Elastic:
     values = cast(PyTreeDict,
                   {"elastic": {"kappa": float(kappa), "mu": float(mu)}})
@@ -108,12 +125,16 @@ def _make_J2_model() -> SmallElasticPlastic:
     )
 
 
-def _build_fe_problem_2x2x2(model, mode: GlobalResidualMode, slope: float):
-    """2x2x2 hex (8 elements, 27 nodes, 81 DOFs) with uniaxial DBCs."""
+def _build_fe_problem_2x2x2(
+        model, mode: GlobalResidualMode, slope: float,
+        dbcs: list[DirichletBC] | None = None,
+):
+    """2x2x2 hex (8 elements, 27 nodes, 81 DOFs) with uniaxial DBCs, or
+    with ``dbcs`` when given."""
     mesh = StructuredHexMesh((1.0, 1.0, 1.0), (2, 2, 2))
     layout = GlobalFieldLayout(name="u", finite_element=Q1_HEX)
     dof_map = build_dof_map(
-        mesh, [layout], _uniaxial_dbcs(slope),
+        mesh, [layout], _uniaxial_dbcs(slope) if dbcs is None else dbcs,
         components_by_field={"u": 3},
     )
     gr = Mechanics(ndims=3)
@@ -674,6 +695,71 @@ class TestCoupledMultiStepAllPaths(unittest.TestCase):
         _compare_hessian_ad_vs_fd(
             self, self.J, self.hess_J, self.params_at,
             _J2_FD_PARAM_PATHS, hs=np.logspace(0, -5, 11),
+        )
+
+
+# ============================================================
+# COUPLED multistep, hypoelastic model in shear
+# ============================================================
+
+class TestCoupledMultiStepHypo(unittest.TestCase):
+    """``jax.grad`` and ``jax.hessian`` through a multistep COUPLED
+    forward solve with ``HypoElasticPlastic`` in simple shear match
+    central difference.
+    """
+
+    J: Callable[[PyTreeDict], jax.Array]
+    grad_J: Callable[[PyTreeDict], PyTreeDict]
+    hess_J: Callable[[PyTreeDict], PyTreeDict]
+    params_at: PyTreeDict
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        slope = 5e-2
+        # Shear 1e-3 (elastic), then 1e-2 to 5e-2 (plastic).
+        ts = (0.02, 0.2, 0.4, 0.7, 1.0)
+        model = HypoElasticPlastic(
+            J2AnalyticalProblem().J2_parameters, DefType.FULL_3D,
+        )
+        fe_problem = _build_fe_problem_2x2x2(
+            model, GlobalResidualMode.COUPLED, slope,
+            dbcs=_shear_dbcs(slope),
+        )
+        cls.params_at = model.parameters.values
+        n_dofs = fe_problem.dof_map.num_total_dofs
+
+        def _J(params: dict[str, Any]) -> jax.Array:
+            U_init = jnp.zeros(n_dofs)
+            xi_init = _initial_xi_by_block(fe_problem)
+            t_schedule_jax = jnp.asarray([0.0, *ts], dtype=jnp.float64)
+            trajectory = build_fe_quasistatic_trajectory(
+                fe_problem,
+                nonlinear_solver_settings={
+                    "max iters": 30,
+                    "abs tol": 1e-10,
+                    "rel tol": 1e-10,
+                },
+            )
+            U_steps, _, _, _, _, _ = trajectory(
+                fe_problem.kernel_arrays, {"all": params},
+                (U_init, xi_init), t_schedule_jax,
+            )
+            return jnp.sum(U_steps ** 2)
+
+        cls.J = staticmethod(jax.jit(_J))
+        cls.grad_J = staticmethod(jax.jit(jax.grad(_J)))
+        cls.hess_J = staticmethod(jax.jit(jax.hessian(_J)))
+
+    def test_grad_matches_fd(self) -> None:
+        _compare_ad_vs_fd(
+            self, self.J, self.grad_J, self.params_at,
+            _J2_FD_PARAM_PATHS,
+        )
+
+    def test_hessian_matches_fd(self) -> None:
+        _compare_hessian_ad_vs_fd(
+            self, self.J, self.hess_J, self.params_at,
+            _J2_FD_PARAM_PATHS,
         )
 
 
