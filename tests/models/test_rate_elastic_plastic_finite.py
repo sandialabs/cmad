@@ -1,10 +1,11 @@
 """Verification for the rate form elastic-plastic model with finite
 deformation.
 
-Four checks: small strain consistency with the J2 analytic solution,
-objectivity under a superposed rigid rotation of the deformation history,
-incremental objectivity under rigid rotation increments, and
-independence of the converged state from the time step size.
+Five checks: small strain consistency with the J2 analytic solution,
+objectivity under a superimposed rigid rotation of the deformation history,
+incremental objectivity under rigid rotation increments, independence of
+the converged state from the time step size, and a dilatation against the
+logarithmic volume change.
 """
 import unittest
 
@@ -144,6 +145,26 @@ class TestRateElasticPlasticFinite(unittest.TestCase):
 
         np.testing.assert_allclose(cauchy_half, cauchy_unit, atol=1e-8)
         np.testing.assert_allclose(alpha_half, alpha_unit, atol=1e-10)
+
+    def test_dilatation_matches_the_logarithmic_volume_change(self):
+        problem = J2AnalyticalProblem()
+        elastic = problem.J2_parameters.values["elastic"]
+        kappa = float(elastic["E"]) / (3.0 * (1.0 - 2.0 * float(elastic["nu"])))
+        stretch = 1.2
+        expected = kappa * 3.0 * np.log(stretch) * np.eye(3)
+
+        # The volume change is integrated exactly, so the result does not
+        # depend on the number of steps.
+        for num_steps in (1, 10):
+            stretches = np.linspace(1.0, stretch, num_steps + 1)
+            F = stretches[np.newaxis, np.newaxis, :] \
+                * np.eye(3)[:, :, np.newaxis]
+            times = np.arange(num_steps + 1, dtype=float)
+            cauchy, alpha = _drive(_model(problem), F, times)
+            np.testing.assert_allclose(
+                cauchy[:, :, -1], expected, rtol=1e-12,
+                atol=1e-12 * expected[0, 0])
+            np.testing.assert_array_equal(alpha, 0.0)
 
 
 if __name__ == "__main__":

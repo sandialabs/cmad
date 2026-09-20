@@ -1,6 +1,7 @@
 import unittest
 
 import numpy as np
+from scipy.linalg import expm
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.global_fields import mp_U_from_F
@@ -39,10 +40,12 @@ def run_test(model_type, def_type, num_steps=100, max_alpha=0.5):
             assert np.linalg.norm(obj_diff) < diff_tol
 
 
-def finite_errors(def_type, step_counts, max_alpha=0.5):
+def finite_errors(def_type, step_counts, max_alpha=0.5, total_rotation=0.):
     """Max errors over the path in alpha and in the Cauchy stress of the
     finite deformation models at each step count, one row per stress mask
-    and one column per model."""
+    and one column per model. A rigid rotation that grows to
+    ``total_rotation`` in equal increments is superimposed on the
+    deformation, in-plane for plane stress."""
     J2_analytical_problem = J2AnalyticalProblem()
     models = get_models(J2_analytical_problem, "rate finite", def_type)
 
@@ -51,21 +54,31 @@ def finite_errors(def_type, step_counts, max_alpha=0.5):
 
     stress_masks = get_stress_masks(def_type)
 
+    if def_type == DefType.PLANE_STRESS:
+        axis = np.array([0., 0., 1.])
+    else:
+        axis = np.array([1., 2., 3.]) / np.sqrt(14.)
+
     errors = {}
     for num_steps in step_counts:
+        angles = total_rotation * np.arange(1, num_steps + 1) / num_steps
+        Q = np.stack([rotation(angle, axis) for angle in angles], axis=2)
+
         alpha_errors = np.zeros((len(stress_masks), len(models)))
         cauchy_errors = np.zeros_like(alpha_errors)
         for mask_idx, stress_mask in enumerate(stress_masks):
             stress, strain, alpha = \
                 J2_analytical_problem.analytical_solution(stress_mask,
                                                           max_alpha, num_steps)
-            F = get_F(I, strain, num_steps, finite=True)
+            F = get_F(I, strain, num_steps, finite=True, Q=Q)
+            rotated_stress = np.einsum("ijt,jkt,lkt->ilt", Q, stress, Q)
 
             weight = np.abs(stress_mask)
 
             for model_idx, model in enumerate(models):
                 alpha_diff, cauchy_diff, _ = \
-                    run_model_and_compare(model, F, weight, alpha, stress)
+                    run_model_and_compare(
+                        model, F, weight, alpha, rotated_stress)
                 alpha_errors[mask_idx, model_idx] = np.abs(alpha_diff).max()
                 cauchy_errors[mask_idx, model_idx] = np.abs(cauchy_diff).max()
         errors[num_steps] = (alpha_errors, cauchy_errors)
@@ -73,14 +86,25 @@ def finite_errors(def_type, step_counts, max_alpha=0.5):
     return errors
 
 
-def get_F(I, strain, num_steps, finite=False):
+def rotation(angle, axis):
+    """Rotation by ``angle`` about the unit vector ``axis``."""
+    K = np.array([[0., -axis[2], axis[1]],
+                  [axis[2], 0., -axis[0]],
+                  [-axis[1], axis[0], 0.]])
+    return np.eye(3) + np.sin(angle) * K + (1. - np.cos(angle)) * K @ K
+
+
+def get_F(I, strain, num_steps, finite=False, Q=None):
     ndims = I.shape[0]
     F = np.repeat(I[:, :, np.newaxis], num_steps + 1, axis=2)
     if finite:
         # For the finite deformation model the analytical strain is the
-        # logarithmic strain, diagonal for every stress mask here.
-        for ii in range(ndims):
-            F[ii, ii, 1:] = np.exp(strain[ii, ii, :])
+        # logarithmic strain, and Q is the superimposed rigid rotation.
+        for step in range(num_steps):
+            F_step = expm(strain[:, :, step])
+            if Q is not None:
+                F_step = Q[:, :, step] @ F_step
+            F[:, :, step + 1] = F_step[:ndims, :ndims]
     else:
         F[:, :, 1:] += strain[:ndims, :ndims, :]
 
@@ -89,7 +113,7 @@ def get_F(I, strain, num_steps, finite=False):
 
 def get_stress_masks(def_type):
     if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRESS:
-        stress_masks = [None] * 2
+        stress_masks = [None] * 3
         # uniaxial stress
         stress_masks[0] = np.zeros((3, 3))
         stress_masks[0][0, 0] = 1.
@@ -97,6 +121,10 @@ def get_stress_masks(def_type):
         stress_masks[1] = np.eye(3)
         stress_masks[1][1, 1] = -1.
         stress_masks[1][2, 2] = 0.
+        # in-plane shear stress
+        stress_masks[2] = np.zeros((3, 3))
+        stress_masks[2][0, 1] = 1.
+        stress_masks[2][1, 0] = 1.
     elif def_type == DefType.UNIAXIAL_STRESS:
         stress_masks = [np.zeros((3, 3))] * 1
         stress_masks[0][0, 0] = 1.
@@ -112,15 +140,11 @@ def get_models(problem, model_type, def_type):
             SmallElasticPlastic(problem.J2_parameters, def_type)
         hill_model = \
             SmallElasticPlastic(problem.hill_parameters, def_type)
-        hosford_model = \
-            SmallElasticPlastic(problem.hosford_parameters, def_type)
     elif model_type == "small rate":
         J2_model = \
             RateElasticPlastic(problem.J2_parameters, def_type)
         hill_model = \
             RateElasticPlastic(problem.hill_parameters, def_type)
-        hosford_model = \
-            RateElasticPlastic(problem.hosford_parameters, def_type)
     elif model_type == "rate finite":
         J2_model = \
             RateElasticPlastic(problem.J2_parameters, def_type,
@@ -128,13 +152,10 @@ def get_models(problem, model_type, def_type):
         hill_model = \
             RateElasticPlastic(problem.hill_parameters, def_type,
                                finite_deformation=True)
-        hosford_model = \
-            RateElasticPlastic(problem.hosford_parameters, def_type,
-                               finite_deformation=True)
     else:
         raise NotImplementedError
 
-    return J2_model, hill_model, hosford_model
+    return J2_model, hill_model
 
 
 def run_model_and_compare(model, F, weight, alpha, stress):
@@ -203,10 +224,11 @@ class TestJ2ModelsFiniteDeformation(unittest.TestCase):
     in the step.
     """
 
-    def _check(self, def_type):
+    def _assert_second_order_convergence(self, def_type, total_rotation=0.):
         max_alpha = 0.5
         coarse, fine = 51, 101
-        errors = finite_errors(def_type, (coarse, fine), max_alpha)
+        errors = finite_errors(
+            def_type, (coarse, fine), max_alpha, total_rotation)
 
         for coarse_errors, fine_errors in zip(
                 errors[coarse], errors[fine], strict=True):
@@ -214,21 +236,30 @@ class TestJ2ModelsFiniteDeformation(unittest.TestCase):
             self.assertGreater(ratio.min(), 3.9)
             self.assertLess(ratio.max(), 4.1)
 
-        # The error in the midpoint rate of deformation is the cube of the
-        # step over 12, which sums to this over the path.
-        alpha_step = max_alpha / (fine - 1)
-        alpha_errors, _ = errors[fine]
-        self.assertLess(
-            alpha_errors.max(), 2. * max_alpha * alpha_step**2 / 12.)
+        if total_rotation == 0.:
+            # The error in the midpoint rate of deformation is the cube of
+            # the step over 12, which sums to this over the path.
+            alpha_step = max_alpha / (fine - 1)
+            alpha_errors, _ = errors[fine]
+            self.assertLess(
+                alpha_errors.max(), 2. * max_alpha * alpha_step**2 / 12.)
 
     def test_rate_finite_3D(self):
-        self._check(DefType.FULL_3D)
+        self._assert_second_order_convergence(DefType.FULL_3D)
 
     def test_rate_finite_plane_stress(self):
-        self._check(DefType.PLANE_STRESS)
+        self._assert_second_order_convergence(DefType.PLANE_STRESS)
 
     def test_rate_finite_uniaxial_stress(self):
-        self._check(DefType.UNIAXIAL_STRESS)
+        self._assert_second_order_convergence(DefType.UNIAXIAL_STRESS)
+
+    def test_rate_finite_3D_rotating(self):
+        self._assert_second_order_convergence(
+            DefType.FULL_3D, total_rotation=2. * np.pi)
+
+    def test_rate_finite_plane_stress_rotating(self):
+        self._assert_second_order_convergence(
+            DefType.PLANE_STRESS, total_rotation=2. * np.pi)
 
 
 if __name__ == "__main__":

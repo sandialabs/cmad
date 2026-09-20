@@ -10,7 +10,8 @@ def params_J2_voce(flat_param_values, scale_params):
 
     E, nu, Y, S, D = flat_param_values
 
-    flat_J2_equivalent_hill_coefficients = 0.5 * np.ones(6)
+    flat_J2_equivalent_hill_coefficients = \
+        np.array([0.5, 0.5, 0.5, 1.5, 1.5, 1.5])
     F, G, H, L, M, N = flat_J2_equivalent_hill_coefficients
 
     J2_equivalent_hosford_coefficient = 4.
