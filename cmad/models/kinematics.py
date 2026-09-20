@@ -157,19 +157,27 @@ def _polar_rotation_jvp(
     return R, -R @ _skew_matrix(inv_3x3(A) @ b)
 
 
-def unrotated_rate_of_deformation(
-        F: JaxArray, F_prev: JaxArray, dt: Scalar,
-) -> JaxArray:
-    """Unrotated rate of deformation ``D = Rᵀ sym(Ḟ F⁻¹) R`` at the
-    midpoint of the step.
+def small_strain_increment(F: JaxArray, F_prev: JaxArray) -> JaxArray:
+    """Small strain increment ``ε − ε_prev = sym(F − F_prev)``."""
+    dF = F - F_prev
+    return 0.5 * (dF + dF.T)
 
-    The velocity gradient ``Ḟ F⁻¹`` is taken as ``(F - F_prev) F_mid⁻¹ / dt``
-    with ``F_mid = (F + F_prev) / 2`` (Hughes and Winget 1980); ``D`` is the
-    symmetric part pulled back to the unrotated frame by
+
+def unrotated_rate_of_deformation_increment(
+        F: JaxArray, F_prev: JaxArray,
+) -> JaxArray:
+    """Unrotated rate of deformation times the step,
+    ``D Δt = Rᵀ sym((F - F_prev) F_mid⁻¹) R``, with
+    ``F_mid = (F + F_prev) / 2`` (Hughes and Winget 1980) and
     ``R = polar_rotation(F_mid)``.
     """
     F_mid = 0.5 * (F + F_prev)
     R = polar_rotation(F_mid)
-    L = (F - F_prev) @ inv_3x3(F_mid) / dt
-    D = 0.5 * (L + L.T)
-    return R.T @ D @ R
+    L = (F - F_prev) @ inv_3x3(F_mid)
+    return R.T @ (0.5 * (L + L.T)) @ R
+
+
+def unrotated_rate_of_deformation(
+        F: JaxArray, F_prev: JaxArray, dt: Scalar,
+) -> JaxArray:
+    return unrotated_rate_of_deformation_increment(F, F_prev) / dt

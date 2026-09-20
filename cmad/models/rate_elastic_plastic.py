@@ -1,3 +1,18 @@
+"""Rate form elastic-plastic model, small strain or finite deformation.
+
+Integrates the stress rate equation ``σ̇ = ℂ:(D − γ̇ n)`` in the material
+frame. Its input is the increment ``ε − ε_prev`` for small strain and
+``D Δt = Rᵀ sym((F − F_prev) F_mid⁻¹) R`` for finite deformation, taken
+into the material frame as ``Qᵀ (·) Q`` when the material has a
+``rotation matrix`` ``Q`` (material to global). The stress comes out in
+reverse, ``σ = R (Q s Qᵀ) Rᵀ`` with ``R = polar_rotation(F)``.
+
+Every term of the stress rate equation is a rate, so the equation times
+``Δt`` has no ``Δt`` left, and the stress residual is written in
+increments. ``Δt`` enters through ``α̇ = Δα/Δt`` in the yield function
+only. A stress equation with a term that is not a rate (viscoelastic
+relaxation) must keep its ``Δt``.
+"""
 from collections.abc import Callable
 from functools import partial
 from typing import Any, ClassVar, cast
@@ -19,7 +34,13 @@ from cmad.models.global_fields import (
     StepTime,
     temperature_at_point,
 )
-from cmad.models.kinematics import gather_F, off_axis_idx
+from cmad.models.kinematics import (
+    gather_F,
+    off_axis_idx,
+    polar_rotation,
+    small_strain_increment,
+    unrotated_rate_of_deformation_increment,
+)
 from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
 from cmad.models.var_types import (
@@ -34,63 +55,70 @@ from cmad.parameters.parameters import Parameters
 from cmad.typing import JaxArray, Scalar, StateList
 
 
-def compute_delta_strain(
+def material_frame_increment(
         xi: StateList, xi_prev: StateList, params: dict[str, Any],
         U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
         def_type: int, uniaxial_stress_idx: int,
+        finite_deformation: bool, has_material_rotation: bool,
 ) -> JaxArray:
+    """Input of the stress equation in the material frame: ``ε − ε_prev``,
+    or ``D Δt`` for finite deformation."""
 
     local_var_idx = 2
     F = gather_F(xi, U, def_type, local_var_idx, uniaxial_stress_idx)
     F_prev = gather_F(xi_prev, U_prev, def_type, local_var_idx,
         uniaxial_stress_idx)
 
-    I = jnp.eye(3)
-    grad_u = F - I
-    grad_u_prev = F_prev - I
-
-    epsilon = 0.5 * (grad_u + grad_u.T)
-    epsilon_prev = 0.5 * (grad_u_prev + grad_u_prev.T)
-    delta_epsilon = epsilon - epsilon_prev
-
-    # Q is a rotation from material coordinates to global coordinates
-    # Q_{ij} = e_i (global) \dot e_j (material)
-    Q = params["rotation matrix"]
+    if finite_deformation:
+        increment = unrotated_rate_of_deformation_increment(F, F_prev)
+    else:
+        increment = small_strain_increment(F, F_prev)
 
     if def_type == DefType.UNIAXIAL_STRESS:
-        off_axis_delta_strain = get_vector(xi[3], 3)
-        constrained_delta_epsilon = jnp.array([
-            [delta_epsilon[0, 0],
-            off_axis_delta_strain[0],
-            off_axis_delta_strain[1]],
-            [off_axis_delta_strain[0],
-            delta_epsilon[1, 1],
-            off_axis_delta_strain[2]],
-            [off_axis_delta_strain[1],
-            off_axis_delta_strain[2],
-            delta_epsilon[2, 2]]
+        off_axis = get_vector(xi[3], 3)
+        increment = jnp.array([
+            [increment[0, 0], off_axis[0], off_axis[1]],
+            [off_axis[0], increment[1, 1], off_axis[2]],
+            [off_axis[1], off_axis[2], increment[2, 2]],
         ])
-        material_delta_epsilon = Q.T @ constrained_delta_epsilon @ Q
-    else:
-        material_delta_epsilon = Q.T @ delta_epsilon @ Q
+
+    if has_material_rotation:
+        # Q is a rotation from material coordinates to global coordinates
+        # Q_{ij} = e_i (global) \dot e_j (material)
+        Q = params["rotation matrix"]
+        return Q.T @ increment @ Q
+
+    return increment
 
 
-    return material_delta_epsilon
+def rotate_out_of_material_frame(
+        stress: JaxArray, params: dict[str, Any],
+        has_material_rotation: bool,
+) -> JaxArray:
+    """``Q s Qᵀ`` when the material has a rotation matrix, ``s``
+    otherwise."""
+    if has_material_rotation:
+        Q = params["rotation matrix"]
+        return Q @ stress @ Q.T
+
+    return stress
 
 
 def elastic_predictor(
         xi: StateList, xi_prev: StateList, params: dict[str, Any],
         U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
         def_type: int, uniaxial_stress_idx: int,
+        finite_deformation: bool, has_material_rotation: bool,
         elastic_stress: Callable[..., JaxArray],
 ) -> StateList:
-    """Elastic predictor state ``[cauchy_prev + C:delta_epsilon,
+    """Elastic predictor state ``[cauchy_prev + C:increment,
     alpha_prev]``, the closed form root of the elastic branch.
     """
-    delta_strain = compute_delta_strain(
-        xi, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx)
+    increment = material_frame_increment(
+        xi, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
+        finite_deformation, has_material_rotation)
     cauchy_prev = get_sym_tensor_from_vector(xi_prev[0], 3)
-    cauchy_trial = cauchy_prev + elastic_stress(delta_strain, params)
+    cauchy_trial = cauchy_prev + elastic_stress(increment, params)
 
     return [
         get_vector_from_sym_tensor(cauchy_trial, 3),
@@ -104,6 +132,7 @@ def initial_guess(
         U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
         step_time: StepTime,
         def_type: int, uniaxial_stress_idx: int,
+        finite_deformation: bool, has_material_rotation: bool,
         elastic_stress: Callable[..., JaxArray],
 ) -> StateList:
     """Starting state for the local Newton: the elastic predictor taken at
@@ -111,7 +140,7 @@ def initial_guess(
     """
     return elastic_predictor(
         xi_prev, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
-        elastic_stress)
+        finite_deformation, has_material_rotation, elastic_stress)
 
 
 def compute_yield_fun(
@@ -156,7 +185,7 @@ def compute_yield_fun_and_normal(
 
 class RateElasticPlastic(MechanicsModel):
     """
-    Small strain rate form elastic-plastic model:
+    Rate form elastic-plastic model, small strain or finite deformation:
     Elastic: Modular linear elasticity
     Plastic: Modular effective stress and hardening
     """
@@ -176,7 +205,16 @@ class RateElasticPlastic(MechanicsModel):
             yield_tol: float = 1e-12,
             uniaxial_stress_idx: int = 0,
             is_complex: bool = False,
+            finite_deformation: bool = False,
     ) -> None:
+
+        if finite_deformation and def_type != DefType.FULL_3D:
+            raise NotImplementedError(
+                "rate_elastic_plastic with finite deformation currently "
+                "supports FULL_3D")
+
+        self.is_finite_deformation = finite_deformation
+        has_material_rotation = "rotation matrix" in parameters.values
 
         self._is_complex = is_complex
         self.dtype = float
@@ -268,13 +306,20 @@ class RateElasticPlastic(MechanicsModel):
                            effective_stress=effective_stress_fun,
                            yield_function=yield_function,
                            yield_tol=yield_tol,
-                           uniaxial_stress_idx=uniaxial_stress_idx, is_complex=is_complex)
+                           uniaxial_stress_idx=uniaxial_stress_idx,
+                           is_complex=is_complex,
+                           finite_deformation=finite_deformation,
+                           has_material_rotation=has_material_rotation)
 
-        cauchy = partial(self._cauchy_fn, def_type=def_type)
+        cauchy = partial(self._cauchy_fn, def_type=def_type,
+                         finite_deformation=finite_deformation,
+                         has_material_rotation=has_material_rotation)
 
         self.initial_guess_fn = jit(partial(
             initial_guess, def_type=def_type,
             uniaxial_stress_idx=uniaxial_stress_idx,
+            finite_deformation=finite_deformation,
+            has_material_rotation=has_material_rotation,
             elastic_stress=elastic_stress_fun))
 
         super().__init__(residual, cauchy)
@@ -290,15 +335,8 @@ class RateElasticPlastic(MechanicsModel):
             parameters=parameters,
             def_type=require_def_type(def_type, cls.__name__),
             uniaxial_stress_idx=model_section.get("uniaxial_stress_idx", 0),
+            finite_deformation=model_section.get("finite deformation", False),
         )
-
-    @classmethod
-    def material_defaults(cls) -> dict[str, Any]:
-        return {
-            "rotation matrix": [
-                [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0],
-            ],
-        }
 
     def derived_output_field_names(self) -> list[str]:
         return ["cauchy"]
@@ -313,6 +351,7 @@ class RateElasticPlastic(MechanicsModel):
             effective_stress: Callable[..., JaxArray],
             yield_function: Callable[..., JaxArray],
             yield_tol: float, uniaxial_stress_idx: int, is_complex: bool,
+            finite_deformation: bool, has_material_rotation: bool,
     ) -> JaxArray:
 
         # state variables for the model
@@ -321,11 +360,10 @@ class RateElasticPlastic(MechanicsModel):
         alpha = get_scalar(xi[1])
         alpha_prev = get_scalar(xi_prev[1])
 
-        trial_delta_strain \
-            = compute_delta_strain(xi, xi_prev, params, U, U_prev, def_type,
-                                   uniaxial_stress_idx)
-        trial_delta_cauchy \
-            = elastic_stress(trial_delta_strain, params)
+        increment = material_frame_increment(
+            xi, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
+            finite_deformation, has_material_rotation)
+        trial_delta_cauchy = elastic_stress(increment, params)
         delta_gamma = alpha - alpha_prev
         scale_factor = two_mu_scale_factor(params)
 
@@ -344,13 +382,13 @@ class RateElasticPlastic(MechanicsModel):
                                          yield_function, is_complex)
         xi_elastic = elastic_predictor(
             xi, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
-            elastic_stress)
+            finite_deformation, has_material_rotation, elastic_stress)
         trial_yield_fun = \
             compute_yield_fun(xi_elastic, xi_prev, params, U, step_time,
                               def_type, effective_stress, yield_function)
-        delta_plastic_strain = delta_gamma * yield_normal
+        plastic_increment = delta_gamma * yield_normal
         delta_cauchy = trial_delta_cauchy \
-            - elastic_stress(delta_plastic_strain, params)
+            - elastic_stress(plastic_increment, params)
         C_plastic_cauchy_tensor = cauchy - cauchy_prev \
             - delta_cauchy
         C_plastic_cauchy = \
@@ -365,9 +403,10 @@ class RateElasticPlastic(MechanicsModel):
         elif def_type == DefType.PLANE_STRESS or \
                 def_type == DefType.UNIAXIAL_STRESS:
 
-            Q = params["rotation matrix"]
-            global_trial_delta_cauchy = Q @ trial_delta_cauchy @ Q.T
-            global_delta_cauchy = Q @ delta_cauchy @ Q.T
+            global_trial_delta_cauchy = rotate_out_of_material_frame(
+                trial_delta_cauchy, params, has_material_rotation)
+            global_delta_cauchy = rotate_out_of_material_frame(
+                delta_cauchy, params, has_material_rotation)
 
             if def_type == DefType.PLANE_STRESS:
                 C_elastic_stretch = global_trial_delta_cauchy[2, 2] \
@@ -418,11 +457,17 @@ class RateElasticPlastic(MechanicsModel):
     def _cauchy_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint, def_type: int,
+            finite_deformation: bool, has_material_rotation: bool,
     ) -> JaxArray:
 
-        Q = params["rotation matrix"]
-        global_cauchy = Q @ get_sym_tensor_from_vector(xi[0], 3) @ Q.T
-        return global_cauchy
+        cauchy = rotate_out_of_material_frame(
+            get_sym_tensor_from_vector(xi[0], 3), params,
+            has_material_rotation)
+        if finite_deformation:
+            R = polar_rotation(gather_F(xi, U, def_type, 2))
+            cauchy = R @ cauchy @ R.T
+
+        return cauchy
 
     @staticmethod
     def pressure_scale_factor(params: dict[str, Any]) -> Scalar:
