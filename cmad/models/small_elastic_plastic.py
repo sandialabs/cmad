@@ -32,10 +32,40 @@ from cmad.models.var_types import (
     get_num_eqs,
     get_scalar,
     get_sym_tensor_from_vector,
+    get_vector,
     get_vector_from_sym_tensor,
+    put_2D_tensor_into_3D,
 )
 from cmad.parameters.parameters import Parameters
 from cmad.typing import JaxArray, Scalar, StateList
+
+
+def plastic_strain_33_idx(def_type: int) -> int:
+    return 2 if def_type == DefType.PLANE_STRAIN else 3
+
+
+def plastic_strain_from_state(
+        xi: StateList, def_type: int, has_material_rotation: bool,
+) -> JaxArray:
+    """Material frame plastic strain as a 3x3, zero where the def type
+    stores no component."""
+    if def_type == DefType.PLANE_STRAIN or def_type == DefType.PLANE_STRESS:
+        in_plane = put_2D_tensor_into_3D(get_sym_tensor_from_vector(xi[0], 2))
+        plastic_strain_33 = get_scalar(xi[plastic_strain_33_idx(def_type)])
+        return in_plane.at[2, 2].set(plastic_strain_33[0])
+    if def_type == DefType.UNIAXIAL_STRESS and not has_material_rotation:
+        return jnp.diag(get_vector(xi[0], 3))
+    return get_sym_tensor_from_vector(xi[0], 3)
+
+
+def stored_plastic_strain_components(
+        A: JaxArray, def_type: int, has_material_rotation: bool,
+) -> JaxArray:
+    if def_type == DefType.PLANE_STRAIN or def_type == DefType.PLANE_STRESS:
+        return get_vector_from_sym_tensor(A[:2, :2], 2)
+    if def_type == DefType.UNIAXIAL_STRESS and not has_material_rotation:
+        return jnp.diag(A)
+    return get_vector_from_sym_tensor(A, 3)
 
 
 def compute_elastic_strain(
@@ -45,7 +75,8 @@ def compute_elastic_strain(
 ) -> JaxArray:
     local_var_idx = 2
     F = gather_F(xi, U, def_type, local_var_idx, uniaxial_stress_idx)
-    plastic_strain = get_sym_tensor_from_vector(xi[0], 3)
+    plastic_strain = plastic_strain_from_state(
+        xi, def_type, has_material_rotation)
     grad_u = F - jnp.eye(3)
     global_total_strain = 0.5 * (grad_u + grad_u.T)
 
@@ -158,12 +189,17 @@ class SmallElasticPlastic(MechanicsModel):
         ndims = def_type_ndims(def_type)
         self._ndims = ndims
 
-        if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRAIN:
+        is_2D = def_type in (DefType.PLANE_STRAIN, DefType.PLANE_STRESS)
+
+        if def_type == DefType.FULL_3D:
             num_residuals = 2
 
-        elif def_type == DefType.PLANE_STRESS \
+        elif def_type == DefType.PLANE_STRAIN \
                 or def_type == DefType.UNIAXIAL_STRESS:
             num_residuals = 3
+
+        elif def_type == DefType.PLANE_STRESS:
+            num_residuals = 4
 
         else:
             raise NotImplementedError
@@ -173,8 +209,16 @@ class SmallElasticPlastic(MechanicsModel):
         # linearized plastic strain tensor in material coordinates
         self.var_names[0] = "plastic strain"
         self.resid_names[0] = "flow rule"
-        self._var_types[0] = VarType.SYM_TENSOR
-        self._num_eqs[0] = get_num_eqs(VarType.SYM_TENSOR, 3)
+        if is_2D:
+            self._var_types[0] = VarType.SYM_TENSOR
+            self._num_eqs[0] = get_num_eqs(VarType.SYM_TENSOR, 2)
+        elif def_type == DefType.UNIAXIAL_STRESS \
+                and not has_material_rotation:
+            self._var_types[0] = VarType.VECTOR
+            self._num_eqs[0] = get_num_eqs(VarType.VECTOR, 3)
+        else:
+            self._var_types[0] = VarType.SYM_TENSOR
+            self._num_eqs[0] = get_num_eqs(VarType.SYM_TENSOR, 3)
         init_vec_pstrain = np.zeros(self._num_eqs[0])
 
         # isotropic hardening variable
@@ -207,6 +251,16 @@ class SmallElasticPlastic(MechanicsModel):
             self._uniaxial_stress_idx = uniaxial_stress_idx
 
             self._init_xi += [init_off_axis_stretches]
+
+        if is_2D:
+            idx = plastic_strain_33_idx(def_type)
+            self.var_names[idx] = "plastic strain 33"
+            self.resid_names[idx] = "flow rule 33"
+            self._var_types[idx] = VarType.SCALAR
+            self._num_eqs[idx] = get_num_eqs(VarType.SCALAR, ndims)
+            init_pstrain_33 = np.zeros(self._num_eqs[idx])
+
+            self._init_xi += [init_pstrain_33]
 
         # set the initial values for xi and xi_prev
         self._init_state_variables()
@@ -273,8 +327,10 @@ class SmallElasticPlastic(MechanicsModel):
     ) -> JaxArray:
 
         # state variables for the model
-        pstrain = get_sym_tensor_from_vector(xi[0], 3)
-        pstrain_prev = get_sym_tensor_from_vector(xi_prev[0], 3)
+        pstrain = plastic_strain_from_state(
+            xi, def_type, has_material_rotation)
+        pstrain_prev = plastic_strain_from_state(
+            xi_prev, def_type, has_material_rotation)
         alpha = get_scalar(xi[1])
         alpha_prev = get_scalar(xi_prev[1])
 
@@ -289,6 +345,10 @@ class SmallElasticPlastic(MechanicsModel):
         # at the previous step; the stretch blocks stay current because
         # compute_elastic_strain reads them
         xi_elastic = [xi_prev[0], xi_prev[1], *xi[2:]]
+        if def_type == DefType.PLANE_STRAIN \
+                or def_type == DefType.PLANE_STRESS:
+            idx = plastic_strain_33_idx(def_type)
+            xi_elastic[idx] = xi_prev[idx]
         _cauchy, trial_yield_fun = compute_yield_fun(
             xi_elastic, xi_prev, params, U, step_time, def_type,
             elastic_stress, effective_stress, yield_function,
@@ -296,22 +356,26 @@ class SmallElasticPlastic(MechanicsModel):
 
         # elastic residual
         C_elastic_pstrain_tensor = pstrain - pstrain_prev
-        C_elastic_pstrain = \
-            get_vector_from_sym_tensor(C_elastic_pstrain_tensor, 3)
+        C_elastic_pstrain = stored_plastic_strain_components(
+            C_elastic_pstrain_tensor, def_type, has_material_rotation)
         C_elastic_alpha = delta_gamma
-        C_elastic = jnp.r_[C_elastic_pstrain, C_elastic_alpha]
 
         # plastic residual
         C_plastic_pstrain_tensor = C_elastic_pstrain_tensor \
             - delta_gamma * yield_normal
-        C_plastic_pstrain = \
-            get_vector_from_sym_tensor(C_plastic_pstrain_tensor, 3)
+        C_plastic_pstrain = stored_plastic_strain_components(
+            C_plastic_pstrain_tensor, def_type, has_material_rotation)
         C_plastic_alpha = yield_fun
-        C_plastic = jnp.r_[C_plastic_pstrain, C_plastic_alpha]
 
-        if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRAIN:
+        if def_type == DefType.FULL_3D:
             C_elastic = jnp.r_[C_elastic_pstrain, C_elastic_alpha]
             C_plastic = jnp.r_[C_plastic_pstrain, C_plastic_alpha]
+
+        elif def_type == DefType.PLANE_STRAIN:
+            C_elastic = jnp.r_[C_elastic_pstrain, C_elastic_alpha,
+                               C_elastic_pstrain_tensor[2, 2]]
+            C_plastic = jnp.r_[C_plastic_pstrain, C_plastic_alpha,
+                               C_plastic_pstrain_tensor[2, 2]]
 
         elif def_type == DefType.PLANE_STRESS or \
                 def_type == DefType.UNIAXIAL_STRESS:
@@ -323,6 +387,10 @@ class SmallElasticPlastic(MechanicsModel):
 
             if def_type == DefType.PLANE_STRESS:
                 C_stretch = global_cauchy[2, 2] / scale_factor
+                C_elastic = jnp.r_[C_elastic_pstrain, C_elastic_alpha,
+                                   C_stretch, C_elastic_pstrain_tensor[2, 2]]
+                C_plastic = jnp.r_[C_plastic_pstrain, C_plastic_alpha,
+                                   C_stretch, C_plastic_pstrain_tensor[2, 2]]
 
             elif def_type == DefType.UNIAXIAL_STRESS:
                 off_axis_stress_idx = off_axis_idx(uniaxial_stress_idx)
@@ -331,9 +399,10 @@ class SmallElasticPlastic(MechanicsModel):
                 C_stretch = jnp.r_[global_cauchy[first_idx, first_idx],
                                    global_cauchy[second_idx, second_idx]] \
                             / scale_factor
-
-            C_elastic = jnp.r_[C_elastic_pstrain, C_elastic_alpha, C_stretch]
-            C_plastic = jnp.r_[C_plastic_pstrain, C_plastic_alpha, C_stretch]
+                C_elastic = jnp.r_[C_elastic_pstrain, C_elastic_alpha,
+                                   C_stretch]
+                C_plastic = jnp.r_[C_plastic_pstrain, C_plastic_alpha,
+                                   C_stretch]
 
         return cond_residual(trial_yield_fun, C_elastic, C_plastic,
                              yield_threshold(yield_tol, params, yield_function))
