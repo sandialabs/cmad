@@ -41,6 +41,11 @@ from cmad.models.kinematics import (
     small_strain_increment,
     unrotated_rate_of_deformation_increment,
 )
+from cmad.models.material_frame import (
+    require_in_plane_rotation,
+    rotate_into_material_frame,
+    rotate_out_of_material_frame,
+)
 from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
 from cmad.models.var_types import (
@@ -101,26 +106,8 @@ def material_frame_increment(
             [off_axis[1], off_axis[2], increment[2, 2]],
         ])
 
-    if has_material_rotation:
-        # Q is a rotation from material coordinates to global coordinates
-        # Q_{ij} = e_i (global) \dot e_j (material)
-        Q = params["rotation matrix"]
-        return Q.T @ increment @ Q
-
-    return increment
-
-
-def rotate_out_of_material_frame(
-        stress: JaxArray, params: dict[str, Any],
-        has_material_rotation: bool,
-) -> JaxArray:
-    """``Q s Qᵀ`` when the material has a rotation matrix, ``s``
-    otherwise."""
-    if has_material_rotation:
-        Q = params["rotation matrix"]
-        return Q @ stress @ Q.T
-
-    return stress
+    return rotate_into_material_frame(
+        increment, params, has_material_rotation)
 
 
 def elastic_predictor(
@@ -229,13 +216,8 @@ class RateElasticPlastic(MechanicsModel):
 
         self.is_finite_deformation = finite_deformation
         has_material_rotation = "rotation matrix" in parameters.values
+        require_in_plane_rotation(parameters, def_type, "rate_elastic_plastic")
         is_2D = def_type in (DefType.PLANE_STRAIN, DefType.PLANE_STRESS)
-        if has_material_rotation and is_2D:
-            Q = np.asarray(parameters.values["rotation matrix"])
-            if not (np.allclose(Q[2, :2], 0.0) and np.allclose(Q[:2, 2], 0.0)):
-                raise ValueError(
-                    "rate_elastic_plastic in plane strain or plane stress "
-                    "needs a rotation matrix about the out-of-plane axis")
 
         self._is_complex = is_complex
         self.dtype = float

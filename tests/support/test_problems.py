@@ -27,7 +27,6 @@ def params_J2_voce(flat_param_values, scale_params):
     D_bounds = np.array([10., 30.])
 
     J2_values = {
-        "rotation matrix": np.eye(3),
         "elastic": elastic_params,
         "plastic": {
             "effective stress": J2_effective_stress_params,
@@ -56,7 +55,6 @@ def params_J2_voce(flat_param_values, scale_params):
     hill_effective_stress_params = {"hill": hill_coefficients}
 
     hill_values = {
-        "rotation matrix": np.eye(3),
         "elastic": elastic_params,
         "plastic": {
             "effective stress": hill_effective_stress_params,
@@ -85,7 +83,6 @@ def params_J2_voce(flat_param_values, scale_params):
     hosford_effective_stress_params = {"hosford": hosford_coefficients}
 
     hosford_values = {
-        "rotation matrix": np.eye(3),
         "elastic": elastic_params,
         "plastic": {
             "effective stress": hosford_effective_stress_params,
@@ -122,7 +119,6 @@ def params_J2_johnson_cook(flat_param_values):
     E, nu, A, B, n, C = flat_param_values
 
     values = {
-        "rotation matrix": np.eye(3),
         "elastic": {"E": E, "nu": nu},
         "plastic": {
             "effective stress": {"J2": 0.},

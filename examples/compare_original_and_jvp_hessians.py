@@ -91,7 +91,6 @@ def create_J2_parameters():
     D_log_scale = np.array([20.])
 
     J2_values = {
-        "rotation matrix": np.eye(3),
         "elastic": elastic_params,
         "plastic": {
             "effective stress": J2_effective_stress_params,

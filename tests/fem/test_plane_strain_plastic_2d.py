@@ -114,9 +114,7 @@ class TestPlaneStrainPlastic2D(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(np.asarray(U_solved))))
 
         # The COUPLED local solve drove at least one IP into plasticity.
-        # alpha (scalar hardening) is xi var 1, just past the 6-component
-        # var 0 (plastic strain / unrotated cauchy), so its flat offset is
-        # the size of var 0.
+        # alpha is xi var 1, so its flat offset is the size of var 0.
         alpha_idx = int(model._num_eqs[0])
         alpha = state.xi_at(_NUM_STEPS, "all")[..., alpha_idx]
         self.assertGreater(float(np.max(alpha)), 0.0)

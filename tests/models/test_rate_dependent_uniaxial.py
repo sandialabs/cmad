@@ -101,7 +101,6 @@ def schedule(peak_strain, strain_rate):
 
 def parameters(flow_stress_params):
     values = {
-        "rotation matrix": np.eye(3),
         "elastic": {"E": _E, "nu": _NU},
         "plastic": {
             "effective stress": {"J2": 0.0},

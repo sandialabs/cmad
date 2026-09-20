@@ -82,20 +82,6 @@ class MPProblem:
     qoi: QoI | None
 
 
-def _with_material_defaults(
-        params_section: dict[str, Any], model_cls: type[Model],
-) -> dict[str, Any]:
-    """Return a copy of ``params_section`` with the model's
-    ``material_defaults()`` setdefault-merged in, so the deck builder fills
-    omitted top-level material parameters such as ``rotation matrix`` before
-    :func:`build_parameters` splits them into the parallel parameter trees.
-    """
-    merged = dict(params_section)
-    for key, default in model_cls.material_defaults().items():
-        merged.setdefault(key, default)
-    return merged
-
-
 def build_mp_problem(
         deck_path: Path, subcommand: str,
 ) -> MPProblem:
@@ -111,9 +97,7 @@ def build_mp_problem(
     validate_deck(resolved, subcommand)
 
     model_cls = resolve_model(resolved["model"]["name"])
-    parameters = build_parameters(
-        _with_material_defaults(resolved["parameters"], model_cls),
-    )
+    parameters = build_parameters(resolved["parameters"])
     def_type = DefType[resolved["model"]["def_type"].upper()]
     model = model_cls.from_deck(resolved["model"], parameters, def_type)
     if not isinstance(model, MechanicsModel):
@@ -655,11 +639,7 @@ def _build_models_by_block(
     model_cls = resolve_model(local_section["type"])
     return {
         block: model_cls.from_deck(
-            local_section,
-            build_parameters(
-                _with_material_defaults(materials[block], model_cls),
-            ),
-            def_type,
+            local_section, build_parameters(materials[block]), def_type,
         )
         for block in materials
     }
