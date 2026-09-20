@@ -54,9 +54,10 @@ class MechanicsModel(Model):
     is_finite_deformation: bool = False
 
     _def_type: int
-    # Index in xi of the plane stress out-of-plane stretch unknown; -1
-    # when the model has no such unknown (FULL_3D, plane strain), where
-    # gather_F ignores it.
+    # Index in xi of the stretch unknown block gather_F reads: the plane
+    # stress out-of-plane stretch, or the uniaxial stress off-axis
+    # stretches; -1 when the model carries no such unknown (FULL_3D,
+    # plane strain), where gather_F ignores it.
     _oop_stretch_idx: int = -1
 
     cauchy_closed_form: Callable[..., JaxArray] | None

@@ -20,8 +20,8 @@ valued, so a complex step model works with the rate-independent relation
 only.
 
 The rate-dependent relations are verified on the small strain models and
-the hypoelastic model, Peric on be_bar as well. be_bar is not compatible
-with Johnson-Cook.
+the hypoelastic model, Peric and Perzyna on be_bar as well. be_bar is not
+compatible with Johnson-Cook.
 """
 from collections.abc import Callable
 from functools import partial
@@ -35,6 +35,7 @@ from cmad.typing import JaxArray, Scalar
 RATE_INDEPENDENT_KEYS = frozenset({"initial yield", "hardening"})
 JOHNSON_COOK_KEYS = frozenset({"johnson_cook"})
 PERIC_KEYS = frozenset({"peric"})
+PERZYNA_KEYS = frozenset({"perzyna"})
 
 POWER_LAW_OFFSET = 1e-10
 
@@ -97,6 +98,27 @@ def peric_flow_stress(
     return sigma_y * jnp.power(1.0 + p["eta"] * alpha_dot, p["epsilon"])
 
 
+def perzyna_flow_stress(
+        alpha: JaxArray, alpha_dot: JaxArray, T: Scalar | None,
+        params: dict[str, Any],
+        hardening_funs: dict[str, Callable[..., JaxArray]],
+) -> JaxArray:
+    """Perzyna: ``alpha_dot = (phi - sigma_y) / eta`` solved for the stress,
+    ``sigma_y + eta alpha_dot``, with ``sigma_y`` the rate-independent flow
+    stress of the same subtree.
+
+    ``eta`` is a viscosity in stress * time: the overstress the material
+    carries per unit equivalent plastic strain rate. The relation is linear
+    in the rate, so it shifts the rate-independent yield surface by a
+    constant at a constant rate, and ``eta -> 0`` is the rate-independent
+    relation exactly rather than a limit of a separate equation.
+    """
+    p = params["perzyna"]
+    sigma_y = rate_independent_flow_stress(
+        alpha, alpha_dot, T, p, hardening_funs)
+    return sigma_y + p["eta"] * alpha_dot
+
+
 def consistency_yield_function(
         flow_stress_fun: Callable[..., JaxArray],
 ) -> Callable[..., JaxArray]:
@@ -130,8 +152,11 @@ def make_yield_function(
     if keys == PERIC_KEYS:
         return consistency_yield_function(partial(
             peric_flow_stress, hardening_funs=hardening_funs))
+    if keys == PERZYNA_KEYS:
+        return consistency_yield_function(partial(
+            perzyna_flow_stress, hardening_funs=hardening_funs))
     raise ValueError(
         f"flow stress: keys {sorted(keys)} name no relation; known: the "
         f"pair {sorted(RATE_INDEPENDENT_KEYS)}, {sorted(JOHNSON_COOK_KEYS)}, "
-        f"or {sorted(PERIC_KEYS)}",
+        f"{sorted(PERIC_KEYS)}, or {sorted(PERZYNA_KEYS)}",
     )

@@ -133,5 +133,65 @@ class TestPericYieldFunction(unittest.TestCase):
         np.testing.assert_allclose(rate, alpha_dot, rtol=1e-12)
 
 
+_PERZYNA = {"perzyna": {**_flow_params(), "eta": 1e4}}
+
+
+class TestPerzynaYieldFunction(unittest.TestCase):
+
+    def test_rate_law_holds_at_the_zero(self) -> None:
+        yield_function = make_yield_function(_PERZYNA)
+        eta = _PERZYNA["perzyna"]["eta"]
+        alpha, alpha_dot = 0.05, 2e-3
+        sigma_y = float(_Y + voce_hardening(alpha, {"S": _S, "D": _D}))
+        phi = brentq(
+            lambda phi: float(
+                yield_function(phi, alpha, alpha_dot, None, _PERZYNA)),
+            sigma_y, 10.0 * sigma_y)
+        np.testing.assert_allclose((phi - sigma_y) / eta, alpha_dot, rtol=1e-12)
+
+    def test_overstress_is_linear_in_the_rate(self) -> None:
+        """The relation is linear in alpha_dot, unlike Peric's power law:
+        doubling the rate doubles the distance outside the yield surface.
+        """
+        yield_function = make_yield_function(_PERZYNA)
+        alpha, alpha_dot, phi = 0.05, 2e-3, 400.0
+        at_rest = float(yield_function(phi, alpha, 0.0, None, _PERZYNA))
+        once = at_rest - float(
+            yield_function(phi, alpha, alpha_dot, None, _PERZYNA))
+        twice = at_rest - float(
+            yield_function(phi, alpha, 2.0 * alpha_dot, None, _PERZYNA))
+        np.testing.assert_allclose(twice, 2.0 * once, rtol=1e-12)
+        np.testing.assert_allclose(
+            once, _PERZYNA["perzyna"]["eta"] * alpha_dot, rtol=1e-12)
+
+    def test_zero_viscosity_is_the_rate_independent_relation(self) -> None:
+        """eta -> 0 is the rate-independent relation itself, not a limit of
+        a separate equation -- which is why the return map needs no branch.
+        """
+        inviscid = {"perzyna": {**_flow_params(), "eta": 0.0}}
+        perzyna = make_yield_function(inviscid)
+        rate_independent = make_yield_function(_flow_params())
+        for alpha in np.linspace(0.0, 0.5, 6):
+            for alpha_dot in (0.0, 1e-3, 1.0):
+                self.assertEqual(
+                    float(perzyna(400.0, alpha, alpha_dot, None, inviscid)),
+                    float(rate_independent(
+                        400.0, alpha, alpha_dot, None, _flow_params())),
+                )
+
+    def test_threshold_is_relative_to_the_initial_yield(self) -> None:
+        """yield_threshold evaluates the relation at zero rate, so the
+        branch threshold is the rate-independent Y either way.
+        """
+        flat_values = np.array([_E, _NU, _Y, _S, _D])
+        params = params_J2_voce(flat_values, False)[0].values
+        params["plastic"]["flow stress"] = _PERZYNA
+        yield_function = make_yield_function(_PERZYNA)
+        yield_tol = 1e-12
+        expected = yield_tol * _Y / two_mu_scale_factor(params)
+        threshold = yield_threshold(yield_tol, params, yield_function)
+        self.assertEqual(float(threshold), float(expected))
+
+
 if __name__ == "__main__":
     unittest.main()

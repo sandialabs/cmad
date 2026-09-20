@@ -33,8 +33,10 @@ def gather_F(
 
     elif def_type == DefType.UNIAXIAL_STRESS:
         on_axis_idx = uniaxial_stress_idx
+        # grad_u is 1x1: the driven component is its single entry, and
+        # on_axis_idx picks the global axis it lands on below.
         F_1D = jnp.eye(1) + grad_u
-        F_uniaxial = F_1D[on_axis_idx, on_axis_idx]
+        F_uniaxial = F_1D[0, 0]
         stretches = xi[local_var_idx]
 
         if on_axis_idx == 0:

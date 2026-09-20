@@ -11,7 +11,7 @@ import numpy as np
 
 from cmad.models.be_bar_elastic_plastic import BeBarElasticPlastic
 from cmad.models.deformation_types import DefType
-from cmad.models.global_fields import mp_U_from_F
+from cmad.models.global_fields import StepTime, mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
 from tests.support.test_problems import (
     J2AnalyticalProblem,
@@ -25,9 +25,15 @@ _ALPHA = 0.15
 
 def _drive_uniaxial(
         lambda_axial: float, lambda_lateral: float, num_steps: int,
+        total_time: float = 1.0,
 ) -> np.ndarray:
     """Drive the material point to ``diag(l_ax, l_lat, l_lat)`` in
-    ``num_steps`` log-linear steps and return the final Cauchy stress."""
+    ``num_steps`` log-linear steps and return the final Cauchy stress.
+
+    ``total_time`` stretches the same deformation path over a longer or
+    shorter wall time. The flow here is rate independent, so it must not
+    change the answer.
+    """
     params = J2AnalyticalProblem(scale_params=False).J2_parameters
     model = BeBarElasticPlastic(params, def_type=DefType.FULL_3D)
     model.set_xi_to_init_vals()
@@ -40,6 +46,7 @@ def _drive_uniaxial(
             lambda_lateral**t_prev,
         ])
         model.gather_global(mp_U_from_F(F), mp_U_from_F(F_prev))
+        model.gather_time(StepTime(t * total_time, t_prev * total_time))
         newton_solve(model, max_iters=50)
         model.advance_xi()
     model.seed_none()
@@ -66,6 +73,20 @@ class TestBeBarElasticPlastic(unittest.TestCase):
         # lateral stress vanishes (uniaxial stress) in the same limit
         self.assertLess(abs(sigma_fine[1, 1]) / cauchy_ref, 1e-3)
         self.assertLess(abs(sigma_fine[2, 2]) / cauchy_ref, 1e-3)
+
+    def test_rate_independent_flow_ignores_the_step_times(self) -> None:
+        """Without a rate dependence law, dt must not reach the answer.
+
+        The same deformation path walked over 1 second and over 1000 gives
+        the same stress: the only route ``step_time`` has into this
+        residual is the rate law, which is off here.
+        """
+        l_ax, l_lat, _ = finite_uniaxial_j2_voce(
+            _E, _NU, _Y, _S, _D, _ALPHA,
+        )
+        fast = _drive_uniaxial(l_ax, l_lat, num_steps=20, total_time=1.0)
+        slow = _drive_uniaxial(l_ax, l_lat, num_steps=20, total_time=1e3)
+        np.testing.assert_allclose(fast, slow, rtol=0.0, atol=1e-10)
 
 
 if __name__ == "__main__":

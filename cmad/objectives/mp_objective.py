@@ -149,10 +149,13 @@ class MPAdjointObjective(MPObjective):
 
             grad += phi.T @ dC_dp + dJ_dp
 
-        grad = grad.squeeze()
-        model.parameters.transform_grad(grad)
+        # reshape, not squeeze: grad is accumulated as (1, n) and a
+        # lone active parameter would squeeze away to a 0-d array,
+        # which transform_grad and the optimizer both index.
+        flat_grad = grad.reshape(-1)
+        model.parameters.transform_grad(flat_grad)
 
-        return GradientResult(J=J, grad=grad)
+        return GradientResult(J=J, grad=flat_grad)
 
 
 class MPDirectObjective(MPObjective):
@@ -213,10 +216,13 @@ class MPDirectObjective(MPObjective):
 
             model.advance_xi()
 
-        grad = grad.squeeze()
-        model.parameters.transform_grad(grad)
+        # reshape, not squeeze: grad is accumulated as (1, n) and a
+        # lone active parameter would squeeze away to a 0-d array,
+        # which transform_grad and the optimizer both index.
+        flat_grad = grad.reshape(-1)
+        model.parameters.transform_grad(flat_grad)
 
-        return GradientResult(J=float(J), grad=grad)
+        return GradientResult(J=float(J), grad=flat_grad)
 
 
 class MPDirectAdjointObjective(MPObjective):
@@ -269,9 +275,12 @@ class MPDirectAdjointObjective(MPObjective):
 
             grad += phi.T @ dC_dp + dJ_dp
 
-        grad = grad.squeeze()
-        untransformed_grad = grad.copy()
-        model.parameters.transform_grad(grad)
+        # reshape, not squeeze: grad is accumulated as (1, n) and a
+        # lone active parameter would squeeze away to a 0-d array,
+        # which transform_grad and the optimizer both index.
+        flat_grad = grad.reshape(-1)
+        untransformed_grad = flat_grad.copy()
+        model.parameters.transform_grad(flat_grad)
 
         # direct-adjoint pass for Hessian
         hessian = np.zeros((num_active_params, num_active_params))
@@ -339,4 +348,4 @@ class MPDirectAdjointObjective(MPObjective):
 
         model.parameters.transform_hessian(hessian, untransformed_grad)
 
-        return HessianResult(J=J, grad=grad, hessian=hessian)
+        return HessianResult(J=J, grad=flat_grad, hessian=hessian)

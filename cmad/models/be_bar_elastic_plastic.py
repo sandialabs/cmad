@@ -5,13 +5,31 @@ Cauchy-Green ``be_bar`` is carried (split into its deviator ``zeta`` and a
 hydrostatic part ``Ie``), advanced by the relative deformation gradient,
 and returned to the yield surface. The yield is von Mises (J2) on the
 deviatoric Kirchhoff stress, which is what the be_bar formulation
-supports; the hardening is modular. Runs in FULL_3D or in either 2D form.
+supports; the hardening is modular. Runs in FULL_3D, in either 2D form,
+or in uniaxial stress.
 
 For plane strain the relative deformation gradient embeds ``F_33 = 1``,
 so the 3D return map carries the out of plane ``be_bar`` with no extra
 local unknown. Plane stress instead solves for ``F_33`` as a fourth
 local unknown, fixed by ``sigma_33 = 0``, which the return map cannot
-supply on its own.
+supply on its own. Uniaxial stress is the same trade one dimension
+lower: only the stretch along the loading axis is prescribed, so the two
+off-axis stretches are a fourth local unknown, a vector fixed by the two
+off-axis normal stresses vanishing. Nothing there has to suppress shear:
+the uniaxial ``gather_F`` is diagonal, so ``be_bar`` stays diagonal.
+
+The yield surface equation closes with the yield function the deck's
+``flow stress`` subtree names (see :mod:`cmad.models.flow_stress`),
+evaluated at the backward Euler hardening rate
+``alpha_dot = (alpha - alpha_prev) / dt``. A rate-dependent relation
+written as a flow stress — Peric, Perzyna — lets the stress sit outside
+the rate-independent yield surface by an amount set by the loading rate;
+only that one equation sees it. The ``be_bar`` deviator and unimodularity
+equations, and the plane or uniaxial stress equations, are the same
+either way. A rate-dependent relation needs real step sizes: the FE
+driver takes them from the deck's time schedule, a material point deck
+from its ``deformation`` section (see :mod:`cmad.io.deformation`), and a
+deck that names no times leaves every step at ``dt = 1``.
 """
 from collections.abc import Callable
 from functools import partial
@@ -31,7 +49,7 @@ from cmad.models.global_fields import (
     StepTime,
     temperature_at_point,
 )
-from cmad.models.kinematics import det_3x3, gather_F, inv_3x3
+from cmad.models.kinematics import det_3x3, gather_F, inv_3x3, off_axis_idx
 from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
 from cmad.models.var_types import (
@@ -65,23 +83,26 @@ def relative_be_bar(
 def elastic_predictor(
         xi: StateList, xi_prev: StateList, params: dict[str, Any],
         U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
-        def_type: int, oop_stretch_idx: int,
+        def_type: int, oop_stretch_idx: int, uniaxial_stress_idx: int,
 ) -> StateList:
     """Elastic predictor state ``[dev(be_bar_trial), tr(be_bar_trial)/3,
-    alpha_prev]``, plus the out of plane stretch under plane stress.
+    alpha_prev]``, plus the stretch unknowns under plane or uniaxial
+    stress.
 
     The closed form root of the elastic branch: plastic flow frozen, the
     elastic ``be_bar`` advanced by the relative deformation.
 
-    ``xi`` supplies only the current out of plane stretch, which under
-    plane stress is the ``F_33`` that :func:`gather_F` embeds, so the
-    trial is a function of a local unknown there. Everything advected
-    comes from ``xi_prev``: the previous ``be_bar``, the hardening, and
-    the previous deformation. In FULL_3D and plane strain ``xi`` never
-    reaches the deformation gradient and the two coincide.
+    ``xi`` supplies only the current stretch unknowns, which are the
+    ``F_33`` (plane stress) or the two off-axis stretches (uniaxial
+    stress) that :func:`gather_F` embeds, so the trial is a function of
+    local unknowns there. Everything advected comes from ``xi_prev``: the
+    previous ``be_bar``, the hardening, and the previous deformation. In
+    FULL_3D and plane strain ``xi`` never reaches the deformation
+    gradient and the two coincide.
     """
-    F = gather_F(xi, U, def_type, oop_stretch_idx)
-    F_prev = gather_F(xi_prev, U_prev, def_type, oop_stretch_idx)
+    F = gather_F(xi, U, def_type, oop_stretch_idx, uniaxial_stress_idx)
+    F_prev = gather_F(
+        xi_prev, U_prev, def_type, oop_stretch_idx, uniaxial_stress_idx)
     be_bar_trial = relative_be_bar(xi_prev[0], xi_prev[1], F, F_prev)
     dev_be_bar_trial = be_bar_trial - jnp.trace(be_bar_trial) / 3. * jnp.eye(3)
     trial = [
@@ -89,7 +110,7 @@ def elastic_predictor(
         jnp.atleast_1d(jnp.trace(be_bar_trial) / 3.),
         xi_prev[2],
     ]
-    if def_type == DefType.PLANE_STRESS:
+    if def_type in (DefType.PLANE_STRESS, DefType.UNIAXIAL_STRESS):
         trial.append(xi[oop_stretch_idx])
     return trial
 
@@ -98,24 +119,26 @@ def initial_guess(
         xi_prev: StateList, params: dict[str, Any],
         U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
         step_time: StepTime,
-        def_type: int, oop_stretch_idx: int,
+        def_type: int, oop_stretch_idx: int, uniaxial_stress_idx: int,
 ) -> StateList:
     """Starting state for the local Newton: the elastic predictor taken at
-    the previous out of plane stretch.
+    the previous stretch unknowns.
 
-    The current stretch does not exist yet, so under plane stress this
-    sits off the root of the out of plane equation and costs iterations.
-    What it does hold is ``delta_gamma`` at zero with the deviator on the
-    frozen flow manifold, which is what keeps the return map away from its
-    other root, the one on the yield surface with a negative plastic
-    increment.
+    The current stretches do not exist yet, so under plane or uniaxial
+    stress this sits off the root of the stress free equations and costs
+    iterations. What it does hold is ``delta_gamma`` at zero with the
+    deviator on the frozen flow manifold, which is what keeps the return
+    map away from its other root, the one on the yield surface with a
+    negative plastic increment.
 
-    ``step_time`` is unused; this model has no rate dependence. It is in the
-    signature because ``make_newton_solve`` calls the initial guess with the
-    residual's trailing arguments.
+    ``step_time`` is unused: the guess is the elastic predictor, which is
+    rate independent even when the model is not, since plastic flow is
+    frozen there. It is in the signature because ``make_newton_solve``
+    calls the initial guess with the residual's trailing arguments.
     """
     return elastic_predictor(
-        xi_prev, xi_prev, params, U, U_prev, def_type, oop_stretch_idx)
+        xi_prev, xi_prev, params, U, U_prev, def_type, oop_stretch_idx,
+        uniaxial_stress_idx)
 
 
 def compute_yield_fun(
@@ -161,9 +184,11 @@ def compute_yield_fun_and_normal(
 class BeBarElasticPlastic(MechanicsModel):
     """Finite deformation elastic-plastic model via the be_bar return map.
 
-    Elastic: neohookean. Plastic: J2 yield on the Kirchhoff stress +
-    modular hardening. State ``[zeta (deviatoric be_bar), Ie (hydrostatic
-    be_bar), alpha]``.
+    Elastic: neohookean. Plastic: J2 yield on the Kirchhoff stress, closed
+    with the yield function the deck's ``flow stress`` subtree names, rate
+    independent or not. State ``[zeta (deviatoric be_bar), Ie
+    (hydrostatic be_bar), alpha]``, plus the stretches the deformation
+    leaves free under plane stress or uniaxial stress.
     """
 
     supports_mixed: ClassVar[bool] = True
@@ -171,20 +196,23 @@ class BeBarElasticPlastic(MechanicsModel):
 
     _def_type: int
     _ndims: int
+    _uniaxial_stress_idx: int
 
     def __init__(
             self, parameters: Parameters,
             def_type: int = DefType.FULL_3D,
             hardening_funs: dict | None = None,
             yield_tol: float = 1e-12,
+            uniaxial_stress_idx: int = 0,
             is_complex: bool = False,
     ) -> None:
 
         if def_type not in (
-                DefType.FULL_3D, DefType.PLANE_STRAIN, DefType.PLANE_STRESS):
+                DefType.FULL_3D, DefType.PLANE_STRAIN, DefType.PLANE_STRESS,
+                DefType.UNIAXIAL_STRESS):
             raise NotImplementedError(
-                "be_bar_elastic_plastic supports FULL_3D, PLANE_STRAIN and "
-                "PLANE_STRESS",
+                "be_bar_elastic_plastic supports FULL_3D, PLANE_STRAIN, "
+                "PLANE_STRESS and UNIAXIAL_STRESS",
             )
 
         self._is_complex = is_complex
@@ -193,8 +221,12 @@ class BeBarElasticPlastic(MechanicsModel):
         self._def_type = def_type
         self._ndims = def_type_ndims(def_type)
 
-        plane_stress = def_type == DefType.PLANE_STRESS
-        self._init_residuals(4 if plane_stress else 3)
+        if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRAIN:
+            num_residuals = 3
+        else:
+            num_residuals = 4
+
+        self._init_residuals(num_residuals)
 
         # deviatoric part of the elastic left Cauchy-Green be_bar
         self.var_names[0] = "zeta"
@@ -220,7 +252,7 @@ class BeBarElasticPlastic(MechanicsModel):
             np.zeros(self._num_eqs[2]),
         ]
 
-        if plane_stress:
+        if def_type == DefType.PLANE_STRESS:
             # Out of plane stretch, the F_33 that gather_F embeds. Unlike
             # plane strain, where F_33 = 1 embeds directly, plane stress
             # fixes it by the plane stress condition sigma_33 = 0, so it
@@ -230,6 +262,20 @@ class BeBarElasticPlastic(MechanicsModel):
             self._var_types[3] = VarType.SCALAR
             self._num_eqs[3] = get_num_eqs(VarType.SCALAR, 3)
             self._oop_stretch_idx = 3
+
+            self._init_xi += [np.ones(self._num_eqs[3])]
+
+        elif def_type == DefType.UNIAXIAL_STRESS:
+            # The two stretches off the loading axis, which gather_F
+            # embeds beside the prescribed one. Only the loading axis is
+            # driven, so these are fixed by the two off-axis normal
+            # stresses vanishing.
+            self.var_names[3] = "off-axis stretches"
+            self.resid_names[3] = "off-axis normal stress"
+            self._var_types[3] = VarType.VECTOR
+            self._num_eqs[3] = get_num_eqs(VarType.VECTOR, 2)
+            self._oop_stretch_idx = 3
+            self._uniaxial_stress_idx = uniaxial_stress_idx
 
             self._init_xi += [np.ones(self._num_eqs[3])]
 
@@ -245,16 +291,19 @@ class BeBarElasticPlastic(MechanicsModel):
         residual = partial(
             self._residual_fn,
             def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
+            uniaxial_stress_idx=uniaxial_stress_idx,
             yield_function=yield_function,
             yield_tol=yield_tol, is_complex=is_complex)
 
         cauchy = partial(
             self._cauchy_fn,
-            def_type=def_type, oop_stretch_idx=self._oop_stretch_idx)
+            def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
+            uniaxial_stress_idx=uniaxial_stress_idx)
 
         self.initial_guess_fn = jit(partial(
             initial_guess,
-            def_type=def_type, oop_stretch_idx=self._oop_stretch_idx))
+            def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
+            uniaxial_stress_idx=uniaxial_stress_idx))
 
         super().__init__(residual, cauchy)
 
@@ -268,6 +317,7 @@ class BeBarElasticPlastic(MechanicsModel):
         return cls(
             parameters=parameters,
             def_type=require_def_type(def_type, cls.__name__),
+            uniaxial_stress_idx=model_section.get("uniaxial_stress_idx", 0),
         )
 
     def derived_output_field_names(self) -> list[str]:
@@ -278,7 +328,7 @@ class BeBarElasticPlastic(MechanicsModel):
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             step_time: StepTime,
-            def_type: int, oop_stretch_idx: int,
+            def_type: int, oop_stretch_idx: int, uniaxial_stress_idx: int,
             yield_function: Callable[..., JaxArray],
             yield_tol: float, is_complex: bool,
     ) -> JaxArray:
@@ -290,7 +340,8 @@ class BeBarElasticPlastic(MechanicsModel):
 
         eye = jnp.eye(3)
         xi_elastic = elastic_predictor(
-            xi, xi_prev, params, U, U_prev, def_type, oop_stretch_idx)
+            xi, xi_prev, params, U, U_prev, def_type, oop_stretch_idx,
+            uniaxial_stress_idx)
         dev_be_bar_trial = get_sym_tensor_from_vector(xi_elastic[0], 3)
 
         yield_fun, yield_normal = compute_yield_fun_and_normal(
@@ -308,18 +359,39 @@ class BeBarElasticPlastic(MechanicsModel):
         C_zeta_plastic = get_vector_from_sym_tensor(
             zeta - dev_be_bar_trial + 2. * delta_gamma * Ie * yield_normal, 3)
         C_Ie_plastic = det_3x3(zeta + Ie * eye) - 1.
-        C_plastic = jnp.r_[C_zeta_plastic, C_Ie_plastic, yield_fun]
+        # The map closes with consistency, f = 0, whether or not the
+        # relation is rate dependent: a rate dependent flow stress puts
+        # alpha_dot inside f rather than replacing this equation, so the
+        # flow direction and the be_bar constraint above are untouched.
+        # delta_gamma is the equivalent plastic strain increment here,
+        # since the flow normal is the gradient of the effective stress
+        # rather than a unit tensor.
+        C_alpha_plastic = yield_fun
+        C_plastic = jnp.r_[C_zeta_plastic, C_Ie_plastic, C_alpha_plastic]
 
-        if def_type == DefType.PLANE_STRESS:
-            # The out of plane stretch is fixed by sigma_33 = 0, which holds
-            # whether or not the step yields, so it closes both branches.
+        if def_type in (DefType.PLANE_STRESS, DefType.UNIAXIAL_STRESS):
+            # The stretch unknowns are fixed by the undriven normal
+            # stresses vanishing, which holds whether or not the step
+            # yields, so those equations close both branches.
             cauchy = BeBarElasticPlastic._cauchy_fn(
-                xi, xi_prev, params, U, U_prev, def_type, oop_stretch_idx)
-            C_oop = jnp.atleast_1d(
-                cauchy[2, 2] / two_mu_scale_factor(params))
-            C_elastic = jnp.r_[C_elastic, C_oop]
-            C_plastic = jnp.r_[C_plastic, C_oop]
+                xi, xi_prev, params, U, U_prev, def_type, oop_stretch_idx,
+                uniaxial_stress_idx)
+            scale_factor = two_mu_scale_factor(params)
+            if def_type == DefType.PLANE_STRESS:
+                C_stretch = jnp.atleast_1d(cauchy[2, 2] / scale_factor)
+            else:
+                off_axis = off_axis_idx(uniaxial_stress_idx)
+                C_stretch = jnp.r_[cauchy[off_axis[0], off_axis[0]],
+                                   cauchy[off_axis[1], off_axis[1]]] \
+                    / scale_factor
+            C_elastic = jnp.r_[C_elastic, C_stretch]
+            C_plastic = jnp.r_[C_plastic, C_stretch]
 
+        # The trial state selects the branch under a rate dependent law
+        # too: a trial inside the yield surface has delta_gamma = 0 as its
+        # exact solution there (the state stays elastic, so f = the trial
+        # value, and zero flow reproduces it), and selecting on the trial
+        # is what keeps delta_gamma non-negative without bracketing f.
         return cond_residual(trial_yield_fun, C_elastic, C_plastic,
                              yield_threshold(yield_tol, params, yield_function))
 
@@ -327,11 +399,11 @@ class BeBarElasticPlastic(MechanicsModel):
     def _cauchy_fn(
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
-            def_type: int, oop_stretch_idx: int,
+            def_type: int, oop_stretch_idx: int, uniaxial_stress_idx: int,
     ) -> JaxArray:
         elastic = ElasticConstants.from_params(params["elastic"])
         eye = jnp.eye(3)
-        F = gather_F(xi, U, def_type, oop_stretch_idx)
+        F = gather_F(xi, U, def_type, oop_stretch_idx, uniaxial_stress_idx)
         J = det_3x3(F)
         zeta = get_sym_tensor_from_vector(xi[0], 3)
         dev_cauchy = elastic.mu * zeta / J

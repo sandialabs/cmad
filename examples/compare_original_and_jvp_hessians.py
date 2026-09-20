@@ -8,7 +8,7 @@ from jax.lax import fori_loop, while_loop
 from jax.tree_util import tree_map
 
 from cmad.models.deformation_types import DefType, def_type_ndims
-from cmad.models.global_fields import mp_U_from_F
+from cmad.models.global_fields import StepTime, mp_U_from_F
 from cmad.models.nonlinear_solver import make_newton_solve, newton_solve
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.objectives.mp_jvp_objective import MPJVPObjective
@@ -21,13 +21,16 @@ from cmad.parameters.parameters import Parameters
 from cmad.qois.calibration import Calibration
 
 
-def get_xis(update_fun, model, F, parameters):
+def get_xis(update_fun, model, F, parameters, times=None):
     num_steps = F.shape[-1] - 1
+    if times is None:
+        times = np.arange(num_steps + 1, dtype=np.float64)
     xis = [model._init_xi]
     for step in range(1, num_steps + 1):
         U = mp_U_from_F(F[:, :, step])
         U_prev = mp_U_from_F(F[:, :, step - 1])
-        xis.append(update_fun(xis[-1], parameters, U, U_prev))
+        step_time = StepTime(times[step], times[step - 1])
+        xis.append(update_fun(xis[-1], parameters, U, U_prev, step_time))
     return xis
 
 
