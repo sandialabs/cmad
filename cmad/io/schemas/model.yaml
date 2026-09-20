@@ -9,3 +9,5 @@ properties:
     type: string
   finite deformation:
     type: boolean
+  initial guess:
+    enum: [elastic predictor, radial return]

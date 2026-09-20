@@ -94,6 +94,8 @@ properties:
     properties:
       type: {type: string}
       finite deformation: {type: boolean}
+      initial guess:
+        enum: [elastic predictor, radial return]
       nonlinear max iters: {type: integer, minimum: 1}
       nonlinear absolute tol: {type: number, exclusiveMinimum: 0}
       nonlinear relative tol: {type: number, exclusiveMinimum: 0}

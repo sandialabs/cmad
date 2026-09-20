@@ -20,7 +20,7 @@ from cmad.models.be_bar_elastic_plastic import (
 from cmad.models.deformation_types import DefType
 from cmad.models.global_fields import mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
-from cmad.models.small_elastic_plastic import SmallElasticPlastic
+from cmad.models.rate_elastic_plastic import RateElasticPlastic
 from tests.support.test_problems import J2AnalyticalProblem
 
 # past yield for the J2AnalyticalProblem material, with a nonzero deviator
@@ -31,7 +31,9 @@ class TestMaterialPointInitialGuess(unittest.TestCase):
 
     def test_starts_from_the_elastic_predictor(self) -> None:
         params = J2AnalyticalProblem(scale_params=False).J2_parameters
-        model = BeBarElasticPlastic(params, def_type=DefType.FULL_3D)
+        model = BeBarElasticPlastic(
+            params, def_type=DefType.FULL_3D,
+            initial_guess="elastic predictor")
         model.set_xi_to_init_vals()
         model.gather_global(mp_U_from_F(_F), mp_U_from_F(np.eye(3)))
 
@@ -48,20 +50,19 @@ class TestMaterialPointInitialGuess(unittest.TestCase):
         # the guess is a move, not a restatement of the previous state
         self.assertGreater(np.abs(np.asarray(model.xi()[0])).max(), 1e-3)
 
-    def test_no_guess_leaves_xi_where_it_was(self) -> None:
-        params = J2AnalyticalProblem().J2_parameters
-        model = SmallElasticPlastic(params, def_type=DefType.FULL_3D)
-        self.assertIsNone(model.initial_guess_fn)
-
+    def test_radial_return_start_needs_no_newton_pass_for_J2(self) -> None:
+        params = J2AnalyticalProblem(scale_params=False).J2_parameters
+        model = RateElasticPlastic(
+            params, def_type=DefType.FULL_3D, initial_guess="radial return")
         model.set_xi_to_init_vals()
         model.gather_global(mp_U_from_F(_F), mp_U_from_F(np.eye(3)))
-        model.add_to_xi(1e-3 * np.arange(1, model.num_dofs + 1))
-        before = [np.asarray(block).copy() for block in model.xi()]
 
         newton_solve(model, max_iters=0)
 
-        for block, before_block in zip(model.xi(), before, strict=True):
-            np.testing.assert_array_equal(np.asarray(block), before_block)
+        model.seed_none()
+        model.evaluate()
+        self.assertLess(np.linalg.norm(model.C()), 1e-12)
+        self.assertGreater(float(model.xi()[1][0]), 0.0)
 
 
 if __name__ == "__main__":

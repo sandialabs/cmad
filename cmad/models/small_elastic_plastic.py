@@ -4,7 +4,7 @@ from typing import Any, ClassVar, cast
 
 import jax.numpy as jnp
 import numpy as np
-from jax import grad
+from jax import grad, jit
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.effective_stress import conventional_effective_stress_fun
@@ -27,6 +27,10 @@ from cmad.models.material_frame import (
 )
 from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
+from cmad.models.radial_return import (
+    plastic_multiplier_increment,
+    resolve_initial_guess,
+)
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -151,6 +155,57 @@ def compute_yield_fun_and_normal(
     return cauchy, yield_fun, yield_normal
 
 
+def start_from_radial_return(
+        xi_prev: StateList, params: dict[str, Any],
+        U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+        step_time: StepTime,
+        def_type: int,
+        elastic_stress: Callable[..., JaxArray],
+        effective_stress: Callable[..., JaxArray],
+        yield_function: Callable[..., JaxArray],
+        yield_tol: float, uniaxial_stress_idx: int,
+        has_material_rotation: bool,
+) -> StateList:
+    """Starting state for the local Newton: the previous state, its stress
+    returned to the yield surface along its own normal when it lies
+    outside."""
+    cauchy_trial, _ = compute_yield_fun(
+        xi_prev, xi_prev, params, U, step_time, def_type, elastic_stress,
+        effective_stress, yield_function, uniaxial_stress_idx,
+        has_material_rotation)
+    normal_trial = grad(effective_stress)(cauchy_trial, params["plastic"])
+    pstrain_prev = plastic_strain_from_state(
+        xi_prev, def_type, has_material_rotation)
+    alpha_prev = get_scalar(xi_prev[1])
+
+    def returned_state(delta_gamma: JaxArray) -> StateList:
+        pstrain = pstrain_prev + delta_gamma * normal_trial
+        returned = [
+            stored_plastic_strain_components(
+                pstrain, def_type, has_material_rotation),
+            alpha_prev + delta_gamma,
+        ]
+        if def_type == DefType.PLANE_STRAIN:
+            returned.append(jnp.array([pstrain[2, 2]]))
+        return returned
+
+    def g(delta_gamma: JaxArray) -> JaxArray:
+        return compute_yield_fun(
+            returned_state(delta_gamma), xi_prev, params, U, step_time,
+            def_type, elastic_stress, effective_stress, yield_function,
+            uniaxial_stress_idx, has_material_rotation)[1][0]
+
+    threshold = yield_threshold(yield_tol, params, yield_function)
+    delta_gamma = plastic_multiplier_increment(g, threshold)
+    is_plastic = g(jnp.zeros(())) > threshold
+
+    return [
+        jnp.where(is_plastic, returned_block, trial_block)
+        for returned_block, trial_block in zip(
+            returned_state(delta_gamma), xi_prev, strict=True)
+    ]
+
+
 class SmallElasticPlastic(MechanicsModel):
     """
     Small strain elastic-plastic model:
@@ -174,11 +229,14 @@ class SmallElasticPlastic(MechanicsModel):
             yield_tol: float = 1e-12,
             uniaxial_stress_idx: int = 0,
             is_complex: bool = False,
+            initial_guess: str | None = None,
     ) -> None:
 
         has_material_rotation = "rotation matrix" in parameters.values
         require_in_plane_rotation(
             parameters, def_type, "small_elastic_plastic")
+        initial_guess = resolve_initial_guess(
+            initial_guess, def_type, "small_elastic_plastic")
 
         self._is_complex = is_complex
         self.dtype = float
@@ -295,6 +353,17 @@ class SmallElasticPlastic(MechanicsModel):
                          uniaxial_stress_idx=uniaxial_stress_idx,
                          has_material_rotation=has_material_rotation)
 
+        # The elastic predictor is the previous state.
+        if initial_guess == "radial return":
+            self.initial_guess_fn = jit(partial(
+                start_from_radial_return, def_type=def_type,
+                elastic_stress=elastic_stress_fun,
+                effective_stress=effective_stress_fun,
+                yield_function=yield_function,
+                yield_tol=yield_tol,
+                uniaxial_stress_idx=uniaxial_stress_idx,
+                has_material_rotation=has_material_rotation))
+
         super().__init__(residual, cauchy)
 
     @classmethod
@@ -308,6 +377,7 @@ class SmallElasticPlastic(MechanicsModel):
             parameters=parameters,
             def_type=require_def_type(def_type, cls.__name__),
             uniaxial_stress_idx=model_section.get("uniaxial_stress_idx", 0),
+            initial_guess=model_section.get("initial guess"),
         )
 
     def derived_output_field_names(self) -> list[str]:

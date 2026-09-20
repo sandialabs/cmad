@@ -48,6 +48,10 @@ from cmad.models.material_frame import (
 )
 from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
+from cmad.models.radial_return import (
+    plastic_multiplier_increment,
+    resolve_initial_guess,
+)
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -146,7 +150,7 @@ def elastic_predictor(
     return [stored_trial, xi_prev[1], *xi[2:]]
 
 
-def initial_guess(
+def start_from_elastic_predictor(
         xi_prev: StateList, params: dict[str, Any],
         U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
         step_time: StepTime,
@@ -195,6 +199,54 @@ def compute_yield_fun_and_normal(
         yield_function), yield_normal
 
 
+def start_from_radial_return(
+        xi_prev: StateList, params: dict[str, Any],
+        U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+        step_time: StepTime,
+        def_type: int, uniaxial_stress_idx: int,
+        finite_deformation: bool, has_material_rotation: bool,
+        elastic_stress: Callable[..., JaxArray],
+        effective_stress: Callable[..., JaxArray],
+        yield_function: Callable[..., JaxArray],
+        yield_tol: float,
+) -> StateList:
+    """Starting state for the local Newton: the elastic predictor, returned
+    to the yield surface along its own normal when it lies outside."""
+    trial = elastic_predictor(
+        xi_prev, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
+        finite_deformation, has_material_rotation, elastic_stress)
+    cauchy_trial = stress_from_state(
+        trial, def_type, uniaxial_stress_idx, has_material_rotation)
+    alpha_prev = get_scalar(xi_prev[1])[0]
+    return_direction = elastic_stress(
+        grad(effective_stress)(cauchy_trial, params["plastic"]), params)
+
+    def g(delta_gamma: JaxArray) -> JaxArray:
+        return compute_yield_fun(
+            cauchy_trial - delta_gamma * return_direction,
+            alpha_prev + delta_gamma, alpha_prev, params, U, step_time,
+            effective_stress, yield_function)
+
+    threshold = yield_threshold(yield_tol, params, yield_function)
+    delta_gamma = plastic_multiplier_increment(g, threshold)
+    is_plastic = g(jnp.zeros(())) > threshold
+    cauchy_return = cauchy_trial - delta_gamma * return_direction
+
+    returned = [
+        stored_stress_components(
+            cauchy_return, def_type, uniaxial_stress_idx,
+            has_material_rotation),
+        xi_prev[1] + delta_gamma,
+    ]
+    if def_type == DefType.PLANE_STRAIN:
+        returned.append(jnp.array([cauchy_return[2, 2]]))
+
+    return [
+        jnp.where(is_plastic, returned_block, trial_block)
+        for returned_block, trial_block in zip(returned, trial, strict=True)
+    ]
+
+
 class RateElasticPlastic(MechanicsModel):
     """
     Rate form elastic-plastic model, small strain or finite deformation:
@@ -218,11 +270,14 @@ class RateElasticPlastic(MechanicsModel):
             uniaxial_stress_idx: int = 0,
             is_complex: bool = False,
             finite_deformation: bool = False,
+            initial_guess: str | None = None,
     ) -> None:
 
         self.is_finite_deformation = finite_deformation
         has_material_rotation = "rotation matrix" in parameters.values
         require_in_plane_rotation(parameters, def_type, "rate_elastic_plastic")
+        initial_guess = resolve_initial_guess(
+            initial_guess, def_type, "rate_elastic_plastic")
         is_2D = def_type in (DefType.PLANE_STRAIN, DefType.PLANE_STRESS)
 
         self._is_complex = is_complex
@@ -341,12 +396,23 @@ class RateElasticPlastic(MechanicsModel):
                          finite_deformation=finite_deformation,
                          has_material_rotation=has_material_rotation)
 
-        self.initial_guess_fn = jit(partial(
-            initial_guess, def_type=def_type,
-            uniaxial_stress_idx=uniaxial_stress_idx,
-            finite_deformation=finite_deformation,
-            has_material_rotation=has_material_rotation,
-            elastic_stress=elastic_stress_fun))
+        if initial_guess == "radial return":
+            self.initial_guess_fn = jit(partial(
+                start_from_radial_return, def_type=def_type,
+                uniaxial_stress_idx=uniaxial_stress_idx,
+                finite_deformation=finite_deformation,
+                has_material_rotation=has_material_rotation,
+                elastic_stress=elastic_stress_fun,
+                effective_stress=effective_stress_fun,
+                yield_function=yield_function,
+                yield_tol=yield_tol))
+        else:
+            self.initial_guess_fn = jit(partial(
+                start_from_elastic_predictor, def_type=def_type,
+                uniaxial_stress_idx=uniaxial_stress_idx,
+                finite_deformation=finite_deformation,
+                has_material_rotation=has_material_rotation,
+                elastic_stress=elastic_stress_fun))
 
         super().__init__(residual, cauchy)
 
@@ -362,6 +428,7 @@ class RateElasticPlastic(MechanicsModel):
             def_type=require_def_type(def_type, cls.__name__),
             uniaxial_stress_idx=model_section.get("uniaxial_stress_idx", 0),
             finite_deformation=model_section.get("finite deformation", False),
+            initial_guess=model_section.get("initial guess"),
         )
 
     def derived_output_field_names(self) -> list[str]:

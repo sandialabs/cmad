@@ -34,6 +34,10 @@ from cmad.models.global_fields import (
 from cmad.models.kinematics import det_3x3, gather_F, inv_3x3
 from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.paths import cond_residual, yield_threshold
+from cmad.models.radial_return import (
+    plastic_multiplier_increment,
+    resolve_initial_guess,
+)
 from cmad.models.var_types import (
     VarType,
     get_dev_sym_tensor_from_vector,
@@ -43,6 +47,9 @@ from cmad.models.var_types import (
 )
 from cmad.parameters.parameters import Parameters
 from cmad.typing import JaxArray, Scalar, StateBlock, StateList
+
+_NUM_RETURN_SWEEPS = 2
+_NUM_IE_STEPS = 2
 
 
 def zeta_ndims(def_type: int) -> int:
@@ -100,7 +107,7 @@ def elastic_predictor(
     return trial
 
 
-def initial_guess(
+def start_from_elastic_predictor(
         xi_prev: StateList, params: dict[str, Any],
         U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
         step_time: StepTime,
@@ -164,6 +171,60 @@ def compute_yield_fun_and_normal(
     ), yield_normal
 
 
+def start_from_radial_return(
+        xi_prev: StateList, params: dict[str, Any],
+        U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+        step_time: StepTime,
+        def_type: int, oop_stretch_idx: int,
+        yield_function: Callable[..., JaxArray], yield_tol: float,
+) -> StateList:
+    """Starting state for the local Newton: the elastic predictor, its
+    deviator returned to the yield surface along its own normal when it
+    lies outside, with ``Ie`` corrected from ``det(be_bar) = 1``. The
+    return is swept again so that it uses a corrected ``Ie``."""
+    trial = elastic_predictor(
+        xi_prev, xi_prev, params, U, U_prev, def_type, oop_stretch_idx)
+    ndims = zeta_ndims(def_type)
+    zeta_trial = get_dev_sym_tensor_from_vector(trial[0], ndims)
+    alpha_prev = get_scalar(xi_prev[2])[0]
+    mu = ElasticConstants.from_params(params["elastic"]).mu
+    normal_trial = grad(J2_effective_stress)(mu * zeta_trial, None)
+    eye = jnp.eye(3)
+
+    def returned_zeta(delta_gamma: JaxArray, Ie: JaxArray) -> JaxArray:
+        return zeta_trial - 2. * delta_gamma * Ie * normal_trial
+
+    def g(delta_gamma: JaxArray, Ie: JaxArray) -> JaxArray:
+        return compute_yield_fun(
+            returned_zeta(delta_gamma, Ie), alpha_prev + delta_gamma,
+            alpha_prev, params, U, step_time, yield_function)
+
+    def det_equation(Ie: JaxArray, zeta: JaxArray) -> JaxArray:
+        return det_3x3(zeta + Ie * eye) - 1.
+
+    threshold = yield_threshold(yield_tol, params, yield_function)
+    Ie = get_scalar(trial[1])[0]
+    is_plastic = g(jnp.zeros(()), Ie) > threshold
+
+    for _ in range(_NUM_RETURN_SWEEPS):
+        delta_gamma = plastic_multiplier_increment(
+            partial(g, Ie=Ie), threshold)
+        zeta = returned_zeta(delta_gamma, Ie)
+        for _ in range(_NUM_IE_STEPS):
+            Ie = Ie - det_equation(Ie, zeta) / grad(det_equation)(Ie, zeta)
+
+    returned = [
+        get_vector_from_dev_sym_tensor(zeta, ndims),
+        jnp.array([Ie]),
+        xi_prev[2] + delta_gamma,
+    ]
+
+    return [
+        jnp.where(is_plastic, returned_block, trial_block)
+        for returned_block, trial_block in zip(returned, trial, strict=True)
+    ]
+
+
 class BeBarElasticPlastic(MechanicsModel):
     """Finite deformation elastic-plastic model via the be_bar return map.
 
@@ -184,6 +245,7 @@ class BeBarElasticPlastic(MechanicsModel):
             hardening_funs: dict | None = None,
             yield_tol: float = 1e-12,
             is_complex: bool = False,
+            initial_guess: str | None = None,
     ) -> None:
 
         if def_type not in (
@@ -192,6 +254,8 @@ class BeBarElasticPlastic(MechanicsModel):
                 "be_bar_elastic_plastic supports FULL_3D, PLANE_STRAIN and "
                 "PLANE_STRESS",
             )
+        initial_guess = resolve_initial_guess(
+            initial_guess, def_type, "be_bar_elastic_plastic")
 
         self._is_complex = is_complex
         self.dtype = complex if is_complex else float
@@ -259,9 +323,15 @@ class BeBarElasticPlastic(MechanicsModel):
             self._cauchy_fn,
             def_type=def_type, oop_stretch_idx=self._oop_stretch_idx)
 
-        self.initial_guess_fn = jit(partial(
-            initial_guess,
-            def_type=def_type, oop_stretch_idx=self._oop_stretch_idx))
+        if initial_guess == "radial return":
+            self.initial_guess_fn = jit(partial(
+                start_from_radial_return,
+                def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
+                yield_function=yield_function, yield_tol=yield_tol))
+        else:
+            self.initial_guess_fn = jit(partial(
+                start_from_elastic_predictor,
+                def_type=def_type, oop_stretch_idx=self._oop_stretch_idx))
 
         super().__init__(residual, cauchy)
 
@@ -275,6 +345,7 @@ class BeBarElasticPlastic(MechanicsModel):
         return cls(
             parameters=parameters,
             def_type=require_def_type(def_type, cls.__name__),
+            initial_guess=model_section.get("initial guess"),
         )
 
     def derived_output_field_names(self) -> list[str]:

@@ -48,4 +48,4 @@ def combined_hardening_fun(
     H = jnp.array([hardening_funs[htype](alpha, hparams)
                    for htype, hparams in params.items()])
 
-    return jnp.sum(H)
+    return jnp.sum(H, axis=0)
