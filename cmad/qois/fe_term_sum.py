@@ -85,6 +85,15 @@ class FETermSum(FEQoI):
             names.append(name if count == 0 else f"{name}_{count + 1}")
         return names
 
+    def data_mean_squares(self) -> dict[str, float]:
+        return {
+            name: mean_square
+            for name, term in zip(
+                self.accumulated_qoi_names(), self._terms, strict=True,
+            )
+            for mean_square in term.data_mean_squares().values()
+        }
+
     @abstractmethod
     def combine(self, accumulated_qois: JaxArray) -> JaxArray:
         """The QoI value from the accumulated terms."""

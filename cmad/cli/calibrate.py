@@ -155,6 +155,7 @@ def _run_calibrate_fe(deck_path: Path) -> int:
     write_opt_history(
         out_dir, prefix, objective.history,
         objective.param_paths if log_params else None,
+        data_mean_squares=objective.data_mean_squares,
     )
     write_fe_opt_params(
         out_dir, prefix, materials,

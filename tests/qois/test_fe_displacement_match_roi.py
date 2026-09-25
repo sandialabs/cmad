@@ -5,12 +5,13 @@ full-field measurement covers, not over the whole domain. Two checks on
 a unit square of four quads, against hand-built displacements rather
 than FE solutions:
 
-- a mismatch of 0.25 everywhere scores ``0.25**2`` whether or not the
-  region is restricted to half the elements, because the integral and
-  the area it is divided by shrink together. Normalizing by the whole
-  area while integrating half would halve it.
-- a mismatch on a node that only one element owns scores zero once the
-  region excludes that element.
+- a zero field against data of 0.25 everywhere scores 1, the mismatch
+  over the data's own mean square, whether or not the region is
+  restricted to half the elements, because the integral, the area it is
+  divided by, and the data mean square all shrink together.
+- a spike on a node that only one element owns, on top of a uniform
+  background the field matches, scores zero once the region excludes
+  that element.
 
 A 3D mesh is measured on its surface, so its region of interest is
 ``(elem_id, local_side_id)`` pairs and the mismatch is integrated over
@@ -104,8 +105,11 @@ class TestRegionOfInterest(unittest.TestCase):
         whole = _evaluate(self.fe_problem, data, self.U, None)
         half = _evaluate(
             self.fe_problem, data, self.U, np.array([0, 1], dtype=np.intp))
-        self.assertAlmostEqual(whole, 0.25 ** 2, places=12)
+        print(f"whole {whole:.15g}, half {half:.15g}")
+        self.assertAlmostEqual(whole, 1.0, places=12)
         self.assertAlmostEqual(half, whole, places=12)
+        qoi = FEDisplacementMatch(self.fe_problem, _T_SCHEDULE, data)
+        self.assertAlmostEqual(qoi.data_mean_square, 0.25 ** 2, places=12)
 
     def test_mismatch_outside_the_region_is_not_scored(self) -> None:
         # the far corner node belongs only to the far corner element, and
@@ -117,11 +121,14 @@ class TestRegionOfInterest(unittest.TestCase):
             np.linalg.norm(centroids - np.array([0.25, 0.25]), axis=1)))
         self.assertNotIn(far_node, self.mesh.connectivity[near_elem])
 
-        data = np.zeros((len(_T_SCHEDULE), self.n_nodes, 2))
+        # the data is the field plus a spike at the far node
+        data = self._uniform_data(0.25)
         data[:, far_node, 0] = 1.0
-        self.assertGreater(_evaluate(self.fe_problem, data, self.U, None), 0.0)
+        U = self.U.copy()
+        U[0::2] = 0.25
+        self.assertGreater(_evaluate(self.fe_problem, data, U, None), 0.0)
         self.assertAlmostEqual(
-            _evaluate(self.fe_problem, data, self.U,
+            _evaluate(self.fe_problem, data, U,
                       np.array([near_elem], dtype=np.intp)),
             0.0, places=12,
         )
@@ -153,11 +160,18 @@ class TestSideRegionOfInterest(unittest.TestCase):
         data[..., 0] = shift
         return data
 
+    def _background_field(self) -> np.ndarray:
+        """The field that matches ``self._data(0.25)``."""
+        U = self.U.copy()
+        U[0::3] = 0.25
+        return U
+
     def test_normalization_uses_the_selected_sides(self) -> None:
         data = self._data(0.25)
         whole = _evaluate(self.fe_problem, data, self.U, self.face)
         half = _evaluate(self.fe_problem, data, self.U, self.face[:2])
-        self.assertAlmostEqual(whole, 0.25 ** 2, places=12)
+        print(f"whole {whole:.15g}, half {half:.15g}")
+        self.assertAlmostEqual(whole, 1.0, places=12)
         self.assertAlmostEqual(half, whole, places=12)
 
     def test_mismatch_off_the_selected_sides_is_not_scored(self) -> None:
@@ -171,24 +185,26 @@ class TestSideRegionOfInterest(unittest.TestCase):
         self.assertNotIn(
             far_node, self.mesh.connectivity[near_half[:, 0]])
 
-        data = self._data()
+        data = self._data(0.25)
         data[:, far_node, 0] = 1.0
+        U = self._background_field()
         self.assertGreater(
-            _evaluate(self.fe_problem, data, self.U, self.face), 0.0)
+            _evaluate(self.fe_problem, data, U, self.face), 0.0)
         self.assertAlmostEqual(
-            _evaluate(self.fe_problem, data, self.U, near_half), 0.0,
+            _evaluate(self.fe_problem, data, U, near_half), 0.0,
             places=12)
 
     def test_a_mismatch_away_from_the_face_is_not_scored(self) -> None:
         # scored over the mesh, missed once the region is the x=1 face
         inner_node = int(np.argmin(np.linalg.norm(
             self.mesh.nodes - np.array([0.0, 0.5, 0.5]), axis=1)))
-        data = self._data()
+        data = self._data(0.25)
         data[:, inner_node, 0] = 1.0
+        U = self._background_field()
         self.assertGreater(
-            _evaluate(self.fe_problem, data, self.U, None), 0.0)
+            _evaluate(self.fe_problem, data, U, None), 0.0)
         self.assertAlmostEqual(
-            _evaluate(self.fe_problem, data, self.U, self.face), 0.0,
+            _evaluate(self.fe_problem, data, U, self.face), 0.0,
             places=12)
 
 

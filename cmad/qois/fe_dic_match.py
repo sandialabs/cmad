@@ -15,10 +15,11 @@ from numpy.typing import NDArray
 
 from cmad.fem.dof import dof_physical_coords
 from cmad.io.point_cloud import PointCloud, read_point_cloud
-from cmad.qois.fe_qoi import FEQoI, MatchTimes, StepContribution
+from cmad.qois.fe_match_term import FEMatchTerm
+from cmad.qois.fe_qoi import MatchTimes, StepContribution
 from cmad.qois.surface_match import (
     surface_groups_and_area,
-    surface_l2_step_closure,
+    surface_squared_mismatch,
 )
 from cmad.remap.gmls import build_gmls_operators
 from cmad.typing import Params
@@ -46,13 +47,14 @@ def _plane_coords(
     return (points - centroid) @ axes.T
 
 
-class FEDicMatch(FEQoI):
+class FEDicMatch(FEMatchTerm):
     r"""Squared displacement mismatch against DIC data on a sideset.
 
     The DIC point cloud is GMLS-remapped onto the sideset's displacement
     coefficients to give a per-step nodal surface target, and the
     objective is the time- and area-averaged
-    :math:`|u - u^\mathrm{DIC}|^2` integrated over the sideset.
+    :math:`|u - u^\mathrm{DIC}|^2` integrated over the sideset, divided
+    by the same average applied to the DIC field alone.
 
     The cloud points and the sideset anchors are projected onto the
     measurement plane (the anchors are coplanar on a flat face); the GMLS
@@ -73,7 +75,7 @@ class FEDicMatch(FEQoI):
             support_multiplier: float = 1.6,
             weight: float = 1.0,
     ) -> None:
-        super().__init__(weight)
+        super().__init__(weight, MatchTimes.from_times(t_schedule))
         num_steps = len(t_schedule)
         if cloud.num_steps != num_steps:
             raise ValueError(
@@ -117,12 +119,14 @@ class FEDicMatch(FEQoI):
             for c in range(num_components):
                 data_flat[step, eq[:, c]] = ops.value @ disp[step, :, c]
 
-        self._match_times = MatchTimes.from_times(t_schedule)
         self._groups, area = surface_groups_and_area(
             fe_problem, sideset, "u",
         )
-        self._norm_factor = 1.0 / (self._match_times.span * area)
         self._data_flat = jnp.asarray(data_flat, dtype=jnp.float64)
+        self._normalize_by_data_mean_square(
+            surface_squared_mismatch(self._groups, self._data_flat),
+            jnp.zeros(num_total_dofs), area,
+        )
 
     @classmethod
     def from_deck(
@@ -148,7 +152,6 @@ class FEDicMatch(FEQoI):
             fe_arrays: FEKernelArrays,
     ) -> StepContribution:
         del params_by_block, fe_arrays  # params enter through the solved U
-        return surface_l2_step_closure(
-            self._groups, self._data_flat, self._match_times,
-            self._norm_factor,
+        return self._step_closure(
+            surface_squared_mismatch(self._groups, self._data_flat),
         )

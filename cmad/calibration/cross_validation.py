@@ -2,10 +2,11 @@
 
 Each fold calibrates on every specimen but one, from the input file's
 parameter values, and scores the held out specimen at that optimum: its
-accumulated QoIs, unweighted, in their own units.
+accumulated QoIs, unweighted relative errors.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,12 +39,15 @@ class Fold:
 
 def cross_validate(
         resolved: dict[str, Any], *, log_params: bool = False,
-) -> list[Fold]:
+) -> tuple[list[Fold], dict[str, dict[str, float]]]:
     """The folds of a validated multispecimen input file, one per held out
     tag of its ``cross validation`` section, every specimen in turn
-    without one. Every specimen starts each fold on its input file
-    schedule."""
+    without one, and every specimen's data mean squares by tag. Every
+    specimen starts each fold on its input file schedule."""
     specimens = build_specimens(resolved)
+    data_mean_squares = {
+        tag: s.data_mean_squares for tag, s in specimens.items()
+    }
     optimizer_section = resolved["optimizer"]
     hold_out = (
         resolved.get("cross validation", {}).get("hold out")
@@ -85,7 +89,7 @@ def cross_validate(
             ),
             failure=evaluation.failure,
         ))
-    return folds
+    return folds, data_mean_squares
 
 
 def cv_score(folds: list[Fold]) -> dict[str, Any]:
@@ -110,11 +114,13 @@ def cv_score(folds: list[Fold]) -> dict[str, Any]:
     return score
 
 
-def summarize(folds: list[Fold]) -> dict[str, Any]:
+def summarize(
+        folds: list[Fold], data_mean_squares: Mapping[str, Mapping[str, float]],
+) -> dict[str, Any]:
     """The summary written by ``cmad cross_validate``: per fold what it
     trained on, the parameters it reached, its value, the held out
     specimen's accumulated QoIs, and the trained specimens', then the
-    score over the folds."""
+    score over the folds and every specimen's data mean squares."""
     summary: dict[str, Any] = {}
     for fold in folds:
         entry: dict[str, Any] = {
@@ -135,4 +141,7 @@ def summarize(folds: list[Fold]) -> dict[str, Any]:
         }
         summary[f"held out {fold.held_out}"] = entry
     summary["cv score"] = cv_score(folds)
+    summary["data mean square"] = {
+        tag: dict(by_name) for tag, by_name in data_mean_squares.items()
+    }
     return summary

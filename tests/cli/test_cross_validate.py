@@ -107,7 +107,8 @@ class TestCrossValidate(unittest.TestCase):
                 summary = yaml.safe_load(f)
             self.assertEqual(
                 list(summary),
-                ["held out a", "held out b", "held out c", "cv score"],
+                ["held out a", "held out b", "held out c", "cv score",
+                 "data mean square"],
             )
             for tag in _CUBES:
                 fold_dir = cv_dir / f"held_out_{tag}"
@@ -127,7 +128,7 @@ class TestCrossValidate(unittest.TestCase):
             # Through the API: the held out values against independent
             # evaluations at the folds' parameters.
             resolved = load_fe_input(joint, "cross_validate")
-            folds = cross_validate(resolved)
+            folds, data_mean_squares = cross_validate(resolved)
             held_out = []
             for fold in folds:
                 single = build_objective(load_fe_input(_write(
@@ -146,7 +147,7 @@ class TestCrossValidate(unittest.TestCase):
                 )
                 self.assertFalse(np.array_equal(fold.result.x, single.x0))
                 held_out.append(fold.held_out_qois["fe_displacement_match"])
-            score = summarize(folds)["cv score"]
+            score = summarize(folds, data_mean_squares)["cv score"]
             self.assertEqual(score["folds"], 3)
             self.assertNotIn("failed", score)
             np.testing.assert_allclose(
@@ -155,7 +156,7 @@ class TestCrossValidate(unittest.TestCase):
             print("held out displacement mismatches:", held_out)
 
             resolved["cross validation"] = {"hold out": ["b"]}
-            (one_fold,) = cross_validate(resolved)
+            (one_fold,), _ = cross_validate(resolved)
             self.assertEqual(one_fold.held_out, "b")
             self.assertEqual(one_fold.trained_on, ["a", "c"])
 

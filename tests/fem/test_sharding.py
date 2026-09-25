@@ -129,14 +129,14 @@ def drive_mixed_problem():
 
 def displacement_match_value(fe_problem, U):
     """One step contribution of ``FEDisplacementMatch`` with an element
-    region of interest. The measured data is zero, so the value is the
-    integral of ``|U|^2`` over the region of interest. The mask has the
-    true element count while the kernel arrays are padded, so this covers
-    the pairing of the two."""
+    region of interest. The measured data is a constant, so the value is
+    the integral of ``|U - 0.1|^2`` over the region of interest, relative
+    to the data's own. The mask has the true element count while the
+    kernel arrays are padded, so this covers the pairing of the two."""
     from cmad.qois.fe_displacement_match import FEDisplacementMatch
     n_nodes = fe_problem.mesh.nodes.shape[0]
     qoi = FEDisplacementMatch(
-        fe_problem, [0.0, 1.0], jnp.zeros((2, n_nodes, 3)), 1.0,
+        fe_problem, [0.0, 1.0], jnp.full((2, n_nodes, 3), 0.1), 1.0,
         roi=np.arange(0, fe_problem.n_elems_by_block["all"], 2),
     )
     closure = qoi.step_contribution({}, fe_problem.kernel_arrays)

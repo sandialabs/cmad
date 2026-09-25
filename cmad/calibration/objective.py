@@ -61,6 +61,7 @@ class Specimen:
         )
         assert bundle.qoi is not None
         self._accumulated_qoi_names = bundle.qoi.accumulated_qoi_names()
+        self.data_mean_squares = bundle.qoi.data_mean_squares()
         self._fe_problem = bundle.fe_problem
         self._fe_arrays = bundle.fe_problem.kernel_arrays
         self._state_init = state_init
@@ -442,6 +443,13 @@ class Objective:
     def schedules(self) -> dict[str, NDArray[np.float64]]:
         """Each specimen's current solve schedule, by tag."""
         return {tag: s.schedule for tag, s in self._specimens.items()}
+
+    @property
+    def data_mean_squares(self) -> dict[str, dict[str, float]]:
+        """Each specimen's data mean square per accumulated QoI, by tag."""
+        return {
+            tag: s.data_mean_squares for tag, s in self._specimens.items()
+        }
 
     @property
     def inserted_times(self) -> dict[str, NDArray[np.float64]]:

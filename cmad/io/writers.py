@@ -16,7 +16,8 @@ structured outputs ignore it.
 
 - ``opt_history.json`` — per-fun-call ``{J, grad_norm, params}`` entries;
   ``params`` and the top-level ``active_param_paths`` are included only
-  when ``optimizer.log_params`` is ``true``.
+  when ``optimizer.log_params`` is ``true``; ``data mean square`` is each
+  FE specimen's, by tag, per accumulated QoI.
 - ``opt_params.yaml`` — the deck's ``parameters:`` subtree with active
   leaves rewritten to their raw-coordinate final values (directly
   substitutable into a follow-up deck).
@@ -125,13 +126,23 @@ def write_J(
         out_dir: Path,
         prefix: str,
         J: float,
-        specimens: Mapping[str, float] | None = None,
+        *,
+        accumulated_qois: Mapping[str, float] | None = None,
+        data_mean_square: Mapping[str, float] | None = None,
+        specimens: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
-    """Write the scalar QoI value as JSON, with each specimen's own value
-    by tag when given."""
+    """Write the QoI value as JSON: ``J`` alone, with the accumulated QoIs
+    and their data mean square by name for one FE specimen, or with those
+    three under ``specimens`` by tag for several."""
     entry: dict[str, Any] = {"J": J}
+    if accumulated_qois is not None:
+        entry["accumulated_qois"] = dict(accumulated_qois)
+    if data_mean_square is not None:
+        entry["data mean square"] = dict(data_mean_square)
     if specimens is not None:
-        entry["specimens"] = dict(specimens)
+        entry["specimens"] = {
+            tag: dict(fields) for tag, fields in specimens.items()
+        }
     with (out_dir / f"{prefix}J.json").open("w") as f:
         json.dump(entry, f, indent=2)
 
@@ -408,6 +419,7 @@ def write_opt_history(
         prefix: str,
         history: list[dict[str, Any]],
         active_param_paths: list[str] | None = None,
+        data_mean_squares: Mapping[str, Mapping[str, float]] | None = None,
 ) -> None:
     """Write the per-fun-call optimization trace.
 
@@ -416,11 +428,16 @@ def write_opt_history(
     canonical-coordinate gradient — matches scipy's internal convergence
     metric. ``params`` is raw-coordinate and ordered per
     ``active_param_paths``, which is included only when param logging is
-    enabled.
+    enabled. ``data_mean_squares`` is each FE specimen's, by tag, per
+    accumulated QoI.
     """
     payload: dict[str, Any] = {"history": history}
     if active_param_paths is not None:
         payload["active_param_paths"] = active_param_paths
+    if data_mean_squares is not None:
+        payload["data mean square"] = {
+            tag: dict(by_name) for tag, by_name in data_mean_squares.items()
+        }
     with (out_dir / f"{prefix}opt_history.json").open("w") as f:
         json.dump(payload, f, indent=2)
 

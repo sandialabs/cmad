@@ -1,11 +1,12 @@
 """Surface (sideset) option of ``FEDisplacementMatch``.
 
 Hand-constructed ``U`` vectors -- not FE solutions -- feed the closure a
-known displacement on the x=1 face of a unit cube, where the surface
-integral of ``|u - u_data|^2`` has a closed form. A linear field is Q1
-exact on the flat face and the quadratic integrand is integrated exactly
-by the degree-2 side quadrature, so the match is to floating-point
-tolerance.
+known displacement on the x=1 face of a unit cube, against data that is
+a second known field, where the surface integrals of ``|u - u_data|^2``
+and of ``|u_data|^2`` both have closed forms, so the relative error
+does. A linear field is Q1 exact on the flat face and the quadratic
+integrand is integrated exactly by the degree-2 side quadrature, so the
+match is to floating-point tolerance.
 
 The same closed form is checked on a mixed u-p problem, where the
 measurement covers ``u`` alone: it must reach that field's equations and
@@ -79,6 +80,27 @@ def _U_diagonal_ramp(mesh, a: float, b: float, c: float) -> np.ndarray:
     return U
 
 
+# The field and the data, each (a x, b y, c z), so on the x=1 face the
+# integral of |u|^2 is a^2 + (b^2 + c^2)/3.
+_A, _B, _C = 0.01, 0.02, -0.005
+_A_DATA, _B_DATA, _C_DATA = 0.004, -0.01, 0.007
+
+
+def _expected_relative_error() -> float:
+    mismatch = (_A - _A_DATA) ** 2 + (
+        (_B - _B_DATA) ** 2 + (_C - _C_DATA) ** 2
+    ) / 3.0
+    data = _A_DATA ** 2 + (_B_DATA ** 2 + _C_DATA ** 2) / 3.0
+    return mismatch / data
+
+
+def _ramp_data(mesh, data_shape) -> np.ndarray:
+    return np.broadcast_to(
+        _U_diagonal_ramp(mesh, _A_DATA, _B_DATA, _C_DATA).reshape(-1, 3),
+        data_shape,
+    )
+
+
 class TestSurfaceMatch(unittest.TestCase):
     def setUp(self) -> None:
         self.fe = _unit_cube_problem(2)
@@ -98,25 +120,23 @@ class TestSurfaceMatch(unittest.TestCase):
         ))
 
     def test_surface_integral_matches_analytical(self) -> None:
-        # On the x=1 face, u = (a, b y, c z) so |u|^2 = a^2 + b^2 y^2 + c^2 z^2.
-        # Over the unit face, int |u|^2 dA = a^2 + (b^2 + c^2)/3. With
-        # weight=1, T=1, dt=1, and face area 1, J equals that integral.
-        a, b, c = 0.01, 0.02, -0.005
-        U = _U_diagonal_ramp(self.fe.mesh, a, b, c)
-        data = np.zeros(self.data_shape)
-        expected = a ** 2 + (b ** 2 + c ** 2) / 3.0
-        self.assertAlmostEqual(self._eval(U, data), expected, places=12)
+        # With T=1, dt=1, and face area 1, J is the integral of |u - u_data|^2
+        # over the face divided by that of |u_data|^2.
+        U = _U_diagonal_ramp(self.fe.mesh, _A, _B, _C)
+        data = _ramp_data(self.fe.mesh, self.data_shape)
+        self.assertAlmostEqual(
+            self._eval(U, data), _expected_relative_error(), places=12,
+        )
 
     def test_matching_field_gives_zero(self) -> None:
-        U = _U_diagonal_ramp(self.fe.mesh, 0.01, 0.02, -0.005)
+        U = _U_diagonal_ramp(self.fe.mesh, _A, _B, _C)
         data = np.broadcast_to(U.reshape(-1, 3), self.data_shape)
         self.assertAlmostEqual(self._eval(U, data), 0.0, places=12)
 
     def test_only_the_sideset_contributes(self) -> None:
         # Perturbing U away from the x=1 face leaves the surface J unchanged.
-        a, b, c = 0.01, 0.02, -0.005
-        U = _U_diagonal_ramp(self.fe.mesh, a, b, c)
-        data = np.zeros(self.data_shape)
+        U = _U_diagonal_ramp(self.fe.mesh, _A, _B, _C)
+        data = _ramp_data(self.fe.mesh, self.data_shape)
         baseline = self._eval(U, data)
 
         off_face = self.fe.mesh.nodes[:, 0] < 1.0
@@ -154,16 +174,15 @@ class TestSurfaceMatchMixed(unittest.TestCase):
     def test_matching_field_gives_zero(self) -> None:
         # nonzero data, so it scores the full integral if it is written
         # anywhere other than the displacement equations
-        u = _U_diagonal_ramp(self.fe.mesh, 0.01, 0.02, -0.005)
+        u = _U_diagonal_ramp(self.fe.mesh, _A, _B, _C)
         data = np.broadcast_to(u.reshape(-1, 3), self.data_shape)
         self.assertAlmostEqual(self._eval(u, data), 0.0, places=12)
 
     def test_surface_integral_matches_analytical(self) -> None:
-        a, b, c = 0.01, 0.02, -0.005
-        u = _U_diagonal_ramp(self.fe.mesh, a, b, c)
-        expected = a ** 2 + (b ** 2 + c ** 2) / 3.0
+        u = _U_diagonal_ramp(self.fe.mesh, _A, _B, _C)
+        data = _ramp_data(self.fe.mesh, self.data_shape)
         self.assertAlmostEqual(
-            self._eval(u, np.zeros(self.data_shape)), expected, places=12)
+            self._eval(u, data), _expected_relative_error(), places=12)
 
 
 if __name__ == "__main__":

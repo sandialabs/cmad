@@ -40,7 +40,7 @@ def run_cross_validate(deck_path: Path) -> int:
     log_params = resolved["optimizer"]["log_params"]
     materials = resolved["residuals"]["local residual"]["materials"]
 
-    folds = cross_validate(resolved, log_params=log_params)
+    folds, data_mean_squares = cross_validate(resolved, log_params=log_params)
 
     out_dir, prefix, _ = resolve_output(resolved)
     cv_dir = out_dir / "cross_validation"
@@ -66,5 +66,5 @@ def run_cross_validate(deck_path: Path) -> int:
         )))
         write_opt_status(fold_dir, prefix, optimize_status(fold.result))
     write_resolved_deck(cv_dir, prefix, resolved)
-    write_cv_summary(cv_dir, prefix, summarize(folds))
+    write_cv_summary(cv_dir, prefix, summarize(folds, data_mean_squares))
     return 0

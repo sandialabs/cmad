@@ -7,8 +7,9 @@ is accumulated alongside cauchy, xi, and solver log in one loop;
 writes the primal output set plus ``J.json``. The FE branch builds
 the :class:`cmad.calibration.Objective` from the input file, evaluates
 its value at the file's parameter point, and writes ``J.json`` +
-``deck.resolved.yaml``; with a ``specimens`` section ``J.json`` also
-holds each specimen's own value. No sensitivities are computed in
+``deck.resolved.yaml``; ``J.json`` holds the accumulated QoIs and their
+data mean square, per specimen with a ``specimens`` section. No
+sensitivities are computed in
 either branch; FE state-trajectory output is reserved to ``cmad
 primal``.
 """
@@ -73,13 +74,25 @@ def _run_objective_fe(deck_path: Path) -> int:
     resolved = load_fe_input(deck_path, "objective")
     objective = build_objective(resolved)
     J = objective.value(objective.x0)
-    specimens = objective.history[-1].get("specimens")
+    entry = objective.history[-1]
+    data_mean_squares = objective.data_mean_squares
 
     out_dir, prefix, _fmt = resolve_output(resolved)
     write_resolved_deck(out_dir, prefix, resolved)
-    write_J(
-        out_dir, prefix, J,
-        None if specimens is None
-        else {tag: entry["J"] for tag, entry in specimens.items()},
-    )
+    if "specimens" in entry:
+        write_J(out_dir, prefix, J, specimens={
+            tag: {
+                "J": fields["J"],
+                "accumulated_qois": fields["accumulated_qois"],
+                "data mean square": data_mean_squares[tag],
+            }
+            for tag, fields in entry["specimens"].items()
+        })
+    else:
+        (tag,) = data_mean_squares
+        write_J(
+            out_dir, prefix, J,
+            accumulated_qois=entry["accumulated_qois"],
+            data_mean_square=data_mean_squares[tag],
+        )
     return 0

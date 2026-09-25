@@ -160,6 +160,11 @@ class FEQoI(QoIBase, ABC):
         own input file name, for a QoI that accumulates one value."""
         return [type(self).__module__.rsplit(".", 1)[-1]]
 
+    def data_mean_squares(self) -> dict[str, float]:
+        """The data mean square for each accumulated QoI, by its reported
+        name, for the QoIs that compare against data."""
+        return {}
+
     @classmethod
     @abstractmethod
     def from_deck(

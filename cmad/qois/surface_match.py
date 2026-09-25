@@ -2,14 +2,12 @@
 
 Shared by the QoIs that compare an FE field to data on a measured
 surface: :func:`surface_groups_and_area` builds the per-facet surface
-cache and gives the area it covers, and
-:func:`surface_l2_step_closure` is the per-step closure that gathers the
-field at each facet, interpolates the mismatch to the side quadrature
-points, and integrates its square over the surface.
+cache and gives the area it covers, and :func:`surface_squared_mismatch`
+gathers the field at each facet, interpolates the mismatch to the side
+quadrature points, and integrates its square over the surface.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
@@ -20,12 +18,11 @@ from cmad.fem.surface_integration import (
     SurfaceIntegrationGroup,
     build_surface_integration_groups,
 )
-from cmad.qois.fe_qoi import MatchTimes, StepContribution
+from cmad.qois.fe_match_term import SquaredMismatch
 from cmad.typing import JaxArray
 
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem
-    from cmad.models.global_fields import StepTime
 
 
 def surface_groups_and_area(
@@ -48,29 +45,15 @@ def surface_groups_and_area(
     return groups, area
 
 
-def surface_l2_step_closure(
+def surface_squared_mismatch(
         groups: list[SurfaceIntegrationGroup],
         data_flat: JaxArray,
-        match_times: MatchTimes,
-        norm_factor: float,
-) -> StepContribution:
-    """Per-step closure for the squared mismatch over the sideset.
-
-    ``data_flat`` is ``(num_match_times, num_total_dofs)``, one row per
-    match time. The row and the weight are the match time at ``t``; a
-    step at any other time scores zero. The field is gathered at each
-    facet's equation numbers, the mismatch is interpolated to the side
-    quadrature points, and its square is integrated over the sideset.
-    """
-    def _closure(
-            U: JaxArray,
-            U_prev: JaxArray,
-            xi: Mapping[str, JaxArray],
-            xi_prev: Mapping[str, JaxArray],
-            step_time: StepTime,
-    ) -> JaxArray:
-        del U_prev, xi, xi_prev
-        step, weight = match_times.index_and_weight(step_time.t)
+) -> SquaredMismatch:
+    """``mismatch(U, step)``: the squared difference between ``U`` and the
+    data at match time ``step``, integrated over the sideset.
+    ``data_flat`` holds one row per match time,
+    ``(num_match_times, num_total_dofs)``."""
+    def _mismatch(U: JaxArray, step: int | JaxArray) -> JaxArray:
         U_data = data_flat[step]
         total = jnp.zeros(())
         for g in groups:
@@ -78,6 +61,6 @@ def surface_l2_step_closure(
             diff_at_ip = jnp.einsum("pa,eac->epc", g.N_side, diff)
             diff_sq = jnp.sum(diff_at_ip * diff_at_ip, axis=-1)
             total = total + jnp.sum(diff_sq * g.dA * g.side_w[None, :])
-        return norm_factor * weight * total
+        return total
 
-    return _closure
+    return _mismatch

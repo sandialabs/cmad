@@ -19,17 +19,17 @@ from cmad.io.qoi_data import (
     load_match_times,
     load_roi,
 )
-from cmad.qois.fe_qoi import FEQoI, MatchTimes, StepContribution
+from cmad.qois.fe_match_term import FEMatchTerm, SquaredMismatch
+from cmad.qois.fe_qoi import MatchTimes, StepContribution
 from cmad.qois.surface_match import (
     surface_groups_and_area,
-    surface_l2_step_closure,
+    surface_squared_mismatch,
 )
 from cmad.typing import JaxArray, Params
 
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem
     from cmad.fem.kernel_arrays import FEKernelArrays
-    from cmad.models.global_fields import StepTime
 
 
 def _element_masks(
@@ -51,19 +51,21 @@ def _element_masks(
     }
 
 
-class FEDisplacementMatch(FEQoI):
+class FEDisplacementMatch(FEMatchTerm):
     r"""Time- and space-averaged squared displacement mismatch.
 
     .. math::
 
-       J = \frac{1}{T \, |\Omega|}
+       J = \frac{1}{T \, |\Omega| \, D}
             \sum_n \Delta t_n \int_\Omega |u_n - u^\mathrm{data}_n|^2 \, dV
 
     over the match times, :math:`\Delta t_n` being each one's weight
     (:class:`cmad.qois.fe_qoi.MatchTimes`, the time schedule by
-    default) and :math:`T` their span. Operates on the residual block
-    whose ``var_name`` is ``"u"``. ``u^\mathrm{data}`` is the nodal
-    displacement at each match time on
+    default), :math:`T` their span, and :math:`D` the same average
+    applied to :math:`u^\mathrm{data}` alone
+    (:class:`cmad.qois.fe_match_term.FEMatchTerm`). Operates on the
+    residual block whose ``var_name`` is ``"u"``. ``u^\mathrm{data}`` is
+    the nodal displacement at each match time on
     ``node_ids`` (every node when ``None``), shaped
     ``(num_match_times, num_nodes, ndims)``. With a ``sideset``, the
     integral and its normalizing measure are over that sideset's surface
@@ -85,7 +87,6 @@ class FEDisplacementMatch(FEQoI):
             match_times: MatchTimes | None = None,
             node_ids: NDArray[np.intp] | None = None,
     ) -> None:
-        super().__init__(weight)
         var_names = list(fe_problem.gr.var_names)
         try:
             r_disp = var_names.index("u")
@@ -99,6 +100,7 @@ class FEDisplacementMatch(FEQoI):
             MatchTimes.from_times(t_schedule) if match_times is None
             else match_times
         )
+        super().__init__(weight, match)
         num_match = int(match.times.shape[0])
         data_arr = np.asarray(data, dtype=np.float64)
         if data_arr.shape[0] != num_match:
@@ -130,7 +132,6 @@ class FEDisplacementMatch(FEQoI):
         self._r_disp = r_disp
         self._field_idx_disp = fe_problem.field_idx_per_block[r_disp]
         self._data_flat = jnp.asarray(data_flat, dtype=jnp.float64)
-        self._match_times = match
 
         if sideset is not None and roi is not None:
             raise ValueError(
@@ -151,24 +152,27 @@ class FEDisplacementMatch(FEQoI):
             )
             self._element_mask = _element_masks(fe_problem, roi)
             if self._element_mask is None:
-                volume = float(sum(arr.sum() for arr in ip_weights.values()))
+                measure = float(sum(arr.sum() for arr in ip_weights.values()))
             else:
-                volume = float(sum(
+                measure = float(sum(
                     (arr * np.asarray(self._element_mask[block])).sum()
                     for block, arr in ip_weights.items()))
-            if volume <= 0.0:
+            if measure <= 0.0:
                 raise ValueError(
                     "FEDisplacementMatch: the region of interest selects no "
                     "elements, so the mismatch has nothing to average over"
                 )
             self._surface_groups = None
-            self._norm_factor = 1.0 / (match.span * volume)
         else:
             self._element_mask = None
-            self._surface_groups, area = surface_groups_and_area(
+            self._surface_groups, measure = surface_groups_and_area(
                 fe_problem, sides, "u",
             )
-            self._norm_factor = 1.0 / (match.span * area)
+        self._normalize_by_data_mean_square(
+            self._squared_mismatch(fe_problem.kernel_arrays),
+            jnp.zeros(fe_problem.dof_map.num_total_dofs),
+            measure,
+        )
 
     @classmethod
     def from_deck(
@@ -201,23 +205,18 @@ class FEDisplacementMatch(FEQoI):
             match_times=match,
         )
 
-    def step_contribution(
-            self,
-            params_by_block: Mapping[str, Params],
-            fe_arrays: FEKernelArrays,
-    ) -> StepContribution:
-        del params_by_block  # params enter only through the solved state U
+    def _squared_mismatch(self, fe_arrays: FEKernelArrays) -> SquaredMismatch:
+        """``mismatch(U, step)``: the squared difference between ``U`` and
+        the data at match time ``step``, integrated over the matched
+        region."""
         if self._surface_groups is not None:
-            return surface_l2_step_closure(
-                self._surface_groups, self._data_flat, self._match_times,
-                self._norm_factor,
+            return surface_squared_mismatch(
+                self._surface_groups, self._data_flat,
             )
         fe_problem = self._fe_problem
         r_disp = self._r_disp
         field_idx_disp = self._field_idx_disp
-        norm_factor = self._norm_factor
         data_flat = self._data_flat
-        match_times = self._match_times
 
         element_mask = self._element_mask
         block_data: list[tuple[str, JaxArray, JaxArray]] = []
@@ -238,15 +237,7 @@ class FEDisplacementMatch(FEQoI):
                 (block_name, N_disp, weighted_iso_jac_det),
             )
 
-        def _closure(
-                U: JaxArray,
-                U_prev: JaxArray,
-                xi: Mapping[str, JaxArray],
-                xi_prev: Mapping[str, JaxArray],
-                step_time: StepTime,
-        ) -> JaxArray:
-            del U_prev, xi, xi_prev
-            step, weight = match_times.index_and_weight(step_time.t)
+        def _mismatch(U: JaxArray, step: int | JaxArray) -> JaxArray:
             U_data = data_flat[step]
             total_integral = jnp.zeros(())
             for (block_name, N_disp,
@@ -264,6 +255,14 @@ class FEDisplacementMatch(FEQoI):
                 diff_sq = jnp.sum(diff_at_ip * diff_at_ip, axis=-1)
                 block_integral = jnp.sum(diff_sq * weighted_iso_jac_det)
                 total_integral = total_integral + block_integral
-            return norm_factor * weight * total_integral
+            return total_integral
 
-        return _closure
+        return _mismatch
+
+    def step_contribution(
+            self,
+            params_by_block: Mapping[str, Params],
+            fe_arrays: FEKernelArrays,
+    ) -> StepContribution:
+        del params_by_block  # params enter only through the solved state U
+        return self._step_closure(self._squared_mismatch(fe_arrays))

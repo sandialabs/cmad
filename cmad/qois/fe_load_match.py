@@ -21,7 +21,8 @@ from cmad.io.qoi_data import (
     load_reaction_data,
 )
 from cmad.models.global_fields import StepTime
-from cmad.qois.fe_qoi import FEQoI, MatchTimes, StepContribution
+from cmad.qois.fe_match_term import FEMatchTerm, SquaredMismatch
+from cmad.qois.fe_qoi import MatchTimes, StepContribution
 from cmad.typing import JaxArray, Params
 
 if TYPE_CHECKING:
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
     from cmad.fem.kernel_arrays import FEKernelArrays
 
 
-class FELoadMatch(FEQoI):
+class FELoadMatch(FEMatchTerm):
     r"""Net boundary reaction on a displacement-controlled sideset.
 
     Two mutually-exclusive modes, set by the deck:
@@ -39,12 +40,14 @@ class FELoadMatch(FEQoI):
 
       .. math::
 
-         J = \frac{1}{T} \sum_n \Delta t_n
+         J = \frac{1}{T \, D} \sum_n \Delta t_n
               \sum_c \left( R_{c,n} - d_{c,n} \right)^2
 
       over the match times, :math:`\Delta t_n` being each one's weight
       (:class:`cmad.qois.fe_qoi.MatchTimes`, the time schedule by
-      default) and :math:`T` their span.
+      default), :math:`T` their span, and :math:`D` the same average
+      applied to :math:`d` alone
+      (:class:`cmad.qois.fe_match_term.FEMatchTerm`).
 
     - **write** (``output_file``): ``cmad primal`` writes the computed
       reaction series to a CSV (synthetic data / plotting); no objective.
@@ -71,13 +74,13 @@ class FELoadMatch(FEQoI):
             *,
             match_times: MatchTimes | None = None,
     ) -> None:
-        super().__init__(weight)
         comps = [int(c) for c in components]
         n_comp = len(comps)
         match = (
             MatchTimes.from_times(t_schedule) if match_times is None
             else match_times
         )
+        super().__init__(weight, match)
         num_match = int(match.times.shape[0])
 
         self._fe_problem = fe_problem
@@ -89,8 +92,6 @@ class FELoadMatch(FEQoI):
             )
             for c in comps
         ]
-        self._match_times = match
-        self._norm_factor = 1.0 / match.span
         self._output_file = output_file
 
         self._data: JaxArray | None
@@ -107,6 +108,9 @@ class FELoadMatch(FEQoI):
                     f"num_components={n_comp})"
                 )
             self._data = data_arr
+            self._normalize_by_data_mean_square(
+                self._squared_mismatch(), jnp.zeros(n_comp), 1.0,
+            )
 
     @classmethod
     def from_deck(
@@ -142,6 +146,18 @@ class FELoadMatch(FEQoI):
             output_file=qoi_section["output_file"],
         )
 
+    def _squared_mismatch(self) -> SquaredMismatch:
+        """``mismatch(reaction, step)``: the squared difference from the
+        measured load at match time ``step``, summed over the
+        components."""
+        data = self._data
+        assert data is not None
+
+        def _mismatch(reaction: JaxArray, step: int | JaxArray) -> JaxArray:
+            return jnp.sum((reaction - data[step]) ** 2)
+
+        return _mismatch
+
     def step_contribution(
             self,
             params_by_block: Mapping[str, Params],
@@ -152,7 +168,7 @@ class FELoadMatch(FEQoI):
                 "fe_load_match in write mode (output_file) has no objective; "
                 "use it under cmad primal, not objective/calibrate"
             )
-        data = self._data
+        mismatch = self._squared_mismatch()
         match_times = self._match_times
         norm_factor = self._norm_factor
 
@@ -168,8 +184,7 @@ class FELoadMatch(FEQoI):
             reaction = self._reaction_at(
                 params_by_block, fe_arrays, U, U_prev, step_time, xi_prev,
             )
-            mismatch = jnp.sum((reaction - data[step]) ** 2)
-            return norm_factor * weight * mismatch
+            return norm_factor * weight * mismatch(reaction, step)
 
         return _closure
 
