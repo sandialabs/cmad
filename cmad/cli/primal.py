@@ -97,7 +97,9 @@ def _run_primal_fe(deck_path: Path) -> int:
     )
     # A failed step is cut back and the schedule driven again, the cuts
     # moved onto measured frames when the field data is an archive.
-    refinement = TimeRefinement.from_deck(gr_section.get("time refinement"))
+    refinement = TimeRefinement.from_deck(
+        bundle.resolved["discretization"].get("time refinement"),
+    )
     snap_to = calibration_data_times(bundle.resolved)
     schedule = np.asarray(bundle.t_schedule, dtype=np.float64)
     inserted_times: list[float] = []

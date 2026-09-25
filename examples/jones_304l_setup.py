@@ -33,7 +33,6 @@ GLOBAL_NEWTON: dict[str, Any] = {
     "nonlinear absolute tol": 1.0e-8,
     "nonlinear relative tol": 1.0e-6,
     "line search": {"max evals": 5},
-    "time refinement": {"max depth": 2},
 }
 LOCAL_NEWTON: dict[str, Any] = {
     "nonlinear max iters": 20,
@@ -151,6 +150,7 @@ def discretization_section(tag: str, entry: dict[str, Any], thickness: float,
         "mesh file": f"examples/meshes/{mesh_name(tag, entry, thickness, ndims)}",
         "build coordinate sidesets": True,
         "times file": f"{data_stem(tag, entry, thickness, ndims)}_solve_times.txt",
+        "time refinement": {"max depth": 2},
     }
     if ndims == 2:
         section["thickness"] = thickness

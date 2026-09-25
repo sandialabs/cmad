@@ -23,6 +23,12 @@ properties:
     properties:
       volume degree: {type: integer, minimum: 1}
       surface degree: {type: integer, minimum: 1}
+  time refinement:
+    type: object
+    additionalProperties: false
+    properties:
+      factor: {type: integer, minimum: 2}
+      max depth: {type: integer, minimum: 0}
 oneOf:
   - required: [num steps, step size]
   - required: [times file]
