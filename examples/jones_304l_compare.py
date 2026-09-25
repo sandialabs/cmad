@@ -38,7 +38,7 @@ def main() -> None:
     parser.add_argument(
         "--deck", required=True,
         help="the calibrate input file naming the mesh, the archive, "
-             "the weights, and the solve times",
+             "the QoI, and the solve times",
     )
     parser.add_argument(
         "--exodus", required=True,
@@ -56,6 +56,7 @@ def main() -> None:
 
     bundle = build_fe_problem_from_deck(Path(args.deck), "calibrate")
     fe_problem = bundle.fe_problem
+    problem_name = bundle.resolved["problem"].get("name", Path(args.deck).stem)
     terms = {t["name"]: t for t in bundle.resolved["qoi"]["terms"]}
     disp_section = terms["fe_displacement_match"]
     load_section = terms["fe_load_match"]
@@ -76,8 +77,11 @@ def main() -> None:
     u_meas = np.full((times.size, n_nodes, ndims), np.nan)
     u_meas[:, store.node_ids] = measured
 
-    # The load term per frame, from the reaction series and the archive:
-    # (w / T) dt_n sum_c (R_cn - d_cn)^2 with dt_1 = 0.
+    # The load term per frame as the QoI computes it: the squared difference
+    # between the reaction and the measured load, summed over the components,
+    # times the frame's time weight, over the span and the data mean square.
+    # The weight of a frame is the time interval before it, so the first
+    # frame, the reference state, has weight 0 and is not integrated.
     reaction = np.loadtxt(args.reaction, delimiter=",").reshape(times.size, -1)
     load_meas = np.asarray(store.load[rows], dtype=np.float64)
     components = [int(c) for c in load_section["components"]]
@@ -85,8 +89,9 @@ def main() -> None:
         load_meas = load_meas.reshape(-1, 1)
     dt = np.concatenate([[0.0], np.diff(times)])
     span = float(times[-1] - times[0])
+    load_mean_square = float(np.sum(dt * np.sum(load_meas ** 2, axis=1)) / span)
     load_sq = np.sum((reaction - load_meas) ** 2, axis=1)
-    load_term = float(load_section["weight"]) / span * dt * load_sq
+    load_term = dt * load_sq / (span * load_mean_square)
 
     # The displacement term per frame, through the QoI's own closure.
     disp_qoi = FEDisplacementMatch.from_deck(
@@ -157,23 +162,25 @@ def main() -> None:
     axes[1].set_xlabel("time (s)")
     axes[1].set_ylabel("predicted load - measured load (kN)")
     axes[1].grid(lw=0.3, alpha=0.4)
+    fig.suptitle(problem_name)
     fig.tight_layout()
-    fig.savefig(out_dir / "load.png", dpi=160)
+    fig.savefig(out_dir / "load.png", dpi=300)
     plt.close(fig)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
     axes[0].plot(times, disp_term, "o-", ms=3, lw=0.9, label="displacement term")
     axes[0].plot(times, load_term, "o-", ms=3, lw=0.9, label="load term")
     axes[0].set_xlabel("time (s)")
-    axes[0].set_ylabel("term contribution per frame")
+    axes[0].set_ylabel("contribution to the relative error per frame")
     axes[0].legend(fontsize=8)
     axes[0].grid(lw=0.3, alpha=0.4)
     axes[1].plot(times, disp_rms, "o-", ms=3, lw=0.9)
     axes[1].set_xlabel("time (s)")
     axes[1].set_ylabel("spatial rms of the u mismatch (mm)")
     axes[1].grid(lw=0.3, alpha=0.4)
+    fig.suptitle(problem_name)
     fig.tight_layout()
-    fig.savefig(out_dir / "terms.png", dpi=160)
+    fig.savefig(out_dir / "terms.png", dpi=300)
     plt.close(fig)
 
     table = np.column_stack(
@@ -185,11 +192,22 @@ def main() -> None:
                "displacement term, load term, spatial rms (mm)",
     )
 
-    print(f"displacement term total {disp_term.sum():.6e} "
-          f"(weight {disp_section['weight']:g})")
-    print(f"load term total {load_term.sum():.6e} "
-          f"(weight {load_section['weight']:g})")
-    print(f"J {disp_term.sum() + load_term.sum():.6e}")
+    disp_weight = float(disp_section.get("weight", 1.0))
+    load_weight = float(load_section.get("weight", 1.0))
+    a_u, a_F = float(disp_term.sum()), float(load_term.sum())
+    qoi_name = bundle.resolved["qoi"]["name"]
+    if qoi_name == "fe_log_sum":
+        J = disp_weight * np.log(a_u) + load_weight * np.log(a_F)
+    else:
+        J = disp_weight * a_u + load_weight * a_F
+    assert disp_qoi.data_mean_square is not None
+    print(f"displacement: relative mean square {a_u:.6e}, "
+          f"rms {100.0 * np.sqrt(a_u):.2f} % of "
+          f"{np.sqrt(disp_qoi.data_mean_square):.3f} mm")
+    print(f"load: relative mean square {a_F:.6e}, "
+          f"rms {100.0 * np.sqrt(a_F):.2f} % of "
+          f"{np.sqrt(load_mean_square) / 1e3:.2f} kN")
+    print(f"J ({qoi_name}, weights {disp_weight:g} and {load_weight:g}) {J:.6e}")
     print(f"wrote {out_dir}/compare.exo, load.png, terms.png, compare.csv")
 
 

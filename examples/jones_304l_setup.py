@@ -9,7 +9,8 @@ specimens is written under examples/jones_304l_inputs/joint/, which
 cmad calibrate and cmad cross_validate read. The primal files write the
 solved field to exodus and the reaction series to a CSV, which
 jones_304l_compare.py reads. --materials takes a calibration's
-opt_params.yaml as the calibrate files' start values.
+opt_params.yaml as the start values of the calibrate files and the
+values of the primal files.
 
 Usage (--specimens lists the tags; --steps picks which of meshes,
 archives, and inputs run, all three by default):
@@ -217,10 +218,14 @@ def input_file(tag: str, entry: dict[str, Any], thickness: float,
                ndims: int, kind: str,
                materials: dict[str, Any] | None = None) -> dict[str, Any]:
     out_path = f"results/jones_304l_{tag}/{kind}_{ndims}d"
-    if kind == "primal":
-        materials = materials_section(active=False)
-    elif materials is None:
-        materials = materials_section(active=True)
+    # Without --materials the script's own values go in, active in a
+    # calibrate file and fixed in a primal file; with it, the given
+    # subtree goes into both kinds as it is.
+    if materials is None:
+        if kind == "calibrate":
+            materials = materials_section(active=True)
+        else:
+            materials = materials_section(active=False)
     deck: dict[str, Any] = {
         "problem": {"type": "fe", "name": f"{tag}_{kind}_{ndims}d"},
         "discretization": discretization_section(tag, entry, thickness, ndims),
@@ -324,7 +329,8 @@ def main() -> None:
     parser.add_argument(
         "--materials", type=Path, default=None,
         help="a calibration's opt_params.yaml whose materials subtree "
-             "replaces the start values in the calibrate files",
+             "replaces the start values in the calibrate files and the "
+             "values in the primal files",
     )
     args = parser.parse_args()
     materials = None if args.materials is None else load_materials(args.materials)
