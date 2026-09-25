@@ -21,6 +21,10 @@ cube of eight hexes, against pairs on its x=1 face.
 ``load_roi`` is covered separately: the mesh dimension chooses whether
 ``elements`` or ``sides`` is read, so a file built for the other kind of
 mesh raises rather than integrating over the wrong entities.
+
+On triangles the assembly integrates with one point by default, which is
+not exact for the square of a linear field; the mismatch uses its own
+rule, checked against the closed form on a split unit square.
 """
 import tempfile
 import unittest
@@ -32,8 +36,12 @@ from jax.tree_util import tree_map
 from cmad.fem.assembly import params_by_block_from_models
 from cmad.fem.dof import GlobalFieldLayout, build_dof_map
 from cmad.fem.fe_problem import build_fe_problem
-from cmad.fem.finite_element import Q1_HEX, Q1_QUAD
-from cmad.fem.mesh import StructuredHexMesh, StructuredQuadMesh
+from cmad.fem.finite_element import P1_TRI, Q1_HEX, Q1_QUAD
+from cmad.fem.mesh import (
+    StructuredHexMesh,
+    StructuredQuadMesh,
+    quad_to_tri_split,
+)
 from cmad.global_residuals.mechanics import Mechanics
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.io.qoi_data import load_roi
@@ -206,6 +214,55 @@ class TestSideRegionOfInterest(unittest.TestCase):
         self.assertAlmostEqual(
             _evaluate(self.fe_problem, data, U, self.face), 0.0,
             places=12)
+
+
+class TestTriangleQuadrature(unittest.TestCase):
+
+    def test_linear_field_against_uniform_data_is_exact(self) -> None:
+        mesh = quad_to_tri_split(
+            StructuredQuadMesh(lengths=(1.0, 1.0), divisions=(2, 2)),
+        )
+        dof_map = build_dof_map(
+            mesh, [GlobalFieldLayout(name="u", finite_element=P1_TRI)], [],
+            components_by_field={"u": 2},
+        )
+        fe_problem = build_fe_problem(
+            mesh=mesh, dof_map=dof_map, gr=Mechanics(ndims=2),
+            models_by_block={"all": _elastic(DefType.PLANE_STRAIN)},
+            modes_by_block={"all": GlobalResidualMode.CLOSED_FORM},
+        )
+        # the field (a x, b y) against the uniform data (c, d): over the
+        # unit square the squared mismatch integrates to
+        # a^2/3 - a c + c^2 + b^2/3 - b d + d^2, and the data mean square
+        # is c^2 + d^2, exact under any rule
+        a, b = 0.01, 0.02
+        c, d = 0.004, -0.01
+        x, y = mesh.nodes[:, 0], mesh.nodes[:, 1]
+        U = np.zeros(mesh.nodes.shape[0] * 2)
+        U[0::2] = a * x
+        U[1::2] = b * y
+        data = np.zeros((len(_T_SCHEDULE), mesh.nodes.shape[0], 2))
+        data[..., 0] = c
+        data[..., 1] = d
+        expected = (
+            (a ** 2 / 3.0 - a * c + c ** 2 + b ** 2 / 3.0 - b * d + d ** 2)
+            / (c ** 2 + d ** 2)
+        )
+
+        # what one point per triangle gives: the squared mismatch at the
+        # centroids times the areas, over the same data mean square
+        corners = mesh.nodes[mesh.connectivity]
+        centroids = corners.mean(axis=1)
+        d1 = corners[:, 1] - corners[:, 0]
+        d2 = corners[:, 2] - corners[:, 0]
+        areas = 0.5 * np.abs(d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0])
+        one_point_value = float(np.sum(areas * (
+            (a * centroids[:, 0] - c) ** 2 + (b * centroids[:, 1] - d) ** 2
+        ))) / (c ** 2 + d ** 2)
+        value = _evaluate(fe_problem, data, U, None)
+        print(f"triangles: relative error {value:.15g}, exact {expected:.15g}, "
+              f"one point rule {one_point_value:.15g}")
+        self.assertAlmostEqual(value, expected, places=12)
 
 
 class TestLoadRoi(unittest.TestCase):

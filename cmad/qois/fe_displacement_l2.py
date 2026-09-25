@@ -4,10 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
 
-import jax.numpy as jnp
-
-from cmad.fem.assembly import _gather_element_U
-from cmad.fem.precompute import compute_ip_quadrature_weights
+from cmad.qois.cell_match import cell_arrays_and_measure, cell_squared_mismatch
 from cmad.qois.fe_qoi import FEQoI, StepContribution
 from cmad.typing import JaxArray, Params
 
@@ -26,11 +23,12 @@ class FEDisplacementL2(FEQoI):
             \sum_n \Delta t_n \int_\Omega |u_n|^2 \, dV
 
     with :math:`T = t_N - t_0`, :math:`|\Omega|` the total domain
-    volume (``Σ_blocks Σ_elem Σ_ip iso_jac_det · w``), and
-    :math:`u_0 = 0`. Operates on the residual block whose
+    volume, and :math:`u_0 = 0`. Operates on the residual block whose
     ``var_name`` is ``"u"`` (the displacement field); mixed-field
     problems (e.g. u-p) are supported because the closure indexes
-    that block specifically and ignores others.
+    that block specifically and ignores others. The integral uses a rule
+    exact for the square of a linear field, whatever rule the assembly
+    uses (:mod:`cmad.qois.cell_match`).
     """
 
     problem_type: ClassVar[str] = "fe"
@@ -50,20 +48,16 @@ class FEDisplacementL2(FEQoI):
                 f"var_name 'u'; got var_names={var_names}"
             ) from exc
 
-        # Total volume: sum of iso_jac_det · w over all blocks/elems/IPs.
-        ip_weights = compute_ip_quadrature_weights(fe_problem.geometry_cache)
-        total_volume = float(sum(arr.sum() for arr in ip_weights.values()))
-
         T = float(t_schedule[-1]) - float(t_schedule[0])
 
-        self._fe_problem = fe_problem
-        # r_disp indexes per-residual-block arrays (gr.var_names,
-        # geometry_cache.shared.field_N_per_block); field_idx_disp
-        # indexes per-field-layout arrays (_gather_element_U output).
-        # field_idx_per_block[r] bridges them; the two coincide for
-        # single-displacement problems.
-        self._r_disp = r_disp
+        # r_disp indexes per-residual-block arrays (gr.var_names);
+        # field_idx_disp indexes per-field-layout arrays (the element
+        # gather). field_idx_per_block[r] bridges them; the two coincide
+        # when the displacement is the problem's only field.
         self._field_idx_disp = fe_problem.field_idx_per_block[r_disp]
+        self._cell_arrays, total_volume = cell_arrays_and_measure(
+            fe_problem, "u", None,
+        )
         self._norm_factor = 1.0 / (T * total_volume)
 
     @classmethod
@@ -81,21 +75,10 @@ class FEDisplacementL2(FEQoI):
             fe_arrays: FEKernelArrays,
     ) -> StepContribution:
         del params_by_block  # params enter only through the solved state U
-        fe_problem = self._fe_problem
-        r_disp = self._r_disp
-        field_idx_disp = self._field_idx_disp
         norm_factor = self._norm_factor
-
-        block_data: list[tuple[str, JaxArray, JaxArray]] = []
-        for block_name in fe_problem.models_by_block:
-            geom_cache = fe_arrays.geometry_cache[block_name]
-            N_disp = geom_cache.shared.field_N_per_block[r_disp]
-            quad_w = geom_cache.shared.quad_w
-            iso_jac_det = geom_cache.per_elem.iso_jac_det
-            weighted_iso_jac_det = iso_jac_det * quad_w
-            block_data.append(
-                (block_name, N_disp, weighted_iso_jac_det),
-            )
+        squared_field = cell_squared_mismatch(
+            self._cell_arrays, self._field_idx_disp, fe_arrays,
+        )
 
         def _closure(
                 U: JaxArray,
@@ -105,20 +88,6 @@ class FEDisplacementL2(FEQoI):
                 step_time: StepTime,
         ) -> JaxArray:
             del U_prev, xi, xi_prev
-            dt = step_time.dt
-            total_integral = jnp.zeros(())
-            for (block_name, N_disp,
-                 weighted_iso_jac_det) in block_data:
-                U_elem_blocks = _gather_element_U(
-                    U, fe_arrays, block_name,
-                )
-                U_disp_per_elem = U_elem_blocks[field_idx_disp]
-                U_at_ip = jnp.einsum(
-                    "pa,eak->epk", N_disp, U_disp_per_elem,
-                )
-                u_sq = jnp.sum(U_at_ip * U_at_ip, axis=-1)
-                block_integral = jnp.sum(u_sq * weighted_iso_jac_det)
-                total_integral = total_integral + block_integral
-            return norm_factor * dt * total_integral
+            return norm_factor * step_time.dt * squared_field(U, 0)
 
         return _closure

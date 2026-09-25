@@ -8,16 +8,18 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 
-from cmad.fem.assembly import _gather_element_U
 from cmad.fem.dof import dof_physical_coords
-from cmad.fem.precompute import compute_ip_quadrature_weights
-from cmad.fem.sharding import pad_element_leaves
 from cmad.io.qoi_data import (
     calibration_data_roi,
     load_calibration_data,
     load_displacement_data,
     load_match_times,
     load_roi,
+)
+from cmad.qois.cell_match import (
+    CellIntegrationArrays,
+    cell_arrays_and_measure,
+    cell_squared_mismatch,
 )
 from cmad.qois.fe_match_term import FEMatchTerm, SquaredMismatch
 from cmad.qois.fe_qoi import MatchTimes, StepContribution
@@ -30,25 +32,6 @@ from cmad.typing import JaxArray, Params
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem
     from cmad.fem.kernel_arrays import FEKernelArrays
-
-
-def _element_masks(
-        fe_problem: FEProblem, roi: NDArray[np.intp] | None,
-) -> dict[str, JaxArray] | None:
-    """Per-block 0/1 element masks selecting the region of interest.
-
-    ``None`` when there is no region of interest, which integrates
-    everywhere. Shaped ``(n_elems_in_block, 1)`` to broadcast against the
-    ``(n_elems, n_ip)`` integration measure.
-    """
-    if roi is None:
-        return None
-    keep = np.zeros(fe_problem.mesh.connectivity.shape[0], dtype=bool)
-    keep[roi] = True
-    return {
-        block: jnp.asarray(keep[elems], dtype=jnp.float64)[:, None]
-        for block, elems in fe_problem.mesh.element_blocks.items()
-    }
 
 
 class FEDisplacementMatch(FEMatchTerm):
@@ -70,7 +53,9 @@ class FEDisplacementMatch(FEMatchTerm):
     ``(num_match_times, num_nodes, ndims)``. With a ``sideset``, the
     integral and its normalizing measure are over that sideset's surface
     rather than over the whole mesh; with a ``roi``, over the elements or
-    the sides it holds.
+    the sides it holds. The integral over elements uses a rule exact for
+    the square of a linear field, whatever rule the assembly uses
+    (:mod:`cmad.qois.cell_match`).
     """
 
     problem_type: ClassVar[str] = "fe"
@@ -128,8 +113,6 @@ class FEDisplacementMatch(FEMatchTerm):
         data_flat = np.zeros((num_match, fe_problem.dof_map.num_total_dofs))
         data_flat[:, eq.reshape(-1)] = data_arr.reshape(num_match, -1)
 
-        self._fe_problem = fe_problem
-        self._r_disp = r_disp
         self._field_idx_disp = fe_problem.field_idx_per_block[r_disp]
         self._data_flat = jnp.asarray(data_flat, dtype=jnp.float64)
 
@@ -146,25 +129,14 @@ class FEDisplacementMatch(FEMatchTerm):
         if roi is not None and roi.ndim == 2:
             sides = roi
 
+        self._cell_arrays: dict[str, CellIntegrationArrays] | None
         if sides is None:
-            ip_weights = compute_ip_quadrature_weights(
-                fe_problem.geometry_cache,
-            )
-            self._element_mask = _element_masks(fe_problem, roi)
-            if self._element_mask is None:
-                measure = float(sum(arr.sum() for arr in ip_weights.values()))
-            else:
-                measure = float(sum(
-                    (arr * np.asarray(self._element_mask[block])).sum()
-                    for block, arr in ip_weights.items()))
-            if measure <= 0.0:
-                raise ValueError(
-                    "FEDisplacementMatch: the region of interest selects no "
-                    "elements, so the mismatch has nothing to average over"
-                )
             self._surface_groups = None
+            self._cell_arrays, measure = cell_arrays_and_measure(
+                fe_problem, "u", roi,
+            )
         else:
-            self._element_mask = None
+            self._cell_arrays = None
             self._surface_groups, measure = surface_groups_and_area(
                 fe_problem, sides, "u",
             )
@@ -213,51 +185,11 @@ class FEDisplacementMatch(FEMatchTerm):
             return surface_squared_mismatch(
                 self._surface_groups, self._data_flat,
             )
-        fe_problem = self._fe_problem
-        r_disp = self._r_disp
-        field_idx_disp = self._field_idx_disp
-        data_flat = self._data_flat
-
-        element_mask = self._element_mask
-        block_data: list[tuple[str, JaxArray, JaxArray]] = []
-        for block_name in fe_problem.models_by_block:
-            geom_cache = fe_arrays.geometry_cache[block_name]
-            N_disp = geom_cache.shared.field_N_per_block[r_disp]
-            quad_w = geom_cache.shared.quad_w
-            iso_jac_det = geom_cache.per_elem.iso_jac_det
-            weighted_iso_jac_det = iso_jac_det * quad_w
-            if element_mask is not None:
-                # The carrier's element axis may be padded past the mask
-                # (cmad.fem.sharding); the padding elements are masked out.
-                mask = pad_element_leaves(
-                    element_mask[block_name], iso_jac_det.shape[0], zero=True,
-                )
-                weighted_iso_jac_det = weighted_iso_jac_det * mask
-            block_data.append(
-                (block_name, N_disp, weighted_iso_jac_det),
-            )
-
-        def _mismatch(U: JaxArray, step: int | JaxArray) -> JaxArray:
-            U_data = data_flat[step]
-            total_integral = jnp.zeros(())
-            for (block_name, N_disp,
-                 weighted_iso_jac_det) in block_data:
-                U_elem = _gather_element_U(U, fe_arrays, block_name)
-                U_data_elem = _gather_element_U(
-                    U_data, fe_arrays, block_name,
-                )
-                diff_per_elem = (
-                    U_elem[field_idx_disp] - U_data_elem[field_idx_disp]
-                )
-                diff_at_ip = jnp.einsum(
-                    "pa,eak->epk", N_disp, diff_per_elem,
-                )
-                diff_sq = jnp.sum(diff_at_ip * diff_at_ip, axis=-1)
-                block_integral = jnp.sum(diff_sq * weighted_iso_jac_det)
-                total_integral = total_integral + block_integral
-            return total_integral
-
-        return _mismatch
+        assert self._cell_arrays is not None
+        return cell_squared_mismatch(
+            self._cell_arrays, self._field_idx_disp, fe_arrays,
+            self._data_flat,
+        )
 
     def step_contribution(
             self,
