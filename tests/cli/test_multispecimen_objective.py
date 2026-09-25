@@ -5,8 +5,12 @@ each with its own truth displacement field from ``cmad primal``. The
 joint objective's value and gradient are the weighted sums of the two
 single specimen objectives', its history entry carries each specimen's
 own value, and its gradient agrees with a directional finite difference.
-A weighted sum of a displacement match and a load match reports its
-accumulated QoIs, which with their weights add up to its value.
+On a third, displacement controlled cube (a traction driven one has a
+reaction that equals the applied load whatever the moduli are), a
+weighted sum of a displacement match and a load match reports its
+accumulated QoIs, which with their weights add up to its value, and a
+log sum of the same terms is the weighted sum of their logarithms, with
+a gradient that also agrees with finite differences.
 """
 import tempfile
 import unittest
@@ -26,10 +30,11 @@ _PULL = {
     "a": ("xmax_sides", ["10.0 * t", "0.0", "0.0"]),
     "b": ("ymax_sides", ["0.0", "10.0 * t", "0.0"]),
 }
-_CELLS = {"a": (2, 2, 2), "b": (3, 2, 2)}
+_CELLS = {"a": (2, 2, 2), "b": (3, 2, 2), "c": (2, 2, 2)}
 _WEIGHT_B = 2.0
-# The reaction at the fixed face balances specimen a's traction.
-_LOAD = {"sideset": "xmin_sides", "components": [0]}
+# Specimen c is stretched by a prescribed displacement on xmax_sides and
+# its load match reads the reaction there.
+_LOAD = {"sideset": "xmax_sides", "components": [0]}
 _LOAD_WEIGHT = 3.0
 
 
@@ -48,7 +53,6 @@ def _shared(elastic: dict[str, Any], out: Path) -> dict[str, Any]:
 
 
 def _specimen(tag: str, mesh: Path, truth: Path | None) -> dict[str, Any]:
-    sideset, traction = _PULL[tag]
     entry: dict[str, Any] = {
         "discretization": {
             "mesh file": str(mesh), "num steps": 5, "step size": 0.2,
@@ -60,10 +64,16 @@ def _specimen(tag: str, mesh: Path, truth: Path | None) -> dict[str, Any]:
                 "fix_z": ["equilibrium", 2, "zmin_sides", "0.0"],
             },
         },
-        "surface flux bcs": {
-            "expression": {"pull": ["equilibrium", sideset, *traction]},
-        },
     }
+    if tag in _PULL:
+        sideset, traction = _PULL[tag]
+        entry["surface flux bcs"] = {
+            "expression": {"pull": ["equilibrium", sideset, *traction]},
+        }
+    else:
+        entry["dirichlet bcs"]["expression"]["ramp_x"] = [
+            "equilibrium", 0, "xmax_sides", "0.05 * t",
+        ]
     if truth is not None:
         entry["qoi"] = {
             "name": "fe_displacement_match", "data_file": str(truth),
@@ -97,23 +107,21 @@ class TestMultispecimenObjective(unittest.TestCase):
         }
         entries: dict[str, dict[str, Any]] = {}
         cls.single: dict[str, Objective] = {}
-        for tag in ("a", "b"):
+        for tag in ("a", "b", "c"):
             mesh = tmp / f"{tag}.exo"
             with ExodusWriter(str(mesh), StructuredHexMesh((1.0, 1.0, 1.0), _CELLS[tag])):
                 pass
             primal_out = tmp / f"primal_{tag}"
-            primal = _write(tmp / f"primal_{tag}.yaml", {
-                **_shared(truth, primal_out),
-                **_specimen(tag, mesh, None),
-            })
-            primal_deck = yaml.safe_load(primal.read_text())
+            primal_deck = {
+                **_shared(truth, primal_out), **_specimen(tag, mesh, None),
+            }
             primal_deck["output"]["exodus filename"] = "truth.exo"
-            if tag == "a":
+            if tag == "c":
                 primal_deck["qoi"] = {
                     "name": "fe_load_match", **_LOAD,
                     "output_file": str(tmp / "load.csv"),
                 }
-            _write(primal, primal_deck)
+            primal = _write(tmp / f"primal_{tag}.yaml", primal_deck)
             assert cmad_main(["primal", str(primal)]) == 0
             entries[tag] = _specimen(tag, mesh, primal_out / "truth.exo")
             single = _write(tmp / f"single_{tag}.yaml", {
@@ -130,22 +138,24 @@ class TestMultispecimenObjective(unittest.TestCase):
             },
         })
         cls.joint = build_objective(load_fe_input(joint, "gradient"))
-        weighted = _write(tmp / "weighted.yaml", {
-            **_shared(start, tmp / "out_weighted"),
-            **entries["a"],
-            "qoi": {
-                "name": "fe_weighted_sum",
-                "terms": [
-                    entries["a"]["qoi"],
-                    {
-                        "name": "fe_load_match", **_LOAD,
-                        "data_file": str(tmp / "load.csv"),
-                        "weight": _LOAD_WEIGHT,
-                    },
-                ],
+        terms = [
+            entries["c"]["qoi"],
+            {
+                "name": "fe_load_match", **_LOAD,
+                "data_file": str(tmp / "load.csv"),
+                "weight": _LOAD_WEIGHT,
             },
-        })
-        cls.weighted = build_objective(load_fe_input(weighted, "gradient"))
+        ]
+        cls.combined: dict[str, Objective] = {}
+        for name in ("fe_weighted_sum", "fe_log_sum"):
+            path = _write(tmp / f"{name}.yaml", {
+                **_shared(start, tmp / f"out_{name}"),
+                **entries["c"],
+                "qoi": {"name": name, "terms": terms},
+            })
+            cls.combined[name] = build_objective(
+                load_fe_input(path, "gradient"),
+            )
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -173,16 +183,18 @@ class TestMultispecimenObjective(unittest.TestCase):
         )
 
     def test_weighted_sum_reports_its_accumulated_qois(self) -> None:
-        J_a, _grad = self.single["a"].evaluate(self.single["a"].x0)
-        J, _grad = self.weighted.evaluate(self.weighted.x0)
-        accumulated = self.weighted.history[-1]["accumulated_qois"]
+        J_c, _grad = self.single["c"].evaluate(self.single["c"].x0)
+        weighted = self.combined["fe_weighted_sum"]
+        J, _grad = weighted.evaluate(weighted.x0)
+        accumulated = weighted.history[-1]["accumulated_qois"]
         self.assertEqual(
             list(accumulated), ["fe_displacement_match", "fe_load_match"],
         )
         np.testing.assert_allclose(
-            accumulated["fe_displacement_match"], J_a, rtol=1e-13,
+            accumulated["fe_displacement_match"], J_c, rtol=1e-13,
         )
-        self.assertGreater(accumulated["fe_load_match"], 0.0)
+        # A mismatch, not a round off residual.
+        self.assertGreater(accumulated["fe_load_match"], 1e-10)
         np.testing.assert_allclose(
             J,
             accumulated["fe_displacement_match"]
@@ -190,19 +202,36 @@ class TestMultispecimenObjective(unittest.TestCase):
             rtol=1e-14,
         )
 
+    def test_log_sum_is_the_weighted_sum_of_logarithms(self) -> None:
+        log_sum = self.combined["fe_log_sum"]
+        J, _grad = log_sum.evaluate(log_sum.x0)
+        accumulated = log_sum.history[-1]["accumulated_qois"]
+        np.testing.assert_allclose(
+            J,
+            np.log(accumulated["fe_displacement_match"])
+            + _LOAD_WEIGHT * np.log(accumulated["fe_load_match"]),
+            rtol=1e-13,
+        )
+        self._check_gradient_against_finite_differences(log_sum, "log sum")
+
     def test_joint_gradient_against_finite_differences(self) -> None:
-        x = self.joint.x0
-        _J, grad = self.joint.evaluate(x)
+        self._check_gradient_against_finite_differences(self.joint, "joint")
+
+    def _check_gradient_against_finite_differences(
+            self, objective: Objective, label: str,
+    ) -> None:
+        x = objective.x0
+        _J, grad = objective.evaluate(x)
         direction = np.array([0.6, -0.8])
         exact = float(grad @ direction)
         hs = np.logspace(-2, -8, 7)
         errors = []
         for h in hs:
-            J_plus = self.joint.value(x + h * direction)
-            J_minus = self.joint.value(x - h * direction)
+            J_plus = objective.value(x + h * direction)
+            J_minus = objective.value(x - h * direction)
             errors.append(abs((J_plus - J_minus) / (2.0 * h) - exact))
         rel_errors = np.asarray(errors) / abs(exact)
-        print("directional FD relative errors:", rel_errors)
+        print(f"{label} directional FD relative errors:", rel_errors)
         log10_drop = float(np.log10(rel_errors.max() / rel_errors.min()))
         self.assertGreater(log10_drop, 4.0)
         self.assertLess(rel_errors.min(), 1e-6)
