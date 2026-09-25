@@ -96,19 +96,17 @@ def pressure_equation(
     """Stabilized pressure equation of the mixed formulation, shape
     ``(n_basis_p, 1)``.
 
-    ``-(p + hydro) / psf N_p - tau grad_N_p . grad p`` times ``w dv``, with
-    ``hydro = tr(sigma) / 3`` of the model's Cauchy stress (closed form or
-    from the local state per ``mode``), ``psf = model.pressure_scale_factor``,
-    and ``tau = stabilization_multiplier 0.5 h^2 / mu`` with
-    ``mu = model.shear_scale_factor``; in finite deformation the
-    stabilization is scaled by ``(cof_F.T @ cof_F) / det F``.
+    ``-(p + hydro) / model.bulk_scale_factor N_p - tau grad_N_p . grad p``
+    times ``w dv``, with ``hydro = tr(sigma) / 3`` of the model's Cauchy
+    stress (closed form or from the local state per ``mode``) and
+    ``tau = stabilization_multiplier h^2 / model.shear_scale_factor``; in
+    finite deformation the stabilization is scaled by
+    ``(cof_F.T @ cof_F) / det F``.
     """
     sigma = _cauchy_by_mode(xi, xi_prev, params, U_ip, U_ip_prev, model, mode)
     hydro = jnp.trace(sigma) / 3.
     p = U_ip.fields["p"][0]
-    psf = model.pressure_scale_factor(params)
-    mu = model.shear_scale_factor(params)
-    tau = stabilization_multiplier * 0.5 * h ** 2 / mu
+    tau = stabilization_multiplier * h ** 2 / model.shear_scale_factor
     grad_p = U_ip.grad_fields["p"][0]
     if model.is_finite_deformation:
         F = model.deformation_gradient(xi, U_ip)
@@ -117,7 +115,8 @@ def pressure_equation(
         stab_term = shapes_p.grad_N @ (stab @ grad_p)
     else:
         stab_term = tau * (shapes_p.grad_N @ grad_p)
-    R_p = (-(p + hydro) / psf * shapes_p.N - stab_term) * w * dv
+    R_p = (-(p + hydro) / model.bulk_scale_factor * shapes_p.N
+           - stab_term) * w * dv
     return R_p[:, None]
 
 

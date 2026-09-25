@@ -41,8 +41,8 @@ class Mechanics(GlobalResidual):
       pressure dof. The pressure block weakly ties ``p`` to ``-hydro``
       and adds a pressure-gradient term ``tau * grad(p).grad(q)`` that
       supplies the inf-sup stability equal-order pairs lack, with
-      ``tau = mult * 0.5 * h^2 / mu`` (``mu = model.shear_scale_factor``,
-      ``h`` the element size). The ``dev`` and ``hydro`` parts are the
+      ``tau = mult * h^2 / model.shear_scale_factor`` (``h`` the element
+      size). The ``dev`` and ``hydro`` parts are the
       trace split of the model's stress, closed form when bound
       CLOSED_FORM (elastic) and from the converged local state when bound
       COUPLED (plastic). Mixed needs a model with ``supports_mixed`` and

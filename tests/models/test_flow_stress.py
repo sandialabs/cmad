@@ -13,10 +13,10 @@ import numpy as np
 from jax import grad
 from scipy.optimize import brentq
 
-from cmad.models.elastic_stress import two_mu_scale_factor
+from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.flow_stress import POWER_LAW_OFFSET, make_yield_function
 from cmad.models.hardening import voce_hardening
-from cmad.models.paths import yield_threshold
+from cmad.models.paths import compute_yield_threshold
 from tests.support.test_problems import params_J2_voce
 
 _E, _NU, _Y, _S, _D = 200e3, 0.3, 200.0, 200.0, 20.0
@@ -60,10 +60,13 @@ class TestRateIndependentYieldFunction(unittest.TestCase):
         flow_params = params["plastic"]["flow stress"]
         yield_function = make_yield_function(flow_params)
         yield_tol = 1e-12
+        shear_scale_factor = 2. * ElasticConstants.from_params(
+            params["elastic"]).mu
         expected = yield_tol * flow_params["initial yield"]["Y"] \
-            / two_mu_scale_factor(params)
-        threshold = yield_threshold(yield_tol, params, yield_function)
-        self.assertEqual(float(threshold), float(expected))
+            / shear_scale_factor
+        threshold = compute_yield_threshold(
+            yield_tol, params, yield_function, shear_scale_factor)
+        self.assertEqual(threshold, float(expected))
 
 
 # The 4340 steel constants of Johnson and Cook 1983, here only as numbers

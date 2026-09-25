@@ -4,15 +4,17 @@ Separates the mechanics-specific contract the mechanics global residual
 relies on from the general :class:`cmad.models.model.Model`.
 """
 from collections.abc import Callable
+from typing import cast
 
 import numpy as np
 from jax import jit
 from numpy.typing import NDArray
 
+from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.kinematics import gather_F
 from cmad.models.model import Model
-from cmad.typing import CauchyFn, JaxArray, Params, ResidualFn, Scalar, StateList
+from cmad.typing import CauchyFn, JaxArray, Params, ResidualFn, StateList
 
 
 def require_def_type(def_type: int | None, model_name: str) -> int:
@@ -43,12 +45,13 @@ class MechanicsModel(Model):
     - :meth:`deformation_gradient`: the 3x3 deformation gradient at an
       integration point, used for the finite Cauchy-to-PK1 map.
 
-    It also declares the mixed formulation's contract, the two scale
-    factors for the pressure equation, which a model with
-    ``supports_mixed`` True overrides; the base raises.
+    It also holds the two scale factors for the mixed formulation's
+    pressure equation, plain constants set from the parameters at
+    construction.
 
     Subclasses set ``_def_type`` (and ``_oop_stretch_idx`` when they
-    carry an out-of-plane stretch unknown) before ``super().__init__()``.
+    carry an out-of-plane stretch unknown) and call
+    ``_init_scale_factors()`` before ``super().__init__()``.
     """
 
     is_finite_deformation: bool = False
@@ -60,6 +63,8 @@ class MechanicsModel(Model):
     _oop_stretch_idx: int = -1
 
     cauchy_closed_form: Callable[..., JaxArray] | None
+    bulk_scale_factor: float
+    shear_scale_factor: float
     _Sigma: NDArray[np.floating]
 
     def __init__(
@@ -94,13 +99,8 @@ class MechanicsModel(Model):
         """
         return gather_F(xi, U, self._def_type, self._oop_stretch_idx)
 
-    # The mixed formulation's contract; a model with supports_mixed True
-    # overrides these.
-
-    @staticmethod
-    def pressure_scale_factor(params: Params) -> Scalar:
-        raise NotImplementedError
-
-    @staticmethod
-    def shear_scale_factor(params: Params) -> Scalar:
-        raise NotImplementedError
+    def _init_scale_factors(self) -> None:
+        elastic = ElasticConstants.from_params(
+            cast(Params, self.parameters.values["elastic"]))
+        self.bulk_scale_factor = float(elastic.kappa)
+        self.shear_scale_factor = 2. * float(elastic.mu)

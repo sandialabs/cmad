@@ -23,11 +23,7 @@ from jax import grad, jit
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.effective_stress import conventional_effective_stress_fun
-from cmad.models.elastic_constants import ElasticConstants
-from cmad.models.elastic_stress import (
-    isotropic_linear_elastic_stress,
-    two_mu_scale_factor,
-)
+from cmad.models.elastic_stress import isotropic_linear_elastic_stress
 from cmad.models.flow_stress import make_yield_function
 from cmad.models.global_fields import (
     GlobalFieldsAtPoint,
@@ -47,7 +43,7 @@ from cmad.models.material_frame import (
     rotate_out_of_material_frame,
 )
 from cmad.models.mechanics_model import MechanicsModel, require_def_type
-from cmad.models.paths import cond_residual, yield_threshold
+from cmad.models.paths import compute_yield_threshold, cond_residual
 from cmad.models.radial_return import (
     plastic_multiplier_increment,
     resolve_initial_guess,
@@ -62,7 +58,7 @@ from cmad.models.var_types import (
     put_2D_tensor_into_3D,
 )
 from cmad.parameters.parameters import Parameters
-from cmad.typing import JaxArray, Scalar, StateBlock, StateList
+from cmad.typing import JaxArray, StateBlock, StateList
 
 
 def stress_from_state(
@@ -171,6 +167,7 @@ def compute_yield_fun(
         params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
         effective_stress: Callable[..., JaxArray],
         yield_function: Callable[..., JaxArray],
+        shear_scale_factor: float,
 ) -> JaxArray:
 
     plastic_params = params["plastic"]
@@ -180,7 +177,7 @@ def compute_yield_fun(
     yield_fun = yield_function(phi, alpha, alpha_dot, temperature_at_point(U),
                                plastic_params["flow stress"])
 
-    return yield_fun / two_mu_scale_factor(params)
+    return yield_fun / shear_scale_factor
 
 
 def compute_yield_fun_and_normal(
@@ -188,7 +185,7 @@ def compute_yield_fun_and_normal(
         params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
         effective_stress: Callable[..., JaxArray],
         yield_function: Callable[..., JaxArray],
-        is_complex: bool,
+        shear_scale_factor: float, is_complex: bool,
 ) -> tuple[JaxArray, JaxArray]:
 
     yield_normal = grad(effective_stress, holomorphic=is_complex)(
@@ -196,7 +193,7 @@ def compute_yield_fun_and_normal(
 
     return compute_yield_fun(
         cauchy, alpha, alpha_prev, params, U, step_time, effective_stress,
-        yield_function), yield_normal
+        yield_function, shear_scale_factor), yield_normal
 
 
 def start_from_radial_return(
@@ -208,7 +205,7 @@ def start_from_radial_return(
         elastic_stress: Callable[..., JaxArray],
         effective_stress: Callable[..., JaxArray],
         yield_function: Callable[..., JaxArray],
-        yield_tol: float,
+        shear_scale_factor: float, yield_threshold: float,
 ) -> StateList:
     """Starting state for the local Newton: the elastic predictor, returned
     to the yield surface along its own normal when it lies outside."""
@@ -225,11 +222,10 @@ def start_from_radial_return(
         return compute_yield_fun(
             cauchy_trial - delta_gamma * return_direction,
             alpha_prev + delta_gamma, alpha_prev, params, U, step_time,
-            effective_stress, yield_function)
+            effective_stress, yield_function, shear_scale_factor)
 
-    threshold = yield_threshold(yield_tol, params, yield_function)
-    delta_gamma = plastic_multiplier_increment(g, threshold)
-    is_plastic = g(jnp.zeros(())) > threshold
+    delta_gamma = plastic_multiplier_increment(g, yield_threshold)
+    is_plastic = g(jnp.zeros(())) > yield_threshold
     cauchy_return = cauchy_trial - delta_gamma * return_direction
 
     returned = [
@@ -371,6 +367,7 @@ class RateElasticPlastic(MechanicsModel):
         # TODO: check that the parameters make sense for this model
         # self._check_params(parameters)
         self.parameters = parameters
+        self._init_scale_factors()
 
         plastic_subtree = cast(dict[str, Any], parameters.values["plastic"])
         if effective_stress_fun is None:
@@ -380,12 +377,16 @@ class RateElasticPlastic(MechanicsModel):
                 conventional_effective_stress_fun(effective_stress_type)
         yield_function = make_yield_function(
             plastic_subtree["flow stress"], hardening_funs)
+        yield_threshold = compute_yield_threshold(
+            yield_tol, parameters.values, yield_function,
+            self.shear_scale_factor)
 
         residual = partial(self._residual_fn, def_type=def_type,
                            elastic_stress=elastic_stress_fun,
                            effective_stress=effective_stress_fun,
                            yield_function=yield_function,
-                           yield_tol=yield_tol,
+                           shear_scale_factor=self.shear_scale_factor,
+                           yield_threshold=yield_threshold,
                            uniaxial_stress_idx=uniaxial_stress_idx,
                            is_complex=is_complex,
                            finite_deformation=finite_deformation,
@@ -405,7 +406,8 @@ class RateElasticPlastic(MechanicsModel):
                 elastic_stress=elastic_stress_fun,
                 effective_stress=effective_stress_fun,
                 yield_function=yield_function,
-                yield_tol=yield_tol))
+                shear_scale_factor=self.shear_scale_factor,
+                yield_threshold=yield_threshold))
         else:
             self.initial_guess_fn = jit(partial(
                 start_from_elastic_predictor, def_type=def_type,
@@ -443,7 +445,8 @@ class RateElasticPlastic(MechanicsModel):
             elastic_stress: Callable[..., JaxArray],
             effective_stress: Callable[..., JaxArray],
             yield_function: Callable[..., JaxArray],
-            yield_tol: float, uniaxial_stress_idx: int, is_complex: bool,
+            shear_scale_factor: float, yield_threshold: float,
+            uniaxial_stress_idx: int, is_complex: bool,
             finite_deformation: bool, has_material_rotation: bool,
     ) -> JaxArray:
 
@@ -460,25 +463,26 @@ class RateElasticPlastic(MechanicsModel):
             finite_deformation, has_material_rotation)
         trial_delta_cauchy = elastic_stress(increment, params)
         delta_gamma = alpha - alpha_prev
-        scale_factor = two_mu_scale_factor(params)
 
         # elastic residual
         C_elastic_cauchy_tensor = cauchy - cauchy_prev \
             - trial_delta_cauchy
         C_elastic_cauchy = stored_stress_components(
             C_elastic_cauchy_tensor, def_type, uniaxial_stress_idx,
-            has_material_rotation) / scale_factor
+            has_material_rotation) / shear_scale_factor
         C_elastic_alpha = delta_gamma
 
         # plastic residual
         yield_fun, yield_normal = \
             compute_yield_fun_and_normal(cauchy, alpha, alpha_prev, params, U,
                                          step_time, effective_stress,
-                                         yield_function, is_complex)
+                                         yield_function, shear_scale_factor,
+                                         is_complex)
         trial_yield_fun = \
             compute_yield_fun(cauchy_prev + trial_delta_cauchy, alpha_prev,
                               alpha_prev, params, U, step_time,
-                              effective_stress, yield_function)
+                              effective_stress, yield_function,
+                              shear_scale_factor)
         plastic_increment = delta_gamma * yield_normal
         delta_cauchy = trial_delta_cauchy \
             - elastic_stress(plastic_increment, params)
@@ -486,7 +490,7 @@ class RateElasticPlastic(MechanicsModel):
             - delta_cauchy
         C_plastic_cauchy = stored_stress_components(
             C_plastic_cauchy_tensor, def_type, uniaxial_stress_idx,
-            has_material_rotation) / scale_factor
+            has_material_rotation) / shear_scale_factor
         C_plastic_alpha = yield_fun
 
         if def_type == DefType.FULL_3D:
@@ -496,9 +500,9 @@ class RateElasticPlastic(MechanicsModel):
         elif def_type == DefType.PLANE_STRAIN or \
                 def_type == DefType.PLANE_STRESS:
             C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha,
-                               C_elastic_cauchy_tensor[2, 2] / scale_factor]
+                               C_elastic_cauchy_tensor[2, 2] / shear_scale_factor]
             C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha,
-                               C_plastic_cauchy_tensor[2, 2] / scale_factor]
+                               C_plastic_cauchy_tensor[2, 2] / shear_scale_factor]
 
         elif def_type == DefType.UNIAXIAL_STRESS \
                 and not has_material_rotation:
@@ -508,12 +512,12 @@ class RateElasticPlastic(MechanicsModel):
 
             C_elastic = jnp.r_[
                 C_elastic_cauchy, C_elastic_alpha,
-                C_elastic_cauchy_tensor[first_idx, first_idx] / scale_factor,
-                C_elastic_cauchy_tensor[second_idx, second_idx] / scale_factor]
+                C_elastic_cauchy_tensor[first_idx, first_idx] / shear_scale_factor,
+                C_elastic_cauchy_tensor[second_idx, second_idx] / shear_scale_factor]
             C_plastic = jnp.r_[
                 C_plastic_cauchy, C_plastic_alpha,
-                C_plastic_cauchy_tensor[first_idx, first_idx] / scale_factor,
-                C_plastic_cauchy_tensor[second_idx, second_idx] / scale_factor]
+                C_plastic_cauchy_tensor[first_idx, first_idx] / shear_scale_factor,
+                C_plastic_cauchy_tensor[second_idx, second_idx] / shear_scale_factor]
 
         elif def_type == DefType.UNIAXIAL_STRESS:
             global_trial_delta_cauchy = rotate_out_of_material_frame(
@@ -528,29 +532,29 @@ class RateElasticPlastic(MechanicsModel):
             C_elastic_stretch = jnp.r_[
                 global_trial_delta_cauchy[first_idx, first_idx],
                 global_trial_delta_cauchy[second_idx, second_idx]] \
-                / scale_factor
+                / shear_scale_factor
             C_plastic_stretch = jnp.r_[
                 global_delta_cauchy[first_idx, first_idx],
                 global_delta_cauchy[second_idx, second_idx]] \
-                / scale_factor
+                / shear_scale_factor
             C_elastic_delta_strain = jnp.r_[
                 global_trial_delta_cauchy[0, 1],
                 global_trial_delta_cauchy[0, 2],
                 global_trial_delta_cauchy[1, 2]
-            ] / scale_factor
+            ] / shear_scale_factor
             C_plastic_delta_strain = jnp.r_[
                 global_delta_cauchy[0, 1],
                 global_delta_cauchy[0, 2],
                 global_delta_cauchy[1, 2]
-            ] / scale_factor
+            ] / shear_scale_factor
 
             C_elastic = jnp.r_[C_elastic_cauchy, C_elastic_alpha,
                                C_elastic_stretch, C_elastic_delta_strain]
             C_plastic = jnp.r_[C_plastic_cauchy, C_plastic_alpha,
                                C_plastic_stretch, C_plastic_delta_strain]
 
-        return cond_residual(trial_yield_fun, C_elastic, C_plastic,
-                             yield_threshold(yield_tol, params, yield_function))
+        return cond_residual(
+            trial_yield_fun, C_elastic, C_plastic, yield_threshold)
 
     def _check_params(self, parameters: Parameters) -> None:
         raise NotImplementedError
@@ -573,11 +577,3 @@ class RateElasticPlastic(MechanicsModel):
             cauchy = R @ cauchy @ R.T
 
         return cauchy
-
-    @staticmethod
-    def pressure_scale_factor(params: dict[str, Any]) -> Scalar:
-        return ElasticConstants.from_params(params["elastic"]).kappa
-
-    @staticmethod
-    def shear_scale_factor(params: dict[str, Any]) -> Scalar:
-        return ElasticConstants.from_params(params["elastic"]).mu

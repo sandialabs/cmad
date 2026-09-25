@@ -6,12 +6,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from cmad.models.deformation_types import DefType, def_type_ndims
-from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.elastic_stress import (
     conventional_elastic_stress_fun,
     isotropic_linear_elastic_cauchy_stress,
     stress_fun_is_finite,
-    two_mu_scale_factor,
 )
 from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.kinematics import gather_F
@@ -23,7 +21,7 @@ from cmad.models.var_types import (
     get_vector_from_sym_tensor,
 )
 from cmad.parameters.parameters import Parameters
-from cmad.typing import JaxArray, Scalar, StateList
+from cmad.typing import JaxArray, StateList
 
 
 class Elastic(MechanicsModel):
@@ -103,10 +101,12 @@ class Elastic(MechanicsModel):
         # TODO: check that the parameters make sense for this model
         # self._check_params(parameters)
         self.parameters = parameters
+        self._init_scale_factors()
 
         residual = partial(self._residual_fn,
                            def_type=def_type,
-                           elastic_stress=elastic_stress_fun)
+                           elastic_stress=elastic_stress_fun,
+                           shear_scale_factor=self.shear_scale_factor)
 
         cauchy = partial(self._cauchy_fn, def_type=def_type)
 
@@ -142,6 +142,7 @@ class Elastic(MechanicsModel):
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             step_time: StepTime,
             def_type: int, elastic_stress: Callable[..., JaxArray],
+            shear_scale_factor: float,
     ) -> JaxArray:
 
         # state variables for the model
@@ -151,11 +152,10 @@ class Elastic(MechanicsModel):
         F = gather_F(xi, U, def_type, 1)  # 3D deformation gradient
 
         # elastic residual
-        scale_factor = two_mu_scale_factor(params)
         C_elastic_cauchy_tensor = cauchy - elastic_stress(F, params)
         C_elastic_cauchy = \
             get_vector_from_sym_tensor(C_elastic_cauchy_tensor, 3) \
-            / scale_factor
+            / shear_scale_factor
 
         if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRAIN:
             C_elastic = C_elastic_cauchy
@@ -164,11 +164,11 @@ class Elastic(MechanicsModel):
                 def_type == DefType.UNIAXIAL_STRESS:
 
             if def_type == DefType.PLANE_STRESS:
-                C_stretch = cauchy[2, 2] / scale_factor
+                C_stretch = cauchy[2, 2] / shear_scale_factor
 
             elif def_type == DefType.UNIAXIAL_STRESS:
                 C_stretch = jnp.r_[cauchy[1, 1], cauchy[2, 2]] \
-                    / scale_factor
+                    / shear_scale_factor
 
             C_elastic = jnp.r_[C_elastic_cauchy, C_stretch]
 
@@ -205,11 +205,3 @@ class Elastic(MechanicsModel):
         else:
             F = jnp.eye(3) + grad_u
         return elastic_stress(F, params)
-
-    @staticmethod
-    def pressure_scale_factor(params: dict[str, Any]) -> Scalar:
-        return ElasticConstants.from_params(params["elastic"]).kappa
-
-    @staticmethod
-    def shear_scale_factor(params: dict[str, Any]) -> Scalar:
-        return ElasticConstants.from_params(params["elastic"]).mu

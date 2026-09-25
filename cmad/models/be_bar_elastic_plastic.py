@@ -24,7 +24,6 @@ from jax import grad, jit
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.effective_stress import J2_effective_stress
 from cmad.models.elastic_constants import ElasticConstants
-from cmad.models.elastic_stress import two_mu_scale_factor
 from cmad.models.flow_stress import make_yield_function
 from cmad.models.global_fields import (
     GlobalFieldsAtPoint,
@@ -33,7 +32,7 @@ from cmad.models.global_fields import (
 )
 from cmad.models.kinematics import det_3x3, gather_F, inv_3x3
 from cmad.models.mechanics_model import MechanicsModel, require_def_type
-from cmad.models.paths import cond_residual, yield_threshold
+from cmad.models.paths import compute_yield_threshold, cond_residual
 from cmad.models.radial_return import (
     plastic_multiplier_increment,
     resolve_initial_guess,
@@ -46,7 +45,7 @@ from cmad.models.var_types import (
     get_vector_from_dev_sym_tensor,
 )
 from cmad.parameters.parameters import Parameters
-from cmad.typing import JaxArray, Scalar, StateBlock, StateList
+from cmad.typing import JaxArray, StateBlock, StateList
 
 _NUM_RETURN_SWEEPS = 2
 _NUM_IE_STEPS = 2
@@ -134,7 +133,7 @@ def start_from_elastic_predictor(
 def compute_yield_fun(
         zeta: JaxArray, alpha: StateBlock, alpha_prev: StateBlock,
         params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
-        yield_function: Callable[..., JaxArray],
+        yield_function: Callable[..., JaxArray], shear_scale_factor: float,
 ) -> JaxArray:
     """Von Mises yield function on the Kirchhoff stress.
 
@@ -151,13 +150,14 @@ def compute_yield_fun(
     yield_fun = yield_function(phi, alpha, alpha_dot, temperature_at_point(U),
                                plastic_params["flow stress"])
 
-    return yield_fun / two_mu_scale_factor(params)
+    return yield_fun / shear_scale_factor
 
 
 def compute_yield_fun_and_normal(
         zeta: JaxArray, alpha: StateBlock, alpha_prev: StateBlock,
         params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
-        yield_function: Callable[..., JaxArray], is_complex: bool,
+        yield_function: Callable[..., JaxArray], shear_scale_factor: float,
+        is_complex: bool,
 ) -> tuple[JaxArray, JaxArray]:
     """Yield function and flow normal, the gradient of the J2 effective
     stress at the deviatoric Kirchhoff stress.
@@ -168,6 +168,7 @@ def compute_yield_fun_and_normal(
 
     return compute_yield_fun(
         zeta, alpha, alpha_prev, params, U, step_time, yield_function,
+        shear_scale_factor,
     ), yield_normal
 
 
@@ -176,7 +177,8 @@ def start_from_radial_return(
         U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
         step_time: StepTime,
         def_type: int, oop_stretch_idx: int,
-        yield_function: Callable[..., JaxArray], yield_tol: float,
+        yield_function: Callable[..., JaxArray],
+        shear_scale_factor: float, yield_threshold: float,
 ) -> StateList:
     """Starting state for the local Newton: the elastic predictor, its
     deviator returned to the yield surface along its own normal when it
@@ -197,18 +199,18 @@ def start_from_radial_return(
     def g(delta_gamma: JaxArray, Ie: JaxArray) -> JaxArray:
         return compute_yield_fun(
             returned_zeta(delta_gamma, Ie), alpha_prev + delta_gamma,
-            alpha_prev, params, U, step_time, yield_function)
+            alpha_prev, params, U, step_time, yield_function,
+            shear_scale_factor)
 
     def det_equation(Ie: JaxArray, zeta: JaxArray) -> JaxArray:
         return det_3x3(zeta + Ie * eye) - 1.
 
-    threshold = yield_threshold(yield_tol, params, yield_function)
     Ie = get_scalar(trial[1])[0]
-    is_plastic = g(jnp.zeros(()), Ie) > threshold
+    is_plastic = g(jnp.zeros(()), Ie) > yield_threshold
 
     for _ in range(_NUM_RETURN_SWEEPS):
         delta_gamma = plastic_multiplier_increment(
-            partial(g, Ie=Ie), threshold)
+            partial(g, Ie=Ie), yield_threshold)
         zeta = returned_zeta(delta_gamma, Ie)
         for _ in range(_NUM_IE_STEPS):
             Ie = Ie - det_equation(Ie, zeta) / grad(det_equation)(Ie, zeta)
@@ -308,16 +310,21 @@ class BeBarElasticPlastic(MechanicsModel):
         self.set_xi_to_init_vals()
 
         self.parameters = parameters
+        self._init_scale_factors()
 
         plastic_subtree = cast(dict[str, Any], parameters.values["plastic"])
         yield_function = make_yield_function(
             plastic_subtree["flow stress"], hardening_funs)
+        yield_threshold = compute_yield_threshold(
+            yield_tol, parameters.values, yield_function,
+            self.shear_scale_factor)
 
         residual = partial(
             self._residual_fn,
             def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
             yield_function=yield_function,
-            yield_tol=yield_tol, is_complex=is_complex)
+            shear_scale_factor=self.shear_scale_factor,
+            yield_threshold=yield_threshold, is_complex=is_complex)
 
         cauchy = partial(
             self._cauchy_fn,
@@ -327,7 +334,9 @@ class BeBarElasticPlastic(MechanicsModel):
             self.initial_guess_fn = jit(partial(
                 start_from_radial_return,
                 def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
-                yield_function=yield_function, yield_tol=yield_tol))
+                yield_function=yield_function,
+                shear_scale_factor=self.shear_scale_factor,
+                yield_threshold=yield_threshold))
         else:
             self.initial_guess_fn = jit(partial(
                 start_from_elastic_predictor,
@@ -358,7 +367,8 @@ class BeBarElasticPlastic(MechanicsModel):
             step_time: StepTime,
             def_type: int, oop_stretch_idx: int,
             yield_function: Callable[..., JaxArray],
-            yield_tol: float, is_complex: bool,
+            shear_scale_factor: float, yield_threshold: float,
+            is_complex: bool,
     ) -> JaxArray:
 
         ndims = zeta_ndims(def_type)
@@ -375,10 +385,10 @@ class BeBarElasticPlastic(MechanicsModel):
 
         yield_fun, yield_normal = compute_yield_fun_and_normal(
             zeta, alpha, alpha_prev, params, U, step_time, yield_function,
-            is_complex)
+            shear_scale_factor, is_complex)
         trial_yield_fun = compute_yield_fun(
             dev_be_bar_trial, alpha_prev, alpha_prev, params, U, step_time,
-            yield_function)
+            yield_function, shear_scale_factor)
         delta_gamma = alpha - alpha_prev
 
         C_elastic = jnp.concatenate(
@@ -396,13 +406,12 @@ class BeBarElasticPlastic(MechanicsModel):
             # whether or not the step yields, so it closes both branches.
             cauchy = BeBarElasticPlastic._cauchy_fn(
                 xi, xi_prev, params, U, U_prev, def_type, oop_stretch_idx)
-            C_oop = jnp.atleast_1d(
-                cauchy[2, 2] / two_mu_scale_factor(params))
+            C_oop = jnp.atleast_1d(cauchy[2, 2] / shear_scale_factor)
             C_elastic = jnp.r_[C_elastic, C_oop]
             C_plastic = jnp.r_[C_plastic, C_oop]
 
-        return cond_residual(trial_yield_fun, C_elastic, C_plastic,
-                             yield_threshold(yield_tol, params, yield_function))
+        return cond_residual(
+            trial_yield_fun, C_elastic, C_plastic, yield_threshold)
 
     @staticmethod
     def _cauchy_fn(
@@ -418,11 +427,3 @@ class BeBarElasticPlastic(MechanicsModel):
         dev_cauchy = elastic.mu * zeta / J
         hydro_cauchy = 0.5 * elastic.kappa * (J - 1. / J)
         return dev_cauchy + hydro_cauchy * eye
-
-    @staticmethod
-    def pressure_scale_factor(params: dict[str, Any]) -> Scalar:
-        return ElasticConstants.from_params(params["elastic"]).kappa
-
-    @staticmethod
-    def shear_scale_factor(params: dict[str, Any]) -> Scalar:
-        return ElasticConstants.from_params(params["elastic"]).mu

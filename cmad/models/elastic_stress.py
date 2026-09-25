@@ -8,7 +8,7 @@ import jax.numpy as jnp
 
 from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.kinematics import det_3x3
-from cmad.typing import JaxArray, Scalar
+from cmad.typing import JaxArray
 
 
 # form used by elastic-plastic models
@@ -75,7 +75,3 @@ _FINITE_ELASTIC_STRESS_FUNS = frozenset({compressible_neohookean_cauchy_stress})
 def stress_fun_is_finite(stress_fun: Callable[..., JaxArray]) -> bool:
     """Whether an elastic stress function is finite deformation."""
     return stress_fun in _FINITE_ELASTIC_STRESS_FUNS
-
-
-def two_mu_scale_factor(params: dict[str, Any]) -> Scalar:
-    return 2. * ElasticConstants.from_params(params["elastic"]).mu

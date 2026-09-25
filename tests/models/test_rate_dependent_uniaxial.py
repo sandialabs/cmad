@@ -17,7 +17,6 @@ from scipy.optimize import brentq
 
 from cmad.models.be_bar_elastic_plastic import BeBarElasticPlastic
 from cmad.models.deformation_types import DefType
-from cmad.models.elastic_stress import two_mu_scale_factor
 from cmad.models.flow_stress import POWER_LAW_OFFSET
 from cmad.models.global_fields import StepTime, mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
@@ -168,8 +167,7 @@ def run_finite(
 
 def stress_bound():
     """The stress agreement the local Newton tolerance permits."""
-    return 2.0 * LOCAL_TOL * float(two_mu_scale_factor(
-        parameters(JOHNSON_COOK).values))
+    return 2.0 * LOCAL_TOL * _E / (1.0 + _NU)
 
 
 class TestSmallStrainModelsMatchTheReturnMap(unittest.TestCase):

@@ -7,7 +7,8 @@ hardening variable, ``alpha_dot`` its backward Euler rate over the step,
 temperature field), and ``params`` the ``flow stress`` subtree. The
 function is in stress units, positive where the state lies outside the
 yield surface, zero at the converged plastic state, and at most zero at
-zero stress, which :func:`cmad.models.paths.yield_threshold` relies on.
+zero stress, which :func:`cmad.models.paths.compute_yield_threshold` relies
+on.
 
 A relation written as a flow stress gives ``phi - sigma_flow(alpha,
 alpha_dot, T)``, the consistency condition with a rate-dependent yield

@@ -9,7 +9,6 @@ import unittest
 import numpy as np
 
 from cmad.models.deformation_types import DefType
-from cmad.models.elastic_stress import two_mu_scale_factor
 from cmad.models.global_fields import mp_U_from_F
 from cmad.models.nonlinear_solver import newton_solve
 from cmad.models.rate_elastic_plastic import RateElasticPlastic
@@ -58,22 +57,18 @@ class TestRatePlaneStrain(unittest.TestCase):
     def _assert_matches_full_3d(self, finite_deformation):
         params = J2AnalyticalProblem().J2_parameters
         F_2D = _history()
-        cauchy_2D, alpha_2D = _drive(
-            RateElasticPlastic(
-                params, DefType.PLANE_STRAIN,
-                finite_deformation=finite_deformation),
-            F_2D)
-        cauchy_3D, alpha_3D = _drive(
-            RateElasticPlastic(
-                params, DefType.FULL_3D,
-                finite_deformation=finite_deformation),
-            _embed(F_2D))
+        model_2D = RateElasticPlastic(
+            params, DefType.PLANE_STRAIN,
+            finite_deformation=finite_deformation)
+        model_3D = RateElasticPlastic(
+            params, DefType.FULL_3D, finite_deformation=finite_deformation)
+        cauchy_2D, alpha_2D = _drive(model_2D, F_2D)
+        cauchy_3D, alpha_3D = _drive(model_3D, _embed(F_2D))
 
         self.assertGreater(alpha_3D[-1], 0.0)
 
         # Both solves stop at LOCAL_TOL, which bounds their difference.
-        stress_bound = 2.0 * LOCAL_TOL * float(
-            two_mu_scale_factor(params.values))
+        stress_bound = 2.0 * LOCAL_TOL * model_3D.shear_scale_factor
         E = float(params.values["elastic"]["E"])
         self.assertLess(np.abs(cauchy_2D - cauchy_3D).max(), stress_bound)
         self.assertLess(np.abs(alpha_2D - alpha_3D).max(), stress_bound / E)
