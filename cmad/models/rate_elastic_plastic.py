@@ -12,6 +12,16 @@ Every term of the stress rate equation is a rate, so the equation times
 increments. ``Δt`` enters through ``α̇ = Δα/Δt`` in the yield function
 only. A stress equation with a term that is not a rate (viscoelastic
 relaxation) must keep its ``Δt``.
+
+When the elastic constants depend on the temperature, ``σ = ℂ(T) : ε_e``
+has the time derivative ``σ̇ = ℂ : ε̇_e + (dℂ/dT) Ṫ : ε_e``, and an
+increment ``σ − σ_prev = ℂ(T) : Δε_e`` drops the second term: a point
+loaded, heated at fixed strain, unloaded, and cooled would keep a residual
+stress. The increment is written exactly instead, ``σ − ℂ(T) ℂ(T_prev)⁻¹
+σ_prev = ℂ(T) : Δε_e``, the previous stress re-expressed with the current
+constants (:func:`rescale_previous_stress`). For isotropic elasticity
+``ℂ(T) ℂ(T_prev)⁻¹`` scales the deviator by ``μ(T)/μ(T_prev)`` and the
+pressure by ``κ(T)/κ(T_prev)``.
 """
 from collections.abc import Callable
 from functools import partial
@@ -23,6 +33,7 @@ from jax import grad, jit
 
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.effective_stress import conventional_effective_stress_fun
+from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.elastic_stress import isotropic_linear_elastic_stress
 from cmad.models.flow_stress import make_yield_function
 from cmad.models.global_fields import (
@@ -50,6 +61,7 @@ from cmad.models.radial_return import (
 )
 from cmad.models.temperature_dependent_parameters import (
     DEFAULT_REFERENCE_TEMPERATURE,
+    has_parameter_forms,
 )
 from cmad.models.var_types import (
     VarType,
@@ -124,12 +136,36 @@ def material_frame_increment(
         increment, params, has_material_rotation)
 
 
+def rescale_previous_stress(
+        cauchy_prev: JaxArray, params: dict[str, Any],
+        params_prev: dict[str, Any],
+) -> JaxArray:
+    """The previous stress re-expressed with the current elastic constants,
+    ``ℂ(T) ℂ(T_prev)⁻¹ σ_prev`` for isotropic elasticity."""
+    elastic = ElasticConstants.from_params(params["elastic"])
+    elastic_prev = ElasticConstants.from_params(params_prev["elastic"])
+    I = jnp.eye(3)
+    pressure = jnp.trace(cauchy_prev) / 3.
+    deviator = cauchy_prev - pressure * I
+    return deviator * (elastic.mu / elastic_prev.mu) \
+        + pressure * (elastic.kappa / elastic_prev.kappa) * I
+
+
+def previous_stress_for_constant_moduli(
+        cauchy_prev: JaxArray, params: dict[str, Any],
+        params_prev: dict[str, Any],
+) -> JaxArray:
+    return cauchy_prev
+
+
 def elastic_predictor(
         xi: StateList, xi_prev: StateList, params: dict[str, Any],
+        params_prev: dict[str, Any],
         U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
         def_type: int, uniaxial_stress_idx: int,
         finite_deformation: bool, has_material_rotation: bool,
         elastic_stress: Callable[..., JaxArray],
+        previous_stress: Callable[..., JaxArray],
 ) -> StateList:
     """Elastic predictor state ``[cauchy_prev + C:increment,
     alpha_prev]``, the closed form root of the elastic branch.
@@ -137,8 +173,10 @@ def elastic_predictor(
     increment = material_frame_increment(
         xi, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
         finite_deformation, has_material_rotation)
-    cauchy_prev = stress_from_state(
-        xi_prev, def_type, uniaxial_stress_idx, has_material_rotation)
+    cauchy_prev = previous_stress(
+        stress_from_state(
+            xi_prev, def_type, uniaxial_stress_idx, has_material_rotation),
+        params, params_prev)
     cauchy_trial = cauchy_prev + elastic_stress(increment, params)
     stored_trial = stored_stress_components(
         cauchy_trial, def_type, uniaxial_stress_idx, has_material_rotation)
@@ -156,13 +194,18 @@ def start_from_elastic_predictor(
         def_type: int, uniaxial_stress_idx: int,
         finite_deformation: bool, has_material_rotation: bool,
         elastic_stress: Callable[..., JaxArray],
+        resolve_parameters: Callable[..., dict[str, Any]],
+        previous_stress: Callable[..., JaxArray],
 ) -> StateList:
     """Starting state for the local Newton: the elastic predictor taken at
     the previous stretches, no current iterate existing yet.
     """
+    params_prev = resolve_parameters(params, U_prev)
+    params = resolve_parameters(params, U)
     return elastic_predictor(
-        xi_prev, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
-        finite_deformation, has_material_rotation, elastic_stress)
+        xi_prev, xi_prev, params, params_prev, U, U_prev, def_type,
+        uniaxial_stress_idx, finite_deformation, has_material_rotation,
+        elastic_stress, previous_stress)
 
 
 def compute_yield_fun(
@@ -209,12 +252,17 @@ def start_from_radial_return(
         effective_stress: Callable[..., JaxArray],
         yield_function: Callable[..., JaxArray],
         shear_scale_factor: float, yield_threshold: float,
+        resolve_parameters: Callable[..., dict[str, Any]],
+        previous_stress: Callable[..., JaxArray],
 ) -> StateList:
     """Starting state for the local Newton: the elastic predictor, returned
     to the yield surface along its own normal when it lies outside."""
+    params_prev = resolve_parameters(params, U_prev)
+    params = resolve_parameters(params, U)
     trial = elastic_predictor(
-        xi_prev, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
-        finite_deformation, has_material_rotation, elastic_stress)
+        xi_prev, xi_prev, params, params_prev, U, U_prev, def_type,
+        uniaxial_stress_idx, finite_deformation, has_material_rotation,
+        elastic_stress, previous_stress)
     cauchy_trial = stress_from_state(
         trial, def_type, uniaxial_stress_idx, has_material_rotation)
     alpha_prev = get_scalar(xi_prev[1])[0]
@@ -372,6 +420,15 @@ class RateElasticPlastic(MechanicsModel):
         # self._check_params(parameters)
         self._init_parameters(parameters, reference_temperature)
 
+        if has_parameter_forms(parameters.values["elastic"]):
+            if elastic_stress_fun is not isotropic_linear_elastic_stress:
+                raise ValueError(
+                    "rate_elastic_plastic: elastic constants that depend on "
+                    "the temperature need isotropic linear elasticity")
+            previous_stress = rescale_previous_stress
+        else:
+            previous_stress = previous_stress_for_constant_moduli
+
         plastic_subtree = cast(dict[str, Any], parameters.values["plastic"])
         if effective_stress_fun is None:
             effective_stress_type = \
@@ -393,7 +450,9 @@ class RateElasticPlastic(MechanicsModel):
                            uniaxial_stress_idx=uniaxial_stress_idx,
                            is_complex=is_complex,
                            finite_deformation=finite_deformation,
-                           has_material_rotation=has_material_rotation)
+                           has_material_rotation=has_material_rotation,
+                           resolve_parameters=self.resolve_parameters,
+                           previous_stress=previous_stress)
 
         cauchy = partial(self._cauchy_fn, def_type=def_type,
                          uniaxial_stress_idx=uniaxial_stress_idx,
@@ -410,14 +469,18 @@ class RateElasticPlastic(MechanicsModel):
                 effective_stress=effective_stress_fun,
                 yield_function=yield_function,
                 shear_scale_factor=self.shear_scale_factor,
-                yield_threshold=yield_threshold))
+                yield_threshold=yield_threshold,
+                resolve_parameters=self.resolve_parameters,
+                previous_stress=previous_stress))
         else:
             self.initial_guess_fn = jit(partial(
                 start_from_elastic_predictor, def_type=def_type,
                 uniaxial_stress_idx=uniaxial_stress_idx,
                 finite_deformation=finite_deformation,
                 has_material_rotation=has_material_rotation,
-                elastic_stress=elastic_stress_fun))
+                elastic_stress=elastic_stress_fun,
+                resolve_parameters=self.resolve_parameters,
+                previous_stress=previous_stress))
 
         super().__init__(residual, cauchy)
 
@@ -453,13 +516,20 @@ class RateElasticPlastic(MechanicsModel):
             shear_scale_factor: float, yield_threshold: float,
             uniaxial_stress_idx: int, is_complex: bool,
             finite_deformation: bool, has_material_rotation: bool,
+            resolve_parameters: Callable[..., dict[str, Any]],
+            previous_stress: Callable[..., JaxArray],
     ) -> JaxArray:
+
+        params_prev = resolve_parameters(params, U_prev)
+        params = resolve_parameters(params, U)
 
         # state variables for the model
         cauchy = stress_from_state(
             xi, def_type, uniaxial_stress_idx, has_material_rotation)
-        cauchy_prev = stress_from_state(
-            xi_prev, def_type, uniaxial_stress_idx, has_material_rotation)
+        cauchy_prev = previous_stress(
+            stress_from_state(
+                xi_prev, def_type, uniaxial_stress_idx, has_material_rotation),
+            params, params_prev)
         alpha = get_scalar(xi[1])
         alpha_prev = get_scalar(xi_prev[1])
 
