@@ -11,3 +11,6 @@ properties:
     type: boolean
   initial guess:
     enum: [elastic predictor, radial return]
+  reference temperature:
+    type: number
+    exclusiveMinimum: 0

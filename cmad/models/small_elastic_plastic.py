@@ -27,6 +27,9 @@ from cmad.models.radial_return import (
     plastic_multiplier_increment,
     resolve_initial_guess,
 )
+from cmad.models.temperature_dependent_parameters import (
+    DEFAULT_REFERENCE_TEMPERATURE,
+)
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -228,6 +231,7 @@ class SmallElasticPlastic(MechanicsModel):
             uniaxial_stress_idx: int = 0,
             is_complex: bool = False,
             initial_guess: str | None = None,
+            reference_temperature: float = DEFAULT_REFERENCE_TEMPERATURE,
     ) -> None:
 
         has_material_rotation = "rotation matrix" in parameters.values
@@ -325,7 +329,7 @@ class SmallElasticPlastic(MechanicsModel):
         # TODO: check that the parameters make sense for this model
         # self._check_params(parameters)
         self.parameters = parameters
-        self._init_scale_factors()
+        self._init_scale_factors(reference_temperature)
 
         plastic_subtree = cast(dict[str, Any], parameters.values["plastic"])
         if effective_stress_fun is None:
@@ -382,6 +386,8 @@ class SmallElasticPlastic(MechanicsModel):
             def_type=require_def_type(def_type, cls.__name__),
             uniaxial_stress_idx=model_section.get("uniaxial_stress_idx", 0),
             initial_guess=model_section.get("initial guess"),
+            reference_temperature=model_section.get(
+                "reference temperature", DEFAULT_REFERENCE_TEMPERATURE),
         )
 
     def derived_output_field_names(self) -> list[str]:

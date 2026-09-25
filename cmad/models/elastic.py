@@ -14,6 +14,9 @@ from cmad.models.elastic_stress import (
 from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.kinematics import gather_F
 from cmad.models.mechanics_model import MechanicsModel, require_def_type
+from cmad.models.temperature_dependent_parameters import (
+    DEFAULT_REFERENCE_TEMPERATURE,
+)
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -41,6 +44,7 @@ class Elastic(MechanicsModel):
                 ..., JaxArray] = isotropic_linear_elastic_cauchy_stress,
             def_type: int = DefType.FULL_3D,
             is_complex: bool = False,
+            reference_temperature: float = DEFAULT_REFERENCE_TEMPERATURE,
     ) -> None:
 
         self._is_complex = is_complex
@@ -101,7 +105,7 @@ class Elastic(MechanicsModel):
         # TODO: check that the parameters make sense for this model
         # self._check_params(parameters)
         self.parameters = parameters
-        self._init_scale_factors()
+        self._init_scale_factors(reference_temperature)
 
         residual = partial(self._residual_fn,
                            def_type=def_type,
@@ -131,6 +135,8 @@ class Elastic(MechanicsModel):
             parameters=parameters,
             def_type=require_def_type(def_type, cls.__name__),
             elastic_stress_fun=conventional_elastic_stress_fun(elastic_stress),
+            reference_temperature=model_section.get(
+                "reference temperature", DEFAULT_REFERENCE_TEMPERATURE),
         )
 
     def derived_output_field_names(self) -> list[str]:

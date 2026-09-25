@@ -14,6 +14,10 @@ from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.kinematics import gather_F
 from cmad.models.model import Model
+from cmad.models.temperature_dependent_parameters import (
+    check_parameter_forms,
+    evaluate_parameters,
+)
 from cmad.typing import CauchyFn, JaxArray, Params, ResidualFn, StateList
 
 
@@ -99,8 +103,10 @@ class MechanicsModel(Model):
         """
         return gather_F(xi, U, self._def_type, self._oop_stretch_idx)
 
-    def _init_scale_factors(self) -> None:
-        elastic = ElasticConstants.from_params(
-            cast(Params, self.parameters.values["elastic"]))
+    def _init_scale_factors(self, reference_temperature: float) -> None:
+        check_parameter_forms(self.parameters.values)
+        values = evaluate_parameters(
+            self.parameters.values, reference_temperature)
+        elastic = ElasticConstants.from_params(cast(Params, values["elastic"]))
         self.bulk_scale_factor = float(elastic.kappa)
         self.shear_scale_factor = 2. * float(elastic.mu)

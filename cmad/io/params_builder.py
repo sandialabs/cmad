@@ -20,6 +20,7 @@ from typing import Any, cast
 import numpy as np
 from numpy.typing import NDArray
 
+from cmad.models.temperature_dependent_parameters import FORMS
 from cmad.parameters.parameters import Parameters
 from cmad.typing import ActiveFlags, Params, Transforms
 
@@ -34,8 +35,12 @@ def build_parameters(parameters_section: dict[str, Any]) -> Parameters:
     )
 
 
-def _split(node: Any) -> tuple[Any, Any, Any]:
+def _split(node: Any, inside_form: bool = False) -> tuple[Any, Any, Any]:
     if isinstance(node, dict) and "value" in node:
+        if inside_form and node.get("active", False):
+            raise ValueError(
+                "calibrating a parameter written as a function of "
+                "temperature is not supported yet")
         return (
             _coerce_value(node["value"]),
             bool(node.get("active", False)),
@@ -46,7 +51,7 @@ def _split(node: Any) -> tuple[Any, Any, Any]:
         acts: dict[str, Any] = {}
         trs: dict[str, Any] = {}
         for k, v in node.items():
-            vals[k], acts[k], trs[k] = _split(v)
+            vals[k], acts[k], trs[k] = _split(v, inside_form or k in FORMS)
         return vals, acts, trs
     return _coerce_value(node), False, None
 

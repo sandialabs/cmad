@@ -68,11 +68,16 @@ def temperature_at_point(U: GlobalFieldsAtPoint) -> Scalar | None:
     return None
 
 
-def mp_U_from_F(F: NDArray[np.floating] | JaxArray) -> GlobalFieldsAtPoint:
-    """Build the MP-level U from a prescribed F: grad_fields['u'] = F - I."""
+def mp_U_from_F(
+        F: NDArray[np.floating] | JaxArray, T: Scalar | None = None,
+) -> GlobalFieldsAtPoint:
+    """Build the MP-level U from a prescribed F: grad_fields['u'] = F - I,
+    with a uniform temperature ``T`` when one is given."""
     F_jax = jnp.asarray(F)
     ndims = F_jax.shape[0]
-    return GlobalFieldsAtPoint(
-        fields={"u": jnp.zeros(ndims)},
-        grad_fields={"u": F_jax - jnp.eye(ndims)},
-    )
+    fields = {"u": jnp.zeros(ndims)}
+    grad_fields = {"u": F_jax - jnp.eye(ndims)}
+    if T is not None:
+        fields["T"] = jnp.array([T])
+        grad_fields["T"] = jnp.zeros((1, ndims))
+    return GlobalFieldsAtPoint(fields=fields, grad_fields=grad_fields)
