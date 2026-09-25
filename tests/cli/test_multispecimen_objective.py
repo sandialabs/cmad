@@ -5,6 +5,8 @@ each with its own truth displacement field from ``cmad primal``. The
 joint objective's value and gradient are the weighted sums of the two
 single specimen objectives', its history entry carries each specimen's
 own value, and its gradient agrees with a directional finite difference.
+A weighted sum of a displacement match and a load match reports its
+accumulated QoIs, which with their weights add up to its value.
 """
 import tempfile
 import unittest
@@ -26,6 +28,9 @@ _PULL = {
 }
 _CELLS = {"a": (2, 2, 2), "b": (3, 2, 2)}
 _WEIGHT_B = 2.0
+# The reaction at the fixed face balances specimen a's traction.
+_LOAD = {"sideset": "xmin_sides", "components": [0]}
+_LOAD_WEIGHT = 3.0
 
 
 def _shared(elastic: dict[str, Any], out: Path) -> dict[str, Any]:
@@ -103,6 +108,11 @@ class TestMultispecimenObjective(unittest.TestCase):
             })
             primal_deck = yaml.safe_load(primal.read_text())
             primal_deck["output"]["exodus filename"] = "truth.exo"
+            if tag == "a":
+                primal_deck["qoi"] = {
+                    "name": "fe_load_match", **_LOAD,
+                    "output_file": str(tmp / "load.csv"),
+                }
             _write(primal, primal_deck)
             assert cmad_main(["primal", str(primal)]) == 0
             entries[tag] = _specimen(tag, mesh, primal_out / "truth.exo")
@@ -120,6 +130,22 @@ class TestMultispecimenObjective(unittest.TestCase):
             },
         })
         cls.joint = build_objective(load_fe_input(joint, "gradient"))
+        weighted = _write(tmp / "weighted.yaml", {
+            **_shared(start, tmp / "out_weighted"),
+            **entries["a"],
+            "qoi": {
+                "name": "fe_weighted_sum",
+                "terms": [
+                    entries["a"]["qoi"],
+                    {
+                        "name": "fe_load_match", **_LOAD,
+                        "data_file": str(tmp / "load.csv"),
+                        "weight": _LOAD_WEIGHT,
+                    },
+                ],
+            },
+        })
+        cls.weighted = build_objective(load_fe_input(weighted, "gradient"))
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -137,10 +163,31 @@ class TestMultispecimenObjective(unittest.TestCase):
         )
         entry = self.joint.history[-1]
         self.assertEqual(set(entry["specimens"]), {"a", "b"})
-        self.assertEqual(entry["specimens"]["a"], {"J": J_a})
-        self.assertEqual(entry["specimens"]["b"], {"J": J_b})
+        for tag, J_tag in (("a", J_a), ("b", J_b)):
+            self.assertEqual(entry["specimens"][tag], {
+                "J": J_tag,
+                "accumulated_qois": {"fe_displacement_match": J_tag},
+            })
         self.assertEqual(
             self.joint.param_paths, ["all.elastic.kappa", "all.elastic.mu"],
+        )
+
+    def test_weighted_sum_reports_its_accumulated_qois(self) -> None:
+        J_a, _grad = self.single["a"].evaluate(self.single["a"].x0)
+        J, _grad = self.weighted.evaluate(self.weighted.x0)
+        accumulated = self.weighted.history[-1]["accumulated_qois"]
+        self.assertEqual(
+            list(accumulated), ["fe_displacement_match", "fe_load_match"],
+        )
+        np.testing.assert_allclose(
+            accumulated["fe_displacement_match"], J_a, rtol=1e-13,
+        )
+        self.assertGreater(accumulated["fe_load_match"], 0.0)
+        np.testing.assert_allclose(
+            J,
+            accumulated["fe_displacement_match"]
+            + _LOAD_WEIGHT * accumulated["fe_load_match"],
+            rtol=1e-14,
         )
 
     def test_joint_gradient_against_finite_differences(self) -> None:

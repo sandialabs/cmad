@@ -177,12 +177,13 @@ def nonlinear_solver_settings(
 
 TrajectoryCost: TypeAlias = Callable[
     [JaxArray, StateInit, FEKernelArrays, JaxArray],
-    tuple[JaxArray, tuple[JaxArray, JaxArray]],
+    tuple[JaxArray, tuple[JaxArray, JaxArray, JaxArray]],
 ]
 """``cost(params_flat, state_init, fe_arrays, t_schedule_jax)`` returning
-``(J, (first_failed_step, iters_per_step))``: the QoI accumulated over
-the forward solve on the given schedule and the solve's status, so a
-caller can refine the schedule and evaluate again."""
+``(J, (first_failed_step, iters_per_step, accumulated_qois))``: the QoI
+accumulated over the forward solve on the given schedule, the solve's
+status, so a caller can refine the schedule and evaluate again, and the
+accumulated QoIs before :meth:`FEQoI.combine`, one per term."""
 
 
 def build_fe_trajectory_cost(
@@ -269,7 +270,7 @@ def build_fe_trajectory_cost(
             state_init: StateInit,
             fe_arrays: FEKernelArrays,
             t_schedule_jax: JaxArray,
-    ) -> tuple[JaxArray, tuple[JaxArray, JaxArray]]:
+    ) -> tuple[JaxArray, tuple[JaxArray, JaxArray, JaxArray]]:
         params_by_block: dict[str, Any] = {}
         for i, b in enumerate(block_names):
             sub_flat = params_flat[boundaries[i]:boundaries[i + 1]]
@@ -285,14 +286,17 @@ def build_fe_trajectory_cost(
         # This runs under AD, so a non-converged step cannot raise from
         # here; the objective is built from what the trajectory reached
         # and the status says whether that was every step.
-        _, _, J, first_failed_step, _rel_norm, iters_per_step = trajectory(
-            fe_arrays,
-            params_by_block,
-            state_init,
-            t_schedule_jax,
-            qoi_step_contribution=qoi_step_contribution,
+        _, _, accumulated_qois, first_failed_step, _rel_norm, iters_per_step = (
+            trajectory(
+                fe_arrays,
+                params_by_block,
+                state_init,
+                t_schedule_jax,
+                qoi_step_contribution=qoi_step_contribution,
+            )
         )
-        return J, (first_failed_step, iters_per_step)
+        J = qoi.combine(accumulated_qois)
+        return J, (first_failed_step, iters_per_step, accumulated_qois)
 
     return params_flat_init, state_init, cost
 

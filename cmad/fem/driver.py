@@ -7,10 +7,9 @@ Two layers:
   ``trajectory`` closure. The closure runs :func:`jax.lax.scan` over
   the time schedule with all-JAX carry / output; each scan step calls
   :func:`cmad.fem.nonlinear_solver._fe_newton_solve_ad`, and an
-  optional QoI step closure is invoked per step to accumulate a scalar
-  functional. This is the AD entry point for callers that want
-  :func:`jax.grad` over a quantity of interest defined on the
-  trajectory.
+  optional QoI step closure is invoked per step to accumulate the QoI.
+  This is the AD entry point for callers that want :func:`jax.grad`
+  over a quantity of interest defined on the trajectory.
 
 - :func:`fe_quasistatic_drive` is the imperative wrapper used by
   :command:`cmad primal` and tests: builds an :class:`FEState`,
@@ -24,7 +23,7 @@ from typing import Any, TypeAlias
 
 import jax.numpy as jnp
 import numpy as np
-from jax import checkpoint, checkpoint_policies, debug, jit, lax
+from jax import checkpoint, checkpoint_policies, debug, eval_shape, jit, lax
 from jax.ad_checkpoint import checkpoint_name
 from numpy.typing import NDArray
 
@@ -103,10 +102,11 @@ def build_fe_quasistatic_trajectory(
     slots ``(U, xi, t, J)`` hold the most-recently-converged step's
     outputs and the running QoI accumulator. CLOSED_FORM ``xi`` entries
     don't change per step but stay in the carry to keep the pytree
-    shape stable. ``J`` starts at ``jnp.zeros(())`` and is always
-    present, whether or not ``qoi_step_contribution`` is supplied.
-    ``t`` rolls the latest-step time forward (initialized
-    ``t_schedule_jax[0]``) so the step body has ``t_prev`` available.
+    shape stable. ``J`` starts at zeros in the shape
+    ``qoi_step_contribution`` returns, a scalar or one value per term,
+    and at ``jnp.zeros(())`` when there is no closure. ``t`` rolls the
+    latest-step time forward (initialized ``t_schedule_jax[0]``) so the
+    step body has ``t_prev`` available.
 
     Per-step input ``(step_idx, t)`` comes from
     ``(jnp.arange(n_steps), t_schedule_jax[1:])`` with
@@ -118,8 +118,8 @@ def build_fe_quasistatic_trajectory(
 
     When ``qoi_step_contribution`` is supplied, the scan body invokes
     it after each solve with ``(U_solved, U_prev, xi, xi_prev, t,
-    t_prev)`` and accumulates the returned scalar into ``J``; when
-    ``None``, ``J`` stays zero.
+    t_prev)`` and adds what it returns into ``J``; when ``None``, ``J``
+    stays zero.
 
     When the nonlinear-solver settings carry ``print convergence``,
     the scan body emits an ``ON PRIMAL STEP`` header before each solve
@@ -127,8 +127,8 @@ def build_fe_quasistatic_trajectory(
 
     The closure returns ``(U_steps, xi_steps_by_block, J,
     first_failed_step, first_failed_rel_norm, iters_per_step)``: the
-    trajectory arrays have leading axis ``n_steps``, ``J`` is the scalar
-    QoI accumulated across the time loop, ``first_failed_step`` is the
+    trajectory arrays have leading axis ``n_steps``, ``J`` is the QoI
+    accumulated across the time loop, ``first_failed_step`` is the
     index of the earliest step whose Newton solve hit the iteration
     limit without meeting a tolerance (``-1`` when every step
     converged), ``first_failed_rel_norm`` is the relative residual it
@@ -247,13 +247,25 @@ def build_fe_quasistatic_trajectory(
             )
 
         n_steps = t_schedule_jax.shape[0] - 1
+        # A scan's carry keeps its shape, so the accumulator starts in
+        # the shape the QoI closure returns.
+        if qoi_step_contribution is None:
+            J_init = jnp.zeros(())
+        else:
+            first_step_time = StepTime(t_schedule_jax[1], t_schedule_jax[0])
+            J_init = jnp.zeros(eval_shape(
+                lambda U, xi: qoi_step_contribution(
+                    U, U, xi, xi, first_step_time,
+                ),
+                U_init, xi_init_by_block,
+            ).shape)
         # Before the first step there is no increment, so the carry
         # starts with U_prev_prev = U_init (a zero increment) over a
         # stride equal to the first; the ratio is 1 and the guess is
         # U_init.
         t_before = 2.0 * t_schedule_jax[0] - t_schedule_jax[1]
         initial_carry = (
-            U_init, xi_init_by_block, t_schedule_jax[0], jnp.zeros(()),
+            U_init, xi_init_by_block, t_schedule_jax[0], J_init,
             jnp.asarray(-1), jnp.zeros(()), U_init, t_before,
         )
         step_inputs = (jnp.arange(n_steps), t_schedule_jax[1:])
@@ -321,7 +333,8 @@ def fe_quasistatic_drive(
     scan to accumulate ``J``. The step-closure build and the
     trajectory call run inside a ``jax.jit`` wrapper, so the
     mesh-sized kernel arrays reach the compiled program as traced
-    shapes rather than baked constants. The returned ``J`` is the full
+    shapes rather than baked constants. The returned ``J`` is the
+    accumulated value passed through :meth:`FEQoI.combine`, the full
     QoI value over the time loop; when ``qoi`` is ``None``,
     ``J = jnp.zeros(())``.
 
@@ -393,6 +406,8 @@ def fe_quasistatic_drive(
     }
     materialize_fe_state(state, U_steps, xi_steps_by_block, t_schedule)
 
+    if qoi is not None:
+        J = qoi.combine(J)
     return state, J, DriveStatus(
         first_failed_step=int(first_failed_step),
         first_failed_rel_norm=float(first_failed_rel_norm),

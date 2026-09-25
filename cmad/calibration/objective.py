@@ -22,18 +22,20 @@ from cmad.cli.common import FEProblemBundle, build_fe_trajectory_cost
 from cmad.fem.time_refinement import TimeRefinement, refine_schedule
 from cmad.models.model import Model
 from cmad.parameters.parameters import Parameters
+from cmad.typing import JaxArray
 
 
 @dataclass(frozen=True)
 class Evaluation:
     """What one specimen returned at a trial point: its value and gradient
-    on the schedule it ended with, the times inserted on the way, and the
-    reason when it failed."""
+    on the schedule it ended with, the times inserted on the way, its
+    accumulated QoIs by name, and the reason when it failed."""
 
     J: float
     grad: NDArray[np.float64]
     schedule: NDArray[np.float64]
     inserted: list[float]
+    accumulated_qois: dict[str, float]
     failure: str | None = None
 
 
@@ -57,6 +59,8 @@ class Specimen:
         _params_flat, state_init, cost = build_fe_trajectory_cost(
             bundle, print_global_convergence,
         )
+        assert bundle.qoi is not None
+        self._accumulated_qoi_names = bundle.qoi.accumulated_qoi_names()
         self._fe_problem = bundle.fe_problem
         self._fe_arrays = bundle.fe_problem.kernel_arrays
         self._state_init = state_init
@@ -109,10 +113,12 @@ class Specimen:
         for depth in range(self._refinement.max_depth + 1):
             args = (x, self._state_init, self._fe_arrays, jnp.asarray(schedule))
             if with_grad:
-                (J, (first_failed, _iters)), grad = self._value_and_grad(*args)
+                (J, (first_failed, _iters, accumulated_qois)), grad = (
+                    self._value_and_grad(*args)
+                )
                 grad_np = np.asarray(grad, dtype=np.float64)
             else:
-                J, (first_failed, _iters) = self._value(*args)
+                J, (first_failed, _iters, accumulated_qois) = self._value(*args)
                 grad_np = np.zeros(0, dtype=np.float64)
             failed = int(first_failed)
             value = float(J)
@@ -120,10 +126,14 @@ class Specimen:
                 np.all(np.isfinite(grad_np)),
             )
             if finite and failed < 0:
-                return Evaluation(value, grad_np, schedule, inserted)
+                return Evaluation(
+                    value, grad_np, schedule, inserted,
+                    self._by_name(accumulated_qois),
+                )
             if not finite and (have_accepted or failed < 0):
                 return Evaluation(
                     value, grad_np, schedule, inserted,
+                    self._by_name(accumulated_qois),
                     "the value or gradient is not finite",
                 )
             if depth == self._refinement.max_depth:
@@ -142,8 +152,16 @@ class Specimen:
             )
         return Evaluation(
             value, grad_np, schedule, inserted,
+            self._by_name(accumulated_qois),
             f"step {failed + 1} failed at refinement depth {depth}",
         )
+
+    def _by_name(self, accumulated_qois: JaxArray) -> dict[str, float]:
+        return dict(zip(
+            self._accumulated_qoi_names,
+            np.asarray(accumulated_qois, dtype=np.float64).ravel().tolist(),
+            strict=True,
+        ))
 
     def keep(self, evaluation: Evaluation) -> None:
         """Adopt the schedule an accepted evaluation ended with."""
@@ -157,7 +175,7 @@ class Specimen:
     def hessian(self, x: NDArray[np.floating]) -> NDArray[np.float64]:
         """The Hessian at ``x`` on the current schedule; raises when a step
         fails or the result is not finite, since a Hessian has no guard."""
-        H, (first_failed, _iters) = self._hessian(
+        H, (first_failed, _iters, _accumulated_qois) = self._hessian(
             x, self._state_init, self._fe_arrays, jnp.asarray(self.schedule),
         )
         H_np = np.asarray(H, dtype=np.float64)
@@ -320,11 +338,15 @@ class Objective:
             if evaluation.inserted:
                 entry["refined"] = evaluation.inserted
             self._record(entry, x, value, grad)
+            entry["accumulated_qois"] = evaluation.accumulated_qois
         else:
             self._record(entry, x, value, grad)
             specimens: dict[str, Any] = {}
             for tag, evaluation in done.items():
-                specimen_entry: dict[str, Any] = {"J": evaluation.J}
+                specimen_entry: dict[str, Any] = {
+                    "J": evaluation.J,
+                    "accumulated_qois": evaluation.accumulated_qois,
+                }
                 if evaluation.inserted:
                     specimen_entry["refined"] = evaluation.inserted
                 specimens[tag] = specimen_entry

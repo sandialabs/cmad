@@ -32,8 +32,8 @@ StepContribution: TypeAlias = Callable[
 """Per-step QoI increment.
 
 Signature ``(U, U_prev, xi, xi_prev, step_time) -> J_n`` where
-``J_n`` is the scalar increment whose sum over the time loop is the
-full QoI value.
+``J_n`` is the increment, a scalar or one value per term, whose sum
+over the time loop :meth:`FEQoI.combine` turns into the QoI value.
 
 - ``U``, ``U_prev``: global flat basis-coefficient vectors of shape
   ``(num_total_dofs,)`` — the whole FE state at the current and
@@ -144,6 +144,16 @@ class FEQoI(QoIBase, ABC):
         the returned scalar into ``J``.
         """
         ...
+
+    def combine(self, accumulated_qois: JaxArray) -> JaxArray:
+        """The QoI value from ``accumulated_qois``, the step increments
+        summed over the time loop."""
+        return accumulated_qois
+
+    def accumulated_qoi_names(self) -> list[str]:
+        """The names the accumulated QoIs are reported under: the QoI's
+        own input file name, for a QoI that accumulates one value."""
+        return [type(self).__module__.rsplit(".", 1)[-1]]
 
     @classmethod
     @abstractmethod
