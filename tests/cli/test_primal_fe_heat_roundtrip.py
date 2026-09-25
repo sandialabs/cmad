@@ -1,6 +1,8 @@
 """``cmad primal`` round trip on a heat transfer problem: a cube held at
 two temperatures on opposite faces, whose linear profile a P1 mesh
-reproduces to round off, read back from the Exodus file."""
+reproduces to round off, and the Kirchhoff transform profile of a
+conductivity linear in temperature likewise, read back from the Exodus
+file."""
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,7 +19,11 @@ from cmad.io.results import FieldSpec
 from cmad.models.var_types import VarType
 
 
-def _make_deck(mesh_filename: str, out_dir: str) -> dict[str, Any]:
+def _make_deck(
+        mesh_filename: str, out_dir: str, conductivity: Any = 16.0,
+        T_hot: float = 400.0, T_cold: float = 300.0,
+) -> dict[str, Any]:
+    """A cube with ``T_hot`` at ``x = 0`` and ``T_cold`` at ``x = 1``."""
     return {
         "problem": {"type": "fe"},
         "discretization": {
@@ -30,14 +36,14 @@ def _make_deck(mesh_filename: str, out_dir: str) -> dict[str, Any]:
             "local residual": {
                 "type": "conduction",
                 "materials": {
-                    "all": {"thermal": {"conductivity": 16.0}},
+                    "all": {"thermal": {"conductivity": conductivity}},
                 },
             },
         },
         "dirichlet bcs": {
             "expression": {
-                "hot": ["energy balance", 0, "xmin_sides", "400.0"],
-                "cold": ["energy balance", 0, "xmax_sides", "300.0"],
+                "hot": ["energy balance", 0, "xmin_sides", T_hot],
+                "cold": ["energy balance", 0, "xmax_sides", T_cold],
             },
         },
         "output": {
@@ -163,6 +169,40 @@ class TestPrimalFeHeatRoundTrip(unittest.TestCase):
             q = results.element["all"]["heat flux"][-1]
             np.testing.assert_allclose(q[:, 0], 1600.0, rtol=1e-6)
             np.testing.assert_allclose(q[:, 1:], 0.0, atol=1e-6)
+
+    def test_conductivity_polynomial_in_temperature(self) -> None:
+        # k = 10 + 0.02 T between 900 at x = 0 and 300 at x = 1. The
+        # Kirchhoff transform phi = k0 T + k1 T^2 / 2 is linear in x, and
+        # a P1 bar reproduces phi at the nodes exactly (each element's
+        # flux integral is phi(T_{i+1}) - phi(T_i)), so the bound is the
+        # global Newton tolerance, not a discretization error.
+        k0, k1 = 10.0, 0.02
+
+        def phi(T: float) -> float:
+            return k0 * T + k1 * T ** 2 / 2
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            mesh = StructuredHexMesh((1.0, 1.0, 1.0), (8, 1, 1))
+            with ExodusWriter(str(tmp / "mesh.exo"), mesh):
+                pass
+            deck = _make_deck(
+                str(tmp / "mesh.exo"), str(tmp / "out"),
+                conductivity={"polynomial": {"coefficients": [k0, k1]}},
+                T_hot=900.0, T_cold=300.0,
+            )
+            deck_path = tmp / "deck.yaml"
+            deck_path.write_text(yaml.safe_dump(deck, sort_keys=False))
+            self.assertEqual(cmad_main(["primal", str(deck_path)]), 0)
+            results = read_results(
+                tmp / "out" / "primal.exo",
+                nodal_field_specs=[FieldSpec("T", VarType.SCALAR)],
+            )
+            T = results.nodal["T"][-1].reshape(-1)
+            x = mesh.nodes[:, 0]
+            phi_x = phi(900.0) + (phi(300.0) - phi(900.0)) * x
+            T_exact = (-k0 + np.sqrt(k0 ** 2 + 2 * k1 * phi_x)) / k1
+            np.testing.assert_allclose(T, T_exact, rtol=0.0, atol=1e-8)
 
 
 if __name__ == "__main__":

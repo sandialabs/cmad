@@ -233,6 +233,43 @@ class TestPrimalFeCoupledRoundTrip(unittest.TestCase):
                 cauchy_terminal[:, 1:], 0.0, atol=1e-6,
             )
 
+    def test_E_polynomial_at_reference_temperature(self) -> None:
+        # E = 250e3 - 100 T is 200e3 at the reference temperature 500,
+        # and a run without a temperature field sits at the reference, so
+        # the run agrees with the plain E = 200e3 run to round off.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            _write_hex_cube_mesh(tmp / "mesh.exo")
+            cauchy = {}
+            for name in ("plain", "polynomial"):
+                deck = _make_fe_primal_deck_coupled(
+                    mesh_filename=str(tmp / "mesh.exo"),
+                    output_section={
+                        "path": str(tmp / name),
+                        "exodus filename": "primal.exo",
+                        "global residual": ["u"],
+                        "local residual": {"all": ["cauchy"]},
+                    },
+                )
+                if name == "polynomial":
+                    local = deck["residuals"]["local residual"]
+                    local["reference temperature"] = 500.0
+                    local["materials"]["all"]["elastic"]["E"] = {
+                        "polynomial": {"coefficients": [250_000.0, -100.0]},
+                    }
+                deck_path = tmp / f"{name}.yaml"
+                deck_path.write_text(yaml.safe_dump(deck, sort_keys=False))
+                self.assertEqual(cmad_main(["primal", str(deck_path)]), 0)
+                cauchy[name] = read_results(
+                    tmp / name / "primal.exo",
+                    element_field_specs={
+                        "all": [FieldSpec("cauchy", VarType.SYM_TENSOR)],
+                    },
+                ).element["all"]["cauchy"]
+            np.testing.assert_allclose(
+                cauchy["polynomial"], cauchy["plain"], rtol=1e-12,
+            )
+
 
 class TestPrimalFeWithQoi(unittest.TestCase):
     """FE primal optionally writes ``J.json`` when the deck supplies

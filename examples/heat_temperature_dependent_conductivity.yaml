@@ -1,0 +1,43 @@
+# Steady heat conduction in a unit cube with a conductivity that rises
+# with temperature, k = 10 + 0.02 T: the x = 0 face held at 300 and the
+# x = 1 face at 900, the other faces insulated, no source. The Kirchhoff
+# transform phi = k0 T + k1 T^2 / 2 satisfies phi'' = 0, so phi is linear
+# in x and T(x) = (-k0 + sqrt(k0^2 + 2 k1 phi(x))) / k1; at x = 0.5 that
+# is 640.18, above the 600 a constant conductivity gives.
+#
+# Generate the mesh from the repo root, then run cmad from examples/
+# (input file paths resolve against the working directory):
+#   python examples/make_cube_mesh.py --n 10   # writes examples/meshes/cube_hex_10.exo
+#   cd examples
+#   cmad primal heat_temperature_dependent_conductivity.yaml
+
+problem:
+  type: fe
+  name: heat_temperature_dependent_conductivity
+
+discretization:
+  mesh file: meshes/cube_hex_10.exo
+  num steps: 1
+  step size: 1.0
+
+residuals:
+  global residual:
+    type: heat_transfer
+  local residual:
+    type: conduction
+    materials:
+      all:
+        thermal:
+          conductivity: {polynomial: {coefficients: [10.0, 0.02]}}
+
+dirichlet bcs:
+  expression:
+    cold: [energy balance, 0, xmin_sides, 300.0]
+    hot: [energy balance, 0, xmax_sides, 900.0]
+
+output:
+  path: results
+  exodus filename: heat_temperature_dependent_conductivity.exo
+  global residual: [T]
+  local residual:
+    all: [heat flux]
