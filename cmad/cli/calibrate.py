@@ -37,6 +37,7 @@ from cmad.calibration import (
     build_objective,
     minimize_objective,
     optimize_status,
+    resolve_initial_guess,
 )
 from cmad.cli.common import (
     build_mp_problem,
@@ -82,7 +83,7 @@ def _run_calibrate_mp(deck_path: Path) -> int:
     )
 
     optimizer_section = graph.resolved["optimizer"]
-    x0 = _resolve_initial_guess(
+    x0 = resolve_initial_guess(
         optimizer_section["initial_guess"],
         parameters.flat_active_values(return_canonical=True),
     )
@@ -137,7 +138,7 @@ def _run_calibrate_fe(deck_path: Path) -> int:
         objective,
         algorithm=optimizer_section["algorithm"],
         options=optimizer_section["options"],
-        x0=_resolve_initial_guess(
+        x0=resolve_initial_guess(
             optimizer_section["initial_guess"], objective.x0,
         ),
     )
@@ -164,17 +165,3 @@ def _run_calibrate_fe(deck_path: Path) -> int:
     )))
     write_opt_status(out_dir, prefix, optimize_status(result))
     return 0
-
-
-def _resolve_initial_guess(
-        spec: Any, init_from_deck: NDArray[np.floating],
-) -> NDArray[np.floating]:
-    """Canonical-coordinate ``x0`` for ``scipy.optimize.minimize``.
-
-    ``"from_deck"`` uses ``init_from_deck`` (the deck's active values already
-    taken through the inverse transforms by the caller); an explicit list is
-    used verbatim.
-    """
-    if spec == "from_deck":
-        return init_from_deck
-    return np.asarray(spec, dtype=np.float64)

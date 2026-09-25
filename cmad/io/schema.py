@@ -103,6 +103,12 @@ _SECTIONS: dict[tuple[str, str], tuple[list[str], list[str]]] = {
          "initial conditions", "convection bcs", "radiation bcs",
          "linear solver"],
     ),
+    ("fe", "cross_validate"): (
+        ["problem", "discretization", "residuals", "qoi", "optimizer"],
+        ["output", "dirichlet bcs", "surface flux bcs", "volumetric sources",
+         "initial conditions", "convection bcs", "radiation bcs",
+         "linear solver", "cross validation"],
+    ),
 }
 
 # The FE sections a specimen entry holds in a multispecimen file; the
@@ -140,6 +146,11 @@ def validate_deck(deck: dict[str, Any], subcommand: str) -> None:
     if problem_type == "fe" and "specimens" in deck:
         qoi_name_by_tag = _check_specimens(deck, subcommand, all_sections)
         composed = _compose_multispecimen_schema(subcommand, qoi_name_by_tag)
+    elif subcommand == "cross_validate":
+        raise ValueError(
+            "cross_validate needs a specimens section with one entry per "
+            "specimen to hold out",
+        )
     else:
         qoi_name: str | None = None
         if "qoi" in all_sections and "qoi" in deck:
@@ -252,7 +263,8 @@ def _compose_multispecimen_schema(
 ) -> dict[str, Any]:
     """The schema of an FE file with a ``specimens`` section: the shared
     sections at the top level, and under ``specimens`` one object per tag
-    holding the specimen sections and an optional ``weight``."""
+    holding the specimen sections and an optional ``weight``. A
+    ``cross validation`` section may hold out only those tags."""
     required, optional = _SECTIONS[("fe", subcommand)]
     shared_required = [s for s in required if s not in _FE_SPECIMEN_SECTIONS]
     shared_optional = [s for s in optional if s not in _FE_SPECIMEN_SECTIONS]
@@ -262,6 +274,9 @@ def _compose_multispecimen_schema(
     properties = _fragments(
         shared_required + shared_optional, None, merged_defs,
     )
+    if "cross validation" in properties:
+        hold_out = properties["cross validation"]["properties"]["hold out"]
+        hold_out["items"]["enum"] = list(qoi_name_by_tag)
     entries: dict[str, Any] = {}
     for tag, qoi_name in qoi_name_by_tag.items():
         entry_properties = _fragments(

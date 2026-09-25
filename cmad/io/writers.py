@@ -502,6 +502,16 @@ def write_opt_status(
         json.dump(status, f, indent=2)
 
 
+def write_cv_summary(
+        out_dir: Path,
+        prefix: str,
+        summary: dict[str, Any],
+) -> None:
+    """Write the cross validation summary as YAML."""
+    with (out_dir / f"{prefix}summary.yaml").open("w") as f:
+        yaml.safe_dump(summary, f, default_flow_style=False, sort_keys=False)
+
+
 def _inject_values(deck_node: Any, values_node: Any) -> Any:
     """Rewrite each leaf in ``deck_node`` with the matching value from
     ``values_node`` (parallel pytree). Leaves in ``deck_node`` are either

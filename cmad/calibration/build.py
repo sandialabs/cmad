@@ -11,6 +11,7 @@ from cmad.cli.common import (
 )
 from cmad.fem.time_refinement import TimeRefinement
 from cmad.io.params_builder import build_parameters
+from cmad.parameters.parameters import Parameters
 
 
 def build_objective(
@@ -21,7 +22,14 @@ def build_objective(
     """The objective from a validated FE input file: one specimen per entry
     of its ``specimens`` section, or one for the whole file, tagged by
     ``problem.name``, or ``specimen`` without one."""
-    materials = resolved["residuals"]["local residual"]["materials"]
+    return Objective(
+        build_specimens(resolved), shared_parameters(resolved),
+        log_params=log_params,
+    )
+
+
+def build_specimens(resolved: dict[str, Any]) -> dict[str, Specimen]:
+    """The specimens of a validated FE input file, by tag."""
     print_global_convergence = bool(
         resolved["residuals"]["global residual"].get("print convergence", False),
     )
@@ -38,7 +46,7 @@ def build_objective(
         tag = resolved["problem"].get("name") or "specimen"
         sections_by_tag = {tag: resolved}
         weights = {tag: 1.0}
-    specimens = {
+    return {
         tag: Specimen(
             build_fe_problem_from_sections(sections),
             refinement=TimeRefinement.from_deck(
@@ -50,8 +58,10 @@ def build_objective(
         )
         for tag, sections in sections_by_tag.items()
     }
-    return Objective(
-        specimens,
-        {block: build_parameters(materials[block]) for block in materials},
-        log_params=log_params,
-    )
+
+
+def shared_parameters(resolved: dict[str, Any]) -> dict[str, Parameters]:
+    """The calibrated parameter tree by element block, built from the
+    input file's ``materials`` section."""
+    materials = resolved["residuals"]["local residual"]["materials"]
+    return {block: build_parameters(materials[block]) for block in materials}

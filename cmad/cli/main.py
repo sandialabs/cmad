@@ -87,6 +87,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     calibrate.add_argument("deck", type=Path, help="Path to the YAML deck.")
 
+    cross_validate = sub.add_parser(
+        "cross_validate",
+        help="Calibrate on every specimen but one and score the held out "
+             "one, each specimen in turn.",
+    )
+    cross_validate.add_argument(
+        "deck", type=Path, help="Path to the YAML deck.",
+    )
+
     args = parser.parse_args(argv)
     if args.devices is not None:
         _apply_device_count(args.devices)
@@ -94,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     # Imported here so the device count above precedes the backend
     # initialisation these modules trigger on import.
     from cmad.cli.calibrate import run_calibrate
+    from cmad.cli.cross_validate import run_cross_validate
     from cmad.cli.gradient import run_gradient
     from cmad.cli.hessian import run_hessian
     from cmad.cli.objective import run_objective
@@ -109,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_hessian(args.deck)
     if args.subcommand == "calibrate":
         return run_calibrate(args.deck)
+    if args.subcommand == "cross_validate":
+        return run_cross_validate(args.deck)
     return 2
 
 

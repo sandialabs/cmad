@@ -167,6 +167,10 @@ class Specimen:
         """Adopt the schedule an accepted evaluation ended with."""
         self.schedule = evaluation.schedule
 
+    def reset_schedule(self) -> None:
+        """Go back to the input file's schedule."""
+        self.schedule = self._input_schedule
+
     @property
     def inserted_times(self) -> NDArray[np.float64]:
         """The times refinement has added to the input file's schedule."""
@@ -234,6 +238,9 @@ class Objective:
                 )
         self._log_params = log_params
         self._accepted: dict[str, Any] = {}
+        self._accepted_evaluations: list[
+            tuple[NDArray[np.float64], dict[str, Evaluation]]
+        ] = []
         self._evaluations = 0
         self.history: list[dict[str, Any]] = []
 
@@ -298,6 +305,24 @@ class Objective:
         self._record_accepted(x, value, None, done)
         return value
 
+    def accumulated_qois_at(
+            self, x: NDArray[np.floating],
+    ) -> dict[str, dict[str, float]]:
+        """Each specimen's accumulated QoIs at ``x``, from the accepted
+        evaluation made there, or from one more value evaluation."""
+        x_arr = np.asarray(x, dtype=np.float64)
+        matches = [
+            done for x_done, done in self._accepted_evaluations
+            if np.array_equal(x_done, x_arr)
+        ]
+        if not matches:
+            self.value(x_arr)
+            matches = [self._accepted_evaluations[-1][1]]
+        return {
+            tag: evaluation.accumulated_qois
+            for tag, evaluation in matches[-1].items()
+        }
+
     def hessian(self, x: NDArray[np.floating]) -> NDArray[np.float64]:
         """The weighted sum of the specimen Hessians at ``x``; raises,
         naming the specimen, when one fails."""
@@ -332,6 +357,9 @@ class Objective:
             grad: NDArray[np.float64] | None,
             done: Mapping[str, Evaluation],
     ) -> None:
+        self._accepted_evaluations.append(
+            (np.array(x, dtype=np.float64), dict(done)),
+        )
         entry: dict[str, Any] = {}
         if len(done) == 1:
             (evaluation,) = done.values()

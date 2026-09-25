@@ -43,6 +43,20 @@ def minimize_objective(
     )
 
 
+def resolve_initial_guess(
+        spec: Any, init_from_deck: NDArray[np.floating],
+) -> NDArray[np.floating]:
+    """``x0`` in canonical coordinates for ``scipy.optimize.minimize``.
+
+    ``"from_deck"`` uses ``init_from_deck`` (the deck's active values already
+    taken through the inverse transforms by the caller); an explicit list is
+    used verbatim.
+    """
+    if spec == "from_deck":
+        return init_from_deck
+    return np.asarray(spec, dtype=np.float64)
+
+
 def optimize_status(result: OptimizeResult) -> dict[str, Any]:
     """Status fields general over any ``scipy.optimize.minimize`` result.
 
