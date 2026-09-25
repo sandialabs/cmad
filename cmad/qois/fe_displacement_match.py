@@ -21,7 +21,7 @@ from cmad.io.qoi_data import (
 )
 from cmad.qois.fe_qoi import FEQoI, MatchTimes, StepContribution
 from cmad.qois.surface_match import (
-    surface_groups_and_norm,
+    surface_groups_and_area,
     surface_l2_step_closure,
 )
 from cmad.typing import JaxArray, Params
@@ -56,14 +56,14 @@ class FEDisplacementMatch(FEQoI):
 
     .. math::
 
-       J = \frac{w}{T \, |\Omega|}
+       J = \frac{1}{T \, |\Omega|}
             \sum_n \Delta t_n \int_\Omega |u_n - u^\mathrm{data}_n|^2 \, dV
 
     over the match times, :math:`\Delta t_n` being each one's weight
     (:class:`cmad.qois.fe_qoi.MatchTimes`, the time schedule by
     default) and :math:`T` their span. Operates on the residual block
-    whose ``var_name`` is ``"u"``. ``w`` is a scalar deck weight;
-    ``u^\mathrm{data}`` is the nodal displacement at each match time on
+    whose ``var_name`` is ``"u"``. ``u^\mathrm{data}`` is the nodal
+    displacement at each match time on
     ``node_ids`` (every node when ``None``), shaped
     ``(num_match_times, num_nodes, ndims)``. With a ``sideset``, the
     integral and its normalizing measure are over that sideset's surface
@@ -85,6 +85,7 @@ class FEDisplacementMatch(FEQoI):
             match_times: MatchTimes | None = None,
             node_ids: NDArray[np.intp] | None = None,
     ) -> None:
+        super().__init__(weight)
         var_names = list(fe_problem.gr.var_names)
         try:
             r_disp = var_names.index("u")
@@ -161,12 +162,13 @@ class FEDisplacementMatch(FEQoI):
                     "elements, so the mismatch has nothing to average over"
                 )
             self._surface_groups = None
-            self._norm_factor = float(weight) / (match.span * volume)
+            self._norm_factor = 1.0 / (match.span * volume)
         else:
             self._element_mask = None
-            self._surface_groups, self._norm_factor = surface_groups_and_norm(
-                fe_problem, sides, "u", weight, match,
+            self._surface_groups, area = surface_groups_and_area(
+                fe_problem, sides, "u",
             )
+            self._norm_factor = 1.0 / (match.span * area)
 
     @classmethod
     def from_deck(

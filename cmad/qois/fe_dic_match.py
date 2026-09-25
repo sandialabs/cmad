@@ -17,7 +17,7 @@ from cmad.fem.dof import dof_physical_coords
 from cmad.io.point_cloud import PointCloud, read_point_cloud
 from cmad.qois.fe_qoi import FEQoI, MatchTimes, StepContribution
 from cmad.qois.surface_match import (
-    surface_groups_and_norm,
+    surface_groups_and_area,
     surface_l2_step_closure,
 )
 from cmad.remap.gmls import build_gmls_operators
@@ -73,6 +73,7 @@ class FEDicMatch(FEQoI):
             support_multiplier: float = 1.6,
             weight: float = 1.0,
     ) -> None:
+        super().__init__(weight)
         num_steps = len(t_schedule)
         if cloud.num_steps != num_steps:
             raise ValueError(
@@ -117,9 +118,10 @@ class FEDicMatch(FEQoI):
                 data_flat[step, eq[:, c]] = ops.value @ disp[step, :, c]
 
         self._match_times = MatchTimes.from_times(t_schedule)
-        self._groups, self._norm_factor = surface_groups_and_norm(
-            fe_problem, sideset, "u", weight, self._match_times,
+        self._groups, area = surface_groups_and_area(
+            fe_problem, sideset, "u",
         )
+        self._norm_factor = 1.0 / (self._match_times.span * area)
         self._data_flat = jnp.asarray(data_flat, dtype=jnp.float64)
 
     @classmethod

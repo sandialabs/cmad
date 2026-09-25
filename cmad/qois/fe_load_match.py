@@ -39,7 +39,7 @@ class FELoadMatch(FEQoI):
 
       .. math::
 
-         J = \frac{w}{T} \sum_n \Delta t_n
+         J = \frac{1}{T} \sum_n \Delta t_n
               \sum_c \left( R_{c,n} - d_{c,n} \right)^2
 
       over the match times, :math:`\Delta t_n` being each one's weight
@@ -71,6 +71,7 @@ class FELoadMatch(FEQoI):
             *,
             match_times: MatchTimes | None = None,
     ) -> None:
+        super().__init__(weight)
         comps = [int(c) for c in components]
         n_comp = len(comps)
         match = (
@@ -89,7 +90,7 @@ class FELoadMatch(FEQoI):
             for c in comps
         ]
         self._match_times = match
-        self._norm_factor = float(weight) / match.span
+        self._norm_factor = 1.0 / match.span
         self._output_file = output_file
 
         self._data: JaxArray | None

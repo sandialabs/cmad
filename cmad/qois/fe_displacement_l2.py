@@ -40,6 +40,7 @@ class FEDisplacementL2(FEQoI):
             fe_problem: FEProblem,
             t_schedule: Sequence[float],
     ) -> None:
+        super().__init__()
         var_names = list(fe_problem.gr.var_names)
         try:
             r_disp = var_names.index("u")

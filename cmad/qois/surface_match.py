@@ -1,8 +1,8 @@
 """Squared displacement mismatch integrated over a surface.
 
 Shared by the QoIs that compare an FE field to data on a measured
-surface: :func:`surface_groups_and_norm` builds the per-facet surface
-cache and the ``1 / (time span * area)`` normalization, and
+surface: :func:`surface_groups_and_area` builds the per-facet surface
+cache and gives the area it covers, and
 :func:`surface_l2_step_closure` is the per-step closure that gathers the
 field at each facet, interpolates the mismatch to the side quadrature
 points, and integrates its square over the surface.
@@ -28,27 +28,24 @@ if TYPE_CHECKING:
     from cmad.models.global_fields import StepTime
 
 
-def surface_groups_and_norm(
+def surface_groups_and_area(
         fe_problem: FEProblem,
         sides: str | NDArray[np.intp],
         field_name: str,
-        weight: float,
-        match_times: MatchTimes,
 ) -> tuple[list[SurfaceIntegrationGroup], float]:
-    """Surface cache for ``field_name`` on ``sides`` and its normalization.
+    """Surface cache for ``field_name`` on ``sides`` and the area of those
+    sides alone, the surface analogue of the volume a mismatch off a
+    sideset is averaged over.
 
     ``sides`` names a sideset or gives its ``(elem_id, local_side_id)``
-    pairs. The normalization is ``weight / (time span * surface area)``,
-    the surface analogue of the volume averaging used off a sideset; the
-    span is the match times' and the area is that of the given sides
-    alone.
+    pairs.
     """
     groups = build_surface_integration_groups(
         fe_problem.mesh, fe_problem.dof_map, field_name, sides,
         fe_problem.side_quadrature,
     )
     area = sum(float(jnp.sum(g.dA * g.side_w[None, :])) for g in groups)
-    return groups, float(weight) / (match_times.span * area)
+    return groups, area
 
 
 def surface_l2_step_closure(

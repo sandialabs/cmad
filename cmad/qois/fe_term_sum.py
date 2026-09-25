@@ -19,24 +19,17 @@ if TYPE_CHECKING:
 
 
 class FETermSum(FEQoI):
-    """Sub-QoIs accumulated one value per term over the time loop.
-
-    The terms are built without their weights, which are kept here, so
-    the accumulated values are unweighted.
-    """
+    """A list of sub-QoIs, each accumulated over the time loop as its own
+    value. The weights are applied in :meth:`combine`."""
 
     problem_type: ClassVar[str] = "fe"
 
-    def __init__(
-            self, terms: Sequence[FEQoI], weights: Sequence[float],
-    ) -> None:
-        if len(terms) != len(weights):
-            raise ValueError(
-                f"{type(self).__name__}: {len(terms)} terms but "
-                f"{len(weights)} weights"
-            )
+    def __init__(self, terms: Sequence[FEQoI]) -> None:
+        super().__init__()
         self._terms = list(terms)
-        self._weights = jnp.asarray(weights, dtype=jnp.float64)
+        self._weights = jnp.asarray(
+            [term.weight for term in terms], dtype=jnp.float64,
+        )
 
     @classmethod
     def from_deck(
@@ -46,7 +39,6 @@ class FETermSum(FEQoI):
             t_schedule: Sequence[float],
     ) -> FETermSum:
         terms: list[FEQoI] = []
-        weights: list[float] = []
         for term in qoi_section["terms"]:
             sub_cls = resolve_qoi(term["name"])
             if sub_cls.problem_type != "fe":
@@ -56,11 +48,8 @@ class FETermSum(FEQoI):
                     "not 'fe'"
                 )
             assert issubclass(sub_cls, FEQoI)
-            weights.append(float(term.get("weight", 1.0)))
-            terms.append(sub_cls.from_deck(
-                {**term, "weight": 1.0}, fe_problem, t_schedule,
-            ))
-        return cls(terms, weights)
+            terms.append(sub_cls.from_deck(term, fe_problem, t_schedule))
+        return cls(terms)
 
     def step_contribution(
             self,

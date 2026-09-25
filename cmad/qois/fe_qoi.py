@@ -124,6 +124,11 @@ class FEQoI(QoIBase, ABC):
 
     problem_type: ClassVar[str] = "fe"
 
+    def __init__(self, weight: float = 1.0) -> None:
+        """``weight`` is the input file weight :meth:`combine` applies; a
+        sum applies the weight of each term there instead."""
+        self.weight = float(weight)
+
     @abstractmethod
     def step_contribution(
             self,
@@ -147,8 +152,8 @@ class FEQoI(QoIBase, ABC):
 
     def combine(self, accumulated_qois: JaxArray) -> JaxArray:
         """The QoI value from ``accumulated_qois``, the step increments
-        summed over the time loop."""
-        return accumulated_qois
+        summed over the time loop, times the QoI's ``weight``."""
+        return self.weight * accumulated_qois
 
     def accumulated_qoi_names(self) -> list[str]:
         """The names the accumulated QoIs are reported under: the QoI's
