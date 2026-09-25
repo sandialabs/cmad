@@ -19,17 +19,14 @@ from pathlib import Path
 
 import numpy as np
 import yaml
-from jax import jit
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 from dic_sampling_viz import build_measurement_grid  # noqa: E402
 from notch_mesh import generate_notch_msh  # noqa: E402
 
-from cmad.cli.common import (  # noqa: E402
-    build_fe_J_of_params_flat,
-    build_fe_problem_from_deck,
-)
+from cmad.calibration import build_objective  # noqa: E402
+from cmad.cli.common import load_fe_input  # noqa: E402
 from cmad.cli.main import main as cmad_main  # noqa: E402
 from cmad.io.point_cloud import PointCloud, write_point_cloud  # noqa: E402
 
@@ -229,12 +226,8 @@ def _balanced_weights(deck: dict) -> dict[str, float]:
         probe = {**deck, "qoi": {
             "name": "fe_weighted_sum", "terms": [{**term, "weight": 1.0}]}}
         probe_path.write_text(yaml.safe_dump(probe, sort_keys=False))
-        bundle = build_fe_problem_from_deck(probe_path, "calibrate")
-        params_flat, state_init, cost = build_fe_J_of_params_flat(bundle)
-        raw = float(jit(cost)(
-            np.asarray(params_flat, dtype=np.float64), state_init,
-            bundle.fe_problem.kernel_arrays))
-        weights[term["name"]] = 1.0 / raw
+        objective = build_objective(load_fe_input(probe_path, "calibrate"))
+        weights[term["name"]] = 1.0 / objective.value(objective.x0)
     return weights
 
 

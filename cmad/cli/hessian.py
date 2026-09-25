@@ -6,15 +6,12 @@ Dispatches on ``problem.type``. The MP branch evaluates
 two strategies that actually produce a Hessian; the factory in
 :mod:`cmad.cli.sensitivity` enforces this) and writes ``J.json``,
 ``grad.{npy,csv}``, ``hess.{npy,csv}``, and ``deck.resolved.yaml``.
-The FE branch builds the FE problem with the QoI attached,
-constructs the ``J(params_flat)`` cost-function closure via
-:func:`cmad.cli.common.build_fe_J_of_params_flat`, evaluates
-``jax.hessian(J)(params_flat)`` directly — no separate adjoint
-driver — and writes ``hess.{npy,csv}`` and ``deck.resolved.yaml``
-only (``jax.hessian`` doesn't surface ``J`` or the gradient as a
-side effect; run ``cmad objective`` and ``cmad gradient``
-separately on the same deck for ``J`` and grad output). Neither
-branch writes primal trajectories — run ``cmad primal``
+The FE branch builds the :class:`cmad.calibration.Objective` from the
+input file, evaluates its Hessian at the file's parameter point (no
+separate adjoint driver), and writes ``hess.{npy,csv}`` and
+``deck.resolved.yaml`` only (run ``cmad objective`` and ``cmad
+gradient`` separately on the same deck for ``J`` and grad output).
+Neither branch writes primal trajectories — run ``cmad primal``
 separately on the same deck for those.
 """
 
@@ -22,13 +19,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import jax
-import numpy as np
-
+from cmad.calibration import build_objective
 from cmad.cli.common import (
-    build_fe_J_of_params_flat,
-    build_fe_problem_from_deck,
     build_mp_problem,
+    load_fe_input,
     resolve_output,
 )
 from cmad.cli.sensitivity import build_sensitivity_driver
@@ -77,19 +71,11 @@ def _run_hessian_mp(deck_path: Path) -> int:
 
 
 def _run_hessian_fe(deck_path: Path) -> int:
-    bundle = build_fe_problem_from_deck(deck_path, "hessian")
-    params_flat, state_init, J_of_params_flat = build_fe_J_of_params_flat(
-        bundle,
-    )
-    fe_arrays = bundle.fe_problem.kernel_arrays
+    resolved = load_fe_input(deck_path, "hessian")
+    objective = build_objective(resolved)
+    hess = objective.hessian(objective.x0)
 
-    hess = np.asarray(
-        jax.jit(jax.hessian(J_of_params_flat, argnums=0))(
-            params_flat, state_init, fe_arrays,
-        ),
-    )
-
-    out_dir, prefix, fmt = resolve_output(bundle.resolved)
-    write_resolved_deck(out_dir, prefix, bundle.resolved)
+    out_dir, prefix, fmt = resolve_output(resolved)
+    write_resolved_deck(out_dir, prefix, resolved)
     write_hessian(out_dir, prefix, hess, fmt)
     return 0

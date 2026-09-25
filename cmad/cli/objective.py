@@ -5,24 +5,22 @@ plus the registered QoI, runs a single forward pass through
 :func:`cmad.cli.primal.run_primal_pass` with the QoI supplied so J
 is accumulated alongside cauchy, xi, and solver log in one loop;
 writes the primal output set plus ``J.json``. The FE branch builds
-the FE problem with the QoI attached, evaluates the
-``J(params_flat)`` closure from
-:func:`cmad.cli.common.build_fe_J_of_params_flat` at the deck's
-parameter point, and writes ``J.json`` + ``deck.resolved.yaml``.
-No sensitivities are computed in either branch; FE state-trajectory
-output is reserved to ``cmad primal``.
+the :class:`cmad.calibration.Objective` from the input file, evaluates
+its value at the file's parameter point, and writes ``J.json`` +
+``deck.resolved.yaml``; with a ``specimens`` section ``J.json`` also
+holds each specimen's own value. No sensitivities are computed in
+either branch; FE state-trajectory output is reserved to ``cmad
+primal``.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from jax import jit
-
+from cmad.calibration import build_objective
 from cmad.cli.common import (
-    build_fe_J_of_params_flat,
-    build_fe_problem_from_deck,
     build_mp_problem,
+    load_fe_input,
     resolve_output,
 )
 from cmad.cli.primal import run_primal_pass
@@ -72,21 +70,16 @@ def _run_objective_mp(deck_path: Path) -> int:
 
 
 def _run_objective_fe(deck_path: Path) -> int:
-    bundle = build_fe_problem_from_deck(deck_path, "objective")
-    gr_section = bundle.resolved["residuals"]["global residual"]
-    params_flat, state_init, J_of_params_flat = build_fe_J_of_params_flat(
-        bundle,
-        print_global_convergence=bool(
-            gr_section.get("print convergence", False),
-        ),
-    )
-    fe_arrays = bundle.fe_problem.kernel_arrays
+    resolved = load_fe_input(deck_path, "objective")
+    objective = build_objective(resolved)
+    J = objective.value(objective.x0)
+    specimens = objective.history[-1].get("specimens")
 
-    J = float(
-        jit(J_of_params_flat)(params_flat, state_init, fe_arrays),
+    out_dir, prefix, _fmt = resolve_output(resolved)
+    write_resolved_deck(out_dir, prefix, resolved)
+    write_J(
+        out_dir, prefix, J,
+        None if specimens is None
+        else {tag: entry["J"] for tag, entry in specimens.items()},
     )
-
-    out_dir, prefix, _fmt = resolve_output(bundle.resolved)
-    write_resolved_deck(out_dir, prefix, bundle.resolved)
-    write_J(out_dir, prefix, J)
     return 0

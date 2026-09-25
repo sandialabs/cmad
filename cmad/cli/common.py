@@ -297,32 +297,6 @@ def build_fe_trajectory_cost(
     return params_flat_init, state_init, cost
 
 
-def build_fe_J_of_params_flat(
-        bundle: FEProblemBundle,
-        print_global_convergence: bool = False,
-) -> tuple[
-    JaxArray,
-    StateInit,
-    Callable[[JaxArray, StateInit, FEKernelArrays], JaxArray],
-]:
-    """``(params_flat_init, state_init, J_of_params_flat)`` for ``cmad
-    objective`` / ``gradient`` / ``hessian``: :func:`build_fe_trajectory_cost`
-    on the bundle's schedule, returning ``J`` alone."""
-    params_flat_init, state_init, cost = build_fe_trajectory_cost(
-        bundle, print_global_convergence,
-    )
-    t_schedule_jax = jnp.asarray(bundle.t_schedule, dtype=jnp.float64)
-
-    def J_of_params_flat(
-            params_flat: JaxArray,
-            state_init: StateInit,
-            fe_arrays: FEKernelArrays,
-    ) -> JaxArray:
-        return cost(params_flat, state_init, fe_arrays, t_schedule_jax)[0]
-
-    return params_flat_init, state_init, J_of_params_flat
-
-
 _DEFAULT_FE_PER_FAMILY: dict[ElementFamily, FiniteElement] = {
     ElementFamily.HEX_LINEAR: Q1_HEX,
     ElementFamily.TET_LINEAR: P1_TET,
@@ -351,27 +325,50 @@ class FEProblemBundle:
     U_init: NDArray[np.float64] | None = None
 
 
+def load_fe_input(deck_path: Path, subcommand: str) -> dict[str, Any]:
+    """Load an FE input file, fill its defaults, and validate it for
+    ``subcommand``."""
+    resolved = apply_deck_defaults(load_deck(deck_path))
+    validate_deck(resolved, subcommand)
+    return resolved
+
+
 def build_fe_problem_from_deck(
         deck_path: Path, subcommand: str,
 ) -> FEProblemBundle:
-    """Build the FE problem shared by FE-track subcommands.
+    """:func:`load_fe_input`, then :func:`build_fe_problem_from_sections`."""
+    return build_fe_problem_from_sections(load_fe_input(deck_path, subcommand))
 
-    Mirrors :func:`build_mp_problem`'s shape: deck load + defaults +
-    schema validation, then resolves the registered GR / per-block
-    Models, parses BC value expressions to JAX-traceable callables,
-    builds the :class:`cmad.fem.dof.GlobalDofMap` and
+
+def specimen_sections(
+        resolved: dict[str, Any], tag: str,
+) -> dict[str, Any]:
+    """The sections one specimen of a multispecimen input file is built
+    from: the shared sections beside the entry's own, whole sections,
+    nothing merged. The entry's ``weight`` is left to the caller."""
+    shared = {k: v for k, v in resolved.items() if k != "specimens"}
+    own = {
+        k: v for k, v in resolved["specimens"][tag].items() if k != "weight"
+    }
+    return {**shared, **own}
+
+
+def build_fe_problem_from_sections(
+        resolved: dict[str, Any],
+) -> FEProblemBundle:
+    """Build the FE problem from a validated input file's sections.
+
+    Resolves the registered GR / per-block Models, parses BC value
+    expressions to JAX-traceable callables, builds the
+    :class:`cmad.fem.dof.GlobalDofMap` and
     :class:`cmad.fem.fe_problem.FEProblem`, and assembles the time
     schedule. The mode-per-block dispatch (``CLOSED_FORM`` vs
     ``COUPLED``) is decided here from each Model's
-    ``supports_closed_form`` flag and threaded explicitly into
+    ``supports_closed_form`` flag and passed explicitly to
     :func:`build_fe_problem`. The optional ``initial conditions``
     section becomes the bundle's ``U_init``
     (:func:`_build_initial_condition`).
     """
-    deck = load_deck(deck_path)
-    resolved = apply_deck_defaults(deck)
-    validate_deck(resolved, subcommand)
-
     mesh_path = Path(resolved["discretization"]["mesh file"])
     mesh = read_mesh_file(mesh_path)
     if resolved["discretization"].get("build coordinate sidesets", False):

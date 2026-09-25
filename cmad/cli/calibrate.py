@@ -10,8 +10,9 @@ The MP branch drives the sensitivity driver dictated by ``sensitivity.type``
 writes ``opt_params.yaml`` -- the deck ``parameters:`` subtree with optimized
 native values.
 
-The FE branch builds a :class:`cmad.calibration.Objective` from the
-problem bundle and minimizes it through
+The FE branch builds a :class:`cmad.calibration.Objective`, one
+:class:`cmad.calibration.Specimen` per entry of a ``specimens`` section
+or one for the whole file, and minimizes it through
 :func:`cmad.calibration.minimize_objective`. It writes two parameter
 artifacts: ``opt_params.yaml`` (reloadable per-block ``materials:``
 subtree, all params) and ``active_params.json`` (a flat
@@ -32,19 +33,17 @@ from numpy.typing import NDArray
 from scipy.optimize import minimize
 
 from cmad.calibration import (
-    Objective,
     active_param_paths,
+    build_objective,
     minimize_objective,
     optimize_status,
 )
 from cmad.cli.common import (
-    build_fe_problem_from_deck,
     build_mp_problem,
-    calibration_data_times,
+    load_fe_input,
     resolve_output,
 )
 from cmad.cli.sensitivity import build_sensitivity_driver
-from cmad.fem.time_refinement import TimeRefinement
 from cmad.io.deck import load_deck, unwrap_top_level
 from cmad.io.writers import (
     write_fe_active_params,
@@ -128,19 +127,12 @@ def _run_calibrate_mp(deck_path: Path) -> int:
 
 
 def _run_calibrate_fe(deck_path: Path) -> int:
-    bundle = build_fe_problem_from_deck(deck_path, "calibrate")
-    optimizer_section = bundle.resolved["optimizer"]
+    resolved = load_fe_input(deck_path, "calibrate")
+    optimizer_section = resolved["optimizer"]
     log_params = optimizer_section["log_params"]
-    gr_section = bundle.resolved["residuals"]["global residual"]
+    materials = resolved["residuals"]["local residual"]["materials"]
 
-    objective = Objective(
-        bundle,
-        refinement=TimeRefinement.from_deck(
-            gr_section.get("time refinement"),
-        ),
-        snap_to=calibration_data_times(bundle.resolved),
-        log_params=log_params,
-    )
+    objective = build_objective(resolved, log_params=log_params)
     result = minimize_objective(
         objective,
         algorithm=optimizer_section["algorithm"],
@@ -150,25 +142,22 @@ def _run_calibrate_fe(deck_path: Path) -> int:
         ),
     )
     objective.set_params(result.x)
-    models = objective.models
 
-    out_dir, prefix, _ = resolve_output(bundle.resolved)
-    if objective.schedule.size > bundle.t_schedule.size:
-        refined_path = out_dir / f"{prefix}refined_times.txt"
-        np.savetxt(refined_path, objective.schedule)
-        print(
-            f"wrote {refined_path} "
-            f"({objective.schedule.size - bundle.t_schedule.size} inserted)"
-        )
-    materials = bundle.resolved["residuals"]["local residual"]["materials"]
-    write_resolved_deck(out_dir, prefix, bundle.resolved)
+    out_dir, prefix, _ = resolve_output(resolved)
+    several = len(objective.schedules) > 1
+    for tag, inserted in objective.inserted_times.items():
+        name = f"{tag}_refined_times.txt" if several else "refined_times.txt"
+        refined_path = out_dir / f"{prefix}{name}"
+        np.savetxt(refined_path, objective.schedules[tag])
+        print(f"wrote {refined_path} ({inserted.size} inserted)")
+    write_resolved_deck(out_dir, prefix, resolved)
     write_opt_history(
         out_dir, prefix, objective.history,
         objective.param_paths if log_params else None,
     )
     write_fe_opt_params(
         out_dir, prefix, materials,
-        {block: model.parameters.values for block, model in models.items()},
+        {block: p.values for block, p in objective.parameters.items()},
     )
     write_fe_active_params(out_dir, prefix, dict(zip(
         objective.param_paths, objective.param_values, strict=True,

@@ -121,10 +121,19 @@ def write_solver_log(
         json.dump(solver_log, f, indent=2)
 
 
-def write_J(out_dir: Path, prefix: str, J: float) -> None:
-    """Write the scalar QoI value as JSON."""
+def write_J(
+        out_dir: Path,
+        prefix: str,
+        J: float,
+        specimens: Mapping[str, float] | None = None,
+) -> None:
+    """Write the scalar QoI value as JSON, with each specimen's own value
+    by tag when given."""
+    entry: dict[str, Any] = {"J": J}
+    if specimens is not None:
+        entry["specimens"] = dict(specimens)
     with (out_dir / f"{prefix}J.json").open("w") as f:
-        json.dump({"J": J}, f, indent=2)
+        json.dump(entry, f, indent=2)
 
 
 def write_grad(

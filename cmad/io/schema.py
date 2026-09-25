@@ -17,6 +17,12 @@ and Calibr8-only-section strip. Both are idempotent so calling
 ``validate_deck`` directly on a not-yet-normalized deck produces the
 same result as calling ``apply_deck_defaults`` first.
 
+An FE input file with a ``specimens`` section holds the sections that
+describe the material and the solve once at the top level, and the
+sections a specimen entry holds (:data:`_FE_SPECIMEN_SECTIONS`) inside
+each entry, with an optional ``weight``. Each entry is validated against
+the same fragments a single specimen file uses.
+
 The checks here resolve the deck's model, QoI, and global residual
 names through :mod:`cmad.io.registry`, which imports only the named
 module; an unknown name raises with a listing of the modules actually
@@ -99,6 +105,14 @@ _SECTIONS: dict[tuple[str, str], tuple[list[str], list[str]]] = {
     ),
 }
 
+# The FE sections a specimen entry holds in a multispecimen file; the
+# others describe the material and the solve, shared by every specimen.
+_FE_SPECIMEN_SECTIONS: tuple[str, ...] = (
+    "discretization", "dirichlet bcs", "surface flux bcs",
+    "volumetric sources", "initial conditions", "convection bcs",
+    "radiation bcs", "qoi",
+)
+
 
 def validate_deck(deck: dict[str, Any], subcommand: str) -> None:
     """Validate the deck against the composed schema for ``subcommand``."""
@@ -123,16 +137,52 @@ def validate_deck(deck: dict[str, Any], subcommand: str) -> None:
     _check_model_registered(deck, problem_type)
     if problem_type == "fe":
         _check_global_residual_registered(deck)
-    qoi_name: str | None = None
-    if "qoi" in all_sections and "qoi" in deck:
-        _check_qoi_registered(deck)
-        qoi_name = deck["qoi"]["name"]
-
-    composed = _compose_schema(problem_type, subcommand, qoi_name=qoi_name)
+    if problem_type == "fe" and "specimens" in deck:
+        qoi_name_by_tag = _check_specimens(deck, subcommand, all_sections)
+        composed = _compose_multispecimen_schema(subcommand, qoi_name_by_tag)
+    else:
+        qoi_name: str | None = None
+        if "qoi" in all_sections and "qoi" in deck:
+            _check_qoi_registered(deck)
+            qoi_name = deck["qoi"]["name"]
+        composed = _compose_schema(problem_type, subcommand, qoi_name=qoi_name)
     errors = list(Draft202012Validator(composed).iter_errors(deck))
     if errors:
         joined = "\n".join(_format_error(e) for e in errors)
         raise ValueError(f"deck validation failed:\n{joined}")
+
+
+def _check_specimens(
+        deck: dict[str, Any], subcommand: str, all_sections: list[str],
+) -> dict[str, str | None]:
+    """Reject a multispecimen file whose layout is wrong, and return each
+    specimen's QoI name (``None`` for an entry without a ``qoi`` section)."""
+    if subcommand == "primal":
+        raise ValueError(
+            "specimens: cmad primal runs one specimen; put the shared "
+            "sections into that specimen's own input file",
+        )
+    at_top = [s for s in _FE_SPECIMEN_SECTIONS if s in deck]
+    if at_top:
+        raise ValueError(
+            f"specimens: the section(s) {at_top} belong inside each "
+            "specimen entry when the file has a specimens section",
+        )
+    specimens = deck["specimens"]
+    if not isinstance(specimens, dict) or not specimens:
+        raise ValueError(
+            "specimens: expected a mapping with one entry per specimen",
+        )
+    qoi_name_by_tag: dict[str, str | None] = {}
+    for tag, entry in specimens.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"specimens.{tag}: expected a mapping of sections")
+        qoi_name: str | None = None
+        if "qoi" in all_sections and "qoi" in entry:
+            _check_qoi_registered(entry, where=f"specimens.{tag}.qoi")
+            qoi_name = entry["qoi"]["name"]
+        qoi_name_by_tag[str(tag)] = qoi_name
+    return qoi_name_by_tag
 
 
 def _check_model_registered(
@@ -177,10 +227,12 @@ def _check_global_residual_registered(deck: dict[str, Any]) -> None:
     resolve_global_residual(glob["type"])
 
 
-def _check_qoi_registered(deck: dict[str, Any]) -> None:
-    qoi_section = deck.get("qoi")
+def _check_qoi_registered(
+        section: dict[str, Any], where: str = "qoi",
+) -> None:
+    qoi_section = section.get("qoi")
     if not isinstance(qoi_section, dict) or "name" not in qoi_section:
-        raise ValueError("qoi: missing 'name' field")
+        raise ValueError(f"{where}: missing 'name' field")
     resolve_qoi(qoi_section["name"])
 
 
@@ -190,10 +242,59 @@ def _compose_schema(
         qoi_name: str | None = None,
 ) -> dict[str, Any]:
     required, optional = _SECTIONS[(problem_type, subcommand)]
-    all_sections = required + optional
-    properties: dict[str, Any] = {}
     merged_defs: dict[str, Any] = {}
-    for section in all_sections:
+    properties = _fragments(required + optional, qoi_name, merged_defs)
+    return _object_schema(required, properties, merged_defs)
+
+
+def _compose_multispecimen_schema(
+        subcommand: str, qoi_name_by_tag: dict[str, str | None],
+) -> dict[str, Any]:
+    """The schema of an FE file with a ``specimens`` section: the shared
+    sections at the top level, and under ``specimens`` one object per tag
+    holding the specimen sections and an optional ``weight``."""
+    required, optional = _SECTIONS[("fe", subcommand)]
+    shared_required = [s for s in required if s not in _FE_SPECIMEN_SECTIONS]
+    shared_optional = [s for s in optional if s not in _FE_SPECIMEN_SECTIONS]
+    specimen_required = [s for s in required if s in _FE_SPECIMEN_SECTIONS]
+    specimen_optional = [s for s in optional if s in _FE_SPECIMEN_SECTIONS]
+    merged_defs: dict[str, Any] = {}
+    properties = _fragments(
+        shared_required + shared_optional, None, merged_defs,
+    )
+    entries: dict[str, Any] = {}
+    for tag, qoi_name in qoi_name_by_tag.items():
+        entry_properties = _fragments(
+            specimen_required + specimen_optional, qoi_name, merged_defs,
+        )
+        entry_properties["weight"] = {"type": "number", "exclusiveMinimum": 0}
+        entries[tag] = {
+            "type": "object",
+            "required": specimen_required,
+            "additionalProperties": False,
+            "properties": entry_properties,
+        }
+    properties["specimens"] = {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": False,
+        "properties": entries,
+    }
+    return _object_schema(
+        [*shared_required, "specimens"], properties, merged_defs,
+    )
+
+
+def _fragments(
+        sections: list[str],
+        qoi_name: str | None,
+        merged_defs: dict[str, Any],
+) -> dict[str, Any]:
+    """The schema fragment of each section, keyed by section, each
+    fragment's ``$defs`` moved into ``merged_defs``. The ``qoi`` fragment
+    is the named QoI's, skipped when there is none."""
+    properties: dict[str, Any] = {}
+    for section in sections:
         if section == "model":
             fragment = _load_fragment("model.yaml")
         elif section == "qoi":
@@ -212,6 +313,14 @@ def _compose_schema(
                     )
                 merged_defs[name] = schema
         properties[section] = fragment
+    return properties
+
+
+def _object_schema(
+        required: list[str],
+        properties: dict[str, Any],
+        merged_defs: dict[str, Any],
+) -> dict[str, Any]:
     composed: dict[str, Any] = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
