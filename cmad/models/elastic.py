@@ -104,20 +104,21 @@ class Elastic(MechanicsModel):
 
         # TODO: check that the parameters make sense for this model
         # self._check_params(parameters)
-        self.parameters = parameters
-        self._init_scale_factors(reference_temperature)
+        self._init_parameters(parameters, reference_temperature)
 
         residual = partial(self._residual_fn,
                            def_type=def_type,
                            elastic_stress=elastic_stress_fun,
-                           shear_scale_factor=self.shear_scale_factor)
+                           shear_scale_factor=self.shear_scale_factor,
+                           resolve_parameters=self.resolve_parameters)
 
         cauchy = partial(self._cauchy_fn, def_type=def_type)
 
         if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRAIN:
             cauchy_closed_form = partial(self._cauchy_closed_form_fn,
                                          def_type=def_type,
-                                         elastic_stress=elastic_stress_fun)
+                                         elastic_stress=elastic_stress_fun,
+                                         resolve_parameters=self.resolve_parameters)
             super().__init__(residual, cauchy,
                              cauchy_closed_form_fun=cauchy_closed_form)
         else:
@@ -149,7 +150,10 @@ class Elastic(MechanicsModel):
             step_time: StepTime,
             def_type: int, elastic_stress: Callable[..., JaxArray],
             shear_scale_factor: float,
+            resolve_parameters: Callable[..., dict[str, Any]],
     ) -> JaxArray:
+
+        params = resolve_parameters(params, U)
 
         # state variables for the model
         cauchy = get_sym_tensor_from_vector(xi[0], 3)
@@ -198,8 +202,10 @@ class Elastic(MechanicsModel):
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             def_type: int,
             elastic_stress: Callable[..., JaxArray],
+            resolve_parameters: Callable[..., dict[str, Any]],
     ) -> JaxArray:
 
+        params = resolve_parameters(params, U)
         grad_u = U.grad_fields["u"]
         if def_type == DefType.PLANE_STRAIN:
             # 2D grad_u embedded with the out of plane stretch fixed to 1

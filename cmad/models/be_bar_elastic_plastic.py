@@ -133,6 +133,20 @@ def start_from_elastic_predictor(
         xi_prev, xi_prev, params, U, U_prev, def_type, oop_stretch_idx)
 
 
+def compute_cauchy(
+        xi: StateList, params: dict[str, Any], U: GlobalFieldsAtPoint,
+        def_type: int, oop_stretch_idx: int,
+) -> JaxArray:
+    elastic = ElasticConstants.from_params(params["elastic"])
+    I = jnp.eye(3)
+    F = gather_F(xi, U, def_type, oop_stretch_idx)
+    J = det_3x3(F)
+    zeta = get_dev_sym_tensor_from_vector(xi[0], zeta_ndims(def_type))
+    dev_cauchy = elastic.mu * zeta / J
+    hydro_cauchy = 0.5 * elastic.kappa * (J - 1. / J)
+    return dev_cauchy + hydro_cauchy * I
+
+
 def compute_yield_fun(
         zeta: JaxArray, alpha: StateBlock, alpha_prev: StateBlock,
         params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
@@ -182,11 +196,13 @@ def start_from_radial_return(
         def_type: int, oop_stretch_idx: int,
         yield_function: Callable[..., JaxArray],
         shear_scale_factor: float, yield_threshold: float,
+        resolve_parameters: Callable[..., dict[str, Any]],
 ) -> StateList:
     """Starting state for the local Newton: the elastic predictor, its
     deviator returned to the yield surface along its own normal when it
     lies outside, with ``Ie`` corrected from ``det(be_bar) = 1``. The
     return is swept again so that it uses a corrected ``Ie``."""
+    params = resolve_parameters(params, U)
     trial = elastic_predictor(
         xi_prev, xi_prev, params, U, U_prev, def_type, oop_stretch_idx)
     ndims = zeta_ndims(def_type)
@@ -313,14 +329,13 @@ class BeBarElasticPlastic(MechanicsModel):
         self._init_state_variables()
         self.set_xi_to_init_vals()
 
-        self.parameters = parameters
-        self._init_scale_factors(reference_temperature)
+        self._init_parameters(parameters, reference_temperature)
 
         plastic_subtree = cast(dict[str, Any], parameters.values["plastic"])
         yield_function = make_yield_function(
             plastic_subtree["flow stress"], hardening_funs)
         yield_threshold = compute_yield_threshold(
-            yield_tol, parameters.values, yield_function,
+            yield_tol, self.reference_parameters, yield_function,
             self.shear_scale_factor)
 
         residual = partial(
@@ -328,11 +343,13 @@ class BeBarElasticPlastic(MechanicsModel):
             def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
             yield_function=yield_function,
             shear_scale_factor=self.shear_scale_factor,
-            yield_threshold=yield_threshold, is_complex=is_complex)
+            yield_threshold=yield_threshold, is_complex=is_complex,
+            resolve_parameters=self.resolve_parameters)
 
         cauchy = partial(
             self._cauchy_fn,
-            def_type=def_type, oop_stretch_idx=self._oop_stretch_idx)
+            def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
+            resolve_parameters=self.resolve_parameters)
 
         if initial_guess == "radial return":
             self.initial_guess_fn = jit(partial(
@@ -340,7 +357,8 @@ class BeBarElasticPlastic(MechanicsModel):
                 def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
                 yield_function=yield_function,
                 shear_scale_factor=self.shear_scale_factor,
-                yield_threshold=yield_threshold))
+                yield_threshold=yield_threshold,
+                resolve_parameters=self.resolve_parameters))
         else:
             self.initial_guess_fn = jit(partial(
                 start_from_elastic_predictor,
@@ -375,8 +393,10 @@ class BeBarElasticPlastic(MechanicsModel):
             yield_function: Callable[..., JaxArray],
             shear_scale_factor: float, yield_threshold: float,
             is_complex: bool,
+            resolve_parameters: Callable[..., dict[str, Any]],
     ) -> JaxArray:
 
+        params = resolve_parameters(params, U)
         ndims = zeta_ndims(def_type)
         zeta = get_dev_sym_tensor_from_vector(xi[0], ndims)
         Ie = get_scalar(xi[1])
@@ -410,8 +430,7 @@ class BeBarElasticPlastic(MechanicsModel):
         if def_type == DefType.PLANE_STRESS:
             # The out of plane stretch is fixed by sigma_33 = 0, which holds
             # whether or not the step yields, so it closes both branches.
-            cauchy = BeBarElasticPlastic._cauchy_fn(
-                xi, xi_prev, params, U, U_prev, def_type, oop_stretch_idx)
+            cauchy = compute_cauchy(xi, params, U, def_type, oop_stretch_idx)
             C_oop = jnp.atleast_1d(cauchy[2, 2] / shear_scale_factor)
             C_elastic = jnp.r_[C_elastic, C_oop]
             C_plastic = jnp.r_[C_plastic, C_oop]
@@ -424,12 +443,7 @@ class BeBarElasticPlastic(MechanicsModel):
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             def_type: int, oop_stretch_idx: int,
+            resolve_parameters: Callable[..., dict[str, Any]],
     ) -> JaxArray:
-        elastic = ElasticConstants.from_params(params["elastic"])
-        eye = jnp.eye(3)
-        F = gather_F(xi, U, def_type, oop_stretch_idx)
-        J = det_3x3(F)
-        zeta = get_dev_sym_tensor_from_vector(xi[0], zeta_ndims(def_type))
-        dev_cauchy = elastic.mu * zeta / J
-        hydro_cauchy = 0.5 * elastic.kappa * (J - 1. / J)
-        return dev_cauchy + hydro_cauchy * eye
+        params = resolve_parameters(params, U)
+        return compute_cauchy(xi, params, U, def_type, oop_stretch_idx)

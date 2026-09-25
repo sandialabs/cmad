@@ -4,7 +4,7 @@ Separates the mechanics-specific contract the mechanics global residual
 relies on from the general :class:`cmad.models.model.Model`.
 """
 from collections.abc import Callable
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 from jax import jit
@@ -14,10 +14,8 @@ from cmad.models.elastic_constants import ElasticConstants
 from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.kinematics import gather_F
 from cmad.models.model import Model
-from cmad.models.temperature_dependent_parameters import (
-    check_parameter_forms,
-    evaluate_parameters,
-)
+from cmad.models.temperature_dependent_parameters import evaluate_parameters
+from cmad.parameters.parameters import Parameters
 from cmad.typing import CauchyFn, JaxArray, Params, ResidualFn, StateList
 
 
@@ -54,8 +52,8 @@ class MechanicsModel(Model):
     construction.
 
     Subclasses set ``_def_type`` (and ``_oop_stretch_idx`` when they
-    carry an out-of-plane stretch unknown) and call
-    ``_init_scale_factors()`` before ``super().__init__()``.
+    carry an out-of-plane stretch unknown) and call ``_init_parameters()``
+    before ``super().__init__()``.
     """
 
     is_finite_deformation: bool = False
@@ -67,6 +65,8 @@ class MechanicsModel(Model):
     _oop_stretch_idx: int = -1
 
     cauchy_closed_form: Callable[..., JaxArray] | None
+    # The parameters at the reference temperature, plain numbers.
+    reference_parameters: dict[str, Any]
     bulk_scale_factor: float
     shear_scale_factor: float
     _Sigma: NDArray[np.floating]
@@ -103,10 +103,13 @@ class MechanicsModel(Model):
         """
         return gather_F(xi, U, self._def_type, self._oop_stretch_idx)
 
-    def _init_scale_factors(self, reference_temperature: float) -> None:
-        check_parameter_forms(self.parameters.values)
-        values = evaluate_parameters(
-            self.parameters.values, reference_temperature)
-        elastic = ElasticConstants.from_params(cast(Params, values["elastic"]))
+    def _init_parameters(
+            self, parameters: Parameters, reference_temperature: float,
+    ) -> None:
+        super()._init_parameters(parameters, reference_temperature)
+        self.reference_parameters = evaluate_parameters(
+            parameters.values, reference_temperature)
+        elastic = ElasticConstants.from_params(
+            cast(Params, self.reference_parameters["elastic"]))
         self.bulk_scale_factor = float(elastic.kappa)
         self.shear_scale_factor = 2. * float(elastic.mu)

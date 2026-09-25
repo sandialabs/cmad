@@ -1,9 +1,14 @@
 """Heat conduction: Fourier's flux and the heat capacity."""
+from collections.abc import Callable
+from functools import partial
 from typing import Any, ClassVar
 
 from jax import numpy as jnp
 
 from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
+from cmad.models.temperature_dependent_parameters import (
+    DEFAULT_REFERENCE_TEMPERATURE,
+)
 from cmad.models.thermal_model import ThermalModel
 from cmad.parameters.parameters import Parameters
 from cmad.typing import JaxArray, Scalar, StateList
@@ -24,7 +29,10 @@ class Conduction(ThermalModel):
 
     supports_closed_form: ClassVar[bool] = True
 
-    def __init__(self, parameters: Parameters) -> None:
+    def __init__(
+            self, parameters: Parameters,
+            reference_temperature: float = DEFAULT_REFERENCE_TEMPERATURE,
+    ) -> None:
         self._is_complex = False
         self.dtype = float
         self._ndims = 3
@@ -44,7 +52,10 @@ class Conduction(ThermalModel):
         self._init_xi = []
         self._init_state_variables()
         self.set_xi_to_init_vals()
-        self.parameters = parameters
+        self._init_parameters(parameters, reference_temperature)
+        self.heat_flux_closed_form = partial(
+            self._heat_flux_closed_form_fn,
+            resolve_parameters=self.resolve_parameters)
 
         super().__init__(self._residual_fn)
 
@@ -55,7 +66,11 @@ class Conduction(ThermalModel):
             parameters: Parameters,
             def_type: int | None,
     ) -> "Conduction":
-        return cls(parameters=parameters)
+        return cls(
+            parameters=parameters,
+            reference_temperature=model_section.get(
+                "reference temperature", DEFAULT_REFERENCE_TEMPERATURE),
+        )
 
     def derived_output_field_names(self) -> list[str]:
         return ["heat flux"]
@@ -69,10 +84,12 @@ class Conduction(ThermalModel):
         return jnp.zeros(0)
 
     @staticmethod
-    def heat_flux_closed_form(
+    def _heat_flux_closed_form_fn(
             params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+            resolve_parameters: Callable[..., dict[str, Any]],
     ) -> JaxArray:
+        params = resolve_parameters(params, U)
         return isotropic_heat_flux(U.grad_fields["T"][0], params)
 
     def heat_flux(
@@ -80,6 +97,7 @@ class Conduction(ThermalModel):
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
     ) -> JaxArray:
+        params = self.resolve_parameters(params, U)
         return isotropic_heat_flux(U.grad_fields["T"][0], params)
 
     def heat_capacity_rate(
@@ -90,6 +108,7 @@ class Conduction(ThermalModel):
     ) -> Scalar:
         if not self._has_capacity:
             return 0.0
+        params = self.resolve_parameters(params, U)
         thermal = params["thermal"]
         rho_c = thermal["density"] * thermal["specific heat"]
         return rho_c * (U.fields["T"][0] - U_prev.fields["T"][0]) / step_time.dt

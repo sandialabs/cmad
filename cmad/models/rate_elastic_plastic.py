@@ -370,8 +370,7 @@ class RateElasticPlastic(MechanicsModel):
 
         # TODO: check that the parameters make sense for this model
         # self._check_params(parameters)
-        self.parameters = parameters
-        self._init_scale_factors(reference_temperature)
+        self._init_parameters(parameters, reference_temperature)
 
         plastic_subtree = cast(dict[str, Any], parameters.values["plastic"])
         if effective_stress_fun is None:
@@ -382,7 +381,7 @@ class RateElasticPlastic(MechanicsModel):
         yield_function = make_yield_function(
             plastic_subtree["flow stress"], hardening_funs)
         yield_threshold = compute_yield_threshold(
-            yield_tol, parameters.values, yield_function,
+            yield_tol, self.reference_parameters, yield_function,
             self.shear_scale_factor)
 
         residual = partial(self._residual_fn, def_type=def_type,

@@ -9,6 +9,9 @@ from numpy.typing import NDArray
 
 from cmad.models.deriv_types import DerivType
 from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
+from cmad.models.temperature_dependent_parameters import (
+    make_parameter_resolver,
+)
 from cmad.models.var_types import VarType
 from cmad.parameters.parameters import Parameters
 from cmad.typing import (
@@ -40,6 +43,8 @@ class Model(ABC):
 
     # ---- attributes the subclass must set before super().__init__() ----
     parameters: Parameters
+    resolve_parameters: Callable[
+        [dict[str, Any], GlobalFieldsAtPoint], dict[str, Any]]
     dtype: type
     _is_complex: bool
     _num_eqs: NDArray[np.intp]
@@ -350,6 +355,13 @@ class Model(ABC):
                GlobalFieldsAtPoint, GlobalFieldsAtPoint]:
         return (self._xi, self._xi_prev, self.parameters.values,
                 self._U, self._U_prev)
+
+    def _init_parameters(
+            self, parameters: Parameters, reference_temperature: float,
+    ) -> None:
+        self.parameters = parameters
+        self.resolve_parameters = make_parameter_resolver(
+            parameters.values, reference_temperature)
 
     def _init_residuals(self, num_residuals: int) -> None:
         self.num_residuals = num_residuals

@@ -166,10 +166,12 @@ def start_from_radial_return(
         yield_function: Callable[..., JaxArray],
         shear_scale_factor: float, yield_threshold: float,
         uniaxial_stress_idx: int, has_material_rotation: bool,
+        resolve_parameters: Callable[..., dict[str, Any]],
 ) -> StateList:
     """Starting state for the local Newton: the previous state, its stress
     returned to the yield surface along its own normal when it lies
     outside."""
+    params = resolve_parameters(params, U)
     cauchy_trial, _ = compute_yield_fun(
         xi_prev, xi_prev, params, U, step_time, def_type, elastic_stress,
         effective_stress, yield_function, shear_scale_factor,
@@ -328,8 +330,7 @@ class SmallElasticPlastic(MechanicsModel):
 
         # TODO: check that the parameters make sense for this model
         # self._check_params(parameters)
-        self.parameters = parameters
-        self._init_scale_factors(reference_temperature)
+        self._init_parameters(parameters, reference_temperature)
 
         plastic_subtree = cast(dict[str, Any], parameters.values["plastic"])
         if effective_stress_fun is None:
@@ -340,7 +341,7 @@ class SmallElasticPlastic(MechanicsModel):
         yield_function = make_yield_function(
             plastic_subtree["flow stress"], hardening_funs)
         yield_threshold = compute_yield_threshold(
-            yield_tol, parameters.values, yield_function,
+            yield_tol, self.reference_parameters, yield_function,
             self.shear_scale_factor)
 
         residual = partial(self._residual_fn,
@@ -352,13 +353,15 @@ class SmallElasticPlastic(MechanicsModel):
                            yield_threshold=yield_threshold,
                            uniaxial_stress_idx=uniaxial_stress_idx,
                            is_complex=is_complex,
-                           has_material_rotation=has_material_rotation)
+                           has_material_rotation=has_material_rotation,
+                           resolve_parameters=self.resolve_parameters)
 
         cauchy = partial(self._cauchy_fn,
                          def_type=def_type,
                          elastic_stress=elastic_stress_fun,
                          uniaxial_stress_idx=uniaxial_stress_idx,
-                         has_material_rotation=has_material_rotation)
+                         has_material_rotation=has_material_rotation,
+                         resolve_parameters=self.resolve_parameters)
 
         # The elastic predictor is the previous state.
         if initial_guess == "radial return":
@@ -370,7 +373,8 @@ class SmallElasticPlastic(MechanicsModel):
                 shear_scale_factor=self.shear_scale_factor,
                 yield_threshold=yield_threshold,
                 uniaxial_stress_idx=uniaxial_stress_idx,
-                has_material_rotation=has_material_rotation))
+                has_material_rotation=has_material_rotation,
+                resolve_parameters=self.resolve_parameters))
 
         super().__init__(residual, cauchy)
 
@@ -405,7 +409,10 @@ class SmallElasticPlastic(MechanicsModel):
             shear_scale_factor: float, yield_threshold: float,
             uniaxial_stress_idx: int, is_complex: bool,
             has_material_rotation: bool,
+            resolve_parameters: Callable[..., dict[str, Any]],
     ) -> JaxArray:
+
+        params = resolve_parameters(params, U)
 
         # state variables for the model
         pstrain = plastic_strain_from_state(
@@ -496,8 +503,10 @@ class SmallElasticPlastic(MechanicsModel):
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             def_type: int, elastic_stress: Callable[..., JaxArray],
             uniaxial_stress_idx: int, has_material_rotation: bool,
+            resolve_parameters: Callable[..., dict[str, Any]],
     ) -> JaxArray:
 
+        params = resolve_parameters(params, U)
         elastic_strain = compute_elastic_strain(xi, params, U, def_type,
             uniaxial_stress_idx, has_material_rotation)
         material_cauchy = elastic_stress(elastic_strain, params)
