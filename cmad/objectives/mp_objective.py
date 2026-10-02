@@ -149,7 +149,7 @@ class MPAdjointObjective(MPObjective):
 
             grad += phi.T @ dC_dp + dJ_dp
 
-        grad = grad.squeeze()
+        grad = grad.reshape(-1)
         model.parameters.transform_grad(grad)
 
         return GradientResult(J=J, grad=grad)
@@ -213,7 +213,7 @@ class MPDirectObjective(MPObjective):
 
             model.advance_xi()
 
-        grad = grad.squeeze()
+        grad = grad.reshape(-1)
         model.parameters.transform_grad(grad)
 
         return GradientResult(J=float(J), grad=grad)
@@ -269,7 +269,7 @@ class MPDirectAdjointObjective(MPObjective):
 
             grad += phi.T @ dC_dp + dJ_dp
 
-        grad = grad.squeeze()
+        grad = grad.reshape(-1)
         untransformed_grad = grad.copy()
         model.parameters.transform_grad(grad)
 
