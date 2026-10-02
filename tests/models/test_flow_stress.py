@@ -4,8 +4,9 @@ The rate-independent relation reproduces the expression the models
 computed inline, ``phi - (Y + hardening(alpha))``, to the bit, and
 ``make_yield_function`` accepts every existing parameter tree and nothing
 else. Johnson-Cook is checked by hand on every branch of its clips; its
-slope at zero strain is also checked. Peric's rate law holds at the zero
-of its yield function.
+slope at zero strain is also checked. Peric's and Perzyna's rate laws hold
+at the zero of their yield functions; Perzyna's value and slope at zero
+rate are also checked.
 """
 import unittest
 
@@ -134,6 +135,46 @@ class TestPericYieldFunction(unittest.TestCase):
             sigma_y, 10.0 * sigma_y)
         rate = ((phi / sigma_y) ** (1.0 / p["epsilon"]) - 1.0) / p["eta"]
         np.testing.assert_allclose(rate, alpha_dot, rtol=1e-12)
+
+
+_PERZYNA = {"perzyna": {**_flow_params(), "eta": 10.0, "epsilon": 0.2}}
+
+
+class TestPerzynaYieldFunction(unittest.TestCase):
+
+    def test_rate_law_holds_at_the_zero(self) -> None:
+        yield_function = make_yield_function(_PERZYNA)
+        p = _PERZYNA["perzyna"]
+        a0 = POWER_LAW_OFFSET
+        alpha, alpha_dot = 0.05, 2.0
+        sigma_y = float(_Y + voce_hardening(alpha, {"S": _S, "D": _D}))
+        phi = brentq(
+            lambda phi: float(
+                yield_function(phi, alpha, alpha_dot, None, _PERZYNA)),
+            sigma_y, 10.0 * sigma_y)
+        rate = ((phi / sigma_y - 1.0 + a0 ** p["epsilon"])
+                ** (1.0 / p["epsilon"]) - a0) / p["eta"]
+        np.testing.assert_allclose(rate, alpha_dot, rtol=1e-12)
+
+    def test_zero_rate_is_the_rate_independent_flow_stress(self) -> None:
+        yield_function = make_yield_function(_PERZYNA)
+        rate_independent = make_yield_function(_flow_params())
+        for alpha in np.linspace(0.0, 0.5, 6):
+            value = yield_function(_PHI, alpha, 0.0, None, _PERZYNA)
+            expected = rate_independent(_PHI, alpha, 0.0, None, _flow_params())
+            self.assertEqual(float(value), float(expected))
+
+    def test_slope_at_zero_rate_is_the_offset_slope(self) -> None:
+        yield_function = make_yield_function(_PERZYNA)
+        p = _PERZYNA["perzyna"]
+        a0 = POWER_LAW_OFFSET
+        alpha = 0.05
+        sigma_y = float(_Y + voce_hardening(alpha, {"S": _S, "D": _D}))
+        expected = -sigma_y * p["eta"] * p["epsilon"] \
+            * a0 ** (p["epsilon"] - 1.0)
+        slope = grad(
+            lambda r: yield_function(_PHI, alpha, r, None, _PERZYNA))(0.0)
+        np.testing.assert_allclose(float(slope), expected, rtol=1e-12)
 
 
 if __name__ == "__main__":

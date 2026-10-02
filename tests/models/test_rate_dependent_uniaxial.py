@@ -40,6 +40,7 @@ PERIC = {
         "eta": 10.0, "epsilon": 0.2,
     },
 }
+PERZYNA = {"perzyna": PERIC["peric"]}
 NUM_STEPS = 40
 PEAK_STRAIN = 3e-3
 STRAIN_RATES = (0.01, 0.1)
@@ -64,6 +65,16 @@ def peric_flow_stress(alpha, rate):
     sigma_y = p["initial yield"]["Y"] \
         + voce["S"] * (1.0 - np.exp(-voce["D"] * alpha))
     return sigma_y * (1.0 + p["eta"] * rate) ** p["epsilon"]
+
+
+def perzyna_flow_stress(alpha, rate):
+    p = PERZYNA["perzyna"]
+    voce = p["hardening"]["voce"]
+    a0 = POWER_LAW_OFFSET
+    sigma_y = p["initial yield"]["Y"] \
+        + voce["S"] * (1.0 - np.exp(-voce["D"] * alpha))
+    return sigma_y * (1.0 + (p["eta"] * rate + a0) ** p["epsilon"]
+                      - a0 ** p["epsilon"])
 
 
 def return_map(flow_stress, strains, times):
@@ -203,6 +214,9 @@ class TestSmallStrainModelsMatchTheReturnMap(unittest.TestCase):
     def test_peric(self) -> None:
         self._check(PERIC, peric_flow_stress)
 
+    def test_perzyna(self) -> None:
+        self._check(PERZYNA, perzyna_flow_stress)
+
 
 class TestFiniteModelsAtSmallStrain(unittest.TestCase):
 
@@ -244,6 +258,9 @@ class TestFiniteModelsAtSmallStrain(unittest.TestCase):
 
     def test_be_bar_peric(self) -> None:
         self._check(BeBarElasticPlastic, 2, PERIC, peric_flow_stress)
+
+    def test_be_bar_perzyna(self) -> None:
+        self._check(BeBarElasticPlastic, 2, PERZYNA, perzyna_flow_stress)
 
 
 if __name__ == "__main__":
