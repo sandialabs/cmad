@@ -103,6 +103,7 @@ class _JVPDriver:
                 max_iters=newton_kwargs["max_iters"],
                 abs_tol=newton_kwargs["abs_tol"],
                 rel_tol=newton_kwargs["rel_tol"],
+                initial_guess_fn=model.initial_guess_fn,
             ),
         )
         self._jvp_obj = MPJVPObjective(qoi, global_state, update_fun, times)
