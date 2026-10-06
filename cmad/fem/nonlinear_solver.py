@@ -417,7 +417,9 @@ def newton_converged(
 
     ``reference_norm`` is the assembly's ``residual_scale`` at the same
     iterate, floored at ``abs_tol`` so a stress free state falls back to
-    the absolute test.
+    the absolute test, and at the round-off floor of the residual over
+    ``rel_tol`` so a residual double precision cannot reduce further counts
+    as converged.
     """
     return jnp.logical_or(
         residual_norm < abs_tol, residual_norm < rel_tol * reference_norm,
@@ -480,7 +482,14 @@ def _fe_newton_primal(
             fe_problem, fe_arrays, params_by_block, U, U_prev, step_time,
             xi_prev_by_block, presc_vals, operator,
         )
-        return r, K, xi, jnp.maximum(residual_scale, abs_tol)
+        # the round-off floor of the residual, ten times machine precision
+        # times || |K| |U| ||
+        roundoff_floor = 10.0 * jnp.finfo(U.dtype).eps * jnp.linalg.norm(
+            _tangent_operator(K, fe_problem, fe_arrays, operator)
+            .absolute_matvec(_pad_dofs(jnp.abs(U), fe_problem)))
+        reference = jnp.maximum(
+            jnp.maximum(residual_scale, abs_tol), roundoff_floor / rel_tol)
+        return r, K, xi, reference
 
     r_init, K_init, xi_init, ref_init = _assemble_enforced(U_init)
 
