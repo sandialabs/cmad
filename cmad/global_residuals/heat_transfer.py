@@ -22,13 +22,18 @@ class HeatTransfer(GlobalResidual):
     A source comes from the volumetric sources section and a prescribed
     flux from the surface flux bcs section, both keyed by "energy
     balance". A
-    model without a heat capacity makes every step steady.
+    model without a heat capacity makes every step steady. ``thickness``
+    is the out of plane extent of a 2D mesh, which a model with a face
+    flux (a plate modeled in its plane) needs.
     """
 
-    def __init__(self, ndims: int = 3) -> None:
+    def __init__(
+            self, ndims: int = 3, thickness: float | None = None,
+    ) -> None:
         self._is_complex = False
         self.dtype = float
         self._ndims = ndims
+        self._thickness = thickness
 
         self._init_residuals(1)
         self._var_types[0] = VarType.SCALAR
@@ -40,7 +45,7 @@ class HeatTransfer(GlobalResidual):
                         model, mode, shapes_ip, w, dv, h, step_time):
             return [energy_balance(
                 xi, xi_prev, params, U_ip, U_ip_prev, model, mode,
-                shapes_ip[0], w, dv, step_time,
+                shapes_ip[0], w, dv, step_time, self._thickness,
             )]
 
         super().__init__(residual_fn)
@@ -52,12 +57,14 @@ class HeatTransfer(GlobalResidual):
             local_newton_settings: dict[str, Any] | None = None,
             print_local_convergence: bool = False,
     ) -> GREvaluators:
-        """Bind to a model, which must be a :class:`ThermalModel`."""
+        """Bind to a model, which must be a :class:`ThermalModel`; one
+        with a face flux needs the thickness."""
         if not isinstance(model, ThermalModel):
             raise ValueError(
                 f"heat transfer needs a thermal model; got "
                 f"{type(model).__name__}",
             )
+        require_thickness_for_face_flux(model, self._thickness)
         return super().for_model(
             model, mode, local_newton_settings, print_local_convergence,
         )
@@ -80,8 +87,21 @@ class HeatTransfer(GlobalResidual):
             cls,
             gr_section: dict[str, Any],
             ndims: int,
+            thickness: float | None = None,
     ) -> "HeatTransfer":
         """Construct from the resolved ``residuals.global residual``
-        section; ``ndims`` comes from the mesh and no ``def_type`` is
-        needed."""
-        return cls(ndims=ndims)
+        section; ``ndims`` comes from the mesh, ``thickness`` from the
+        discretization section, and no ``def_type`` is needed."""
+        return cls(ndims=ndims, thickness=thickness)
+
+
+def require_thickness_for_face_flux(
+        model: ThermalModel, thickness: float | None,
+) -> None:
+    """Raise a ``ValueError`` when the model has a face flux and the
+    residual has no thickness."""
+    if model.face_flux is not None and thickness is None:
+        raise ValueError(
+            "face convection needs a 2D mesh with discretization.thickness, "
+            "the plate's full thickness",
+        )

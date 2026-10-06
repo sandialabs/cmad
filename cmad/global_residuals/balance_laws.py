@@ -147,12 +147,20 @@ def energy_balance(
         w: Scalar,
         dv: Scalar,
         step_time: StepTime,
+        thickness: float | None = None,
 ) -> JaxArray:
     """Residual block of the energy balance, shape ``(n_basis_T, 1)``:
     ``N rho c (T - T_prev) / dt - grad_N . q`` times ``w dv``, with the
     heat capacity rate and the heat flux ``q`` from the model
-    (closed-form or from the local state per ``mode``)."""
+    (closed-form or from the local state per ``mode``). A model with a
+    ``face_flux`` adds ``N 2 face_flux`` over the area element
+    ``w dv / thickness``, the heat leaving both faces of a plate modeled
+    in its plane."""
     q = _heat_flux_by_mode(xi, xi_prev, params, U_ip, U_ip_prev, model, mode)
     c_rate = model.heat_capacity_rate(params, U_ip, U_ip_prev, step_time)
     R = (shapes_T.N * c_rate - shapes_T.grad_N @ q) * w * dv
+    if model.face_flux is not None:
+        assert thickness is not None
+        R = R + shapes_T.N * (
+            2.0 * model.face_flux(params, U_ip, U_ip_prev) * w * dv / thickness)
     return R[:, None]

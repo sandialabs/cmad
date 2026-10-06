@@ -64,6 +64,7 @@ class ThermomechanicsModel(MechanicsModel, ThermalModel):
         self.compute_thermal_stretch = mechanics.compute_thermal_stretch
         if thermal.supports_closed_form:
             self.heat_flux_closed_form = thermal.heat_flux_closed_form
+        self.face_flux = thermal.face_flux
         if mechanics.initial_guess_fn is not None:
             self.initial_guess_fn = self._initial_guess_fn
 

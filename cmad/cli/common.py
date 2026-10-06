@@ -71,6 +71,7 @@ from cmad.models.model import Model
 from cmad.models.temperature_dependent_parameters import (
     DEFAULT_REFERENCE_TEMPERATURE,
 )
+from cmad.models.thermal_model import ThermalModel
 from cmad.models.thermomechanics_model import ThermomechanicsModel
 from cmad.parameters.parameters import Parameters
 from cmad.qois.fe_qoi import FEQoI
@@ -395,7 +396,10 @@ def build_fe_problem_from_sections(
 
     gr_section = resolved["residuals"]["global residual"]
     gr_cls = resolve_global_residual(gr_section["type"])
-    gr = gr_cls.from_deck(gr_section, ndims=ndims)
+    gr = gr_cls.from_deck(
+        gr_section, ndims=ndims,
+        thickness=resolved["discretization"].get("thickness"),
+    )
 
     is_mixed = bool(gr_section.get("mixed", False))
     ls_section = resolved["linear solver"]
@@ -442,6 +446,14 @@ def build_fe_problem_from_sections(
         models_by_block = _compose_thermomechanics_models(
             models_by_block, local_section,
         )
+    if def_type not in (None, DefType.PLANE_STRESS):
+        for block, model in models_by_block.items():
+            if isinstance(model, ThermalModel) and model.face_flux is not None:
+                raise ValueError(
+                    f"residuals.local residual.materials.{block}: face "
+                    f"convection needs def_type plane_stress, a plate with "
+                    f"free faces; got {def_type_name}",
+                )
     modes_by_block = {
         block: (
             GlobalResidualMode.CLOSED_FORM

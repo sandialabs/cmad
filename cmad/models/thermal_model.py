@@ -18,11 +18,15 @@ class ThermalModel(Model):
     the heat flux for the energy balance and the heat capacity rate for
     its rate term. A model with no local state sets ``heat_flux_closed_form``
     at construction and has ``supports_closed_form`` True; a model with
-    local state provides ``heat_flux`` from it.
+    local state provides ``heat_flux`` from it. ``face_flux`` is the heat
+    flux out of one face of a plate modeled in its plane, per unit face
+    area, set at construction by a model that has one.
     """
 
     heat_flux_closed_form: Callable[
         [Params, GlobalFieldsAtPoint, GlobalFieldsAtPoint], JaxArray]
+    face_flux: Callable[
+        [Params, GlobalFieldsAtPoint, GlobalFieldsAtPoint], Scalar] | None = None
 
     def heat_flux(
             self,

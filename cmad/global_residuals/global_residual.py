@@ -96,10 +96,13 @@ class GlobalResidual(ABC):
             cls,
             gr_section: dict[str, Any],
             ndims: int,
+            thickness: float | None = None,
     ) -> "GlobalResidual":
         """Build a :class:`GlobalResidual` instance from the deck's
         ``residuals.global residual`` section. ``ndims`` is sourced
-        from the mesh by the deck-side builder. The base stub raises
+        from the mesh by the deck-side builder, ``thickness`` from the
+        discretization section (the out of plane extent of a 2D mesh,
+        ``None`` otherwise). The base stub raises
         ``NotImplementedError`` so concrete subclasses are forced to
         override; the stub exists so the registry's
         ``type[GlobalResidual]`` return is statically callable via

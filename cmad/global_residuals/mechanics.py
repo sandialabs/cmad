@@ -233,6 +233,7 @@ class Mechanics(GlobalResidual):
             cls,
             gr_section: dict[str, Any],
             ndims: int,
+            thickness: float | None = None,
     ) -> "Mechanics":
         """Construct from the resolved ``residuals.global residual`` section.
 
