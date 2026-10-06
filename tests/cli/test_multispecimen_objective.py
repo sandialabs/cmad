@@ -10,7 +10,8 @@ reaction that equals the applied load whatever the moduli are), a
 weighted sum of a displacement match and a load match reports its
 accumulated QoIs, which with their weights add up to its value, and a
 log sum of the same terms is the weighted sum of their logarithms, with
-a gradient that also agrees with finite differences.
+a gradient that also agrees with finite differences. The optimizer driver
+runs its hook once after every evaluation.
 """
 import tempfile
 import unittest
@@ -20,7 +21,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from cmad.calibration import Objective, build_objective
+from cmad.calibration import Objective, build_objective, minimize_objective
 from cmad.cli.common import load_fe_input
 from cmad.cli.main import main as cmad_main
 from cmad.fem.mesh import StructuredHexMesh
@@ -216,6 +217,22 @@ class TestMultispecimenObjective(unittest.TestCase):
 
     def test_joint_gradient_against_finite_differences(self) -> None:
         self._check_gradient_against_finite_differences(self.joint, "joint")
+
+    def test_minimize_runs_the_hooks(self) -> None:
+        # After every evaluation, each after its history entry, and once
+        # per iteration.
+        objective = self.single["a"]
+        before = len(objective.history)
+        calls: list[int] = []
+        iterations: list[int] = []
+        result = minimize_objective(
+            objective, algorithm="L-BFGS-B", options={"maxiter": 2},
+            after_evaluation=lambda: calls.append(len(objective.history)),
+            after_iteration=lambda: iterations.append(len(calls)),
+        )
+        self.assertGreater(len(calls), 0)
+        self.assertEqual(calls, list(range(before + 1, before + len(calls) + 1)))
+        self.assertEqual(len(iterations), result.nit)
 
     def _check_gradient_against_finite_differences(
             self, objective: Objective, label: str,

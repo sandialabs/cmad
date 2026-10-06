@@ -1,6 +1,7 @@
 """Optimizer drivers for calibration objectives."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -26,20 +27,35 @@ def minimize_objective(
         algorithm: str,
         options: dict[str, Any],
         x0: NDArray[np.floating] | None = None,
+        after_evaluation: Callable[[], None] | None = None,
+        after_iteration: Callable[[], None] | None = None,
 ) -> OptimizeResult:
     """``scipy.optimize.minimize`` over ``objective.evaluate`` with
     ``jac=True``, the objective's Hessian for the methods that take one,
     and its bounds for the methods that accept them; ``x0`` defaults to
-    the objective's."""
+    the objective's. ``after_evaluation`` runs after every evaluation and
+    ``after_iteration`` after every iteration."""
     method = algorithm.upper()
+
+    def evaluate(x: NDArray[np.floating]) -> tuple[float, NDArray[np.float64]]:
+        result = objective.evaluate(x)
+        if after_evaluation is not None:
+            after_evaluation()
+        return result
+
+    def callback(_xk: NDArray[np.floating]) -> None:
+        if after_iteration is not None:
+            after_iteration()
+
     return minimize(
-        objective.evaluate,
+        evaluate,
         objective.x0 if x0 is None else np.asarray(x0, dtype=np.float64),
         jac=True,
         hess=objective.hessian if method in _HESSIAN_METHODS else None,
         method=algorithm,
         bounds=objective.bounds if method in _BOUNDED_METHODS else None,
         options=options,
+        callback=callback,
     )
 
 

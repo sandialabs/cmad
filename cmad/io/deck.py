@@ -53,6 +53,7 @@ _OPTIMIZER_DEFAULTS: dict[str, Any] = {
     "initial_guess": "from_deck",
     "options": {},
     "log_params": True,
+    "print_progress": False,
 }
 _FE_RESIDUALS_DEFAULTS: dict[str, dict[str, Any]] = {
     "global residual": {
