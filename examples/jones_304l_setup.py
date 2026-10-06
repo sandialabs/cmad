@@ -9,7 +9,7 @@ specimens is written under examples/jones_304l_inputs/joint/, which
 cmad calibrate and cmad cross_validate read. The primal files write the
 solved field to exodus and the reaction series to a CSV, which
 jones_304l_compare.py reads. --materials takes the opt_params.yaml of a
-calibration as the start values of the calibrate files.
+calibration as the initial values of the primal and calibrate files.
 
 --model picks the material model, be_bar with Voce hardening or the rate
 model with Johnson-Cook, and --temperature how the temperature enters:
@@ -44,7 +44,9 @@ from typing import Any
 import numpy as np
 import yaml
 
+from cmad.calibration import active_param_paths
 from cmad.io.calibration_data import CalibrationData
+from cmad.io.params_builder import build_parameters
 
 EXAMPLES = Path(__file__).resolve().parent
 RECORD = EXAMPLES / "jones_304l_specimens.yaml"
@@ -173,9 +175,12 @@ def run_reference_temperature(
 
 def materials_section(
         active: bool, model: str, temperature: str, ndims: int,
-        reference_temperature: float,
+        reference_temperature: float, initial_values: dict[str, float],
 ) -> dict[str, Any]:
-    def param(value: float) -> Any:
+    """The materials of ``model``, each constant starting at its entry of
+    ``initial_values``, as active parameters or as plain values."""
+    def param(name: str) -> Any:
+        value = initial_values[name]
         if not active:
             return value
         return {"value": value, "active": True, "transform": {"log": value}}
@@ -184,18 +189,16 @@ def materials_section(
         plastic: dict[str, Any] = {
             "effective stress": {"J2": {}},
             "flow stress": {
-                "initial yield": {"Y": param(START["Y"])},
+                "initial yield": {"Y": param("Y")},
                 "hardening": {
-                    "voce_modulus": {
-                        "H": param(START["H"]), "D": param(START["D"]),
-                    },
+                    "voce_modulus": {"H": param("H"), "D": param("D")},
                 },
             },
         }
         solid: dict[str, Any] = {"elastic": dict(ELASTIC), "plastic": plastic}
         return {"solid": solid}
 
-    jc = {name: param(value) for name, value in JOHNSON_COOK_START.items()}
+    jc = {name: param(name) for name in JOHNSON_COOK_START}
     plastic = {
         "effective stress": {"J2": {}},
         "flow stress": {
@@ -215,7 +218,7 @@ def materials_section(
         },
     }
     if temperature == "coupled":
-        plastic["taylor-quinney"] = TAYLOR_QUINNEY
+        plastic["taylor-quinney"] = initial_values["taylor-quinney"]
         thermal: dict[str, Any] = dict(THERMAL)
         if ndims == 2:
             thermal["face convection"] = {
@@ -226,9 +229,19 @@ def materials_section(
 
 
 def load_materials(path: Path) -> dict[str, Any]:
-    """The ``materials`` subtree of a calibration's opt_params.yaml."""
+    """The ``materials`` subtree of an opt_params.yaml."""
     materials: dict[str, Any] = yaml.safe_load(path.read_text())["materials"]
     return materials
+
+
+def extract_active_values(materials: dict[str, Any]) -> dict[str, float]:
+    """The values of the active parameters of a materials subtree, by name."""
+    parameters = build_parameters(materials["solid"])
+    names = [path.split(".")[-1] for path in active_param_paths(parameters)]
+    values = parameters.flat_active_values(return_canonical=False)
+    return {
+        name: float(value) for name, value in zip(names, values, strict=True)
+    }
 
 
 def residuals_section(ndims: int, materials: dict[str, Any], model: str,
@@ -358,17 +371,13 @@ def file_stem(kind: str, ndims: int, temperature: str) -> str:
 def input_file(tag: str, entry: dict[str, Any], thickness: float,
                ndims: int, kind: str, model: str, temperature: str,
                reference_temperature: float,
-               materials: dict[str, Any] | None = None) -> dict[str, Any]:
+               initial_values: dict[str, float]) -> dict[str, Any]:
     stem = file_stem(kind, ndims, temperature)
     out_path = f"results/jones_304l_{tag}/{stem}"
-    if kind == "primal":
-        materials = materials_section(
-            False, model, temperature, ndims, reference_temperature,
-        )
-    elif materials is None:
-        materials = materials_section(
-            True, model, temperature, ndims, reference_temperature,
-        )
+    materials = materials_section(
+        kind != "primal", model, temperature, ndims, reference_temperature,
+        initial_values,
+    )
     deck: dict[str, Any] = {
         "problem": {"type": "fe", "name": f"{tag}_{stem}"},
         "discretization": discretization_section(
@@ -410,14 +419,13 @@ def input_file(tag: str, entry: dict[str, Any], thickness: float,
 def joint_input_file(entries: dict[str, dict[str, Any]], thickness: float,
                      ndims: int, model: str, temperature: str,
                      reference_temperature: float,
-                     materials: dict[str, Any] | None = None) -> dict[str, Any]:
+                     initial_values: dict[str, float]) -> dict[str, Any]:
     """One calibrate file over every specimen in ``entries``: the shared
     sections once, then each specimen's own under ``specimens``."""
     stem = file_stem("calibrate", ndims, temperature)
-    if materials is None:
-        materials = materials_section(
-            True, model, temperature, ndims, reference_temperature,
-        )
+    materials = materials_section(
+        True, model, temperature, ndims, reference_temperature, initial_values,
+    )
     return {
         "problem": {"type": "fe", "name": f"joint_{stem}"},
         "residuals": residuals_section(
@@ -450,14 +458,14 @@ HEADER = "# generated by jones_304l_setup.py from jones_304l_specimens.yaml\n"
 def make_inputs(tag: str, entry: dict[str, Any], thickness: float,
                 dims: list[int], model: str, temperature: str,
                 reference_temperature: float,
-                materials: dict[str, Any] | None = None) -> None:
+                initial_values: dict[str, float]) -> None:
     out_dir = INPUT_DIR / tag
     out_dir.mkdir(parents=True, exist_ok=True)
     for ndims in dims:
         for kind in ("primal", "calibrate"):
             deck = input_file(
                 tag, entry, thickness, ndims, kind, model, temperature,
-                reference_temperature, materials,
+                reference_temperature, initial_values,
             )
             path = out_dir / f"{file_stem(kind, ndims, temperature)}.yaml"
             path.write_text(HEADER + yaml.safe_dump(deck, sort_keys=False))
@@ -467,13 +475,13 @@ def make_inputs(tag: str, entry: dict[str, Any], thickness: float,
 def make_joint_input(entries: dict[str, dict[str, Any]], thickness: float,
                      dims: list[int], model: str, temperature: str,
                      reference_temperature: float,
-                     materials: dict[str, Any] | None = None) -> None:
+                     initial_values: dict[str, float]) -> None:
     out_dir = INPUT_DIR / "joint"
     out_dir.mkdir(parents=True, exist_ok=True)
     for ndims in dims:
         deck = joint_input_file(
             entries, thickness, ndims, model, temperature,
-            reference_temperature, materials,
+            reference_temperature, initial_values,
         )
         path = out_dir / f"{file_stem('calibrate', ndims, temperature)}.yaml"
         path.write_text(HEADER + yaml.safe_dump(deck, sort_keys=False))
@@ -504,9 +512,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--materials", type=Path, default=None,
-        help="a calibration's opt_params.yaml whose materials subtree "
-             "replaces the start values in the calibrate files and the "
-             "values in the primal files",
+        help="an opt_params.yaml whose active parameters give the initial "
+             "values of the primal and calibrate files",
     )
     parser.add_argument(
         "--model", default="be_bar", choices=MODELS,
@@ -520,7 +527,11 @@ def main() -> None:
     args = parser.parse_args()
     if args.model == "be_bar" and args.temperature != "none":
         raise SystemExit("--temperature applies to --model rate_johnson_cook")
-    materials = None if args.materials is None else load_materials(args.materials)
+    initial_values = {
+        **START, **JOHNSON_COOK_START, "taylor-quinney": TAYLOR_QUINNEY,
+    }
+    if args.materials is not None:
+        initial_values.update(extract_active_values(load_materials(args.materials)))
 
     thickness, record = load_record()
     tags = args.specimens
@@ -555,12 +566,12 @@ def main() -> None:
     for tag, entry in entries.items():
         make_inputs(
             tag, entry, thickness, args.dims, args.model, args.temperature,
-            reference_temperature, materials,
+            reference_temperature, initial_values,
         )
     if len(entries) > 1:
         make_joint_input(
             entries, thickness, args.dims, args.model, args.temperature,
-            reference_temperature, materials,
+            reference_temperature, initial_values,
         )
 
 
