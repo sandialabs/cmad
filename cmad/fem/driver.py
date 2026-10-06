@@ -206,8 +206,9 @@ def build_fe_quasistatic_trajectory(
 
             def skip(state):
                 U_at, xi_at = state
+                num_blocks = len(fe_problem.block_offsets_padded) - 1
                 return (
-                    U_at, xi_at, jnp.zeros(()), jnp.ones(()),
+                    U_at, xi_at, jnp.zeros(num_blocks), jnp.ones(num_blocks),
                     jnp.zeros((), dtype=jnp.int32),
                 )
 
@@ -228,7 +229,8 @@ def build_fe_quasistatic_trajectory(
                 failed_here, step_idx, first_failed_step,
             )
             first_failed_rel_norm = jnp.where(
-                failed_here, r_norm / reference_norm, first_failed_rel_norm,
+                failed_here, jnp.max(r_norm / reference_norm),
+                first_failed_rel_norm,
             )
 
             if qoi_step_contribution is not None:

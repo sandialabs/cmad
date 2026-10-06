@@ -89,8 +89,6 @@ class TangentOperator(Protocol):
 
     def matvec(self, x: JaxArray) -> JaxArray: ...
 
-    def absolute_matvec(self, x: JaxArray) -> JaxArray: ...
-
     def diagonal(self) -> JaxArray: ...
 
     def block_matvec(
@@ -152,14 +150,6 @@ class AssembledOperator:
 
     def matvec(self, x: JaxArray) -> JaxArray:
         return self._K_bcsr @ x
-
-    def absolute_matvec(self, x: JaxArray) -> JaxArray:
-        """``|K| x`` with the entrywise absolute values of the tangent."""
-        return BCSR(
-            (jnp.abs(self.unique_data), self.sparsity.col_indices,
-             self.sparsity.indptr),
-            shape=(self.sparsity.n, self.sparsity.n),
-        ) @ x
 
     def diagonal(self) -> JaxArray:
         return self.unique_data[self.sparsity.diag_idx]
@@ -263,16 +253,13 @@ class ElementOperator:
     def num_fields(self) -> int:
         return len(self.field_offsets) - 1
 
-    def raw_matvec(self, x: JaxArray, absolute: bool = False) -> JaxArray:
-        """The assembled ``K x``, no boundary conditions; ``|K| x`` with
-        ``absolute``."""
+    def raw_matvec(self, x: JaxArray) -> JaxArray:
+        """The assembled ``K x``, no boundary conditions."""
         y = jnp.zeros(self._n, dtype=x.dtype)
         for block, K_blocks in self.K_elem_by_block.items():
             eqs = self.eq_by_block[block]
             for r, K_r in enumerate(K_blocks):
                 for s, K_rs in enumerate(K_r):
-                    if absolute:
-                        K_rs = jnp.abs(K_rs)
                     y = y.at[eqs[r]].add(
                         jnp.einsum("eij,ej->ei", K_rs, x[eqs[s]]),
                     )
@@ -281,13 +268,6 @@ class ElementOperator:
     def matvec(self, x: JaxArray) -> JaxArray:
         y = self.raw_matvec(x * self._free) * self._free
         return y + jnp.where(self._free == 0.0, self._diagonal * x, 0.0)
-
-    def absolute_matvec(self, x: JaxArray) -> JaxArray:
-        """``|K| x`` with the entrywise absolute values of the embedded
-        tangent."""
-        y = self.raw_matvec(x * self._free, absolute=True) * self._free
-        return y + jnp.where(
-            self._free == 0.0, jnp.abs(self._diagonal) * x, 0.0)
 
     def _assembled_diagonal(self, dtype: np.dtype) -> JaxArray:
         d = jnp.zeros(self._n, dtype=dtype)

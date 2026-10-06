@@ -68,13 +68,14 @@ class TestChunkedAssembly(unittest.TestCase):
             n = fe_problem.n_elems_by_block["all"]
             outputs.append((
                 np.asarray(K.data), np.asarray(R), np.asarray(xi["all"][:n]),
-                float(scale),
+                np.asarray(scale),
             ))
         (K_ref, R_ref, xi_ref, scale_ref), (K_c, R_c, xi_c, scale_c) = outputs
         np.testing.assert_allclose(K_c, K_ref, rtol=1e-13, atol=1e-13)
         np.testing.assert_allclose(R_c, R_ref, rtol=1e-13, atol=1e-13)
         np.testing.assert_allclose(xi_c, xi_ref, rtol=1e-13, atol=1e-15)
-        self.assertAlmostEqual(scale_c, scale_ref, delta=1e-13 * scale_ref)
+        np.testing.assert_allclose(
+            scale_c, scale_ref, rtol=1e-13, atol=1e-13 * scale_ref.max())
 
     def test_element_tangent_and_residual_match(self) -> None:
         outputs = []

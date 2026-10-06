@@ -23,6 +23,10 @@ round off.
   heat transfer residual on the deformed mesh.
 - The plastic heating of the finite deformation models on the insulated
   hex against the small strain model at two small strains.
+- The mixed heated bar with GMRES and the block preconditioner against
+  the direct solve.
+- Each residual block of the mixed heated bar meets the tolerance on
+  its own at the end of a Newton step.
 """
 import dataclasses
 import tempfile
@@ -36,13 +40,16 @@ from scipy.optimize import brentq
 
 from cmad.cli.common import build_fe_problem_from_deck
 from cmad.cli.main import main as cmad_main
+from cmad.fem.assembly import params_by_block_from_models
 from cmad.fem.dof import dof_physical_coords
+from cmad.fem.driver import fe_quasistatic_drive
 from cmad.fem.mesh import (
     StructuredHexMesh,
     StructuredQuadMesh,
     hex_to_tet_split,
     quad_to_tri_split,
 )
+from cmad.fem.nonlinear_solver import fe_newton_solve
 from cmad.io.exodus import ExodusWriter, read_results
 from cmad.io.params_builder import build_parameters
 from cmad.io.results import FieldSpec
@@ -573,6 +580,90 @@ class TestFiniteModelsOnTheInsulatedHex(unittest.TestCase):
     def test_be_bar(self) -> None:
         self._check("be_bar_elastic_plastic",
                     {**_J2_VOCE, "taylor-quinney": _BETA})
+
+
+_GMRES_BLOCK = {"type": "gmres",
+                "preconditioner": {"type": "block", "inner": "jacobi"}}
+
+
+def _mixed_heated_bar_deck(
+        mesh_filename: str, out_dir: str,
+        linear_solver: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The mixed bar heated into yield with Johnson-Cook."""
+    deck = _deck(
+        mesh_filename, out_dir, "small_elastic_plastic",
+        _material(_JOHNSON_COOK_PLASTIC),
+        _constrained_bar(f"{_T_REF} + 300.0 * t"),
+        num_steps=10, mixed=True, outputs=("cauchy", "alpha"))
+    if linear_solver is not None:
+        deck["linear solver"] = linear_solver
+    return deck
+
+
+class TestMixedBarSolvers(unittest.TestCase):
+    """GMRES with the block preconditioner gives the direct solve's
+    answer on the mixed heated bar, for each inner solve."""
+
+    def test_block_preconditioned_gmres(self) -> None:
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (4, 1, 1))
+        nodal = [FieldSpec("u", VarType.VECTOR), FieldSpec("p", VarType.SCALAR),
+                 FieldSpec("T", VarType.SCALAR)]
+        element = [FieldSpec("cauchy", VarType.SYM_TENSOR),
+                   FieldSpec("alpha", VarType.SCALAR)]
+        results = {}
+        for inner in (None, "jacobi", "chebyshev", "amg"):
+            linear_solver = None if inner is None else {
+                "type": "gmres",
+                "preconditioner": {"type": "block", "inner": inner}}
+            with tempfile.TemporaryDirectory() as tmpdir:
+                results[inner] = _run(
+                    Path(tmpdir), mesh,
+                    lambda m, o, s=linear_solver: _mixed_heated_bar_deck(m, o, s),
+                    nodal, element)
+        direct = results.pop(None)
+        for inner, r in results.items():
+            for field in ("u", "p", "T"):
+                np.testing.assert_allclose(
+                    r.nodal[field][-1], direct.nodal[field][-1],
+                    rtol=1e-8, atol=1e-11, err_msg=inner)
+            np.testing.assert_allclose(
+                r.element["all"]["cauchy"][-1], direct.element["all"]["cauchy"][-1],
+                rtol=1e-8, atol=1e-8, err_msg=inner)
+
+
+class TestPerBlockConvergence(unittest.TestCase):
+    """Each residual block of the mixed heated bar meets the tolerance
+    on its own at the end of a Newton step."""
+
+    def test_every_block_converged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            with ExodusWriter(str(tmp / "mesh.exo"),
+                              StructuredHexMesh((1.0, 1.0, 1.0), (4, 1, 1))):
+                pass
+            deck_path = tmp / "deck.yaml"
+            deck_path.write_text(yaml.safe_dump(_mixed_heated_bar_deck(
+                str(tmp / "mesh.exo"), str(tmp / "out"), _GMRES_BLOCK),
+                sort_keys=False))
+            bundle = build_fe_problem_from_deck(deck_path, "primal")
+        fe_problem = bundle.fe_problem
+        tolerances = {"rel tol": 1e-10, "abs tol": 1e-10}
+        linear = bundle.resolved["linear solver"]
+        state, _, status = fe_quasistatic_drive(
+            fe_problem, [0.0, 0.1, 0.2], U_init=bundle.U_init,
+            nonlinear_solver_settings=tolerances, linear_solver_settings=linear)
+        self.assertTrue(bool(status.converged))
+        xi_prev = {block: state.xi_at(2, block)
+                   for block in fe_problem.models_by_block}
+        _, _, newton = fe_newton_solve(
+            fe_problem, params_by_block_from_models(fe_problem), state.U_at(2),
+            xi_prev, t=0.3, t_prev=0.2, nonlinear_solver_settings=tolerances,
+            linear_solver_settings=linear, return_status=True)
+        self.assertTrue(bool(newton.converged))
+        residual = np.asarray(newton.residual_norm)
+        ratio = residual / np.asarray(newton.reference_norm)
+        self.assertEqual(ratio.shape, (3,))
+        self.assertTrue(np.all((ratio <= 1e-10) | (residual <= 1e-10)))
 
 
 class TestBuilder(unittest.TestCase):
