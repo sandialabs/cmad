@@ -60,19 +60,19 @@ def johnson_cook_flow_stress(
         alpha: JaxArray, alpha_dot: JaxArray, T: Scalar,
         params: dict[str, Any],
 ) -> JaxArray:
-    """Johnson and Cook 1983: ``(A + B alpha^n) (1 + C ln(alpha_dot /
+    """Johnson and Cook 1983: ``(A + B alpha^n) (1 + C ln(1 + alpha_dot /
     reference rate)) (1 - T*^m)``.
 
     ``T*`` is the homologous temperature ``(T - T_ref) / (T_melt - T_ref)``,
-    clipped to ``[0, 1]``. Below the reference rate, where the logarithm
-    would be negative, the rate term is set to one. Both powers are
-    evaluated at ``x + POWER_LAW_OFFSET`` so their slope at zero is finite,
-    which raises the initial flow stress by ``B alpha_0^n``.
+    clipped to ``[0, 1]``. The rate term is ``ln(1 + rate ratio)`` rather
+    than ``ln(rate ratio)``, so it is one at zero rate and smooth through
+    the reference rate, and equal to the original well above it. Both
+    powers are evaluated at ``x + POWER_LAW_OFFSET`` so their slope at
+    zero is finite, which raises the initial flow stress by ``B alpha_0^n``.
     """
     p = params["johnson_cook"]
     strain_hardening = p["A"] + p["B"] * offset_power(alpha, p["n"])
-    rate_dependence = 1.0 + p["C"] * jnp.log(
-        jnp.maximum(alpha_dot / p["reference rate"], 1.0))
+    rate_dependence = 1.0 + p["C"] * jnp.log1p(alpha_dot / p["reference rate"])
     T_ref = p["reference temperature"]
     T_star = jnp.clip(
         (T - T_ref) / (p["melt temperature"] - T_ref), 0.0, 1.0)

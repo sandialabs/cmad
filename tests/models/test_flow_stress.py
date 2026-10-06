@@ -88,8 +88,7 @@ def _johnson_cook_terms(alpha, alpha_dot, T):
     p = _JC["johnson_cook"]
     a0 = POWER_LAW_OFFSET
     strain_hardening = p["A"] + p["B"] * (alpha + a0) ** p["n"]
-    rate_dependence = 1.0 + p["C"] * np.log(
-        max(alpha_dot / p["reference rate"], 1.0))
+    rate_dependence = 1.0 + p["C"] * np.log1p(alpha_dot / p["reference rate"])
     T_star = (T - p["reference temperature"]) \
         / (p["melt temperature"] - p["reference temperature"])
     T_star = min(max(T_star, 0.0), 1.0)
@@ -101,7 +100,7 @@ class TestJohnsonCookYieldFunction(unittest.TestCase):
 
     def test_value_by_hand_on_every_branch(self) -> None:
         yield_function = make_yield_function(_JC)
-        for alpha_dot in (10.0, 0.1, -1.0):
+        for alpha_dot in (10.0, 0.1, 0.0):
             for T in (100.0, 294.0, 500.0, 1793.0):
                 value = yield_function(_PHI, 0.1, alpha_dot, T, _JC)
                 expected = _PHI - float(np.prod(_johnson_cook_terms(
