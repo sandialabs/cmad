@@ -377,6 +377,15 @@ class SmallElasticPlastic(MechanicsModel):
                          resolve_parameters=self.resolve_parameters,
                          compute_thermal_stretch=self.compute_thermal_stretch)
 
+        if "taylor quinney" in plastic_subtree:
+            self.dissipation = partial(
+                self._dissipation_fn, def_type=def_type,
+                elastic_stress=elastic_stress_fun,
+                uniaxial_stress_idx=uniaxial_stress_idx,
+                has_material_rotation=has_material_rotation,
+                resolve_parameters=self.resolve_parameters,
+                compute_thermal_stretch=self.compute_thermal_stretch)
+
         # The elastic predictor is the previous state.
         if initial_guess == "radial return":
             self.initial_guess_fn = jit(partial(
@@ -535,3 +544,27 @@ class SmallElasticPlastic(MechanicsModel):
 
         return rotate_out_of_material_frame(
             material_cauchy, params, has_material_rotation)
+
+    @staticmethod
+    def _dissipation_fn(
+            xi: StateList, xi_prev: StateList, params: dict[str, Any],
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+            step_time: StepTime,
+            def_type: int, elastic_stress: Callable[..., JaxArray],
+            uniaxial_stress_idx: int, has_material_rotation: bool,
+            resolve_parameters: Callable[..., dict[str, Any]],
+            compute_thermal_stretch: Callable[..., Scalar],
+    ) -> Scalar:
+        """The plastic work rate that becomes heat, ``beta sigma : (eps_p -
+        eps_p_prev) / dt`` in the material frame."""
+        thermal_stretch = compute_thermal_stretch(params, U)
+        params = resolve_parameters(params, U)
+        elastic_strain = compute_elastic_strain(xi, params, U, def_type,
+            uniaxial_stress_idx, has_material_rotation, thermal_stretch)
+        material_cauchy = elastic_stress(elastic_strain, params)
+        plastic_strain_increment = (
+            plastic_strain_from_state(xi, def_type, has_material_rotation)
+            - plastic_strain_from_state(xi_prev, def_type, has_material_rotation))
+        beta = params["plastic"]["taylor quinney"]
+        return beta * jnp.sum(material_cauchy * plastic_strain_increment) \
+            / step_time.dt

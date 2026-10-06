@@ -11,7 +11,7 @@ from jax import jit
 from numpy.typing import NDArray
 
 from cmad.models.elastic_constants import ElasticConstants
-from cmad.models.global_fields import GlobalFieldsAtPoint
+from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
 from cmad.models.kinematics import gather_F
 from cmad.models.model import Model
 from cmad.models.temperature_dependent_parameters import evaluate_parameters
@@ -45,6 +45,9 @@ class MechanicsModel(Model):
     residual function to ``super().__init__()``, and the closed form
     stress function when the model has one; both are jit-compiled at
     construction and reached as ``cauchy`` and ``cauchy_closed_form``.
+    ``dissipation`` is the plastic work rate that becomes heat, a power
+    per unit reference volume, set at construction by a plastic model
+    whose material names ``plastic: taylor quinney``.
     On top of :class:`Model` it adds the two pieces the residual reads:
 
     - ``is_finite_deformation``: selects the form the GR assembles --
@@ -74,6 +77,9 @@ class MechanicsModel(Model):
     _oop_stretch_idx: int = -1
 
     cauchy_closed_form: Callable[..., JaxArray] | None
+    dissipation: Callable[
+        [StateList, StateList, Params, GlobalFieldsAtPoint,
+         GlobalFieldsAtPoint, StepTime], Scalar] | None = None
     # The parameters at the reference temperature, plain numbers.
     reference_parameters: dict[str, Any]
     bulk_scale_factor: float

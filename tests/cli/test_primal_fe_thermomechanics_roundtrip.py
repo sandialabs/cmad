@@ -10,6 +10,14 @@ round off.
 - A be_bar cube and a plane stress square expanding freely.
 - The builder: the temperature field starts at the reference temperature,
   and a material without a thermal subtree is refused.
+- The unit slab of ``test_heat_transient.py`` on the thermomechanics
+  residual with a free Elastic body: the temperature is the heat transfer
+  run's to round off and matches the Fourier series, and the body moves.
+- One insulated hex of the small strain model with Johnson-Cook and
+  ``taylor quinney``, pulled to five percent strain: the temperature
+  follows the uniaxial return map with the temperature raised per step by
+  the plastic work, and ``rho c dT`` equals ``beta`` times the plastic work
+  summed from the written stress and plastic strain.
 """
 import tempfile
 import unittest
@@ -18,6 +26,7 @@ from typing import Any
 
 import numpy as np
 import yaml
+from scipy.optimize import brentq
 
 from cmad.cli.common import build_fe_problem_from_deck
 from cmad.cli.main import main as cmad_main
@@ -27,8 +36,10 @@ from cmad.io.exodus import ExodusWriter, read_results
 from cmad.io.params_builder import build_parameters
 from cmad.io.results import FieldSpec
 from cmad.models.deformation_types import DefType
+from cmad.models.flow_stress import POWER_LAW_OFFSET
 from cmad.models.small_elastic_plastic import SmallElasticPlastic
 from cmad.models.var_types import VarType
+from tests.fem.test_heat_transient import slab_series
 from tests.models.test_rate_dependent_uniaxial import JOHNSON_COOK
 from tests.models.test_thermal_expansion import _drive
 
@@ -240,6 +251,194 @@ class TestFreeExpansion(unittest.TestCase):
             atol=1e-15)
         np.testing.assert_allclose(
             results.element["all"]["cauchy"][-1], 0.0, atol=1e-7)
+
+
+_SLAB_THERMAL = {"conductivity": 1.0, "density": 1.0, "specific heat": 1.0}
+_SLAB_STEPS, _SLAB_T_FINAL = 100, 0.1
+
+
+def _slab_deck(mesh_filename: str, out_dir: str,
+               thermomechanics: bool) -> dict[str, Any]:
+    """The slab of ``test_heat_transient.py`` as an input file, shifted by
+    the reference temperature: one degree above it at the start, both ends
+    held at it, on the thermomechanics residual with a free Elastic body
+    or on the heat transfer residual."""
+    if thermomechanics:
+        material = {
+            "elastic": {"E": _E, "nu": _NU},
+            "thermal expansion": {"alpha": _ALPHA, "reference temperature": _T_REF},
+            "thermal": _SLAB_THERMAL,
+        }
+        deck = _deck(
+            mesh_filename, out_dir, "elastic", material,
+            {**_symmetry(3), **_hot_x_faces(_T_REF)}, num_steps=_SLAB_STEPS)
+    else:
+        deck = {
+            "problem": {"type": "fe"},
+            "discretization": {"mesh file": mesh_filename,
+                               "num steps": _SLAB_STEPS},
+            "residuals": {
+                "global residual": {"type": "heat_transfer"},
+                "local residual": {
+                    "type": "conduction",
+                    "materials": {"all": {"thermal": _SLAB_THERMAL}},
+                },
+            },
+            "dirichlet bcs": {"expression": _hot_x_faces(_T_REF)},
+            "output": {
+                "path": out_dir,
+                "exodus filename": "primal.exo",
+                "global residual": ["T"],
+                "local residual": {"all": ["heat flux"]},
+            },
+        }
+    deck["discretization"]["step size"] = _SLAB_T_FINAL / _SLAB_STEPS
+    deck["initial conditions"] = {"T": _T_REF + 1.0}
+    return deck
+
+
+class TestSlab(unittest.TestCase):
+
+    def test_temperature_is_the_heat_transfer_runs(self) -> None:
+        mesh = StructuredHexMesh((1.0, 1.0, 1.0), (32, 1, 1))
+        T = {}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = _run(
+                Path(tmpdir), mesh, lambda m, o: _slab_deck(m, o, True),
+                [FieldSpec("u", VarType.VECTOR), FieldSpec("T", VarType.SCALAR)],
+                [FieldSpec("cauchy", VarType.SYM_TENSOR)])
+            T["thermomechanics"] = results.nodal["T"][-1].reshape(-1)
+            u = results.nodal["u"][-1]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = _run(
+                Path(tmpdir), mesh, lambda m, o: _slab_deck(m, o, False),
+                [FieldSpec("T", VarType.SCALAR)],
+                [FieldSpec("heat flux", VarType.VECTOR)])
+            T["heat transfer"] = results.nodal["T"][-1].reshape(-1)
+        np.testing.assert_allclose(
+            T["thermomechanics"], T["heat transfer"], rtol=1e-12)
+        # the discretization error of the coarse slab in test_heat_transient
+        self.assertLess(
+            np.abs(T["heat transfer"] - _T_REF
+                   - slab_series(mesh.nodes[:, 0], _SLAB_T_FINAL)).max(), 3e-3)
+        # the body is undeformed at the reference temperature and is at
+        # most one degree above it, so the far face moves out, and no
+        # farther than alpha times the length
+        u_end = u[mesh.nodes[:, 0] == 1.0, 0]
+        self.assertGreater(u_end.min(), 0.0)
+        self.assertLess(u_end.max(), _ALPHA)
+
+
+_BETA, _RHO_C = 0.9, 3.9
+_PULL_STRAIN, _PULL_STEPS = 0.05, 20
+
+
+def _johnson_cook_flow_stress(alpha: float, rate: float, T: float) -> float:
+    """The Johnson-Cook flow stress of ``JOHNSON_COOK`` at a temperature."""
+    p = JOHNSON_COOK["johnson_cook"]
+    a0 = POWER_LAW_OFFSET
+    T_star = max((T - p["reference temperature"])
+                 / (p["melt temperature"] - p["reference temperature"]), 0.0)
+    return (p["A"] + p["B"] * (alpha + a0) ** p["n"]) \
+        * (1.0 + p["C"] * np.log(max(rate / p["reference rate"], 1.0))) \
+        * (1.0 - (T_star + a0) ** p["m"])
+
+
+def _heated_return_map(strains: Any, times: Any, T_0: float) -> Any:
+    """The uniaxial return map of ``test_rate_dependent_uniaxial.py`` with
+    the thermal strain ``alpha (T - T_0)`` and the temperature raised per
+    step by ``rho c (T_n - T_(n-1)) = beta sigma_n delta_gamma_n``, the
+    flow stress at the step's temperature.
+
+    Returns ``sigma_11``, ``alpha``, the axial plastic strain, and the
+    temperature per step.
+    """
+    n = len(strains)
+    sigma, alpha, eps_p = np.zeros(n), np.zeros(n), np.zeros(n)
+    T = np.full(n, T_0)
+    for k in range(1, n):
+        dt = times[k] - times[k - 1]
+        alpha[k], eps_p[k], T[k] = alpha[k - 1], eps_p[k - 1], T[k - 1]
+        sigma_tr = _E * (strains[k] - eps_p[k - 1] - _ALPHA * (T[k - 1] - T_0))
+        sign = np.sign(sigma_tr)
+        if abs(sigma_tr) <= _johnson_cook_flow_stress(
+                alpha[k - 1], 0.0, T[k - 1]):
+            sigma[k] = sigma_tr
+            continue
+
+        def step(dg, k=k, sign=sign):
+            """The stress and the temperature at ``dg``, linear in each
+            other once ``dg`` is fixed."""
+            e = strains[k] - eps_p[k - 1] - dg * sign
+            c = _BETA * dg * sign * _E / _RHO_C
+            T_n = (T[k - 1] + c * (e + _ALPHA * T_0)) / (1.0 + c * _ALPHA)
+            return _E * (e - _ALPHA * (T_n - T_0)), T_n
+
+        def g(dg, k=k, dt=dt):
+            sigma_n, T_n = step(dg)
+            return abs(sigma_n) - _johnson_cook_flow_stress(
+                alpha[k - 1] + dg, dg / dt, T_n)
+
+        dg = brentq(g, 0.0, abs(sigma_tr) / _E, xtol=1e-18, rtol=1e-15)
+        sigma[k], T[k] = step(dg)
+        alpha[k] = alpha[k - 1] + dg
+        eps_p[k] = eps_p[k - 1] + dg * sign
+    return sigma, alpha, eps_p, T
+
+
+def _sym_tensor_contraction(a: Any, b: Any) -> float:
+    """``a : b`` summed over steps for symmetric tensors stored as
+    ``[xx, xy, xz, yy, yz, zz]``."""
+    normal, shear = [0, 3, 5], [1, 2, 4]
+    return float(np.sum(a[:, normal] * b[:, normal])
+                 + 2.0 * np.sum(a[:, shear] * b[:, shear]))
+
+
+class TestInsulatedHex(unittest.TestCase):
+
+    def test_plastic_heating_follows_the_return_map(self) -> None:
+        material = _material({
+            "effective stress": {"J2": {}},
+            "flow stress": JOHNSON_COOK, "taylor quinney": _BETA,
+        })
+        material["thermal"] = {"conductivity": 16.0, "density": 1.0,
+                               "specific heat": _RHO_C}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = _run(
+                Path(tmpdir), StructuredHexMesh((1.0, 1.0, 1.0), (1, 1, 1)),
+                lambda m, o: _deck(
+                    m, o, "small_elastic_plastic", material,
+                    {**_symmetry(3),
+                     "pull_x_max": ["equilibrium", 0, "xmax_sides",
+                                    f"{_PULL_STRAIN} * t"]},
+                    num_steps=_PULL_STEPS,
+                    outputs=("cauchy", "plastic strain", "alpha")),
+                [FieldSpec("T", VarType.SCALAR)],
+                [FieldSpec("cauchy", VarType.SYM_TENSOR),
+                 FieldSpec("plastic strain", VarType.SYM_TENSOR),
+                 FieldSpec("alpha", VarType.SCALAR)])
+        times = np.linspace(0.0, 1.0, _PULL_STEPS + 1)
+        sigma, alpha, _, T = _heated_return_map(
+            _PULL_STRAIN * times, times, _T_REF)
+        self.assertGreater(T[-1] - _T_REF, 1.0)
+        T_fe = np.array([
+            results.nodal["T"][k].reshape(-1) for k in range(len(times))])
+        np.testing.assert_allclose(
+            T_fe - _T_REF, np.broadcast_to((T - _T_REF)[:, None], T_fe.shape),
+            rtol=1e-8, atol=1e-10)
+        cauchy = np.array([
+            results.element["all"]["cauchy"][k][0] for k in range(len(times))])
+        np.testing.assert_allclose(cauchy[-1, 0], sigma[-1], rtol=1e-8)
+        np.testing.assert_allclose(
+            results.element["all"]["alpha"][-1].reshape(-1), alpha[-1], rtol=1e-8)
+        # the heat stored equals beta times the plastic work, both from the
+        # written fields
+        eps_p = np.array([
+            results.element["all"]["plastic strain"][k][0]
+            for k in range(len(times))])
+        work = _sym_tensor_contraction(cauchy[1:], np.diff(eps_p, axis=0))
+        np.testing.assert_allclose(
+            _RHO_C * (T_fe[-1, 0] - _T_REF), _BETA * work, rtol=1e-8)
 
 
 class TestBuilder(unittest.TestCase):

@@ -18,7 +18,9 @@ class ThermomechanicsModel(MechanicsModel, ThermalModel):
     The local state stacks the mechanics blocks before the thermal blocks,
     and the residual stacks the same way. The Cauchy stress and the
     deformation gradient come from the mechanics model, the heat flux and
-    the heat capacity rate from the thermal model. The input file builder
+    the heat capacity rate from the thermal model. The heat generation is
+    the mechanics dissipation when the mechanics model has one. The input
+    file builder
     composes it for the thermomechanics global residual; it is not an
     input file type.
     """
@@ -65,6 +67,9 @@ class ThermomechanicsModel(MechanicsModel, ThermalModel):
         if thermal.supports_closed_form:
             self.heat_flux_closed_form = thermal.heat_flux_closed_form
         self.face_flux = thermal.face_flux
+        if mechanics.dissipation is not None:
+            self.dissipation = self._dissipation_fn
+            self.heat_generation = self.dissipation
         if mechanics.initial_guess_fn is not None:
             self.initial_guess_fn = self._initial_guess_fn
 
@@ -138,6 +143,17 @@ class ThermomechanicsModel(MechanicsModel, ThermalModel):
             step_time: StepTime,
     ) -> Scalar:
         return self.thermal.heat_capacity_rate(params, U, U_prev, step_time)
+
+    def _dissipation_fn(
+            self,
+            xi: StateList, xi_prev: StateList, params: Params,
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+            step_time: StepTime,
+    ) -> Scalar:
+        n = self._num_mechanics_blocks
+        assert self.mechanics.dissipation is not None
+        return self.mechanics.dissipation(
+            xi[:n], xi_prev[:n], params, U, U_prev, step_time)
 
     def state_output_fields(self) -> list[tuple[str, VarType]]:
         return [

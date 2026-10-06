@@ -479,6 +479,19 @@ class RateElasticPlastic(MechanicsModel):
                          finite_deformation=finite_deformation,
                          has_material_rotation=has_material_rotation)
 
+        if "taylor quinney" in plastic_subtree:
+            if finite_deformation:
+                raise NotImplementedError(
+                    "rate_elastic_plastic: taylor quinney with finite "
+                    "deformation is not implemented")
+            self.dissipation = partial(
+                self._dissipation_fn, def_type=def_type,
+                effective_stress=effective_stress_fun,
+                uniaxial_stress_idx=uniaxial_stress_idx,
+                is_complex=is_complex,
+                has_material_rotation=has_material_rotation,
+                resolve_parameters=self.resolve_parameters)
+
         if initial_guess == "radial return":
             self.initial_guess_fn = jit(partial(
                 start_from_radial_return, def_type=def_type,
@@ -680,3 +693,25 @@ class RateElasticPlastic(MechanicsModel):
             cauchy = R @ cauchy @ R.T
 
         return cauchy
+
+    @staticmethod
+    def _dissipation_fn(
+            xi: StateList, xi_prev: StateList, params: dict[str, Any],
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+            step_time: StepTime,
+            def_type: int, effective_stress: Callable[..., JaxArray],
+            uniaxial_stress_idx: int, is_complex: bool,
+            has_material_rotation: bool,
+            resolve_parameters: Callable[..., dict[str, Any]],
+    ) -> Scalar:
+        """The plastic work rate that becomes heat, ``beta sigma :
+        delta_gamma n / dt`` in the material frame."""
+        params = resolve_parameters(params, U)
+        cauchy = stress_from_state(
+            xi, def_type, uniaxial_stress_idx, has_material_rotation)
+        yield_normal = grad(effective_stress, holomorphic=is_complex)(
+            cauchy, params["plastic"])
+        delta_gamma = get_scalar(xi[1]) - get_scalar(xi_prev[1])
+        beta = params["plastic"]["taylor quinney"]
+        return beta * jnp.sum(cauchy * (delta_gamma * yield_normal)) \
+            / step_time.dt
