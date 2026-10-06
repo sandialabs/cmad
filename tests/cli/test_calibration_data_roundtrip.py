@@ -130,7 +130,7 @@ class TestCalibrationDataRoundTrip(unittest.TestCase):
             load=np.loadtxt(cls.load_csv, delimiter=","),
             node_ids=node_ids,
             sidesets={LOADED: loaded_nodes},
-            values=cls.truth_u[:, node_ids, :],
+            displacement=cls.truth_u[:, node_ids, :],
             mesh_file=str(cls.mesh_path),
             mesh_num_nodes=int(cls.mesh.nodes.shape[0]),
             roi={

@@ -11,7 +11,7 @@ from cmad.io.calibration_data import CalibrationData
 from cmad.io.qoi_data import load_roi
 
 
-def _record() -> CalibrationData:
+def _record(temperature: bool = False) -> CalibrationData:
     rng = np.random.default_rng(0)
     return CalibrationData(
         times=np.array([0.0, 1.0, 2.5, 4.0]),
@@ -22,7 +22,7 @@ def _record() -> CalibrationData:
             "ymin_sides": np.array([2, 5], dtype=np.intp),
             "ymax_sides": np.array([11, 12], dtype=np.intp),
         },
-        values=rng.standard_normal((4, 5, 2)),
+        displacement=rng.standard_normal((4, 5, 2)),
         mesh_file="mesh.msh",
         mesh_num_nodes=20,
         roi={
@@ -30,6 +30,9 @@ def _record() -> CalibrationData:
             "band": np.float64(0.5),
             "max_gap": np.float64(0.3),
         },
+        temperature=(
+            300.0 + rng.standard_normal((4, 5)) if temperature else None
+        ),
     )
 
 
@@ -47,13 +50,35 @@ class TestCalibrationData(unittest.TestCase):
         self.assertEqual(list(back.sidesets), list(data.sidesets))
         for name, ids in data.sidesets.items():
             np.testing.assert_array_equal(back.sidesets[name], ids)
-        np.testing.assert_array_equal(back.values, data.values)
+        np.testing.assert_array_equal(back.displacement, data.displacement)
+        self.assertIsNone(back.temperature)
         self.assertEqual(back.mesh_file, "mesh.msh")
         self.assertEqual(back.mesh_num_nodes, 20)
         self.assertEqual(set(back.roi), {"elements", "band", "max_gap"})
         np.testing.assert_array_equal(back.roi["elements"], [0, 3])
         self.assertEqual(float(back.roi["band"]), 0.5)
         self.assertEqual(float(back.roi["max_gap"]), 0.3)
+
+    def test_temperature_round_trip(self) -> None:
+        data = _record(temperature=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "calibration_data.npz"
+            data.write(path)
+            back = CalibrationData.read(path)
+        assert data.temperature is not None
+        np.testing.assert_array_equal(back.temperature, data.temperature)
+        self.assertEqual(set(back.roi), {"elements", "band", "max_gap"})
+
+    def test_temperature_shape_checked(self) -> None:
+        data = _record()
+        with self.assertRaisesRegex(ValueError, "temperature has shape"):
+            CalibrationData(
+                times=data.times, frame_ids=data.frame_ids, load=data.load,
+                node_ids=data.node_ids, sidesets=data.sidesets,
+                displacement=data.displacement, mesh_file=data.mesh_file,
+                mesh_num_nodes=data.mesh_num_nodes,
+                temperature=np.zeros((4, 3)),
+            )
 
     def test_frame_lookup(self) -> None:
         data = _record()
@@ -74,8 +99,26 @@ class TestCalibrationData(unittest.TestCase):
     def test_rows_by_node_ids(self) -> None:
         data = _record()
         rows = data.rows([1, 3], [11, 5])
-        np.testing.assert_array_equal(rows, data.values[[1, 3]][:, [3, 1]])
-        np.testing.assert_array_equal(data.rows([2]), data.values[2:3])
+        np.testing.assert_array_equal(
+            rows, data.displacement[[1, 3]][:, [3, 1]],
+        )
+        np.testing.assert_array_equal(data.rows([2]), data.displacement[2:3])
+
+    def test_rows_by_field(self) -> None:
+        data = _record(temperature=True)
+        assert data.temperature is not None
+        rows = data.rows([1, 3], [11, 5], field="T")
+        self.assertEqual(rows.shape, (2, 2, 1))
+        np.testing.assert_array_equal(
+            rows[:, :, 0], data.temperature[[1, 3]][:, [3, 1]],
+        )
+        np.testing.assert_array_equal(
+            data.rows([2], field="u"), data.displacement[2:3],
+        )
+        with self.assertRaisesRegex(ValueError, "unknown field 'p'"):
+            data.rows([2], field="p")
+        with self.assertRaisesRegex(ValueError, "holds no temperature"):
+            _record().rows([2], field="T")
 
     def test_missing_node_raises(self) -> None:
         data = _record()
@@ -91,7 +134,7 @@ class TestCalibrationData(unittest.TestCase):
                 times=data.times, frame_ids=data.frame_ids, load=data.load,
                 node_ids=data.node_ids,
                 sidesets={"ymin_sides": np.array([2, 9], dtype=np.intp)},
-                values=data.values, mesh_file=data.mesh_file,
+                displacement=data.displacement, mesh_file=data.mesh_file,
                 mesh_num_nodes=data.mesh_num_nodes,
             )
 
