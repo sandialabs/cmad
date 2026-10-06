@@ -47,7 +47,7 @@ class MechanicsModel(Model):
     construction and reached as ``cauchy`` and ``cauchy_closed_form``.
     ``dissipation`` is the plastic work rate that becomes heat, a power
     per unit reference volume, set at construction by a plastic model
-    whose material names ``plastic: taylor quinney``.
+    whose material names ``plastic: taylor-quinney``.
     On top of :class:`Model` it adds the two pieces the residual reads:
 
     - ``is_finite_deformation``: selects the form the GR assembles --

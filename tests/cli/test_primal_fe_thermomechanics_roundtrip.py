@@ -14,11 +14,17 @@ round off.
   residual with a free Elastic body: the temperature is the heat transfer
   run's to round off and matches the Fourier series, and the body moves.
 - One insulated hex of the small strain model with Johnson-Cook and
-  ``taylor quinney``, pulled to five percent strain: the temperature
+  ``taylor-quinney``, pulled to five percent strain: the temperature
   follows the uniaxial return map with the temperature raised per step by
   the plastic work, and ``rho c dT`` equals ``beta`` times the plastic work
   summed from the written stress and plastic strain.
+- Steady conduction through a neohookean body clamped at one end and
+  pulled at the other, on tets and on plane strain triangles, against the
+  heat transfer residual on the deformed mesh.
+- The plastic heating of the finite deformation models on the insulated
+  hex against the small strain model at two small strains.
 """
+import dataclasses
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,7 +37,12 @@ from scipy.optimize import brentq
 from cmad.cli.common import build_fe_problem_from_deck
 from cmad.cli.main import main as cmad_main
 from cmad.fem.dof import dof_physical_coords
-from cmad.fem.mesh import StructuredHexMesh, StructuredQuadMesh
+from cmad.fem.mesh import (
+    StructuredHexMesh,
+    StructuredQuadMesh,
+    hex_to_tet_split,
+    quad_to_tri_split,
+)
 from cmad.io.exodus import ExodusWriter, read_results
 from cmad.io.params_builder import build_parameters
 from cmad.io.results import FieldSpec
@@ -71,6 +82,7 @@ def _deck(
         num_steps: int = 1, def_type: str = "full_3d", mixed: bool = False,
         outputs: tuple[str, ...] = ("cauchy",),
         reference_temperature: float = _T_REF,
+        local_residual: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     gr: dict[str, Any] = {"type": "thermomechanics", "def_type": def_type}
     if mixed:
@@ -88,6 +100,7 @@ def _deck(
                 "type": model_type,
                 "reference temperature": reference_temperature,
                 "materials": {"all": material},
+                **(local_residual or {}),
             },
         },
         "dirichlet bcs": {"expression": dirichlet},
@@ -121,6 +134,35 @@ def _constrained_bar(T_expression: Any) -> dict[str, Any]:
         **_symmetry(3),
         "fixed_x_max": ["equilibrium", 0, "xmax_sides", "0.0"],
         **_hot_x_faces(T_expression),
+    }
+
+
+def _heat_deck(
+        mesh_filename: str, out_dir: str, thermal: dict[str, Any],
+        dirichlet: dict[str, Any], num_steps: int = 1,
+) -> dict[str, Any]:
+    """A heat transfer input file with the given material and boundary
+    temperatures."""
+    return {
+        "problem": {"type": "fe"},
+        "discretization": {
+            "mesh file": mesh_filename, "num steps": num_steps,
+            "step size": 1.0 / num_steps,
+        },
+        "residuals": {
+            "global residual": {"type": "heat_transfer"},
+            "local residual": {
+                "type": "conduction",
+                "materials": {"all": {"thermal": thermal}},
+            },
+        },
+        "dirichlet bcs": {"expression": dirichlet},
+        "output": {
+            "path": out_dir,
+            "exodus filename": "primal.exo",
+            "global residual": ["T"],
+            "local residual": {"all": ["heat flux"]},
+        },
     }
 
 
@@ -273,25 +315,9 @@ def _slab_deck(mesh_filename: str, out_dir: str,
             mesh_filename, out_dir, "elastic", material,
             {**_symmetry(3), **_hot_x_faces(_T_REF)}, num_steps=_SLAB_STEPS)
     else:
-        deck = {
-            "problem": {"type": "fe"},
-            "discretization": {"mesh file": mesh_filename,
-                               "num steps": _SLAB_STEPS},
-            "residuals": {
-                "global residual": {"type": "heat_transfer"},
-                "local residual": {
-                    "type": "conduction",
-                    "materials": {"all": {"thermal": _SLAB_THERMAL}},
-                },
-            },
-            "dirichlet bcs": {"expression": _hot_x_faces(_T_REF)},
-            "output": {
-                "path": out_dir,
-                "exodus filename": "primal.exo",
-                "global residual": ["T"],
-                "local residual": {"all": ["heat flux"]},
-            },
-        }
+        deck = _heat_deck(
+            mesh_filename, out_dir, _SLAB_THERMAL, _hot_x_faces(_T_REF),
+            num_steps=_SLAB_STEPS)
     deck["discretization"]["step size"] = _SLAB_T_FINAL / _SLAB_STEPS
     deck["initial conditions"] = {"T": _T_REF + 1.0}
     return deck
@@ -331,6 +357,10 @@ class TestSlab(unittest.TestCase):
 
 _BETA, _RHO_C = 0.9, 3.9
 _PULL_STRAIN, _PULL_STEPS = 0.05, 20
+_JOHNSON_COOK_PLASTIC = {
+    "effective stress": {"J2": {}},
+    "flow stress": JOHNSON_COOK, "taylor-quinney": _BETA,
+}
 
 
 def _johnson_cook_flow_stress(alpha: float, rate: float, T: float) -> float:
@@ -397,10 +427,7 @@ def _sym_tensor_contraction(a: Any, b: Any) -> float:
 class TestInsulatedHex(unittest.TestCase):
 
     def test_plastic_heating_follows_the_return_map(self) -> None:
-        material = _material({
-            "effective stress": {"J2": {}},
-            "flow stress": JOHNSON_COOK, "taylor quinney": _BETA,
-        })
+        material = _material(_JOHNSON_COOK_PLASTIC)
         material["thermal"] = {"conductivity": 16.0, "density": 1.0,
                                "specific heat": _RHO_C}
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -439,6 +466,113 @@ class TestInsulatedHex(unittest.TestCase):
         work = _sym_tensor_contraction(cauchy[1:], np.diff(eps_p, axis=0))
         np.testing.assert_allclose(
             _RHO_C * (T_fe[-1, 0] - _T_REF), _BETA * work, rtol=1e-8)
+
+
+def _deformed(mesh: Any, u: Any) -> Any:
+    """The mesh with its nodes moved by ``u``."""
+    return dataclasses.replace(mesh, nodes=mesh.nodes + u)
+
+
+class TestConductionOnADeformedBody(unittest.TestCase):
+    """Steady conduction between two end temperatures through a neohookean
+    body clamped at one end and pulled at the other, against the heat
+    transfer residual on the deformed mesh: the same discrete problem when
+    ``F`` is constant on each element."""
+
+    def _check(self, mesh: Any, def_type: str, ndims: int) -> None:
+        material = {
+            "elastic": {"E": _E, "nu": _NU},
+            "thermal expansion": {"alpha": _ALPHA, "reference temperature": _T_REF},
+            "thermal": _THERMAL,
+        }
+        ends = {
+            "cold_x_min": ["energy balance", 0, "xmin_sides", _T_REF],
+            "hot_x_max": ["energy balance", 0, "xmax_sides", _T_HOT],
+        }
+        clamp = {f"clamp_{d}": ["equilibrium", d, "xmin_sides", 0.0]
+                 for d in range(ndims)}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = _run(
+                Path(tmpdir), mesh,
+                lambda m, o: _deck(
+                    m, o, "elastic", material,
+                    {**clamp, "pull_x_max": ["equilibrium", 0, "xmax_sides", 0.3],
+                     **ends},
+                    def_type=def_type,
+                    local_residual={"elastic_stress": "neohookean"}),
+                [FieldSpec("u", VarType.VECTOR), FieldSpec("T", VarType.SCALAR)],
+                [FieldSpec("cauchy", VarType.SYM_TENSOR)])
+        u = results.nodal["u"][-1]
+        T = results.nodal["T"][-1].reshape(-1)
+        # the deformation is not homogeneous, so the temperature is not
+        # linear in the reference coordinate
+        self.assertGreater(
+            np.abs(T - (_T_REF + _DT * mesh.nodes[:, 0])).max(), 1.0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = _run(
+                Path(tmpdir), _deformed(mesh, u),
+                lambda m, o: _heat_deck(m, o, _THERMAL, ends),
+                [FieldSpec("T", VarType.SCALAR)],
+                [FieldSpec("heat flux", VarType.VECTOR)])
+        np.testing.assert_allclose(
+            T, results.nodal["T"][-1].reshape(-1), rtol=1e-9)
+
+    def test_tets(self) -> None:
+        self._check(
+            hex_to_tet_split(StructuredHexMesh((1.0, 1.0, 1.0), (4, 4, 4))),
+            "full_3d", 3)
+
+    def test_plane_strain_triangles(self) -> None:
+        self._check(
+            quad_to_tri_split(StructuredQuadMesh((1.0, 1.0), (6, 6))),
+            "plane_strain", 2)
+
+
+def _insulated_hex_rise(
+        model_type: str, plastic: dict[str, Any], strain: float,
+        local_residual: dict[str, Any] | None = None) -> float:
+    """The temperature rise of one insulated hex pulled to ``strain`` in
+    one second on the thermomechanics residual."""
+    material = _material(plastic)
+    material["thermal"] = {"conductivity": 16.0, "density": 1.0,
+                           "specific heat": _RHO_C}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        results = _run(
+            Path(tmpdir), StructuredHexMesh((1.0, 1.0, 1.0), (1, 1, 1)),
+            lambda m, o: _deck(
+                m, o, model_type, material,
+                {**_symmetry(3),
+                 "pull_x_max": ["equilibrium", 0, "xmax_sides", f"{strain} * t"]},
+                num_steps=_PULL_STEPS, local_residual=local_residual),
+            [FieldSpec("T", VarType.SCALAR)],
+            [FieldSpec("cauchy", VarType.SYM_TENSOR)])
+    return float(results.nodal["T"][-1].reshape(-1)[0]) - _T_REF
+
+
+class TestFiniteModelsOnTheInsulatedHex(unittest.TestCase):
+    """The plastic heating of the finite deformation models against the
+    small strain model at two small strains: within a few percent, the
+    gap shrinking with the strain."""
+
+    def _check(self, model_type: str, plastic: dict[str, Any],
+               local_residual: dict[str, Any] | None = None) -> None:
+        gaps = []
+        for strain in (0.02, 0.01):
+            small = _insulated_hex_rise("small_elastic_plastic", plastic, strain)
+            finite = _insulated_hex_rise(
+                model_type, plastic, strain, local_residual)
+            self.assertGreater(small, 0.1)
+            gaps.append(abs(finite - small) / small)
+        self.assertLess(gaps[0], 0.05)
+        self.assertLess(gaps[1], 0.75 * gaps[0])
+
+    def test_rate_model(self) -> None:
+        self._check("rate_elastic_plastic", _JOHNSON_COOK_PLASTIC,
+                    {"finite deformation": True})
+
+    def test_be_bar(self) -> None:
+        self._check("be_bar_elastic_plastic",
+                    {**_J2_VOCE, "taylor-quinney": _BETA})
 
 
 class TestBuilder(unittest.TestCase):

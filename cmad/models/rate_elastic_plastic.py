@@ -34,7 +34,10 @@ from jax import grad, jit
 from cmad.models.deformation_types import DefType, def_type_ndims
 from cmad.models.effective_stress import conventional_effective_stress_fun
 from cmad.models.elastic_constants import ElasticConstants
-from cmad.models.elastic_stress import isotropic_linear_elastic_stress
+from cmad.models.elastic_stress import (
+    isotropic_linear_elastic_strain,
+    isotropic_linear_elastic_stress,
+)
 from cmad.models.flow_stress import make_yield_function
 from cmad.models.global_fields import (
     GlobalFieldsAtPoint,
@@ -42,6 +45,7 @@ from cmad.models.global_fields import (
     temperature_at_point,
 )
 from cmad.models.kinematics import (
+    det_3x3,
     gather_F,
     off_axis_idx,
     polar_rotation,
@@ -479,18 +483,19 @@ class RateElasticPlastic(MechanicsModel):
                          finite_deformation=finite_deformation,
                          has_material_rotation=has_material_rotation)
 
-        if "taylor quinney" in plastic_subtree:
-            if finite_deformation:
-                raise NotImplementedError(
-                    "rate_elastic_plastic: taylor quinney with finite "
-                    "deformation is not implemented")
+        if "taylor-quinney" in plastic_subtree:
+            if elastic_stress_fun is not isotropic_linear_elastic_stress:
+                raise ValueError(
+                    "rate_elastic_plastic: taylor-quinney needs isotropic "
+                    "linear elasticity")
             self.dissipation = partial(
                 self._dissipation_fn, def_type=def_type,
-                effective_stress=effective_stress_fun,
                 uniaxial_stress_idx=uniaxial_stress_idx,
-                is_complex=is_complex,
+                finite_deformation=finite_deformation,
                 has_material_rotation=has_material_rotation,
-                resolve_parameters=self.resolve_parameters)
+                resolve_parameters=self.resolve_parameters,
+                previous_stress=previous_stress,
+                compute_thermal_stretch=self.compute_thermal_stretch)
 
         if initial_guess == "radial return":
             self.initial_guess_fn = jit(partial(
@@ -699,19 +704,33 @@ class RateElasticPlastic(MechanicsModel):
             xi: StateList, xi_prev: StateList, params: dict[str, Any],
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             step_time: StepTime,
-            def_type: int, effective_stress: Callable[..., JaxArray],
-            uniaxial_stress_idx: int, is_complex: bool,
-            has_material_rotation: bool,
+            def_type: int, uniaxial_stress_idx: int,
+            finite_deformation: bool, has_material_rotation: bool,
             resolve_parameters: Callable[..., dict[str, Any]],
+            previous_stress: Callable[..., JaxArray],
+            compute_thermal_stretch: Callable[..., Scalar],
     ) -> Scalar:
-        """The plastic work rate that becomes heat, ``beta sigma :
-        delta_gamma n / dt`` in the material frame."""
+        """The plastic work rate that becomes heat, ``beta sigma : d eps_p
+        / dt``, per unit reference volume in finite deformation."""
+        thermal_stretch = compute_thermal_stretch(params, U)
+        thermal_stretch_prev = compute_thermal_stretch(params, U_prev)
+        params_prev = resolve_parameters(params, U_prev)
         params = resolve_parameters(params, U)
         cauchy = stress_from_state(
             xi, def_type, uniaxial_stress_idx, has_material_rotation)
-        yield_normal = grad(effective_stress, holomorphic=is_complex)(
-            cauchy, params["plastic"])
-        delta_gamma = get_scalar(xi[1]) - get_scalar(xi_prev[1])
-        beta = params["plastic"]["taylor quinney"]
-        return beta * jnp.sum(cauchy * (delta_gamma * yield_normal)) \
-            / step_time.dt
+        cauchy_prev = previous_stress(
+            stress_from_state(
+                xi_prev, def_type, uniaxial_stress_idx, has_material_rotation),
+            params, params_prev)
+        increment = material_frame_increment(
+            xi, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
+            finite_deformation, has_material_rotation, thermal_stretch,
+            thermal_stretch_prev)
+        plastic_increment = increment - isotropic_linear_elastic_strain(
+            cauchy - cauchy_prev, params)
+        beta = params["plastic"]["taylor-quinney"]
+        dissipation = beta * jnp.sum(cauchy * plastic_increment) / step_time.dt
+        if finite_deformation:
+            dissipation = dissipation * det_3x3(
+                gather_F(xi, U, def_type, 2, uniaxial_stress_idx))
+        return dissipation

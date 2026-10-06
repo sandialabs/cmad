@@ -5,7 +5,7 @@ against the scalar return map of ``test_rate_dependent_uniaxial.py``: the
 dissipation is ``beta phi delta_gamma / dt`` with ``phi = |sigma_11|``,
 zero while the point is elastic. The composite's heat generation is the
 mechanics dissipation, and both are ``None`` for a material without
-``taylor quinney`` and for Elastic.
+``taylor-quinney`` and for Elastic.
 """
 import unittest
 
@@ -46,7 +46,7 @@ def _parameters(beta=_BETA, thermal=False):
         },
     }
     if beta is not None:
-        tree["plastic"]["taylor quinney"] = beta
+        tree["plastic"]["taylor-quinney"] = beta
     if thermal:
         tree["thermal"] = {"conductivity": 16.0}
     return build_parameters(tree)
@@ -102,10 +102,6 @@ class TestDissipationMatchesTheReturnMap(unittest.TestCase):
 
     def test_rate_elastic_plastic(self):
         self._check(RateElasticPlastic)
-
-    def test_finite_deformation_is_refused(self):
-        with self.assertRaisesRegex(NotImplementedError, "finite deformation"):
-            RateElasticPlastic(_parameters(), finite_deformation=True)
 
 
 class TestCompositeHeatGeneration(unittest.TestCase):

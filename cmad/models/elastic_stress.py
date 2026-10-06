@@ -22,6 +22,17 @@ def isotropic_linear_elastic_stress(
     )
 
 
+def isotropic_linear_elastic_strain(
+        stress: JaxArray, params: dict[str, Any],
+) -> JaxArray:
+    """The inverse of :func:`isotropic_linear_elastic_stress`."""
+    elastic_constants = ElasticConstants.from_params(params["elastic"])
+    trace_strain = jnp.trace(stress) / (
+        3. * elastic_constants.lmbda + 2. * elastic_constants.mu)
+    return (stress - elastic_constants.lmbda * trace_strain * jnp.eye(3)) \
+        / (2. * elastic_constants.mu)
+
+
 # alternative form used by elasticity-only models
 def isotropic_linear_elastic_cauchy_stress(
         F: JaxArray, params: dict[str, Any],

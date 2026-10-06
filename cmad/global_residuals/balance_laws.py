@@ -11,7 +11,7 @@ from jax import numpy as jnp
 from cmad.fem.shapes import ShapeFunctionsAtIP
 from cmad.global_residuals.modes import GlobalResidualMode
 from cmad.models.global_fields import GlobalFieldsAtPoint, StepTime
-from cmad.models.kinematics import cofactor, det_3x3
+from cmad.models.kinematics import cofactor, det_3x3, inv_3x3
 from cmad.models.mechanics_model import MechanicsModel
 from cmad.models.thermal_model import ThermalModel
 from cmad.typing import JaxArray, Params, Scalar, StateList
@@ -152,12 +152,31 @@ def energy_balance(
     """Residual block of the energy balance, shape ``(n_basis_T, 1)``:
     ``N rho c (T - T_prev) / dt - grad_N . q`` times ``w dv``, with the
     heat capacity rate and the heat flux ``q`` from the model
-    (closed-form or from the local state per ``mode``). A model with a
-    ``heat_generation`` subtracts ``N heat_generation`` times ``w dv``.
+    (closed-form or from the local state per ``mode``). Under finite
+    deformation the model gets the temperature gradient in the current
+    configuration, ``Grad T F^-1``, and its flux is pulled back to the
+    reference one, ``Q = cof(F)^T q``, the heat per unit reference area.
+    A model with a ``heat_generation`` subtracts ``N heat_generation``
+    times ``w dv``.
     A model with a ``face_flux`` adds ``N 2 face_flux`` over the area element
     ``w dv / thickness``, the heat leaving both faces of a plate modeled
     in its plane."""
-    q = _heat_flux_by_mode(xi, xi_prev, params, U_ip, U_ip_prev, model, mode)
+    n = U_ip.grad_fields["T"].shape[-1]
+    if isinstance(model, MechanicsModel) and model.is_finite_deformation:
+        # the model's Fourier law wants the temperature gradient over
+        # current distances, so the model gets grad T = Grad T F^-1; the
+        # balance integrates over the reference volume, so the flux the
+        # model returns is pulled back to Q = cof(F)^T q
+        F = model.deformation_gradient(xi, U_ip)
+        U_current = GlobalFieldsAtPoint(
+            fields=U_ip.fields,
+            grad_fields={**U_ip.grad_fields,
+                         "T": U_ip.grad_fields["T"] @ inv_3x3(F)[:n, :n]})
+        q = cofactor(F)[:n, :n].T @ _heat_flux_by_mode(
+            xi, xi_prev, params, U_current, U_ip_prev, model, mode)
+    else:
+        q = _heat_flux_by_mode(
+            xi, xi_prev, params, U_ip, U_ip_prev, model, mode)
     c_rate = model.heat_capacity_rate(params, U_ip, U_ip_prev, step_time)
     R = (shapes_T.N * c_rate - shapes_T.grad_N @ q) * w * dv
     if model.heat_generation is not None:

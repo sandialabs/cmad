@@ -360,6 +360,13 @@ class BeBarElasticPlastic(MechanicsModel):
             resolve_parameters=self.resolve_parameters,
             compute_thermal_stretch=self.compute_thermal_stretch)
 
+        if "taylor-quinney" in plastic_subtree:
+            self.dissipation = partial(
+                self._dissipation_fn,
+                def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
+                resolve_parameters=self.resolve_parameters,
+                compute_thermal_stretch=self.compute_thermal_stretch)
+
         if initial_guess == "radial return":
             self.initial_guess_fn = jit(partial(
                 start_from_radial_return,
@@ -464,3 +471,29 @@ class BeBarElasticPlastic(MechanicsModel):
         params = resolve_parameters(params, U)
         return compute_cauchy(
             xi, params, U, def_type, oop_stretch_idx, thermal_stretch)
+
+    @staticmethod
+    def _dissipation_fn(
+            xi: StateList, xi_prev: StateList, params: dict[str, Any],
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+            step_time: StepTime,
+            def_type: int, oop_stretch_idx: int,
+            resolve_parameters: Callable[..., dict[str, Any]],
+            compute_thermal_stretch: Callable[..., Scalar],
+    ) -> Scalar:
+        """The plastic work rate that becomes heat per unit reference
+        volume, ``beta J sigma : d eps_p / dt``."""
+        thermal_stretch = compute_thermal_stretch(params, U)
+        params = resolve_parameters(params, U)
+        cauchy = compute_cauchy(
+            xi, params, U, def_type, oop_stretch_idx, thermal_stretch)
+        J = det_3x3(gather_F(xi, U, def_type, oop_stretch_idx))
+        ndims = zeta_ndims(def_type)
+        zeta = get_dev_sym_tensor_from_vector(xi[0], ndims)
+        Ie = get_scalar(xi[1])[0]
+        trial = elastic_predictor(
+            xi, xi_prev, params, U, U_prev, def_type, oop_stretch_idx)
+        dev_be_bar_trial = get_dev_sym_tensor_from_vector(trial[0], ndims)
+        plastic_increment = (dev_be_bar_trial - zeta) / (2. * Ie)
+        beta = params["plastic"]["taylor-quinney"]
+        return beta * J * jnp.sum(cauchy * plastic_increment) / step_time.dt

@@ -48,7 +48,7 @@ residuals:
               reference temperature: 294.0
               melt temperature: 1793.0
               m: 1.03
-          taylor quinney: 0.9
+          taylor-quinney: 0.9
         thermal expansion: {alpha: 1.2e-5, reference temperature: 300.0}
         thermal:
           conductivity: 16.0
