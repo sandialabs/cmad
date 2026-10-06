@@ -786,10 +786,10 @@ def assemble_element_block_dense(
     ``fe_arrays.r_scatter_eq_by_block[block_name][r]`` and ``[s]``, the
     global equation numbers they scatter to. ``xi_solved_per_block`` is
     the converged xi for COUPLED, ``None`` for CLOSED_FORM.
-    ``R_elem_norm`` is the l2 norm of the per-element residual entries
-    exactly as the kernels produced them, before the scatter sums them
-    into ``R_block``: the size of the assembly's summands, not of their
-    sum.
+    ``R_elem_norm`` is the l2 norm, one entry per residual block, of the
+    per-element residual entries exactly as the kernels produced them,
+    before the scatter sums them into ``R_block``: the size of the
+    assembly's summands, not of their sum.
 
     The per-element U-gather index arrays, the per-residual-block
     R-scatter eq arrays, and the reference-frame geometry cache are
@@ -824,7 +824,7 @@ def assemble_element_block_dense(
         assert K_per_elem is not None
         n_chunk = r_scatter_eq[0].shape[0]
         R_block = _scatter_residual(R_block, R_per_elem, r_scatter_eq)
-        norm_sq = norm_sq + sum(jnp.sum(R_r ** 2) for R_r in R_per_elem)
+        norm_sq = norm_sq + jnp.stack([jnp.sum(R_r ** 2) for R_r in R_per_elem])
         K_blocks = [
             [
                 K_per_elem[r][s].reshape(
@@ -842,7 +842,8 @@ def assemble_element_block_dense(
             fe_arrays.u_gather_eq_by_block[block_name], eq_indices_per_block,
             geom_cache.per_elem, xi_prev,
         ),
-        body, (jnp.zeros(fe_problem.dof_map.num_total_dofs), jnp.zeros(())),
+        body,
+        (jnp.zeros(fe_problem.dof_map.num_total_dofs), jnp.zeros(num_blocks)),
     )
     return R_block, K_blocks, xi_solved_per_block, jnp.sqrt(norm_sq)
 
@@ -983,7 +984,7 @@ def _assemble_block_into_unique_data(
         )
         assert K_per_elem is not None
         R_block = _scatter_residual(R_block, R_per_elem, r_scatter_eq)
-        norm_sq = norm_sq + sum(jnp.sum(R_r ** 2) for R_r in R_per_elem)
+        norm_sq = norm_sq + jnp.stack([jnp.sum(R_r ** 2) for R_r in R_per_elem])
         k = 0
         for r in range(num_blocks):
             for s in range(num_blocks):
@@ -1000,7 +1001,8 @@ def _assemble_block_into_unique_data(
             geom_cache.per_elem, xi_prev, dedup_per_pair,
         ),
         body,
-        (jnp.zeros(fe_problem.dof_map.num_total_dofs), unique_data, jnp.zeros(())),
+        (jnp.zeros(fe_problem.dof_map.num_total_dofs), unique_data,
+         jnp.zeros(num_blocks)),
     )
     return R_block, unique_data, xi_solved, jnp.sqrt(norm_sq), offset
 
@@ -1030,9 +1032,9 @@ def assemble_global(
     are exactly the set of blocks whose mode is COUPLED, each entry
     shaped ``(n_elems_block, n_ips, total_xi_dofs)``. CLOSED_FORM-
     only problems get an empty dict. ``residual_scale`` combines the
-    element blocks' ``R_elem_norm`` values into one l2 norm (see
-    :func:`assemble_element_block_dense` for what each measures); the
-    Neumann contributions are not in it.
+    element blocks' ``R_elem_norm`` values into one l2 norm per residual
+    block (see :func:`assemble_element_block_dense` for what each
+    measures); the Neumann contributions are not in it.
 
     Nonlinear-FE convention: ``R(U) = R_int(U) - F_ext`` (body-force
     and surface-flux contributions folded into ``R``, no separate
@@ -1089,7 +1091,7 @@ def assemble_global(
         R_elem_norms.append(R_elem_norm)
         if xi_solved is not None:
             xi_solved_by_block[block_name] = xi_solved
-    residual_scale = jnp.linalg.norm(jnp.stack(R_elem_norms))
+    residual_scale = jnp.sqrt(jnp.sum(jnp.stack(R_elem_norms) ** 2, axis=0))
 
     R_global = R_global + assemble_side_neumann(
         fe_problem.dof_map,
@@ -1170,7 +1172,7 @@ def assemble_element_tangent(
         R_elem_norms.append(R_elem_norm)
         if xi_solved is not None:
             xi_solved_by_block[block_name] = xi_solved
-    residual_scale = jnp.linalg.norm(jnp.stack(R_elem_norms))
+    residual_scale = jnp.sqrt(jnp.sum(jnp.stack(R_elem_norms) ** 2, axis=0))
 
     R_global = R_global + assemble_side_neumann(
         fe_problem.dof_map,

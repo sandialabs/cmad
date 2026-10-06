@@ -57,8 +57,8 @@ _OPTIMIZER_DEFAULTS: dict[str, Any] = {
 _FE_RESIDUALS_DEFAULTS: dict[str, dict[str, Any]] = {
     "global residual": {
         "nonlinear max iters": 10,
-        "nonlinear absolute tol": 1.0e-12,
-        "nonlinear relative tol": 1.0e-12,
+        "nonlinear absolute tol": 1.0e-10,
+        "nonlinear relative tol": 1.0e-10,
         "print convergence": False,
         "line search": {
             "max evals": 4,

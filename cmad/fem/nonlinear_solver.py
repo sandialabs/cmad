@@ -2,6 +2,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
+from itertools import pairwise
 from typing import Any
 
 import jax
@@ -150,6 +151,14 @@ def _pad_dofs(v: JaxArray, fe_problem: FEProblem) -> JaxArray:
 def _strip_dofs(v: JaxArray, fe_problem: FEProblem) -> JaxArray:
     """``v`` on the padded dofs gathered back to the true ones."""
     return v[..., jnp.asarray(fe_problem.dof_padding_map)]
+
+
+def _block_norms(v: JaxArray, fe_problem: FEProblem) -> JaxArray:
+    """The l2 norm of ``v`` over each field's padded dofs."""
+    norms = [
+        jnp.linalg.norm(v[start:end])
+        for start, end in pairwise(fe_problem.block_offsets_padded)]
+    return jnp.stack(norms)
 
 
 def _pad_near_null_space(
@@ -388,10 +397,11 @@ def _solve_linear(
 class NewtonStatus:
     """How a global Newton step ended.
 
-    ``converged`` is :func:`newton_converged` applied to the two norms;
-    the norms come along so a caller can report how far off a failed step
-    was, in both absolute and relative terms, and ``iterations`` is the
-    number of Newton iterations the step took.
+    ``converged`` is :func:`newton_converged` applied to the two norms,
+    one entry per residual block; the norms come along so a caller can
+    report how far off a failed step was, in both absolute and relative
+    terms, and ``iterations`` is the number of Newton iterations the step
+    took.
     """
     converged: JaxArray
     residual_norm: JaxArray
@@ -399,7 +409,8 @@ class NewtonStatus:
     iterations: JaxArray
 
     def relative_norm(self) -> JaxArray:
-        return self.residual_norm / self.reference_norm
+        """The largest relative norm over the residual blocks."""
+        return jnp.max(self.residual_norm / self.reference_norm)
 
 
 def newton_converged(
@@ -417,13 +428,12 @@ def newton_converged(
 
     ``reference_norm`` is the assembly's ``residual_scale`` at the same
     iterate, floored at ``abs_tol`` so a stress free state falls back to
-    the absolute test, and at the round-off floor of the residual over
-    ``rel_tol`` so a residual double precision cannot reduce further counts
-    as converged.
+    the absolute test. Both norms have one entry per residual block, and
+    every block must pass.
     """
-    return jnp.logical_or(
+    return jnp.all(jnp.logical_or(
         residual_norm < abs_tol, residual_norm < rel_tol * reference_norm,
-    )
+    ))
 
 
 def _fe_newton_primal(
@@ -450,10 +460,10 @@ def _fe_newton_primal(
     against the absolute and relative tolerances.
 
     Returns ``(U_star, xi_star, residual_norm, reference_norm,
-    iterations)``: the converged displacement, the solved state at it,
-    the residual norm the loop exited on, the reference norm of the same
-    iterate, and
-    the number of Newton iterations taken. The loop stops once the
+    iterations)``: the converged solution, the solved state at it, the
+    residual norm the loop exited on, the reference norm of the same
+    iterate, both norms with one entry per residual block, and the number
+    of Newton iterations taken. The loop stops once the
     residual meets the absolute tolerance ``abs tol`` or falls below
     ``rel tol`` times the reference, and otherwise when it hits the
     iteration limit. Both norms come back because the exit alone does not say
@@ -482,35 +492,27 @@ def _fe_newton_primal(
             fe_problem, fe_arrays, params_by_block, U, U_prev, step_time,
             xi_prev_by_block, presc_vals, operator,
         )
-        # the round-off floor of the residual, ten times machine precision
-        # times || |K| |U| ||
-        roundoff_floor = 10.0 * jnp.finfo(U.dtype).eps * jnp.linalg.norm(
-            _tangent_operator(K, fe_problem, fe_arrays, operator)
-            .absolute_matvec(_pad_dofs(jnp.abs(U), fe_problem)))
-        reference = jnp.maximum(
-            jnp.maximum(residual_scale, abs_tol), roundoff_floor / rel_tol)
-        return r, K, xi, reference
+        return r, K, xi, jnp.maximum(residual_scale, abs_tol)
 
     r_init, K_init, xi_init, ref_init = _assemble_enforced(U_init)
 
     def _print_line(k, r, ref):
         if print_global_convergence:
-            R_norm = jnp.linalg.norm(r)
+            R_norm = _block_norms(r, fe_problem)
             jax.debug.print(" > ({k}) Newton iteration", k=k, ordered=True)
-            jax.debug.print(
-                " > absolute ||R|| = {abs_r:.6e}", abs_r=R_norm, ordered=True,
-            )
-            jax.debug.print(
-                " > relative ||R|| = {rel_r:.6e}", rel_r=R_norm / ref,
-                ordered=True,
-            )
+            for b, layout in enumerate(fe_problem.dof_map.field_layouts):
+                jax.debug.print(
+                    " > {name}: absolute ||R|| = {abs_r:.6e}, "
+                    "relative ||R|| = {rel_r:.6e}",
+                    name=layout.name, abs_r=R_norm[b], rel_r=R_norm[b] / ref[b],
+                    ordered=True)
 
     _print_line(1, r_init, ref_init)
 
     def cond(state):
         i, r, ref, _, _, _ = state
         converged = newton_converged(
-            jnp.linalg.norm(r), ref, abs_tol, rel_tol,
+            _block_norms(r, fe_problem), ref, abs_tol, rel_tol,
         )
         return (i < max_iters) & jnp.logical_not(converged)
 
@@ -551,7 +553,7 @@ def _fe_newton_primal(
         (jnp.zeros((), dtype=jnp.int32), r_init, ref_init, K_init, U_init,
          xi_init),
     )
-    return U_star, xi_star, jnp.linalg.norm(r_star), ref_star, iters
+    return U_star, xi_star, _block_norms(r_star, fe_problem), ref_star, iters
 
 
 def fe_newton_solve(
