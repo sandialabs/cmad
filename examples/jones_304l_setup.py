@@ -8,9 +8,8 @@ chosen, one calibrate input file per dimension over exactly those
 specimens is written under examples/jones_304l_inputs/joint/, which
 cmad calibrate and cmad cross_validate read. The primal files write the
 solved field to exodus and the reaction series to a CSV, which
-jones_304l_compare.py reads. --materials takes a calibration's
-opt_params.yaml as the start values of the calibrate files and the
-values of the primal files.
+jones_304l_compare.py reads. --materials takes the opt_params.yaml of a
+calibration as the start values of the calibrate files.
 
 --model picks the material model, be_bar with Voce hardening or the rate
 model with Johnson-Cook, and --temperature how the temperature enters:
@@ -267,7 +266,6 @@ def discretization_section(tag: str, entry: dict[str, Any], thickness: float,
     if ndims == 2:
         section["thickness"] = thickness
     if temperature == "coupled":
-        section["quadrature"] = {"volume degree": 2}
         section["time refinement"] = {"max depth": 4}
     return section
 
