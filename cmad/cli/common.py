@@ -784,14 +784,15 @@ def _build_dirichlet_bcs(
             mesh, fe_by_field[field_name], [str(sideset)],
         )
         if store is not None:
-            if int(eq) >= store.num_components:
+            rows = store.rows(
+                np.arange(store.num_frames), node_ids, field=field_name,
+            )
+            if int(eq) >= rows.shape[2]:
                 raise ValueError(
-                    f"{where}: eq {eq} exceeds the {store.num_components} "
-                    f"components in '{data_file}'",
+                    f"{where}: eq {eq} exceeds the {rows.shape[2]} "
+                    f"components of field '{field_name}' in '{data_file}'",
                 )
-            values_by_step = store.rows(
-                np.arange(store.num_frames), node_ids,
-            )[:, :, int(eq):int(eq) + 1]
+            values_by_step = rows[:, :, int(eq):int(eq) + 1]
             data_times = store.times
         else:
             assert data is not None
