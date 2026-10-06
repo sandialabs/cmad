@@ -377,7 +377,7 @@ def _johnson_cook_flow_stress(alpha: float, rate: float, T: float) -> float:
     T_star = max((T - p["reference temperature"])
                  / (p["melt temperature"] - p["reference temperature"]), 0.0)
     return (p["A"] + p["B"] * (alpha + a0) ** p["n"]) \
-        * (1.0 + p["C"] * np.log(max(rate / p["reference rate"], 1.0))) \
+        * (1.0 + p["C"] * np.log1p(rate / p["reference rate"])) \
         * (1.0 - (T_star + a0) ** p["m"])
 
 

@@ -55,7 +55,7 @@ def johnson_cook_flow_stress(alpha, rate):
     p = JOHNSON_COOK["johnson_cook"]
     a0 = POWER_LAW_OFFSET
     return (p["A"] + p["B"] * (alpha + a0) ** p["n"]) \
-        * (1.0 + p["C"] * np.log(max(rate / p["reference rate"], 1.0))) \
+        * (1.0 + p["C"] * np.log1p(rate / p["reference rate"])) \
         * (1.0 - a0 ** p["m"])
 
 
@@ -201,7 +201,7 @@ class TestSmallStrainModelsMatchTheReturnMap(unittest.TestCase):
 
     def test_johnson_cook(self) -> None:
         # Both strain rates exceed the reference rate once the point flows,
-        # so the rate term is exercised rather than clipped.
+        # so the rate term is exercised.
         strains, times = schedule(PEAK_STRAIN, STRAIN_RATES[0])
         _, alpha_ref, _ = return_map(johnson_cook_flow_stress, strains, times)
         rates = np.diff(alpha_ref) / np.diff(times)
