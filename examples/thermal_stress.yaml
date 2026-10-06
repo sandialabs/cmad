@@ -1,0 +1,53 @@
+# Thermal stress in a unit cube: the x = 0 and x = 1 faces cannot move in
+# x and are held at 393.15 K from the first step, the reference
+# temperature being 293.15 K, so the cube is heated by 100 K with its
+# length in x fixed and its other faces free. The temperature is uniform
+# (the heat problem has no source and equal end temperatures), the
+# thermal strain alpha dT = 1.2e-3 is taken up in x by the stress
+# sigma_xx = -E alpha dT = -240 MPa, and the free directions stretch by
+# (1 + nu) alpha dT = 1.56e-3. A linear basis carries this uniform state
+# exactly.
+#
+# Generate the mesh from the repo root, then run cmad from examples/
+# (input file paths resolve against the working directory):
+#   python examples/make_cube_mesh.py --n 10   # writes examples/meshes/cube_hex_10.exo
+#   cd examples
+#   cmad primal thermal_stress.yaml
+
+problem:
+  type: fe
+  name: thermal_stress
+
+discretization:
+  mesh file: meshes/cube_hex_10.exo
+  num steps: 1
+  step size: 1.0
+
+residuals:
+  global residual:
+    type: thermomechanics
+    def_type: full_3d
+  local residual:
+    type: elastic
+    reference temperature: 293.15
+    materials:
+      all:
+        elastic: {E: 200.0e+3, nu: 0.3}
+        thermal expansion: {alpha: 1.2e-5, reference temperature: 293.15}
+        thermal: {conductivity: 16.0}
+
+dirichlet bcs:
+  expression:
+    fixed_x_min: [equilibrium, 0, xmin_sides, 0.0]
+    fixed_x_max: [equilibrium, 0, xmax_sides, 0.0]
+    sym_y: [equilibrium, 1, ymin_sides, 0.0]
+    sym_z: [equilibrium, 2, zmin_sides, 0.0]
+    hot_x_min: [energy balance, 0, xmin_sides, 393.15]
+    hot_x_max: [energy balance, 0, xmax_sides, 393.15]
+
+output:
+  path: results
+  exodus filename: thermal_stress.exo
+  global residual: [u, T]
+  local residual:
+    all: [cauchy, heat flux]
