@@ -19,15 +19,16 @@ data at match time ``step``, integrated over the matched region."""
 
 def compute_data_mean_square(
         mismatch: SquaredMismatch,
-        zero_prediction: JaxArray,
+        initial_field: JaxArray,
         match_times: MatchTimes,
         measure: float,
 ) -> float:
-    """The term's average applied to its data alone: ``mismatch`` at zero
-    prediction, summed over the match times with their weights, over the
-    span and ``measure``."""
+    """The term's average applied to its data alone: ``mismatch`` at
+    ``initial_field``, the field at the initial time the data changes
+    from, summed over the match times with their weights, over the span
+    and ``measure``."""
     total = sum(
-        float(weight) * float(mismatch(zero_prediction, step))
+        float(weight) * float(mismatch(initial_field, step))
         for step, weight in enumerate(match_times.weights)
     )
     return total / (match_times.span * measure)
@@ -46,13 +47,13 @@ class FEMatchTerm(FEQoI, ABC):
     def _normalize_by_data_mean_square(
             self,
             mismatch: SquaredMismatch,
-            zero_prediction: JaxArray,
+            initial_field: JaxArray,
             measure: float,
     ) -> None:
         """Set the term's scale from its data; raises when the data is
         zero."""
         self.data_mean_square = compute_data_mean_square(
-            mismatch, zero_prediction, self._match_times, measure,
+            mismatch, initial_field, self._match_times, measure,
         )
         if self.data_mean_square <= 0.0:
             raise ValueError(

@@ -1,0 +1,15 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+required: [name, calibration_data_file]
+additionalProperties: false
+properties:
+  name:
+    const: fe_temperature_match
+  calibration_data_file:
+    type: string
+  match_times_file:
+    type: string
+  weight:
+    type: number
+  sideset:
+    type: string
