@@ -114,7 +114,7 @@ class MPAdjointObjective(MPObjective):
         J = self._forward_pass_with_storage()
 
         num_active_params = model.parameters.num_active_params
-        grad = np.zeros((1, num_active_params))
+        grad: NDArray[np.floating] = np.zeros((1, num_active_params))
 
         # adjoint pass
         num_dofs = model.num_dofs
@@ -173,7 +173,7 @@ class MPDirectObjective(MPObjective):
         num_dofs = model.num_dofs
 
         J: float | NDArray[np.number] = 0.
-        grad = np.zeros((1, num_active_params))
+        grad: NDArray[np.floating] = np.zeros((1, num_active_params))
         dxi_dp = np.zeros((num_dofs, num_active_params))
 
         num_steps = self._num_steps
@@ -232,7 +232,7 @@ class MPDirectAdjointObjective(MPObjective):
         J = self._forward_pass_with_storage()
 
         num_active_params = model.parameters.num_active_params
-        grad = np.zeros((1, num_active_params))
+        grad: NDArray[np.floating] = np.zeros((1, num_active_params))
 
         # adjoint pass
         num_dofs = model.num_dofs
