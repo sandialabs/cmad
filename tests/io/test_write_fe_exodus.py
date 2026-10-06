@@ -50,6 +50,7 @@ class _StubModel:
     ) -> None:
         self._state = state_fields
         self._derived = derived_names
+        self.var_names = [name for name, _ in state_fields]
 
     def state_output_fields(self) -> list[tuple[str, VarType]]:
         return self._state

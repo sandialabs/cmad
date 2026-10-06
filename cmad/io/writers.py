@@ -265,12 +265,11 @@ def _element_catalog_for_block(
 
     catalog: dict[str, ResolvedElementField] = {}
     if mode == GlobalResidualMode.COUPLED:
-        for resid_idx, (name, var_type) in enumerate(
-                model.state_output_fields(),
-        ):
+        for name, var_type in model.state_output_fields():
             catalog[name] = ResolvedElementField(
                 name, var_type,
-                partial(evaluate_state_var_at_ips, resid_idx=resid_idx),
+                partial(evaluate_state_var_at_ips,
+                        resid_idx=model.var_names.index(name)),
             )
 
     for name in model.derived_output_field_names():

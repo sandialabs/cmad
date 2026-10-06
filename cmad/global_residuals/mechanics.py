@@ -18,6 +18,50 @@ from cmad.models.var_types import VarType
 from cmad.typing import GREvaluators
 
 
+def rigid_body_modes(mesh: Mesh, ndims: int) -> NDArray[np.floating]:
+    """The rigid body modes at the mesh nodes, the translations and the
+    rotations as linear displacement fields, interleaved by node (matching
+    :meth:`cmad.fem.dof.GlobalDofMap.eq_index`'s ``basis_fn * ndofs + dof``
+    layout): 3 in 2D (two translations and the rotation about z), 6 in 3D
+    (three translations and three rotations ``e_k x r``, via
+    :func:`pyamg.util.utils.coord_to_rbm`). Shape ``(ndims * n_nodes,
+    n_rbm)``."""
+    coords = np.asarray(mesh.nodes, dtype=np.float64)
+    n = coords.shape[0]
+    if ndims == 2:
+        x, y = coords[:, 0], coords[:, 1]
+        modes = np.zeros((2 * n, 3))
+        modes[0::2, 0] = 1.0          # translation x
+        modes[1::2, 1] = 1.0          # translation y
+        modes[0::2, 2] = -y           # rotation about z
+        modes[1::2, 2] = x
+        return modes
+    from pyamg.util.utils import coord_to_rbm
+    return np.asarray(coord_to_rbm(
+        n, 3, coords[:, 0], coords[:, 1], coords[:, 2],
+    ))
+
+
+def def_type_from_section(gr_section: dict[str, Any], ndims: int) -> DefType:
+    """The ``def_type`` of a mechanics ``residuals.global residual``
+    section, required, and checked against the mesh's ``ndims``."""
+    def_type_name = gr_section.get("def_type")
+    if def_type_name is None:
+        raise ValueError(
+            "residuals.global residual: mechanics "
+            "requires 'def_type'",
+        )
+    def_type = DefType[def_type_name.upper()]
+    expected_ndims = def_type_ndims(def_type)
+    if expected_ndims != ndims:
+        raise ValueError(
+            f"residuals.global residual: def_type '{def_type_name}' "
+            f"implies ndims={expected_ndims} but the mesh has "
+            f"ndims={ndims}",
+        )
+    return def_type
+
+
 class Mechanics(GlobalResidual):
     """Quasi-static mechanics equilibrium.
 
@@ -151,24 +195,12 @@ class Mechanics(GlobalResidual):
         Shape ``(ndims * n_nodes, n_rbm)`` for displacement, or
         ``((ndims + 1) * n_nodes, n_rbm + 1)`` for mixed.
         """
-        coords = np.asarray(mesh.nodes, dtype=np.float64)
-        n = coords.shape[0]
-        if self._ndims == 2:
-            x, y = coords[:, 0], coords[:, 1]
-            u_modes = np.zeros((2 * n, 3))
-            u_modes[0::2, 0] = 1.0          # translation x
-            u_modes[1::2, 1] = 1.0          # translation y
-            u_modes[0::2, 2] = -y           # rotation about z
-            u_modes[1::2, 2] = x
-        else:
-            from pyamg.util.utils import coord_to_rbm
-            u_modes = coord_to_rbm(
-                n, 3, coords[:, 0], coords[:, 1], coords[:, 2],
-            )
+        u_modes = rigid_body_modes(mesh, self._ndims)
         if not self._mixed:
             return u_modes
         # Append the constant pressure mode: the n_rbm displacement modes
         # (zero on the p block) plus one column that is 1 on the p block.
+        n = mesh.nodes.shape[0]
         n_u, n_rbm = u_modes.shape
         modes = np.zeros((n_u + n, n_rbm + 1))
         modes[:n_u, :n_rbm] = u_modes
@@ -211,20 +243,7 @@ class Mechanics(GlobalResidual):
         formulation; ``stabilization multiplier`` scales its pressure
         stabilization (default 1.0).
         """
-        def_type_name = gr_section.get("def_type")
-        if def_type_name is None:
-            raise ValueError(
-                "residuals.global residual: mechanics "
-                "requires 'def_type'",
-            )
-        def_type = DefType[def_type_name.upper()]
-        expected_ndims = def_type_ndims(def_type)
-        if expected_ndims != ndims:
-            raise ValueError(
-                f"residuals.global residual: def_type '{def_type_name}' "
-                f"implies ndims={expected_ndims} but the mesh has "
-                f"ndims={ndims}",
-            )
+        def_type_from_section(gr_section, ndims)
         return cls(
             ndims=ndims,
             mixed=bool(gr_section.get("mixed", False)),

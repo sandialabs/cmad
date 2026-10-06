@@ -15,7 +15,7 @@ supply on its own.
 """
 from collections.abc import Callable
 from functools import partial
-from typing import Any, ClassVar, cast
+from typing import Any, cast
 
 import jax.numpy as jnp
 import numpy as np
@@ -260,7 +260,7 @@ class BeBarElasticPlastic(MechanicsModel):
     be_bar), alpha]``.
     """
 
-    supports_mixed: ClassVar[bool] = True
+    supports_mixed = True
     is_finite_deformation = True
 
     _def_type: int

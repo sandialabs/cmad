@@ -7,7 +7,7 @@ the full for_model pipeline — closure-dict keys, capability gating,
 AD gradients vs central FD, and one Newton step for a linear problem.
 """
 import unittest
-from typing import ClassVar, cast
+from typing import cast
 
 import jax.numpy as jnp
 import numpy as np
@@ -109,11 +109,8 @@ class TestGlobalResidualABC(unittest.TestCase):
     def test_for_model_closed_form_rejects_incapable_model(self):
         gr = _ToyEquilibrium()
 
-        class _ElasticWithoutClosedForm(Elastic):
-            supports_closed_form: ClassVar[bool] = False
-
-        model = _ElasticWithoutClosedForm(
-            _make_parameters(), def_type=DefType.FULL_3D)
+        model = Elastic(_make_parameters(), def_type=DefType.FULL_3D)
+        model.supports_closed_form = False
 
         with self.assertRaises(ValueError) as ctx:
             gr.for_model(model, mode=GlobalResidualMode.CLOSED_FORM)
