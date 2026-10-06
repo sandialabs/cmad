@@ -401,7 +401,11 @@ def _scaled_lu_solve(
         perm: NDArray[np.integer] | None = None,
 ) -> np.ndarray:
     """Solve ``K x = b`` as ``(S K S) y = S b`` with ``x = S y`` and
-    ``S = diag(s)``, reordering by ``perm`` when one is given."""
+    ``S = diag(s)``, reordering by ``perm`` when one is given. A matrix
+    with a NaN or an infinite entry reports as NaN like a singular one,
+    since SuperLU can crash the process on it."""
+    if not np.all(np.isfinite(K_csc.data)):
+        return np.full_like(np.asarray(b_np), np.nan)
     s = _symmetric_diagonal_scaling(K_csc)
     S = scipy.sparse.diags(s)
     scaled = (S @ K_csc @ S).tocsc()
@@ -499,6 +503,8 @@ def scipy_lu(
         # (which accepts only 1D or 2D ``b``), then restores the
         # caller's batch shape on the return.
         b_arr = np.asarray(b_np)
+        if not np.all(np.isfinite(K_csc.data)):
+            return np.full_like(b_arr, np.nan)
         batch_shape = b_arr.shape[:-1]
         b_2d_T = np.ascontiguousarray(b_arr.reshape(-1, b_arr.shape[-1]).T)
         try:
