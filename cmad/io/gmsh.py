@@ -21,10 +21,13 @@ What the reader maps:
   ``element_block_ids``). With no such physical groups, a single ``"all"``
   block holds every element.
 
-Boundary conditions attach through the bounding box side sets that
+- **Side sets**: each physical group one dimension below the mesh becomes
+  one side set named as the group is, its boundary elements as the
+  ``(elem_id, local_side_id)`` pairs of the elements that own them.
+
+Boundary conditions also attach through the bounding box side sets that
 :func:`cmad.fem.mesh.coordinate_side_sets` builds at deck-load (the deck's
-``build coordinate sidesets`` option), so ``node_sets`` and ``side_sets`` come
-back empty.
+``build coordinate sidesets`` option); ``node_sets`` come back empty.
 """
 from __future__ import annotations
 
@@ -36,6 +39,7 @@ from numpy.typing import NDArray
 
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.mesh import Mesh
+from cmad.fem.topology import _LOCAL_SIDES_PER_ELEMENT
 
 _GMSH_TYPE_TO_FAMILY: dict[int, ElementFamily] = {
     2: ElementFamily.TRI_LINEAR,
@@ -54,8 +58,9 @@ def read_gmsh_mesh(path: str | Path) -> Mesh:
     node / element / block mapping).
 
     Raises :class:`GmshFormatError` for no nodes, no 2D or 3D elements, mixed
-    or unknown element families, a 2D mesh that varies in z, or physical
-    groups that do not partition the elements.
+    or unknown element families, a 2D mesh that varies in z, physical
+    groups that do not partition the elements, or a boundary group element
+    that is no side of any element.
     """
     path = Path(path)
     if not path.is_file():
@@ -73,6 +78,7 @@ def read_gmsh_mesh(path: str | Path) -> Mesh:
         element_blocks, element_block_ids = _read_blocks(
             dim, connectivity.shape[0], elem_tags,
         )
+        side_sets = _read_side_sets(dim, connectivity, family, index_by_tag)
     finally:
         if started:
             gmsh.finalize()
@@ -83,7 +89,7 @@ def read_gmsh_mesh(path: str | Path) -> Mesh:
         element_family=family,
         element_blocks=element_blocks,
         node_sets={},
-        side_sets={},
+        side_sets=side_sets,
         element_block_ids=element_block_ids,
     )
 
@@ -205,3 +211,49 @@ def _read_blocks(
             "group; every element must belong to exactly one physical group"
         )
     return blocks, block_ids
+
+
+def _read_side_sets(
+        dim: int,
+        connectivity: NDArray[np.intp],
+        family: ElementFamily,
+        index_by_tag: NDArray[np.intp],
+) -> dict[str, NDArray[np.intp]]:
+    """One side set per physical group of dimension ``dim - 1``, named as
+    the group is: each of its boundary elements as the ``(elem_id,
+    local_side_id)`` pair of the element side on the same nodes."""
+    groups = gmsh.model.getPhysicalGroups(dim - 1)
+    if not groups:
+        return {}
+    local_sides = _LOCAL_SIDES_PER_ELEMENT[family]
+    n_verts = int(local_sides.shape[1])
+    side_nodes = np.sort(connectivity[:, local_sides], axis=-1)
+    owner: dict[tuple[int, ...], tuple[int, int]] = {}
+    for elem_id, sides in enumerate(side_nodes.tolist()):
+        for local_side_id, verts in enumerate(sides):
+            owner[tuple(verts)] = (elem_id, local_side_id)
+
+    side_sets: dict[str, NDArray[np.intp]] = {}
+    for group_dim, tag in sorted(groups, key=lambda g: g[1]):
+        name = gmsh.model.getPhysicalName(group_dim, tag) or f"sides_{tag}"
+        pairs: list[tuple[int, int]] = []
+        for entity in gmsh.model.getEntitiesForPhysicalGroup(group_dim, tag):
+            _types, _tags, node_tags = gmsh.model.mesh.getElements(
+                group_dim, int(entity),
+            )
+            for flat in node_tags:
+                rows = np.sort(
+                    index_by_tag[np.asarray(flat, dtype=np.int64)]
+                    .reshape(-1, n_verts),
+                    axis=1,
+                )
+                for verts in rows.tolist():
+                    if tuple(verts) not in owner:
+                        raise GmshFormatError(
+                            f"physical group {name!r} holds a boundary "
+                            f"element on nodes {verts} that is no side of "
+                            "any element"
+                        )
+                    pairs.append(owner[tuple(verts)])
+        side_sets[name] = np.asarray(pairs, dtype=np.intp).reshape(-1, 2)
+    return side_sets

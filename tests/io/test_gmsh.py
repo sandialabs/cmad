@@ -103,6 +103,36 @@ def _write_tri_square(
         gmsh.finalize()
 
 
+def _write_mesh_with_boundary_group(
+        path: Path, *, ndims: int, size: float = 0.5,
+) -> None:
+    """A tri square or a tet box whose x = 1 boundary is a physical group
+    one dimension below the mesh, named ``right_sides``."""
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("boundary_group")
+        if ndims == 2:
+            gmsh.model.occ.addRectangle(0.0, 0.0, 0.0, 1.0, 1.0)
+        else:
+            gmsh.model.occ.addBox(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+        gmsh.model.occ.synchronize()
+        solid = [e[1] for e in gmsh.model.getEntities(ndims)]
+        gmsh.model.addPhysicalGroup(ndims, solid, name="solid")
+        eps = 1.0e-6
+        right = gmsh.model.getEntitiesInBoundingBox(
+            1.0 - eps, -eps, -eps, 1.0 + eps, 1.0 + eps, 1.0 + eps, ndims - 1,
+        )
+        gmsh.model.addPhysicalGroup(
+            ndims - 1, [e[1] for e in right], name="right_sides",
+        )
+        gmsh.option.setNumber("Mesh.MeshSizeMax", size)
+        gmsh.model.mesh.generate(ndims)
+        gmsh.write(str(path))
+    finally:
+        gmsh.finalize()
+
+
 class TestReadGmshMesh(unittest.TestCase):
     def test_tet_box(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -213,6 +243,30 @@ class TestGmshBoundingBoxSidesets(unittest.TestCase):
         for pairs in sides.values():
             self.assertEqual(pairs.shape[1], 2)
             self.assertGreater(pairs.shape[0], 0)
+
+
+class TestGmshBoundaryGroups(unittest.TestCase):
+    """A physical group one dimension below the mesh reads as a side set,
+    here the x = 1 boundary against the bounding box side set."""
+
+    def _check(self, ndims: int) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "right.msh"
+            _write_mesh_with_boundary_group(path, ndims=ndims)
+            mesh = read_gmsh_mesh(path)
+        self.assertEqual(list(mesh.side_sets), ["right_sides"])
+        pairs = mesh.side_sets["right_sides"]
+        self.assertEqual(pairs.shape[1], 2)
+        self.assertEqual(
+            set(map(tuple, pairs.tolist())),
+            set(map(tuple, coordinate_side_sets(mesh)["xmax_sides"].tolist())),
+        )
+
+    def test_edge_group_2d(self) -> None:
+        self._check(2)
+
+    def test_face_group_3d(self) -> None:
+        self._check(3)
 
 
 class TestGmshPrimalEndToEnd(unittest.TestCase):

@@ -7,10 +7,11 @@ with ``jones_304l_cut_preview.py``, which reports where the data reaches.
 
 Omitting ``--thickness`` meshes the trimmed face in linear triangles.
 Supplying it extrudes that face and meshes the solid in linear tets. The
-mesh carries one physical group, ``solid``; boundary sets come from
-``build coordinate sidesets`` at load time, which gives the cut edges as
-``ymin_sides`` and ``ymax_sides``, and in 3D the front and back faces as
-``zmin_sides`` and ``zmax_sides``.
+mesh carries two physical groups: ``solid``, and ``free_sides``, the
+boundary other than the cuts and, in 3D, the front and back faces, which
+the reader turns into a side set. The cuts come from ``build coordinate
+sidesets`` at load time as ``ymin_sides`` and ``ymax_sides``, and in 3D
+the front and back faces as ``zmin_sides`` and ``zmax_sides``.
 
 ``--h`` sets the element size away from curvature. Where the boundary
 turns, ``--curvature-elements`` refines it toward the size that puts that
@@ -115,6 +116,16 @@ def _loop_curves(
     return curves
 
 
+def _flat_along(
+        entity: tuple[int, int], axis: int, values: list[float], tol: float,
+) -> bool:
+    """Whether ``entity``'s bounding box has no extent along ``axis`` and
+    sits at one of ``values``."""
+    box = gmsh.model.getBoundingBox(*entity)
+    lo, hi = box[axis], box[axis + 3]
+    return hi - lo <= tol and any(abs(lo - value) <= tol for value in values)
+
+
 def build_specimen_mesh(
         path: Path, h: float, *, geometry_file: str | Path,
         y_min: float, y_max: float, thickness: float | None = None,
@@ -183,27 +194,44 @@ def build_specimen_mesh(
                 f"found {corners.size} points on the cut lines, expected at "
                 f"least 4; the trim did not insert the crossings as expected"
             )
-        loops = [gmsh.model.occ.addCurveLoop(
-            _loop_curves(trimmed, base_z, h, tol=straight_tol,
-                         forced_breaks=corners)
-        )]
-        loops += [
-            gmsh.model.occ.addCurveLoop(
-                _loop_curves(hole, base_z, h, tol=straight_tol)
-            )
-            for hole in kept
+        outline_curves = _loop_curves(
+            trimmed, base_z, h, tol=straight_tol, forced_breaks=corners,
+        )
+        hole_curves = [
+            _loop_curves(hole, base_z, h, tol=straight_tol) for hole in kept
         ]
+        loops = [gmsh.model.occ.addCurveLoop(outline_curves)]
+        loops += [gmsh.model.occ.addCurveLoop(curves) for curves in hole_curves]
         surface = gmsh.model.occ.addPlaneSurface(loops)
 
+        # The free boundary is everything but the cuts and, in 3D, the
+        # front and back faces, told apart by their flat bounding boxes.
+        y_cuts = [y_min - offset[1], y_max - offset[1]]
+        tol = 1.0e-6 * (y_max - y_min)
         if thickness is None:
             gmsh.model.occ.synchronize()
             gmsh.model.addPhysicalGroup(2, [surface], name="solid")
+            free = [
+                curve for curve in outline_curves
+                if not _flat_along((1, curve), 1, y_cuts, tol)
+            ]
+            free += [curve for curves in hole_curves for curve in curves]
+            gmsh.model.addPhysicalGroup(1, free, name="free_sides")
             dim = 2
         else:
             extruded = gmsh.model.occ.extrude([(2, surface)], 0.0, 0.0, thickness)
             volumes = [tag for entity_dim, tag in extruded if entity_dim == 3]
             gmsh.model.occ.synchronize()
             gmsh.model.addPhysicalGroup(3, volumes, name="solid")
+            z_ends = [base_z, base_z + thickness]
+            free = [
+                tag for _entity_dim, tag in gmsh.model.getBoundary(
+                    [(3, volume) for volume in volumes], oriented=False,
+                )
+                if not _flat_along((2, tag), 2, z_ends, tol)
+                and not _flat_along((2, tag), 1, y_cuts, tol)
+            ]
+            gmsh.model.addPhysicalGroup(2, free, name="free_sides")
             dim = 3
 
         # A size floor of h would cancel the curvature refinement, so the
