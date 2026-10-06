@@ -42,6 +42,7 @@ from cmad.fem.mesh import Mesh, coordinate_side_sets
 from cmad.fem.quadrature import (
     QuadratureRule,
     hex_quadrature,
+    line_quadrature,
     quad_quadrature,
     tet_quadrature,
     tri_quadrature,
@@ -638,11 +639,17 @@ def _quad_rule(
             return hex_quadrature(degree=degree)
         if family == ElementFamily.TET_LINEAR:
             return tet_quadrature(degree=degree)
+        if family == ElementFamily.QUAD_LINEAR:
+            return quad_quadrature(degree=degree)
+        if family == ElementFamily.TRI_LINEAR:
+            return tri_quadrature(degree=degree)
     elif kind == "surface":
         if family == ElementFamily.HEX_LINEAR:
             return quad_quadrature(degree=degree)
         if family == ElementFamily.TET_LINEAR:
             return tri_quadrature(degree=degree)
+        if family in (ElementFamily.QUAD_LINEAR, ElementFamily.TRI_LINEAR):
+            return line_quadrature(degree=degree)
     raise ValueError(
         f"_quad_rule: unsupported (family={family.name}, kind={kind})",
     )
