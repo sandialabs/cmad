@@ -3,9 +3,10 @@
 A :class:`CalibrationData` holds every usable frame of a measurement on
 the nodes a calibration reads: the nodes of the region of interest the
 displacement match integrates over and the nodes of the sidesets the
-Dirichlet conditions prescribe, with the measured load per frame. It is
-one compressed ``.npz`` per mesh, written by :meth:`CalibrationData.write`
-and read back by :meth:`CalibrationData.read`.
+Dirichlet conditions prescribe, with the measured load per frame and,
+when it was measured, the temperature. It is one compressed ``.npz`` per
+mesh, written by :meth:`CalibrationData.write` and read back by
+:meth:`CalibrationData.read`.
 """
 from __future__ import annotations
 
@@ -19,9 +20,11 @@ from numpy.typing import NDArray
 
 _STORE_KEYS = frozenset({
     "times", "frame_ids", "load", "node_ids", "sideset_names",
-    "sideset_offsets", "sideset_node_ids", "values", "mesh_file",
+    "sideset_offsets", "sideset_node_ids", "displacement", "mesh_file",
     "mesh_num_nodes",
 })
+# Measured fields written only when the record has them.
+_FIELD_KEYS = frozenset({"temperature"})
 
 
 @dataclass(frozen=True)
@@ -34,13 +37,14 @@ class CalibrationData:
     the measurement record, ``-1`` for the reference; ``load`` ``(F,)``
     is the measured load per frame. ``node_ids`` ``(N,)`` is sorted
     ascending, the union of the region of interest's nodes and the
-    Dirichlet sidesets' nodes, and is the node axis of ``values``
+    Dirichlet sidesets' nodes, and is the node axis of ``displacement``
     ``(F, N, C)``. ``sidesets`` groups the Dirichlet sidesets' node ids
     by name, each group sorted, the order
     :func:`cmad.fem.dof.sideset_basis_fns` produces. ``mesh_file`` and
     ``mesh_num_nodes`` record the mesh it was built for. ``roi`` is the
     region of interest entries, written into the archive alongside the
-    store's own.
+    store's own. ``temperature`` ``(F, N)`` is the measured temperature in
+    Kelvin on the same nodes, ``None`` when the record has none.
     """
 
     times: NDArray[np.float64]
@@ -48,10 +52,11 @@ class CalibrationData:
     load: NDArray[np.float64]
     node_ids: NDArray[np.intp]
     sidesets: dict[str, NDArray[np.intp]]
-    values: NDArray[np.float64]
+    displacement: NDArray[np.float64]
     mesh_file: str
     mesh_num_nodes: int
     roi: dict[str, Any] = field(default_factory=dict)
+    temperature: NDArray[np.float64] | None = None
 
     def __post_init__(self) -> None:
         num_frames = int(self.times.shape[0]) if self.times.ndim == 1 else 0
@@ -73,12 +78,18 @@ class CalibrationData:
             raise ValueError("node_ids must be nonempty, sorted, and unique")
         num_nodes = int(self.node_ids.shape[0])
         if (
-            self.values.ndim != 3
-            or self.values.shape[:2] != (num_frames, num_nodes)
+            self.displacement.ndim != 3
+            or self.displacement.shape[:2] != (num_frames, num_nodes)
         ):
             raise ValueError(
-                f"values has shape {tuple(self.values.shape)}; expected "
-                f"({num_frames}, {num_nodes}, num_components)"
+                f"displacement has shape {tuple(self.displacement.shape)}; "
+                f"expected ({num_frames}, {num_nodes}, num_components)"
+            )
+        expected = (num_frames, num_nodes)
+        if self.temperature is not None and self.temperature.shape != expected:
+            raise ValueError(
+                f"temperature has shape {tuple(self.temperature.shape)}; "
+                f"expected {expected}"
             )
         for name, ids in self.sidesets.items():
             if ids.ndim != 1 or not np.all(np.diff(ids) > 0):
@@ -101,7 +112,7 @@ class CalibrationData:
 
     @property
     def num_components(self) -> int:
-        return int(self.values.shape[2])
+        return int(self.displacement.shape[2])
 
     def nearest_frame(self, t: float) -> int:
         """Index of the frame closest to ``t``."""
@@ -175,16 +186,29 @@ class CalibrationData:
             self,
             frames: Sequence[int] | NDArray[np.intp],
             node_ids: Sequence[int] | NDArray[np.intp] | None = None,
+            field: str = "u",
     ) -> NDArray[np.float64]:
-        """``values`` at ``frames`` on ``node_ids``, every node when
-        ``None``; shaped ``(len(frames), n, num_components)``."""
+        """``field`` at ``frames`` on ``node_ids``, every node when
+        ``None``; shaped ``(len(frames), n, num_components)``. ``"u"`` is
+        the displacement and ``"T"`` the temperature with one component."""
+        data = self._field(field)
         idx = np.atleast_1d(np.asarray(frames, dtype=np.intp))
         if node_ids is None:
-            return np.asarray(self.values[idx], dtype=np.float64)
+            return np.asarray(data[idx], dtype=np.float64)
         pos = self.positions(node_ids)
-        return np.asarray(
-            self.values[idx[:, None], pos[None, :]], dtype=np.float64,
-        )
+        return np.asarray(data[idx[:, None], pos[None, :]], dtype=np.float64)
+
+    def _field(self, field: str) -> NDArray[np.float64]:
+        if field == "u":
+            return self.displacement
+        if field == "T":
+            if self.temperature is None:
+                raise ValueError(
+                    f"the calibration data built for {self.mesh_file} holds "
+                    f"no temperature"
+                )
+            return self.temperature[:, :, None]
+        raise ValueError(f"unknown field {field!r}; the fields are 'u' and 'T'")
 
     @classmethod
     def read(cls, path: str | Path) -> CalibrationData:
@@ -210,18 +234,25 @@ class CalibrationData:
             }
             roi = {
                 key: archive[key] for key in archive.files
-                if key not in _STORE_KEYS
+                if key not in _STORE_KEYS and key not in _FIELD_KEYS
             }
+            temperature = (
+                np.asarray(archive["temperature"], dtype=np.float64)
+                if "temperature" in archive.files else None
+            )
             return cls(
                 times=np.asarray(archive["times"], dtype=np.float64),
                 frame_ids=np.asarray(archive["frame_ids"], dtype=np.intp),
                 load=np.asarray(archive["load"], dtype=np.float64),
                 node_ids=np.asarray(archive["node_ids"], dtype=np.intp),
                 sidesets=sidesets,
-                values=np.asarray(archive["values"], dtype=np.float64),
+                displacement=np.asarray(
+                    archive["displacement"], dtype=np.float64,
+                ),
                 mesh_file=str(archive["mesh_file"]),
                 mesh_num_nodes=int(archive["mesh_num_nodes"]),
                 roi=roi,
+                temperature=temperature,
             )
 
     def write(self, path: str | Path) -> None:
@@ -241,11 +272,13 @@ class CalibrationData:
             "sideset_offsets": np.concatenate(
                 [[0], np.cumsum(sizes)]).astype(np.intp),
             "sideset_node_ids": grouped.astype(np.intp),
-            "values": self.values,
+            "displacement": self.displacement,
             "mesh_file": np.array(self.mesh_file),
             "mesh_num_nodes": np.array(self.mesh_num_nodes),
             **self.roi,
         }
+        if self.temperature is not None:
+            entries["temperature"] = self.temperature
         np.savez_compressed(Path(path), **entries)
 
 

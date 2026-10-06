@@ -10,7 +10,12 @@ The archive also carries the region of interest the displacement match
 integrates over: the elements (2D) or imaged face sides (3D) whose nodes
 all sit farther from the free boundary than ``--roi-band``, chosen with
 jones_304l_roi_preview.py. Only the nodes of that region and of the
-Dirichlet sidesets (``--bc-sidesets``) are remapped.
+Dirichlet sidesets (``--bc-sidesets``) are remapped, unless the record
+has the IR temperature: then every node is, since a prescribed field
+needs the temperature everywhere. The temperature is stored beside the
+displacement in Kelvin, converted with the low or the high emissivity
+bound or their mean (``--emissivity-bound``), its reference row the
+first kept frame's field.
 
 The frame range comes from jones_304l_load_preview.py, which plots the
 load record so the ends can be trimmed by eye. Within that range the
@@ -94,6 +99,12 @@ OBSERVED_SIDESET = "zmax_sides"
 KN_TO_N = 1000.0
 
 DISPLACEMENT_KEYS = ("U", "V", "W")
+
+# The IR temperature, in C, converted with the low and the high emissivity
+# bound in turn along the leading axis.
+TEMPERATURE_KEY = "IR_temperature"
+EMISSIVITY_BOUNDS = ("mid", "low", "high")
+CELSIUS_TO_KELVIN = 273.15
 
 
 def select_frames(
@@ -259,6 +270,35 @@ def read_frame_rows(
     return rows
 
 
+def has_temperature(data_file: str | Path) -> bool:
+    """Whether the record holds the IR temperature."""
+    with h5py.File(Path(data_file), "r") as handle:
+        return TEMPERATURE_KEY in handle
+
+
+def read_temperature_rows(
+        handle: h5py.File, frames: NDArray[np.intp], bound: str,
+) -> NDArray[np.float64]:
+    """Rows ``frames`` of the IR temperature in Kelvin: the low or the high
+    emissivity bound's estimate, or their mean, read in point axis blocks
+    as :func:`read_frame_rows` does."""
+    point_block = 8192
+    dataset = handle[TEMPERATURE_KEY]
+    _n_bounds, _n_frames, n_points = dataset.shape
+    rows = np.empty((frames.size, n_points), dtype=np.float64)
+    for start in range(0, n_points, point_block):
+        stop = min(start + point_block, n_points)
+        piece = np.asarray(dataset[:, :, start:stop], dtype=np.float64)
+        low, high = piece[0][frames], piece[1][frames]
+        if bound == "low":
+            rows[:, start:stop] = low
+        elif bound == "high":
+            rows[:, start:stop] = high
+        else:
+            rows[:, start:stop] = 0.5 * (low + high)
+    return rows + CELSIUS_TO_KELVIN
+
+
 def cloud_offset_for_mesh(
         geometry_file: str | Path,
         mesh_nodes: NDArray[np.float64],
@@ -341,7 +381,8 @@ def remap_history(
         poly_order: int = 2,
         support_multiplier: float = 1.6,
         frame_block: int = FRAME_BLOCK,
-) -> tuple[NDArray[np.float64], int]:
+        emissivity_bound: str | None = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64] | None, int]:
     """Reconstruct the measured displacements at ``frames`` onto ``targets``.
 
     ``valid`` is the validity from :func:`frame_validity`. With
@@ -349,17 +390,24 @@ def remap_history(
     that frame; otherwise one operator serves every frame, built from the
     points valid throughout. The displacements are read ``frame_block``
     frames at a time. Returns the ``(num_frames, num_targets,
-    num_components)`` history and the fewest source points any fit used.
+    num_components)`` history, the ``(num_frames, num_targets)``
+    temperature in Kelvin (``None`` without ``emissivity_bound``), and
+    the fewest source points any displacement fit used.
 
     The source is every valid measurement point, untrimmed. GMLS support
     is local, so points beyond the modeled region never enter a target's
     neighborhood, while trimming to it would leave targets on the cut
     edges supported from one side only.
+
+    The temperature is reconstructed the same way from the points with a
+    finite value, with operators of its own. A frame with no temperature
+    raises.
     """
     keys = DISPLACEMENT_KEYS[:num_components]
     history = np.zeros(
         (frames.size, targets.shape[0], num_components), dtype=np.float64,
     )
+    temperature_blocks: list[NDArray[np.float64]] = []
     throughout = None if per_frame else valid.all(axis=0)
     shared = None
     if throughout is None:
@@ -383,7 +431,47 @@ def remap_history(
                 )
                 for c in range(num_components):
                     history[i, :, c] = ops.value @ measured[c][j][keep]
-    return history, fewest
+            if emissivity_bound is not None:
+                temperature_blocks.append(remap_temperature_block(
+                    handle, block, emissivity_bound, source, targets,
+                    poly_order=poly_order,
+                    support_multiplier=support_multiplier,
+                ))
+    temperature = (
+        np.concatenate(temperature_blocks) if emissivity_bound is not None
+        else None
+    )
+    return history, temperature, fewest
+
+
+def remap_temperature_block(
+        handle: h5py.File,
+        frames: NDArray[np.intp],
+        emissivity_bound: str,
+        source: NDArray[np.float64],
+        targets: NDArray[np.float64],
+        *,
+        poly_order: int,
+        support_multiplier: float,
+) -> NDArray[np.float64]:
+    """The temperature at ``frames`` onto ``targets``, each frame
+    reconstructed from the points with a finite value; shaped
+    ``(len(frames), num_targets)``."""
+    rows = read_temperature_rows(handle, frames, emissivity_bound)
+    out = np.empty((frames.size, targets.shape[0]), dtype=np.float64)
+    for j, frame in enumerate(frames):
+        keep = np.isfinite(rows[j])
+        if not keep.any():
+            raise ValueError(
+                f"frame {int(frame)} has no temperature; trim the range or "
+                f"exclude it"
+            )
+        ops = build_gmls_operators(
+            source[keep], targets, poly_order=poly_order,
+            support_multiplier=support_multiplier,
+        )
+        out[j] = ops.value @ rows[j][keep]
+    return out
 
 
 def main() -> None:
@@ -428,6 +516,13 @@ def main() -> None:
         "--filter", default="per-frame", choices=("per-frame", "union"),
         help="fit each frame from its own valid points, or from the points "
              "valid in all of them (default per-frame)",
+    )
+    parser.add_argument(
+        "--emissivity-bound", default="mid",
+        choices=(*EMISSIVITY_BOUNDS, "none"),
+        help="store the IR temperature converted with the low or the high "
+             "emissivity bound or their mean, when the record has it; none "
+             "leaves it out (default mid)",
     )
     parser.add_argument(
         "--roi-band", type=float, required=True,
@@ -506,18 +601,28 @@ def main() -> None:
     node_ids = np.union1d(
         np.unique(facets[kept]), np.concatenate(list(sidesets.values())),
     ).astype(np.intp)
+    emissivity_bound = (
+        args.emissivity_bound
+        if args.emissivity_bound != "none" and has_temperature(args.data)
+        else None
+    )
+    if emissivity_bound is not None:
+        # A prescribed field needs the temperature at every node.
+        node_ids = np.arange(nodes.shape[0], dtype=np.intp)
 
-    deformed, fewest = remap_history(
+    deformed, temperature, fewest = remap_history(
         args.data, in_range, valid, source, nodes[node_ids, :2],
         num_components,
         per_frame=args.filter == "per-frame",
         poly_order=args.poly_order,
         support_multiplier=args.support_multiplier,
         frame_block=args.frame_block,
+        emissivity_bound=emissivity_bound,
     )
 
     # The reference is constructed, not measured: t = 0 is the test start
-    # the dataset zeroes to, where the specimen is unloaded and undeformed.
+    # the dataset zeroes to, where the specimen is unloaded and undeformed,
+    # at the temperature of the first kept frame.
     entity_kind = "elements" if num_components == 2 else "sides"
     data = CalibrationData(
         times=np.concatenate([[0.0], times[in_range]]),
@@ -525,13 +630,17 @@ def main() -> None:
         load=np.concatenate([[0.0], load[in_range]]) * args.force_scale,
         node_ids=node_ids,
         sidesets=sidesets,
-        values=np.concatenate([np.zeros_like(deformed[:1]), deformed]),
+        displacement=np.concatenate([np.zeros_like(deformed[:1]), deformed]),
         mesh_file=str(args.mesh),
         mesh_num_nodes=int(nodes.shape[0]),
         roi={
             entity_kind: entities[kept],
             "band": np.float64(band), "max_gap": np.float64(max_gap),
         },
+        temperature=(
+            None if temperature is None
+            else np.concatenate([temperature[:1], temperature])
+        ),
     )
     schedule = np.concatenate([[0.0], times[frames]])
 
@@ -556,17 +665,24 @@ def main() -> None:
         f"targets {node_ids.size} of {nodes.shape[0]} nodes, "
         f"{num_components} components"
     )
-    print("\n  frame      time      load    extension     |u|max")
+    if temperature is None:
+        print("no temperature stored")
+    else:
+        print(f"temperature in K from the {emissivity_bound} emissivity bound")
+    T_header = "" if temperature is None else "      T max"
+    print(f"\n  frame      time      load    extension     |u|max{T_header}")
     for row, frame in zip(np.searchsorted(in_range, frames), frames,
                           strict=True):
+        T_max = "" if temperature is None else f" {temperature[row].max():10.2f}"
         print(
             f"  {frame:5d} {times[frame]:9.1f} {load[frame]:9.4f} "
             f"{extension[frame]:11.4f} {np.abs(deformed[row]).max():10.4f}"
+            f"{T_max}"
         )
     print(
-        f"\nwrote {archive} {data.values.shape}, "
+        f"\nwrote {archive} {data.displacement.shape}, "
         f"{archive.stat().st_size / 1e6:.2f} MB stored against "
-        f"{data.values.nbytes / 1e6:.2f} MB raw"
+        f"{data.displacement.nbytes / 1e6:.2f} MB raw"
     )
     print(f"      {stem}_solve_times.txt, {stem}_match_times.txt")
     print(
