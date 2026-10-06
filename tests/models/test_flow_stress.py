@@ -158,7 +158,7 @@ class TestPerzynaYieldFunction(unittest.TestCase):
         sigma_y = float(_Y + voce_hardening(alpha, {"S": _S, "D": _D}))
         phi = brentq(
             lambda phi: float(
-                yield_function(phi, alpha, alpha_dot, None, _PERZYNA)),
+                yield_function(phi, alpha, alpha_dot, 300.0, _PERZYNA)),
             sigma_y, 10.0 * sigma_y)
         rate = ((phi / sigma_y - 1.0 + a0 ** p["epsilon"])
                 ** (1.0 / p["epsilon"]) - a0) / p["eta"]
@@ -168,8 +168,8 @@ class TestPerzynaYieldFunction(unittest.TestCase):
         yield_function = make_yield_function(_PERZYNA)
         rate_independent = make_yield_function(_flow_params())
         for alpha in np.linspace(0.0, 0.5, 6):
-            value = yield_function(_PHI, alpha, 0.0, None, _PERZYNA)
-            expected = rate_independent(_PHI, alpha, 0.0, None, _flow_params())
+            value = yield_function(_PHI, alpha, 0.0, 300.0, _PERZYNA)
+            expected = rate_independent(_PHI, alpha, 0.0, 300.0, _flow_params())
             self.assertEqual(float(value), float(expected))
 
     def test_slope_at_zero_rate_is_the_offset_slope(self) -> None:
@@ -181,7 +181,7 @@ class TestPerzynaYieldFunction(unittest.TestCase):
         expected = -sigma_y * p["eta"] * p["epsilon"] \
             * a0 ** (p["epsilon"] - 1.0)
         slope = grad(
-            lambda r: yield_function(_PHI, alpha, r, None, _PERZYNA))(0.0)
+            lambda r: yield_function(_PHI, alpha, r, 300.0, _PERZYNA))(0.0)
         np.testing.assert_allclose(float(slope), expected, rtol=1e-12)
 
 

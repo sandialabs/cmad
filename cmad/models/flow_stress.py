@@ -98,7 +98,7 @@ def peric_flow_stress(
 
 
 def perzyna_flow_stress(
-        alpha: JaxArray, alpha_dot: JaxArray, T: Scalar | None,
+        alpha: JaxArray, alpha_dot: JaxArray, T: Scalar,
         params: dict[str, Any],
         hardening_funs: dict[str, Callable[..., JaxArray]],
 ) -> JaxArray:
