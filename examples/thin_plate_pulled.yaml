@@ -1,0 +1,76 @@
+# A thin strip pulled to five percent strain in one second, heating from
+# its own plastic work: a 10 by 2 mm half strip (y = 0 the symmetry line
+# of a 4 mm wide strip), 1 mm thick, in plane stress, gripped at both
+# ends where the temperature is held at 300 K, losing heat through its
+# two faces and its free edge to air at 300 K, and conducting toward the
+# grips. Johnson-Cook with the Taylor-Quinney coefficient 0.9. Units are
+# mm, MPa, s, and K: the density 7.85e-9 Mg/mm^3 and the specific heat
+# 5.0e+8 mJ/(Mg K) give rho c = 3.9 MPa/K, the conductivity is 16 W/(m K),
+# and h = 25 W/(m^2 K) is 2.5e-2. The adiabatic rise for the plastic work
+# of this pull is 3.45 K; the middle of the strip reaches 303.26 K, a
+# point half a millimeter from a grip 300.88 K, and the stress is 337 MPa.
+#
+# Generate the mesh from the repo root, then run cmad from examples/
+# (input file paths resolve against the working directory):
+#   python examples/make_strip_mesh.py   # writes examples/meshes/strip_quad_20x4.exo
+#   cd examples
+#   cmad primal thin_plate_pulled.yaml
+
+problem:
+  type: fe
+  name: thin_plate_pulled
+
+discretization:
+  mesh file: meshes/strip_quad_20x4.exo
+  thickness: 1.0
+  num steps: 20
+  step size: 0.05
+
+residuals:
+  global residual:
+    type: thermomechanics
+    def_type: plane_stress
+  local residual:
+    type: small_elastic_plastic
+    reference temperature: 300.0
+    materials:
+      all:
+        elastic: {E: 200.0e+3, nu: 0.3}
+        plastic:
+          effective stress: {J2: {}}
+          flow stress:
+            johnson_cook:
+              A: 200.0
+              B: 300.0
+              n: 0.3
+              C: 0.014
+              reference rate: 1.0e-3
+              reference temperature: 294.0
+              melt temperature: 1793.0
+              m: 1.03
+          taylor quinney: 0.9
+        thermal expansion: {alpha: 1.2e-5, reference temperature: 300.0}
+        thermal:
+          conductivity: 16.0
+          density: 7.85e-9
+          specific heat: 5.0e+8
+          face convection: {h: 2.5e-2, T_inf: 300.0}
+
+dirichlet bcs:
+  expression:
+    grip_x_min: [equilibrium, 0, xmin_sides, 0.0]
+    pull_x_max: [equilibrium, 0, xmax_sides, 0.5 * t]
+    sym_y: [equilibrium, 1, ymin_sides, 0.0]
+    grip_T_min: [energy balance, 0, xmin_sides, 300.0]
+    grip_T_max: [energy balance, 0, xmax_sides, 300.0]
+
+convection bcs:
+  expression:
+    free_edge: [energy balance, ymax_sides, 2.5e-2, 300.0]
+
+output:
+  path: results
+  exodus filename: thin_plate_pulled.exo
+  global residual: [u, T]
+  local residual:
+    all: [cauchy, alpha, heat flux]
