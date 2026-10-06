@@ -127,13 +127,53 @@ def _run_calibrate_mp(deck_path: Path) -> int:
     return 0
 
 
+def _progress_line(
+        entry: dict[str, Any], iteration: int, evaluation: int,
+) -> str | None:
+    """One line on an accepted history entry; ``None`` on a guarded one,
+    since the objective prints the guard's reason itself."""
+    if "guarded" in entry:
+        return None
+    line = f"iteration {iteration}, evaluation {evaluation}: J {entry['J']:.6e}"
+    if "grad_norm" in entry:
+        line += f", |grad| {entry['grad_norm']:.3e}"
+    for tag, specimen in entry.get("specimens", {}).items():
+        line += f", {tag} J {specimen['J']:.6e}"
+    return line
+
+
 def _run_calibrate_fe(deck_path: Path) -> int:
     resolved = load_fe_input(deck_path, "calibrate")
     optimizer_section = resolved["optimizer"]
     log_params = optimizer_section["log_params"]
     materials = resolved["residuals"]["local residual"]["materials"]
+    out_dir, prefix, _ = resolve_output(resolved)
 
     objective = build_objective(resolved, log_params=log_params)
+
+    def write_history() -> None:
+        write_opt_history(
+            out_dir, prefix, objective.history,
+            objective.param_paths if log_params else None,
+            data_mean_squares=objective.data_mean_squares,
+        )
+
+    # The iterations done, from the optimizer's per iteration hook.
+    iterations = 0
+
+    def after_evaluation() -> None:
+        write_history()
+        if optimizer_section["print_progress"]:
+            line = _progress_line(
+                objective.history[-1], iterations + 1, len(objective.history),
+            )
+            if line is not None:
+                print(line, flush=True)
+
+    def after_iteration() -> None:
+        nonlocal iterations
+        iterations += 1
+
     result = minimize_objective(
         objective,
         algorithm=optimizer_section["algorithm"],
@@ -141,10 +181,11 @@ def _run_calibrate_fe(deck_path: Path) -> int:
         x0=resolve_initial_guess(
             optimizer_section["initial_guess"], objective.x0,
         ),
+        after_evaluation=after_evaluation,
+        after_iteration=after_iteration,
     )
     objective.set_params(result.x)
 
-    out_dir, prefix, _ = resolve_output(resolved)
     several = len(objective.schedules) > 1
     for tag, inserted in objective.inserted_times.items():
         name = f"{tag}_refined_times.txt" if several else "refined_times.txt"
@@ -152,11 +193,7 @@ def _run_calibrate_fe(deck_path: Path) -> int:
         np.savetxt(refined_path, objective.schedules[tag])
         print(f"wrote {refined_path} ({inserted.size} inserted)")
     write_resolved_deck(out_dir, prefix, resolved)
-    write_opt_history(
-        out_dir, prefix, objective.history,
-        objective.param_paths if log_params else None,
-        data_mean_squares=objective.data_mean_squares,
-    )
+    write_history()
     write_fe_opt_params(
         out_dir, prefix, materials,
         {block: p.values for block, p in objective.parameters.items()},

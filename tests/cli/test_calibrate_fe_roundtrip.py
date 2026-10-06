@@ -17,6 +17,8 @@ Assertions cover the three calibrate outputs: ``opt_status.json`` (converged,
 ``active_params.json`` (flat active-only table), plus the ``opt_history.json``
 native-parameter trace.
 """
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -135,13 +137,17 @@ class TestCalibrateFERoundTrip(unittest.TestCase):
                 optimizer={
                     "algorithm": "L-BFGS-B",
                     "log_params": True,
+                    "print_progress": True,
                     "options": {"ftol": 1e-14, "gtol": 1e-10, "maxiter": 200},
                 },
             )
             (tmp / "cal.yaml").write_text(
                 yaml.safe_dump(cal_deck, sort_keys=False),
             )
-            self.assertEqual(cmad_main(["calibrate", str(tmp / "cal.yaml")]), 0)
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                exit_code = cmad_main(["calibrate", str(tmp / "cal.yaml")])
+            self.assertEqual(exit_code, 0)
 
             with (cal_out / "opt_status.json").open() as f:
                 status = json.load(f)
@@ -182,6 +188,13 @@ class TestCalibrateFERoundTrip(unittest.TestCase):
             self.assertLess(
                 min(h["grad_norm"] for h in hist["history"]), 1e-5,
             )
+
+            # print_progress: a line per evaluation.
+            lines = printed.getvalue().splitlines()
+            for evaluation in (1, len(hist["history"])):
+                self.assertTrue(
+                    any(f"evaluation {evaluation}: J" in line for line in lines),
+                )
 
 
 if __name__ == "__main__":
