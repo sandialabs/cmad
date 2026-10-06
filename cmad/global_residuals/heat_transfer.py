@@ -1,4 +1,5 @@
 """Heat transfer global residual: the energy balance."""
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -56,6 +57,7 @@ class HeatTransfer(GlobalResidual):
             mode: GlobalResidualMode = GlobalResidualMode.COUPLED,
             local_newton_settings: dict[str, Any] | None = None,
             print_local_convergence: bool = False,
+            prescribed_field_names: Sequence[str] = (),
     ) -> GREvaluators:
         """Bind to a model, which must be a :class:`ThermalModel`; one
         with a face flux needs the thickness."""
@@ -67,6 +69,7 @@ class HeatTransfer(GlobalResidual):
         require_thickness_for_face_flux(model, self._thickness)
         return super().for_model(
             model, mode, local_newton_settings, print_local_convergence,
+            prescribed_field_names,
         )
 
     def evaluate_nodal_field(

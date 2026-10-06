@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
 from cmad.fem.fe_problem import FEProblem
 from cmad.fem.finite_element import EntityType
+from cmad.fem.nodal_history import interpolate_nodal_history
 from cmad.fem.precompute import (
     BlockIPGeometryPerElem,
     BlockIPGeometryShared,
@@ -148,6 +149,59 @@ def _gather_element_U(
     ]
 
 
+def _prescribed_fields_at(
+        fe_arrays: "FEKernelArrays", t: Scalar,
+) -> list[JaxArray]:
+    """The nodal values of every prescribed field at time ``t``, each
+    flattened node major."""
+    return [
+        interpolate_nodal_history(data, times, t).ravel()
+        for data, times in zip(
+            fe_arrays.prescribed_field_data, fe_arrays.prescribed_field_times,
+            strict=True,
+        )
+    ]
+
+
+def _fields_with_prescribed(
+        fe_arrays: "FEKernelArrays",
+        block_name: str,
+        U_global: NDArray[np.floating] | JaxArray,
+        U_prev_global: NDArray[np.floating] | JaxArray,
+        step_time: StepTime,
+) -> tuple[JaxArray, JaxArray, tuple[JaxArray, ...]]:
+    """``(U, U_prev, gather)``: the global vectors extended by the nodal
+    values of every prescribed field at ``step_time.t`` and
+    ``step_time.t_prev``, and the block's gather indices over them, the
+    unknown fields first."""
+    U = jnp.concatenate([
+        jnp.asarray(U_global), *_prescribed_fields_at(fe_arrays, step_time.t),
+    ])
+    U_prev = jnp.concatenate([
+        jnp.asarray(U_prev_global),
+        *_prescribed_fields_at(fe_arrays, step_time.t_prev),
+    ])
+    gather = (
+        *fe_arrays.u_gather_eq_by_block[block_name],
+        *fe_arrays.prescribed_gather_by_block[block_name],
+    )
+    return U, U_prev, gather
+
+
+def _shape_functions_at_ip(
+        field_N_at_ip: Sequence[JaxArray],
+        field_grad_N_phys_at_ip: Sequence[JaxArray],
+) -> list[ShapeFunctionsAtIP]:
+    """One :class:`ShapeFunctionsAtIP` per geometry cache entry: the
+    residual blocks first, then the prescribed fields."""
+    return [
+        ShapeFunctionsAtIP(N=N, grad_N=grad_N)
+        for N, grad_N in zip(
+            field_N_at_ip, field_grad_N_phys_at_ip, strict=True,
+        )
+    ]
+
+
 def _chunk_kernel(
         fe_problem: FEProblem,
         block_name: str,
@@ -166,7 +220,7 @@ def _chunk_kernel(
     elements whose U gather indices, previous state, and geometry are
     given: the per element kernel of the block's mode vmapped over them,
     with the tangent and, for a COUPLED block, the converged state, or
-    ``None`` for each that is not asked for or not there."""
+    ``None`` for each that is not asked for or not present."""
     U_elem = [U_global[eq] for eq in u_gather_eq]
     U_prev_elem = [U_prev_global[eq] for eq in u_gather_eq]
     evaluators = fe_problem.evaluators_by_block[block_name]
@@ -379,11 +433,12 @@ def per_element_R_and_K(
 ) -> tuple[list[JaxArray], list[list[JaxArray]]]:
     """Per-element ``(R_blocks, dR_dU_blocks)`` at all IPs of one element.
 
-    For each IP: read the cached per-block physical-frame field
-    shapes and integration measure from ``geom_per_elem`` /
-    ``geom_shared``, call ``R_and_dR_dU_evaluator`` with the per-block
-    ``field_shapes_phys_per_block`` for the fused internal-force +
-    tangent contribution, and accumulate. Subtract the forcing
+    For each IP: read the cached physical frame field shapes and
+    integration measure from ``geom_per_elem`` / ``geom_shared``, call
+    ``R_and_dR_dU_evaluator`` with ``field_shapes_phys`` (one entry per
+    geometry cache entry: the residual blocks first, then the prescribed
+    fields) for the fused internal force and tangent contribution, and
+    accumulate. Subtract the forcing
     contribution ``f_ext_r = N_r · f_r · w · dv`` (with ``N_r`` from
     block ``r``'s field interpolant — Galerkin test function) from
     each residual block ``r`` listed in ``forcing_fns_by_block_idx``
@@ -410,8 +465,9 @@ def per_element_R_and_K(
 
     ``geom_per_elem`` packs the per-element-IP arrays — signed
     ``iso_jac_det`` (the integration measure ``iso_jac_det·thickness·w``),
-    physical-frame field-shape gradients (one entry per residual
-    block, lifted via ``inv(iso_jac)`` from the geometric basis) and
+    physical frame field shape gradients (one entry per residual
+    block and per prescribed field, lifted via ``inv(iso_jac)`` from the
+    geometric basis) and
     physical IP coordinates (``coords_ip = N_geom · X_elem``) consumed
     by forcing callables. ``geom_shared`` packs the mesh-uniform
     arrays — quadrature weights and per-block reference-frame field-
@@ -431,26 +487,20 @@ def per_element_R_and_K(
     this kernel — the dispatch happens in
     :func:`assemble_element_block` rather than per-IP.
     """
-    num_blocks = len(residual_block_shapes)
-
-    def per_ip(quad_w_ip, dv_ip, coords_ip,
-               field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block):
-        field_shapes_phys_per_block = [
-            ShapeFunctionsAtIP(
-                N=field_N_at_ip_per_block[r],
-                grad_N=field_grad_N_phys_at_ip_per_block[r],
-            )
-            for r in range(num_blocks)
-        ]
+    def per_ip(quad_w_ip, dv_ip, coords_ip, field_N_at_ip,
+               field_grad_N_phys_at_ip):
+        field_shapes_phys = _shape_functions_at_ip(
+            field_N_at_ip, field_grad_N_phys_at_ip,
+        )
         R_ip, dR_dU_ip = R_and_dR_dU_evaluator(
             params, U_elem, U_prev_elem,
-            field_shapes_phys_per_block, quad_w_ip, dv_ip,
+            field_shapes_phys, quad_w_ip, dv_ip,
             geom_per_elem.element_size, step_time,
         )
         body_force_ip_per_block = {
             block_idx: jnp.einsum(
                 "a,k->ak",
-                field_shapes_phys_per_block[block_idx].N,
+                field_shapes_phys[block_idx].N,
                 jnp.asarray(forcing_fn(coords_ip, step_time.t)),
             ) * quad_w_ip * dv_ip
             for block_idx, forcing_fn in forcing_fns_by_block_idx.items()
@@ -471,11 +521,8 @@ def per_element_R_and_K(
             geom_shared.quad_w,
             geom_per_elem.iso_jac_det * geom_shared.thickness,
             geom_per_elem.coords_ip,
-            [geom_shared.field_N_per_block[r] for r in range(num_blocks)],
-            [
-                geom_per_elem.field_grad_N_phys_per_block[r]
-                for r in range(num_blocks)
-            ],
+            list(geom_shared.field_N_per_block),
+            list(geom_per_elem.field_grad_N_phys_per_block),
         ),
     )
 
@@ -514,24 +561,20 @@ def per_element_R(
     """
     num_blocks = len(residual_block_shapes)
 
-    def per_ip(quad_w_ip, dv_ip, coords_ip,
-               field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block):
-        field_shapes_phys_per_block = [
-            ShapeFunctionsAtIP(
-                N=field_N_at_ip_per_block[r],
-                grad_N=field_grad_N_phys_at_ip_per_block[r],
-            )
-            for r in range(num_blocks)
-        ]
+    def per_ip(quad_w_ip, dv_ip, coords_ip, field_N_at_ip,
+               field_grad_N_phys_at_ip):
+        field_shapes_phys = _shape_functions_at_ip(
+            field_N_at_ip, field_grad_N_phys_at_ip,
+        )
         R_ip = list(R_evaluator(
             params, U_elem, U_prev_elem,
-            field_shapes_phys_per_block, quad_w_ip, dv_ip,
+            field_shapes_phys, quad_w_ip, dv_ip,
             geom_per_elem.element_size, step_time,
         ))
         for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
             f_ext = jnp.einsum(
                 "a,k->ak",
-                field_shapes_phys_per_block[block_idx].N,
+                field_shapes_phys[block_idx].N,
                 jnp.asarray(forcing_fn(coords_ip, step_time.t)),
             ) * quad_w_ip * dv_ip
             R_ip[block_idx] = R_ip[block_idx] - f_ext
@@ -548,11 +591,8 @@ def per_element_R(
             geom_shared.quad_w,
             geom_per_elem.iso_jac_det * geom_shared.thickness,
             geom_per_elem.coords_ip,
-            [geom_shared.field_N_per_block[r] for r in range(num_blocks)],
-            [
-                geom_per_elem.field_grad_N_phys_per_block[r]
-                for r in range(num_blocks)
-            ],
+            list(geom_shared.field_N_per_block),
+            list(geom_per_elem.field_grad_N_phys_per_block),
         ),
     )
     return R_blocks
@@ -615,23 +655,15 @@ def per_element_R_and_K_coupled(
     (used only to label the optional local convergence print) is passed
     to the evaluator.
     """
-    num_blocks = len(residual_block_shapes)
-
-    def per_ip(quad_w_ip, dv_ip, coords_ip,
-               xi_prev_at_ip,
-               field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block,
-               ip_idx):
-        field_shapes_phys_per_block = [
-            ShapeFunctionsAtIP(
-                N=field_N_at_ip_per_block[r],
-                grad_N=field_grad_N_phys_at_ip_per_block[r],
-            )
-            for r in range(num_blocks)
-        ]
+    def per_ip(quad_w_ip, dv_ip, coords_ip, xi_prev_at_ip, field_N_at_ip,
+               field_grad_N_phys_at_ip, ip_idx):
+        field_shapes_phys = _shape_functions_at_ip(
+            field_N_at_ip, field_grad_N_phys_at_ip,
+        )
         xi_prev_blocks = unravel_xi(xi_prev_at_ip)
         R_ip, dR_dU_ip, xi_blocks = R_and_dR_dU_and_xi_evaluator(
             params, U_elem, U_prev_elem, xi_prev_blocks,
-            field_shapes_phys_per_block, quad_w_ip, dv_ip,
+            field_shapes_phys, quad_w_ip, dv_ip,
             geom_per_elem.element_size, step_time, ip_idx,
         )
         # Discard the unravel callable; xi treedef is fixed by
@@ -640,7 +672,7 @@ def per_element_R_and_K_coupled(
         body_force_ip_per_block = {
             block_idx: jnp.einsum(
                 "a,k->ak",
-                field_shapes_phys_per_block[block_idx].N,
+                field_shapes_phys[block_idx].N,
                 jnp.asarray(forcing_fn(coords_ip, step_time.t)),
             ) * quad_w_ip * dv_ip
             for block_idx, forcing_fn in forcing_fns_by_block_idx.items()
@@ -665,11 +697,8 @@ def per_element_R_and_K_coupled(
             geom_per_elem.iso_jac_det * geom_shared.thickness,
             geom_per_elem.coords_ip,
             xi_prev_per_ip,
-            [geom_shared.field_N_per_block[r] for r in range(num_blocks)],
-            [
-                geom_per_elem.field_grad_N_phys_per_block[r]
-                for r in range(num_blocks)
-            ],
+            list(geom_shared.field_N_per_block),
+            list(geom_per_elem.field_grad_N_phys_per_block),
             jnp.arange(geom_shared.quad_w.shape[0]),
         ),
     )
@@ -709,25 +738,21 @@ def per_element_R_coupled(
     """
     num_blocks = len(residual_block_shapes)
 
-    def per_ip(quad_w_ip, dv_ip, coords_ip, xi_prev_at_ip,
-               field_N_at_ip_per_block, field_grad_N_phys_at_ip_per_block):
-        field_shapes_phys_per_block = [
-            ShapeFunctionsAtIP(
-                N=field_N_at_ip_per_block[r],
-                grad_N=field_grad_N_phys_at_ip_per_block[r],
-            )
-            for r in range(num_blocks)
-        ]
+    def per_ip(quad_w_ip, dv_ip, coords_ip, xi_prev_at_ip, field_N_at_ip,
+               field_grad_N_phys_at_ip):
+        field_shapes_phys = _shape_functions_at_ip(
+            field_N_at_ip, field_grad_N_phys_at_ip,
+        )
         xi_prev_blocks = unravel_xi(xi_prev_at_ip)
         R_ip = list(R_coupled_evaluator(
             params, U_elem, U_prev_elem, xi_prev_blocks,
-            field_shapes_phys_per_block, quad_w_ip, dv_ip,
+            field_shapes_phys, quad_w_ip, dv_ip,
             geom_per_elem.element_size, step_time,
         ))
         for block_idx, forcing_fn in forcing_fns_by_block_idx.items():
             f_ext = jnp.einsum(
                 "a,k->ak",
-                field_shapes_phys_per_block[block_idx].N,
+                field_shapes_phys[block_idx].N,
                 jnp.asarray(forcing_fn(coords_ip, step_time.t)),
             ) * quad_w_ip * dv_ip
             R_ip[block_idx] = R_ip[block_idx] - f_ext
@@ -745,11 +770,8 @@ def per_element_R_coupled(
             geom_per_elem.iso_jac_det * geom_shared.thickness,
             geom_per_elem.coords_ip,
             xi_prev_per_ip,
-            [geom_shared.field_N_per_block[r] for r in range(num_blocks)],
-            [
-                geom_per_elem.field_grad_N_phys_per_block[r]
-                for r in range(num_blocks)
-            ],
+            list(geom_shared.field_N_per_block),
+            list(geom_per_elem.field_grad_N_phys_per_block),
         ),
     )
     return R_blocks
@@ -791,10 +813,10 @@ def assemble_element_block_dense(
     before the scatter sums them into ``R_block``: the size of the
     assembly's summands, not of their sum.
 
-    The per-element U-gather index arrays, the per-residual-block
-    R-scatter eq arrays, and the reference-frame geometry cache are
-    read from ``fe_arrays`` rather than derived from ``fe_problem`` /
-    ``mesh.connectivity`` in-trace.
+    The per-element U gather index arrays, the prescribed field values
+    and gather indices, the per-residual-block R scatter eq arrays, and
+    the reference frame geometry cache are read from ``fe_arrays`` rather
+    than derived from ``fe_problem`` / ``mesh.connectivity`` in the trace.
 
     ``xi_prev_per_block`` is required when the block is COUPLED and
     must match the cached layout ``(n_elems_block, n_ips,
@@ -809,8 +831,9 @@ def assemble_element_block_dense(
     # the padding elements carry zero residuals and tangents.
     n_elems = eq_indices_per_block[0].shape[0]
     n_dofs_per_block = [eq.shape[1] for eq in eq_indices_per_block]
-    U = jnp.asarray(U_global)
-    U_prev = jnp.asarray(U_prev_global)
+    U, U_prev, gather = _fields_with_prescribed(
+        fe_arrays, block_name, U_global, U_prev_global, step_time,
+    )
     xi_prev = None if xi_prev_per_block is None else jnp.asarray(xi_prev_per_block)
 
     def body(carry, xs):
@@ -839,7 +862,7 @@ def assemble_element_block_dense(
     (R_block, norm_sq), (K_blocks, xi_solved_per_block) = _scan_chunks(
         fe_problem.elements_per_chunk, n_elems, fe_problem.device_mesh,
         (
-            fe_arrays.u_gather_eq_by_block[block_name], eq_indices_per_block,
+            gather, eq_indices_per_block,
             geom_cache.per_elem, xi_prev,
         ),
         body,
@@ -907,8 +930,9 @@ def assemble_element_block_residual(
     geom_cache = fe_arrays.geometry_cache[block_name]
     eq_indices_per_block = fe_arrays.r_scatter_eq_by_block[block_name]
     n_elems = eq_indices_per_block[0].shape[0]
-    U = jnp.asarray(U_global)
-    U_prev = jnp.asarray(U_prev_global)
+    U, U_prev, gather = _fields_with_prescribed(
+        fe_arrays, block_name, U_global, U_prev_global, step_time,
+    )
     xi_prev = None if xi_prev_per_block is None else jnp.asarray(xi_prev_per_block)
 
     def body(R_block, xs):
@@ -923,7 +947,7 @@ def assemble_element_block_residual(
     R_block, _ = _scan_chunks(
         fe_problem.elements_per_chunk, n_elems, fe_problem.device_mesh,
         (
-            fe_arrays.u_gather_eq_by_block[block_name], eq_indices_per_block,
+            gather, eq_indices_per_block,
             geom_cache.per_elem, xi_prev,
         ),
         body, jnp.zeros(fe_problem.dof_map.num_total_dofs),
@@ -955,8 +979,9 @@ def _assemble_block_into_unique_data(
     eq_indices_per_block = fe_arrays.r_scatter_eq_by_block[block_name]
     n_elems = eq_indices_per_block[0].shape[0]
     n_dofs_per_block = [eq.shape[1] for eq in eq_indices_per_block]
-    U = jnp.asarray(U_global)
-    U_prev = jnp.asarray(U_prev_global)
+    U, U_prev, gather = _fields_with_prescribed(
+        fe_arrays, block_name, U_global, U_prev_global, step_time,
+    )
     xi_prev = None if xi_prev_per_block is None else jnp.asarray(xi_prev_per_block)
 
     # The block's dedup indices per (r, s) pair, each pair's range
@@ -997,7 +1022,7 @@ def _assemble_block_into_unique_data(
     (R_block, unique_data, norm_sq), xi_solved = _scan_chunks(
         fe_problem.elements_per_chunk, n_elems, fe_problem.device_mesh,
         (
-            fe_arrays.u_gather_eq_by_block[block_name], eq_indices_per_block,
+            gather, eq_indices_per_block,
             geom_cache.per_elem, xi_prev, dedup_per_pair,
         ),
         body,

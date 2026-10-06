@@ -64,6 +64,7 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 
+from cmad.fem.nodal_history import interpolate_nodal_history
 from cmad.typing import JaxArray, Scalar
 
 
@@ -246,20 +247,10 @@ def make_nodal_field_values(
             f"step of {gaps.min():.6g}"
         )
 
-    num_frames = data.shape[0]
-    last = num_frames - 2
-
     def values(
             coords: NDArray[np.floating] | JaxArray, t: Scalar,
     ) -> JaxArray:
         del coords  # the layout is fixed at build time
-        if num_frames == 1:
-            return data[0]  # a single frame holds for the whole history
-        lo = jnp.clip(jnp.searchsorted(times, t, side="right") - 1, 0, last)
-        span = times[lo + 1] - times[lo]
-        weight = jnp.clip((t - times[lo]) / span, 0.0, 1.0)
-        before = jnp.take(data, lo, axis=0)
-        after = jnp.take(data, lo + 1, axis=0)
-        return before + weight * (after - before)
+        return interpolate_nodal_history(data, times, t)
 
     return values

@@ -293,12 +293,12 @@ class TestFiniteElements(unittest.TestCase):
             Q1_HEX,
         )
 
-    def test_unknown_var_name_in_finite_elements_raises(self) -> None:
+    def test_unknown_field_in_finite_elements_raises(self) -> None:
         with self.assertRaises(ValueError) as ctx:
             self._build({"p": "Q1"})
         msg = str(ctx.exception)
         self.assertIn("p", msg)
-        self.assertIn("var_name", msg)
+        self.assertIn("field", msg)
 
     def test_family_mismatch_raises(self) -> None:
         with self.assertRaises(ValueError) as ctx:

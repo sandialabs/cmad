@@ -1,4 +1,5 @@
 """Quasi-static mechanics equilibrium global residual."""
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -165,6 +166,7 @@ class Mechanics(GlobalResidual):
             mode: GlobalResidualMode = GlobalResidualMode.COUPLED,
             local_newton_settings: dict[str, Any] | None = None,
             print_local_convergence: bool = False,
+            prescribed_field_names: Sequence[str] = (),
     ) -> GREvaluators:
         """Bind to a model, rejecting a mixed binding to a model that does
         not support the mixed formulation (``supports_mixed``), as the
@@ -178,6 +180,7 @@ class Mechanics(GlobalResidual):
             )
         return super().for_model(
             model, mode, local_newton_settings, print_local_convergence,
+            prescribed_field_names,
         )
 
     def near_null_space(self, mesh: Mesh) -> NDArray[np.floating]:

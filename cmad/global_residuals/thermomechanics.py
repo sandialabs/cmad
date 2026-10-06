@@ -1,5 +1,6 @@
 """Thermomechanics global residual: the momentum balance and the energy
 balance on one mesh."""
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -86,7 +87,7 @@ class Thermomechanics(GlobalResidual):
                 ))
             R.append(energy_balance(
                 xi, xi_prev, params, U_ip, U_ip_prev, model, mode,
-                shapes_ip[-1], w, dv, step_time, self._thickness,
+                shapes_ip[T], w, dv, step_time, self._thickness,
             ))
             return R
 
@@ -103,6 +104,7 @@ class Thermomechanics(GlobalResidual):
             mode: GlobalResidualMode = GlobalResidualMode.COUPLED,
             local_newton_settings: dict[str, Any] | None = None,
             print_local_convergence: bool = False,
+            prescribed_field_names: Sequence[str] = (),
     ) -> GREvaluators:
         """Bind to a model, which must be a :class:`ThermomechanicsModel`
         and, when ``mixed``, support the mixed formulation; one with a
@@ -120,6 +122,7 @@ class Thermomechanics(GlobalResidual):
         require_thickness_for_face_flux(model, self._thickness)
         return super().for_model(
             model, mode, local_newton_settings, print_local_convergence,
+            prescribed_field_names,
         )
 
     def near_null_space(self, mesh: Mesh) -> NDArray[np.floating]:

@@ -25,14 +25,16 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
+import numpy as np
 from jax.tree_util import register_pytree_node_class
 
 from cmad.fem.assembly import (
+    _element_basis_fns,
     _element_eq_indices,
     _pad_element_rows,
     assembled_coo_dedup,
 )
-from cmad.fem.dof import DBCArrays, build_dbc_arrays
+from cmad.fem.dof import DBCArrays, GlobalFieldLayout, build_dbc_arrays
 from cmad.fem.precompute import BlockIPGeometryCache
 from cmad.fem.sharding import pad_element_leaves
 from cmad.fem.sparse_solve import BlockSparsity, EmbeddedSparsity
@@ -56,6 +58,9 @@ _FEKernelArraysChildren = tuple[
     NeumannSideArrays,
     NeumannSideArrays,
     DBCArrays,
+    tuple[JaxArray, ...],
+    tuple[JaxArray, ...],
+    dict[str, tuple[JaxArray, ...]],
 ]
 
 
@@ -110,6 +115,15 @@ class FEKernelArrays:
     - ``dbc_arrays``: the per-DirichletBC prescribed-value arrays —
       flat-vector scatter positions and boundary-vertex coordinates;
       see :data:`cmad.fem.dof.DBCArrays`.
+    - ``prescribed_field_data``: one ``(num_times, num_nodes,
+      num_components)`` array per prescribed field, in
+      ``fe_problem.prescribed_fields`` order, and
+      ``prescribed_field_times`` the matching ``(num_times,)`` arrays.
+    - ``prescribed_gather_by_block``: per element block, one
+      ``(n_elems_block, num_dofs_per_element, num_components)`` index
+      array per prescribed field, in the form of the U gather, into the
+      vector the assembly gathers from: the global ``U`` followed by the
+      nodal values of each prescribed field at one time, node major.
     """
     u_gather_eq_by_block: dict[str, tuple[JaxArray, ...]]
     r_scatter_eq_by_block: dict[str, tuple[JaxArray, ...]]
@@ -123,6 +137,9 @@ class FEKernelArrays:
     neumann_side_arrays: NeumannSideArrays
     robin_side_arrays: NeumannSideArrays
     dbc_arrays: DBCArrays
+    prescribed_field_data: tuple[JaxArray, ...]
+    prescribed_field_times: tuple[JaxArray, ...]
+    prescribed_gather_by_block: dict[str, tuple[JaxArray, ...]]
 
     def tree_flatten(self) -> tuple[_FEKernelArraysChildren, None]:
         children: _FEKernelArraysChildren = (
@@ -138,6 +155,9 @@ class FEKernelArrays:
             self.neumann_side_arrays,
             self.robin_side_arrays,
             self.dbc_arrays,
+            self.prescribed_field_data,
+            self.prescribed_field_times,
+            self.prescribed_gather_by_block,
         )
         return children, None
 
@@ -148,7 +168,8 @@ class FEKernelArrays:
         (u_gather_eq_by_block, r_scatter_eq_by_block, coo_rows, coo_cols,
          coo_dedup_scatter, geometry_cache, embedded_sparsity, block_sparsity,
          prescribed_indices, neumann_side_arrays, robin_side_arrays,
-         dbc_arrays) = children
+         dbc_arrays, prescribed_field_data, prescribed_field_times,
+         prescribed_gather_by_block) = children
         return cls(
             u_gather_eq_by_block=u_gather_eq_by_block,
             r_scatter_eq_by_block=r_scatter_eq_by_block,
@@ -162,6 +183,9 @@ class FEKernelArrays:
             neumann_side_arrays=neumann_side_arrays,
             robin_side_arrays=robin_side_arrays,
             dbc_arrays=dbc_arrays,
+            prescribed_field_data=tuple(prescribed_field_data),
+            prescribed_field_times=tuple(prescribed_field_times),
+            prescribed_gather_by_block=prescribed_gather_by_block,
         )
 
 
@@ -196,8 +220,18 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
     # The element axis is the padded one (cmad.fem.sharding): a padding
     # element repeats the block's last element's indices and has a zero
     # iso_jac_det, so it contributes nothing.
+
+    # In the vector the assembly gathers from, the unknowns come first and
+    # then the nodal values of each prescribed field in turn.
+    prescribed_offsets: list[int] = []
+    next_offset = dof_map.num_total_dofs
+    for pf in fe_problem.prescribed_fields:
+        prescribed_offsets.append(next_offset)
+        next_offset += pf.data.shape[1] * pf.data.shape[2]
+
     u_gather_eq_by_block: dict[str, tuple[JaxArray, ...]] = {}
     r_scatter_eq_by_block: dict[str, tuple[JaxArray, ...]] = {}
+    prescribed_gather_by_block: dict[str, tuple[JaxArray, ...]] = {}
     geometry_cache: dict[str, BlockIPGeometryCache] = {}
     for block_name in fe_problem.evaluators_by_block:
         connectivity_block = mesh.connectivity[
@@ -230,6 +264,25 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
             for r in range(num_residuals)
         )
 
+        prescribed_gathers: list[JaxArray] = []
+        for pf, offset in zip(
+            fe_problem.prescribed_fields, prescribed_offsets, strict=True,
+        ):
+            num_components = pf.data.shape[2]
+            basis_fns = _element_basis_fns(
+                GlobalFieldLayout(pf.name, pf.finite_element),
+                connectivity_block,
+            )
+            eq = (
+                offset
+                + basis_fns[:, :, None] * num_components
+                + np.arange(num_components)[None, None, :]
+            )
+            prescribed_gathers.append(
+                jnp.asarray(_pad_element_rows(eq.astype(np.intp), n_elems)),
+            )
+        prescribed_gather_by_block[block_name] = tuple(prescribed_gathers)
+
         cache = fe_problem.geometry_cache[block_name]
         if cache.per_elem.iso_jac_det.shape[0] == n_elems:
             geometry_cache[block_name] = cache
@@ -260,6 +313,14 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
         coo_pattern=(coo_rows, coo_cols),
     )
     dbc_arrays = build_dbc_arrays(dof_map)
+    prescribed_field_data = tuple(
+        jnp.asarray(pf.data, dtype=jnp.float64)
+        for pf in fe_problem.prescribed_fields
+    )
+    prescribed_field_times = tuple(
+        jnp.asarray(pf.times, dtype=jnp.float64)
+        for pf in fe_problem.prescribed_fields
+    )
 
     return FEKernelArrays(
         u_gather_eq_by_block=u_gather_eq_by_block,
@@ -274,4 +335,7 @@ def build_fe_kernel_arrays(fe_problem: FEProblem) -> FEKernelArrays:
         neumann_side_arrays=neumann_side_arrays,
         robin_side_arrays=robin_side_arrays,
         dbc_arrays=dbc_arrays,
+        prescribed_field_data=prescribed_field_data,
+        prescribed_field_times=prescribed_field_times,
+        prescribed_gather_by_block=prescribed_gather_by_block,
     )
