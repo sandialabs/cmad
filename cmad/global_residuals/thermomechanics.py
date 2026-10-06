@@ -13,6 +13,9 @@ from cmad.global_residuals.balance_laws import (
     pressure_equation,
 )
 from cmad.global_residuals.global_residual import GlobalResidual
+from cmad.global_residuals.heat_transfer import (
+    require_thickness_for_face_flux,
+)
 from cmad.global_residuals.mechanics import (
     def_type_from_section,
     rigid_body_modes,
@@ -31,17 +34,21 @@ class Thermomechanics(GlobalResidual):
     a :class:`ThermomechanicsModel`. The bodies are the balance laws of
     :mod:`cmad.global_residuals.balance_laws`; the two formulations are
     those of :class:`cmad.global_residuals.mechanics.Mechanics`.
+    ``thickness`` is the out of plane extent of a 2D mesh, which a model
+    with a face flux (a plate modeled in its plane) needs.
     """
 
     def __init__(
             self, ndims: int = 3, mixed: bool = False,
             stabilization_multiplier: float = 1.0,
+            thickness: float | None = None,
     ) -> None:
         self._is_complex = False
         self.dtype = float
         self._ndims = ndims
         self._mixed = mixed
         self._stabilization_multiplier = stabilization_multiplier
+        self._thickness = thickness
 
         if mixed and ndims not in (2, 3):
             raise NotImplementedError(
@@ -79,7 +86,7 @@ class Thermomechanics(GlobalResidual):
                 ))
             R.append(energy_balance(
                 xi, xi_prev, params, U_ip, U_ip_prev, model, mode,
-                shapes_ip[-1], w, dv, step_time,
+                shapes_ip[-1], w, dv, step_time, self._thickness,
             ))
             return R
 
@@ -98,7 +105,8 @@ class Thermomechanics(GlobalResidual):
             print_local_convergence: bool = False,
     ) -> GREvaluators:
         """Bind to a model, which must be a :class:`ThermomechanicsModel`
-        and, when ``mixed``, support the mixed formulation."""
+        and, when ``mixed``, support the mixed formulation; one with a
+        face flux needs the thickness."""
         if not isinstance(model, ThermomechanicsModel):
             raise ValueError(
                 f"thermomechanics needs a thermomechanics model, a mechanics "
@@ -109,6 +117,7 @@ class Thermomechanics(GlobalResidual):
                 f"mixed formulation requires a model with supports_mixed; "
                 f"got {type(model.mechanics).__name__} with the flag False",
             )
+        require_thickness_for_face_flux(model, self._thickness)
         return super().for_model(
             model, mode, local_newton_settings, print_local_convergence,
         )
@@ -150,14 +159,17 @@ class Thermomechanics(GlobalResidual):
             cls,
             gr_section: dict[str, Any],
             ndims: int,
+            thickness: float | None = None,
     ) -> "Thermomechanics":
         """Construct from the resolved ``residuals.global residual``
         section: ``def_type`` is required and checked against the mesh,
-        ``mixed`` and ``stabilization multiplier`` as for mechanics."""
+        ``mixed`` and ``stabilization multiplier`` as for mechanics,
+        ``thickness`` from the discretization section."""
         def_type_from_section(gr_section, ndims)
         return cls(
             ndims=ndims,
             mixed=bool(gr_section.get("mixed", False)),
             stabilization_multiplier=gr_section.get(
                 "stabilization multiplier", 1.0),
+            thickness=thickness,
         )

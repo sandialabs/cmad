@@ -13,15 +13,31 @@ from cmad.models.thermal_model import ThermalModel
 from cmad.parameters.parameters import Parameters
 from cmad.typing import JaxArray, Scalar, StateList
 
+FACE_CONVECTION_KEYS = frozenset({"h", "T_inf"})
+
 
 def isotropic_heat_flux(grad_T: JaxArray, params: dict[str, Any]) -> JaxArray:
     """Fourier's flux of an isotropic conductor, ``-k grad T``."""
     return -params["thermal"]["conductivity"] * grad_T
 
 
+def check_face_convection(values: dict[str, Any]) -> None:
+    """Raise a ``ValueError`` unless ``thermal.face convection``, when
+    present, holds exactly ``h`` and ``T_inf``."""
+    face = values["thermal"].get("face convection")
+    if face is None:
+        return
+    if not isinstance(face, dict) or set(face) != FACE_CONVECTION_KEYS:
+        raise ValueError(
+            "thermal.face convection: needs 'h', the convection coefficient "
+            "of the plate's faces, and 'T_inf', the temperature of the air")
+
+
 class Conduction(ThermalModel):
     """Heat conduction from Fourier's law, with the heat capacity ``rho c``
-    when the material names a density and a specific heat.
+    when the material names a density and a specific heat, and the face
+    flux ``h (T - T_inf)`` of a plate modeled in its plane when it names
+    ``face convection: {h, T_inf}``.
 
     No local state, so the flux is closed-form; without the capacity the
     rate term is zero and the problem is steady.
@@ -56,6 +72,11 @@ class Conduction(ThermalModel):
         self.heat_flux_closed_form = partial(
             self._heat_flux_closed_form_fn,
             resolve_parameters=self.resolve_parameters)
+        check_face_convection(parameters.values)
+        if "face convection" in thermal:
+            self.face_flux = partial(
+                self._face_convection_fn,
+                resolve_parameters=self.resolve_parameters)
 
         super().__init__(self._residual_fn)
 
@@ -91,6 +112,16 @@ class Conduction(ThermalModel):
     ) -> JaxArray:
         params = resolve_parameters(params, U)
         return isotropic_heat_flux(U.grad_fields["T"][0], params)
+
+    @staticmethod
+    def _face_convection_fn(
+            params: dict[str, Any],
+            U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
+            resolve_parameters: Callable[..., dict[str, Any]],
+    ) -> Scalar:
+        params = resolve_parameters(params, U)
+        face = params["thermal"]["face convection"]
+        return face["h"] * (U.fields["T"][0] - face["T_inf"])
 
     def heat_flux(
             self,
