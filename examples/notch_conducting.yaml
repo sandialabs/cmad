@@ -1,0 +1,73 @@
+# A notched plate heating from its own plastic work while it conducts: a
+# quarter of a 10 by 10 mm plate 2 mm thick with a central hole of radius
+# 2 mm, over its half thickness (symmetry planes x = 0, y = 0, and z = 0),
+# in tets, mixed, the be_bar model with rate-independent Voce hardening, the
+# yield stress a table in temperature, and the Taylor-Quinney coefficient
+# 0.9. The edge y = 10 is pulled 4 percent in 1 s and held at 300 K; the
+# face z = 1 and the edge x = 10 lose heat to air at 300 K. Units are mm,
+# MPa, s, and K (304L).
+#
+# At t = 1 s the hole edge at (2, 0) reaches 308.66 K at 25 percent plastic
+# strain and 816 MPa.
+#
+# Generate the mesh from the repo root, then run cmad from examples/:
+#   python examples/notch_mesh.py --plate 10 10 1 --radius 2 --h 0.5 \
+#       --out examples/meshes/notch_10mm.msh --plane
+#   cd examples
+#   cmad primal notch_conducting.yaml
+
+problem:
+  type: fe
+  name: notch_conducting
+
+discretization:
+  mesh file: meshes/notch_10mm.msh
+  build coordinate sidesets: true
+  num steps: 20
+  step size: 0.05
+  quadrature:
+    volume degree: 2
+
+residuals:
+  global residual:
+    type: thermomechanics
+    def_type: full_3d
+    mixed: true
+  local residual:
+    type: be_bar_elastic_plastic
+    reference temperature: 300.0
+    materials:
+      solid:
+        elastic: {E: 200.0e+3, nu: 0.3}
+        plastic:
+          effective stress: {J2: {}}
+          flow stress:
+            initial yield:
+              Y: {table: {T: [300.0, 500.0], values: [335.4, 292.0]}}
+            hardening: {voce_modulus: {H: 2625.0, D: 2.5}}
+          taylor-quinney: 0.9
+        thermal expansion: {alpha: 1.2e-5, reference temperature: 300.0}
+        thermal:
+          conductivity: 16.0
+          density: 7.85e-9
+          specific heat: 5.0e+8
+
+dirichlet bcs:
+  expression:
+    sym_x: [equilibrium, 0, xmin_sides, 0.0]
+    sym_y: [equilibrium, 1, ymin_sides, 0.0]
+    sym_z: [equilibrium, 2, zmin_sides, 0.0]
+    load_y: [equilibrium, 1, ymax_sides, 0.4 * t]
+    grip_T: [energy balance, 0, ymax_sides, 300.0]
+
+convection bcs:
+  expression:
+    face: [energy balance, zmax_sides, 2.5e-2, 300.0]
+    edge: [energy balance, xmax_sides, 2.5e-2, 300.0]
+
+output:
+  path: results
+  exodus filename: notch_conducting.exo
+  global residual: [u, p, T]
+  local residual:
+    solid: [cauchy, alpha, heat flux]
