@@ -39,6 +39,7 @@ from cmad.fem.fe_problem import FEProblem, FEState, build_fe_problem
 from cmad.fem.finite_element import P1_TET, P1_TRI, Q1_HEX, Q1_QUAD, FiniteElement
 from cmad.fem.kernel_arrays import FEKernelArrays
 from cmad.fem.mesh import Mesh, coordinate_side_sets
+from cmad.fem.nodal_history import PrescribedField
 from cmad.fem.quadrature import (
     QuadratureRule,
     hex_quadrature,
@@ -464,8 +465,10 @@ def build_fe_problem_from_sections(
         for block, model in models_by_block.items()
     }
 
+    prescribed_section = resolved.get("prescribed fields") or {}
     field_layouts = _build_field_layouts(
         resolved["discretization"], gr, mesh.element_family,
+        prescribed_names=list(prescribed_section),
     )
     components_by_field = {
         str(gr.var_names[r]): int(gr._num_eqs[r])
@@ -493,6 +496,10 @@ def build_fe_problem_from_sections(
         resolved.get("convection bcs"), resolved.get("radiation bcs"), gr,
     )
     forcing_fns = _build_forcing_fns(resolved.get("volumetric sources"), gr)
+    prescribed_fields = _build_prescribed_fields(
+        prescribed_section, gr, mesh, mesh.element_family,
+        resolved["discretization"].get("finite elements") or {}, t_schedule,
+    )
 
     assembly_quadrature, side_quadrature = _build_quadrature_overrides(
         resolved["discretization"], mesh.element_family,
@@ -522,6 +529,7 @@ def build_fe_problem_from_sections(
         local_newton_settings=local_newton_settings,
         thickness=resolved["discretization"].get("thickness"),
         elements_per_chunk=resolved["discretization"].get("elements per chunk"),
+        prescribed_fields=prescribed_fields,
     )
 
     qoi: FEQoI | None = None
@@ -548,14 +556,17 @@ def _build_field_layouts(
         disc_section: dict[str, Any],
         gr: GlobalResidual,
         family: ElementFamily,
+        prescribed_names: Sequence[str] = (),
 ) -> list[GlobalFieldLayout]:
     """One layout per GR residual block, FE looked up per ``var_name``.
 
     Per-var FE choice comes from ``discretization.finite elements``
     (deck-side discretization decision); omitted var_names fall back to
     family-matched linear Lagrange (Q1_HEX / P1_TET in 3D, Q1_QUAD /
-    P1_TRI in 2D). Stray override keys that don't match any GR var_name
-    raise — silent typos in the deck would otherwise apply nothing.
+    P1_TRI in 2D). An override may also name a prescribed field
+    (``prescribed_names``), whose layout :func:`_build_prescribed_fields`
+    builds. Stray override keys that match neither raise, since a silent
+    typo in the input file would otherwise apply nothing.
     """
     if family not in _DEFAULT_FE_PER_FAMILY:
         raise ValueError(
@@ -565,12 +576,12 @@ def _build_field_layouts(
         )
     overrides = disc_section.get("finite elements") or {}
     var_names = {str(gr.var_names[r]) for r in range(gr.num_residuals)}
-    unknown = set(overrides) - var_names
+    unknown = set(overrides) - var_names - set(prescribed_names)
     if unknown:
         raise ValueError(
             f"discretization.finite elements references unknown "
-            f"var_name(s) {sorted(unknown)}; GR var_names: "
-            f"{sorted(var_names)}",
+            f"field(s) {sorted(unknown)}; the fields are "
+            f"{sorted(var_names | set(prescribed_names))}",
         )
     layouts: list[GlobalFieldLayout] = []
     for r in range(gr.num_residuals):
@@ -814,6 +825,7 @@ def _check_calibration_bc_data(
         t_schedule: NDArray[np.float64],
         mesh: Mesh,
         data_file: str,
+        where: str = "dirichlet bcs.field data file",
 ) -> None:
     """Reject an archive built for another mesh or not covering the schedule."""
     store.check_mesh(int(mesh.nodes.shape[0]))
@@ -823,7 +835,7 @@ def _check_calibration_bc_data(
         or float(t_schedule[-1]) > float(store.times[-1]) + tol
     ):
         raise ValueError(
-            f"dirichlet bcs.field data file: the schedule spans "
+            f"{where}: the schedule spans "
             f"{float(t_schedule[0]):g} to {float(t_schedule[-1]):g} but "
             f"'{data_file}' covers {float(store.times[0]):g} to "
             f"{float(store.times[-1]):g}",
@@ -1027,6 +1039,85 @@ def _build_forcing_fns(
         ]
         fns_by_idx[r] = _make_volumetric_source_callable(component_fns)
     return fns_by_idx
+
+
+def _build_prescribed_fields(
+        section: dict[str, Any] | None,
+        gr: GlobalResidual,
+        mesh: Mesh,
+        family: ElementFamily,
+        fe_overrides: dict[str, str],
+        t_schedule: NDArray[np.float64],
+) -> list[PrescribedField]:
+    """The ``prescribed fields`` section as :class:`PrescribedField`
+    declarations: each entry a nodal history from a ``data file`` (a
+    calibration data archive read on every node, or a ``(num_times,
+    num_nodes, num_components)`` array with one entry per schedule time)
+    or an ``expression`` per component evaluated at the nodes at every
+    schedule time. The finite element is the ``finite elements`` override
+    for the name or the family default."""
+    if not section:
+        return []
+    var_names = [str(name) for name in gr.var_names]
+    num_nodes = int(mesh.nodes.shape[0])
+    fields: list[PrescribedField] = []
+    for name, entry in section.items():
+        where = f"prescribed fields.{name}"
+        if name in var_names:
+            raise ValueError(
+                f"{where}: '{name}' is a solved field of the global "
+                f"residual (solved fields: {var_names})",
+            )
+        fe_name = fe_overrides.get(name)
+        fe = (
+            _resolve_fe_name(fe_name, family, name) if fe_name is not None
+            else _DEFAULT_FE_PER_FAMILY[family]
+        )
+        if "data file" in entry:
+            data_file = str(entry["data file"])
+            if not Path(data_file).exists():
+                raise FileNotFoundError(
+                    f"{where}.data file: file not found at {data_file}",
+                )
+            if is_calibration_data(data_file):
+                store = CalibrationData.read(data_file)
+                _check_calibration_bc_data(
+                    store, t_schedule, mesh, data_file, f"{where}.data file",
+                )
+                data = store.rows(
+                    np.arange(store.num_frames), np.arange(num_nodes),
+                    field=name,
+                )
+                times = store.times
+            else:
+                data = np.asarray(
+                    load_displacement_data({"data_file": data_file}),
+                    dtype=np.float64,
+                )
+                _check_field_bc_data(
+                    data, t_schedule, mesh, 0, data_file, f"{where}.data file",
+                )
+                times = t_schedule
+        else:
+            exprs = entry["expression"]
+            component_exprs = exprs if isinstance(exprs, list) else [exprs]
+            component_fns = [
+                _make_dbc_value_callable(
+                    parse_scalar_expression(expr, _BC_COORD_NAMES),
+                )
+                for expr in component_exprs
+            ]
+            coords = jnp.asarray(mesh.nodes)
+            data = np.stack([
+                np.concatenate(
+                    [np.asarray(fn(coords, float(t))) for fn in component_fns],
+                    axis=1,
+                )
+                for t in t_schedule
+            ])
+            times = t_schedule
+        fields.append(PrescribedField(name, fe, data, times))
+    return fields
 
 
 def _build_initial_condition(

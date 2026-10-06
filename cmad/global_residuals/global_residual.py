@@ -1,6 +1,6 @@
 """Global-residual abstract contract and composed-helper builder."""
 from abc import ABC
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 import jax.numpy as jnp
@@ -16,11 +16,31 @@ from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.model import Model
 from cmad.models.nonlinear_solver import make_newton_solve
 from cmad.models.var_types import VarType
-from cmad.typing import GREvaluators, JaxArray, ResidualFnGR
+from cmad.typing import GREvaluators, JaxArray, Params, ResidualFnGR
 
 if TYPE_CHECKING:
     from cmad.fem.fe_problem import FEProblem, FEState
     from cmad.fem.mesh import Mesh
+
+
+def _jacfwd_unknowns(
+        fn: Callable[..., Any], num_unknowns: int, has_aux: bool = False,
+) -> Callable[..., Any]:
+    """:func:`jax.jacfwd` of ``fn(params, U, U_prev, *rest)`` in the first
+    ``num_unknowns`` entries of ``U``, the entries after them (the
+    prescribed fields) held fixed."""
+    def jac(params: Params, U: Sequence[JaxArray], U_prev: Sequence[JaxArray],
+            *rest: Any) -> Any:
+        unknowns = list(U[:num_unknowns])
+        prescribed = list(U[num_unknowns:])
+        return jacfwd(
+            lambda U_unknowns: fn(
+                params, [*U_unknowns, *prescribed], U_prev, *rest,
+            ),
+            has_aux=has_aux,
+        )(unknowns)
+
+    return jac
 
 
 class GlobalResidual(ABC):
@@ -134,17 +154,18 @@ class GlobalResidual(ABC):
             self,
             U: Sequence[JaxArray],
             shapes_ip: Sequence[ShapeFunctionsAtIP],
+            field_names: Sequence[str | None] | None = None,
     ) -> GlobalFieldsAtPoint:
-        """Thin method wrapper around the module-level
-        :func:`interpolate_global_fields_at_ip`, closing over
-        ``self.var_names`` (the field-symbol / dict-key carrier; the
-        parallel ``self.resid_names`` carries the governing-equation
-        label and is not consumed here). Subclasses with mixed-basis
-        interpolation logic that can't be expressed through per-block
-        iteration should override this method.
+        """The element arrays ``U`` interpolated to the integration point,
+        entry ``i`` stored under ``field_names[i]``, or under
+        ``self.var_names[i]`` when ``field_names`` is not given. The
+        :meth:`for_model` closures pass ``var_names`` followed by the
+        prescribed field names, since their ``U`` holds the unknown fields
+        and then the prescribed ones. A subclass whose interpolation is not
+        one field per entry overrides this method.
         """
         return interpolate_global_fields_at_ip(
-            U, shapes_ip, self.var_names,
+            U, shapes_ip, self.var_names if field_names is None else field_names,
         )
 
     def near_null_space(
@@ -218,6 +239,7 @@ class GlobalResidual(ABC):
             mode: GlobalResidualMode = GlobalResidualMode.COUPLED,
             local_newton_settings: dict[str, Any] | None = None,
             print_local_convergence: bool = False,
+            prescribed_field_names: Sequence[str] = (),
     ) -> GREvaluators:
         """Bind this GR to a concrete Model in a specific operational
         mode. ``mode`` is captured lexically in the closures this
@@ -226,8 +248,12 @@ class GlobalResidual(ABC):
         on it for the per-physics flux dispatch
         (``model.cauchy_closed_form(params, U_ip, U_ip_prev)`` for
         CLOSED_FORM, ``model.cauchy(xi, xi_prev, params, U_ip,
-        U_ip_prev)`` for COUPLED). Returns a mode-specific dict of
-        jit'd public evaluators keyed by string names:
+        U_ip_prev)`` for COUPLED). ``prescribed_field_names`` are the
+        fields whose element arrays follow the unknowns in ``U`` and whose
+        shape functions follow them in ``shapes_ip``: interpolated for
+        the residual body under their names, held fixed by the tangent.
+        Returns a mode-specific dict of jit'd public evaluators keyed by
+        string names:
 
         - CLOSED_FORM (2 keys, both 8-arg sig
           ``(params, U, U_prev, shapes_ip, w, dv, h, step_time)``
@@ -291,7 +317,7 @@ class GlobalResidual(ABC):
                     f"model.supports_closed_form; got "
                     f"{type(model).__name__} with the flag False"
                 )
-            return self._for_model_closed_form(model)
+            return self._for_model_closed_form(model, prescribed_field_names)
 
         if mode == GlobalResidualMode.COUPLED:
             if local_newton_settings is None:
@@ -302,12 +328,16 @@ class GlobalResidual(ABC):
                 }
             return self._for_model_coupled(
                 model, local_newton_settings, print_local_convergence,
+                prescribed_field_names,
             )
 
         raise ValueError(f"Unknown GlobalResidualMode: {mode}")
 
-    def _for_model_closed_form(self, model: Model) -> GREvaluators:
+    def _for_model_closed_form(
+            self, model: Model, prescribed_field_names: Sequence[str],
+    ) -> GREvaluators:
         residual_fn = self._residual_fn
+        field_names = [*self.var_names, *prescribed_field_names]
 
         # CLOSED_FORM closures are U-only on the public boundary;
         # the underlying residual_fn keeps xi/xi_prev because the
@@ -319,16 +349,17 @@ class GlobalResidual(ABC):
         # Public-closure argnums: params=0, U=1, U_prev=2,
         # shapes_ip=3, w=4, dv=5, h=6, step_time=7.
         def r_at_ip(params, U, U_prev, shapes_ip, w, dv, h, step_time):
-            U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
+            U_ip = self.interpolate_global_fields_at_ip(
+                U, shapes_ip, field_names)
             U_ip_prev = self.interpolate_global_fields_at_ip(
-                U_prev, shapes_ip)
+                U_prev, shapes_ip, field_names)
             return residual_fn(
                 xi_zeros, xi_zeros, params, U_ip, U_ip_prev,
                 model, GlobalResidualMode.CLOSED_FORM,
                 shapes_ip, w, dv, h, step_time,
             )
 
-        dR_dU_at_ip = jacfwd(r_at_ip, argnums=1)
+        dR_dU_at_ip = _jacfwd_unknowns(r_at_ip, self.num_residuals)
 
         def r_and_dR_dU_at_ip(
                 params, U, U_prev, shapes_ip, w, dv, h, step_time,
@@ -349,8 +380,10 @@ class GlobalResidual(ABC):
             model: Model,
             local_newton_settings: dict[str, Any],
             print_local_convergence: bool,
+            prescribed_field_names: Sequence[str],
     ) -> GREvaluators:
         residual_fn = self._residual_fn
+        field_names = [*self.var_names, *prescribed_field_names]
 
         local_newton = make_newton_solve(
             model._residual,
@@ -364,9 +397,10 @@ class GlobalResidual(ABC):
         #   shapes_ip=4, w=5, dv=6, h=7, step_time=8.
         def coupled_r_and_xi(params, U, U_prev, xi_prev,
                              shapes_ip, w, dv, h, step_time):
-            U_ip = self.interpolate_global_fields_at_ip(U, shapes_ip)
+            U_ip = self.interpolate_global_fields_at_ip(
+                U, shapes_ip, field_names)
             U_ip_prev = self.interpolate_global_fields_at_ip(
-                U_prev, shapes_ip)
+                U_prev, shapes_ip, field_names)
             xi = local_newton(xi_prev, params, U_ip, U_ip_prev, step_time)
             R = residual_fn(
                 xi, xi_prev, params, U_ip, U_ip_prev,
@@ -391,7 +425,9 @@ class GlobalResidual(ABC):
             )
             return R, (R, xi)
 
-        dR_dU_and_aux = jacfwd(coupled_r_with_aux, argnums=1, has_aux=True)
+        dR_dU_and_aux = _jacfwd_unknowns(
+            coupled_r_with_aux, self.num_residuals, has_aux=True,
+        )
 
         def r_and_dR_dU_and_xi_at_ip(params, U, U_prev, xi_prev,
                                      shapes_ip, w, dv, h, step_time,

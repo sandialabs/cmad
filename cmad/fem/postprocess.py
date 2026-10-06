@@ -22,9 +22,14 @@ from jax import vmap
 from jax.flatten_util import ravel_pytree
 from numpy.typing import NDArray
 
-from cmad.fem.assembly import _element_eq_indices
+from cmad.fem.assembly import (
+    _element_basis_fns,
+    _element_eq_indices,
+    _shape_functions_at_ip,
+)
+from cmad.fem.dof import GlobalFieldLayout
 from cmad.fem.fe_problem import FEProblem, FEState
-from cmad.fem.shapes import ShapeFunctionsAtIP
+from cmad.fem.nodal_history import interpolate_nodal_history
 from cmad.global_residuals.balance_laws import cauchy_with_pressure
 from cmad.global_residuals.interpolation import (
     interpolate_global_fields_at_ip,
@@ -60,13 +65,17 @@ def _evaluate_flux_at_ips(
     the model's value into the ``n_comp`` output components. ``U`` and
     ``U_prev`` come from ``fe_state.U_at(step)`` and the step before
     (zeros at ``step == 0``), interpolated per IP with the cached field
-    shape values of ``fe_problem.geometry_cache[block_name]``.
+    shape values of ``fe_problem.geometry_cache[block_name]``. The
+    prescribed fields are interpolated to the step's times and appended
+    after the unknowns, as in the assembly.
     """
     U_global = jnp.asarray(fe_state.U_at(step))
     U_prev_global = (
         jnp.asarray(fe_state.U_at(step - 1)) if step > 0
         else jnp.zeros_like(U_global)
     )
+    t = fe_state.t_history[step]
+    t_prev = fe_state.t_history[max(step - 1, 0)]
     # The gather indices are derived from the FE mesh's connectivity
     # rather than read off the kernel arrays: the carrier's element axis
     # is padded for the device sharding (cmad.fem.sharding), and this
@@ -78,7 +87,7 @@ def _evaluate_flux_at_ips(
     ]
     n_elems_block = connectivity_block.shape[0]
 
-    def gather(U_jax):
+    def gather(U_jax, t_at):
         gathered = []
         for field_idx in range(len(dof_map.field_layouts)):
             ndofs = int(dof_map.num_dofs_per_basis_fn[field_idx])
@@ -86,16 +95,27 @@ def _evaluate_flux_at_ips(
                 connectivity_block, dof_map, field_idx=field_idx,
             )
             gathered.append(U_jax[eq.reshape(n_elems_block, -1, ndofs)])
+        for pf in fe_problem.prescribed_fields:
+            nodal = interpolate_nodal_history(
+                jnp.asarray(pf.data), jnp.asarray(pf.times), t_at,
+            )
+            basis_fns = _element_basis_fns(
+                GlobalFieldLayout(pf.name, pf.finite_element),
+                connectivity_block,
+            )
+            gathered.append(nodal[basis_fns])
         return gathered
 
-    U_elem_block = gather(U_global)
-    U_prev_elem_block = gather(U_prev_global)
+    U_elem_block = gather(U_global, t)
+    U_prev_elem_block = gather(U_prev_global, t_prev)
 
     model = fe_problem.models_by_block[block_name]
     params = model.parameters.values
     mode = fe_problem.modes_by_block[block_name]
-    var_names = fe_problem.gr.var_names
-    num_blocks = len(fe_problem.block_shapes)
+    field_names = [
+        *fe_problem.gr.var_names,
+        *(pf.name for pf in fe_problem.prescribed_fields),
+    ]
 
     geom_cache = fe_problem.geometry_cache[block_name]
     geom_per_elem = geom_cache.per_elem
@@ -103,13 +123,10 @@ def _evaluate_flux_at_ips(
     nips = int(geom_shared.quad_w.shape[0])
 
     def shapes_at(gpe, ip_idx):
-        return [
-            ShapeFunctionsAtIP(
-                N=geom_shared.field_N_per_block[r][ip_idx],
-                grad_N=gpe.field_grad_N_phys_per_block[r][ip_idx],
-            )
-            for r in range(num_blocks)
-        ]
+        return _shape_functions_at_ip(
+            [N[ip_idx] for N in geom_shared.field_N_per_block],
+            [grad_N[ip_idx] for grad_N in gpe.field_grad_N_phys_per_block],
+        )
 
     if mode == GlobalResidualMode.CLOSED_FORM:
         if flux_closed_form is None:
@@ -124,9 +141,11 @@ def _evaluate_flux_at_ips(
             values = jnp.zeros((nips, n_comp))
             for ip_idx in range(nips):
                 shapes_ip = shapes_at(gpe, ip_idx)
-                U_ip = interpolate_global_fields_at_ip(U_e, shapes_ip, var_names)
+                U_ip = interpolate_global_fields_at_ip(
+                    U_e, shapes_ip, field_names,
+                )
                 U_prev_ip = interpolate_global_fields_at_ip(
-                    U_prev_e, shapes_ip, var_names,
+                    U_prev_e, shapes_ip, field_names,
                 )
                 values = values.at[ip_idx].set(
                     post(closed_form(params, U_ip, U_prev_ip), U_ip),
@@ -149,9 +168,11 @@ def _evaluate_flux_at_ips(
             values = jnp.zeros((nips, n_comp))
             for ip_idx in range(nips):
                 shapes_ip = shapes_at(gpe, ip_idx)
-                U_ip = interpolate_global_fields_at_ip(U_e, shapes_ip, var_names)
+                U_ip = interpolate_global_fields_at_ip(
+                    U_e, shapes_ip, field_names,
+                )
                 U_prev_ip = interpolate_global_fields_at_ip(
-                    U_prev_e, shapes_ip, var_names,
+                    U_prev_e, shapes_ip, field_names,
                 )
                 xi_blocks = unravel_xi(xi_per_ip[ip_idx])
                 xi_prev_blocks = unravel_xi(xi_prev_per_ip[ip_idx])

@@ -12,6 +12,7 @@ from cmad.fem.bcs import NeumannBC, RobinBC
 from cmad.fem.dof import GlobalDofMap, GlobalFieldLayout
 from cmad.fem.element_family import ElementFamily
 from cmad.fem.mesh import Mesh
+from cmad.fem.nodal_history import PrescribedField
 from cmad.fem.precompute import (
     BlockIPGeometryCache,
     precompute_block_geometry,
@@ -157,6 +158,13 @@ class FEProblem:
     ``device_mesh`` every scan step runs one chunk on each device, so the
     element axis is padded to a multiple of the device count times the
     chunk.
+
+    ``prescribed_fields`` are the fields given as data at every node over
+    time (:class:`cmad.fem.nodal_history.PrescribedField`). They have no
+    dofs and no rows in the tangent: the assembly interpolates them in
+    time and at the integration points beside the unknown fields, and the
+    geometry cache holds their shape functions after the entries for the
+    residual blocks.
     """
     mesh: Mesh
     dof_map: GlobalDofMap
@@ -175,6 +183,7 @@ class FEProblem:
     thickness: float | None = None
     num_devices: int | None = None
     elements_per_chunk: int | None = None
+    prescribed_fields: Sequence[PrescribedField] = ()
 
     field_layouts_per_block: list[GlobalFieldLayout] = field(
         init=False, default_factory=list,
@@ -248,6 +257,34 @@ class FEProblem:
         object.__setattr__(self, "field_layouts_per_block", layouts)
         object.__setattr__(self, "field_idx_per_block", idxs)
 
+        num_nodes = self.mesh.nodes.shape[0]
+        prescribed_names: list[str] = []
+        prescribed_layouts: list[GlobalFieldLayout] = []
+        for pf in self.prescribed_fields:
+            if pf.name in name_to_idx:
+                raise ValueError(
+                    f"prescribed field '{pf.name}' is a solved field of the "
+                    f"problem (solved fields: {sorted(name_to_idx)})"
+                )
+            if pf.name in prescribed_names:
+                raise ValueError(f"prescribed field '{pf.name}' is repeated")
+            fe_family = pf.finite_element.element_family
+            if fe_family != self.mesh.element_family:
+                raise ValueError(
+                    f"prescribed field '{pf.name}': finite_element family "
+                    f"({fe_family.name}) does not match mesh element_family "
+                    f"({self.mesh.element_family.name})"
+                )
+            if pf.data.shape[1] != num_nodes:
+                raise ValueError(
+                    f"prescribed field '{pf.name}' has data on "
+                    f"{pf.data.shape[1]} nodes; the mesh has {num_nodes}"
+                )
+            prescribed_names.append(pf.name)
+            prescribed_layouts.append(
+                GlobalFieldLayout(pf.name, pf.finite_element),
+            )
+
         resolved = resolve_neumann_bcs(
             self.mesh, self.dof_map, self.neumann_bcs,
         )
@@ -301,7 +338,8 @@ class FEProblem:
         )
 
         geometry_cache = precompute_block_geometry(
-            self.mesh, self.assembly_quadrature, layouts, self.thickness,
+            self.mesh, self.assembly_quadrature,
+            [*layouts, *prescribed_layouts], self.thickness,
         )
         object.__setattr__(self, "geometry_cache", geometry_cache)
 
@@ -522,6 +560,7 @@ def build_fe_problem(
         num_devices: int | None = None,
         robin_bcs: Sequence[RobinBC] = (),
         elements_per_chunk: int | None = None,
+        prescribed_fields: Sequence[PrescribedField] = (),
 ) -> FEProblem:
     """Validate FE inputs and build an immutable :class:`FEProblem`.
 
@@ -553,6 +592,10 @@ def build_fe_problem(
     field / sideset, non-VERTEX FE, sequence-values length mismatch)
     raise eagerly with diagnostic messages from
     :func:`cmad.fem.surface_bcs.resolve_neumann_bcs`.
+
+    ``prescribed_fields`` are forwarded to :class:`FEProblem` and their
+    names to ``gr.for_model``, so the evaluators interpolate them beside
+    the unknown fields.
     """
     if modes_by_block is None:
         modes_by_block = {
@@ -598,6 +641,7 @@ def build_fe_problem(
                     f"(gr._num_eqs[{block_idx}])"
                 )
 
+    prescribed_field_names = tuple(pf.name for pf in prescribed_fields)
     evaluators_by_block: dict[str, GREvaluators] = {}
     for b in models_by_block:
         mode = modes_by_block[b]
@@ -611,6 +655,7 @@ def build_fe_problem(
             mode=mode,
             local_newton_settings=block_local_settings,
             print_local_convergence=print_local_convergence,
+            prescribed_field_names=prescribed_field_names,
         )
 
     return FEProblem(
@@ -628,4 +673,5 @@ def build_fe_problem(
         thickness=thickness,
         num_devices=num_devices,
         elements_per_chunk=elements_per_chunk,
+        prescribed_fields=prescribed_fields,
     )

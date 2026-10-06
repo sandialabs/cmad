@@ -77,37 +77,37 @@ _SECTIONS: dict[tuple[str, str], tuple[list[str], list[str]]] = {
         ["problem", "discretization", "residuals"],
         ["output", "dirichlet bcs", "surface flux bcs", "volumetric sources",
          "initial conditions", "convection bcs", "radiation bcs",
-         "linear solver", "qoi"],
+         "prescribed fields", "linear solver", "qoi"],
     ),
     ("fe", "objective"): (
         ["problem", "discretization", "residuals", "qoi"],
         ["output", "dirichlet bcs", "surface flux bcs", "volumetric sources",
          "initial conditions", "convection bcs", "radiation bcs",
-         "linear solver"],
+         "prescribed fields", "linear solver"],
     ),
     ("fe", "gradient"): (
         ["problem", "discretization", "residuals", "qoi"],
         ["output", "dirichlet bcs", "surface flux bcs", "volumetric sources",
          "initial conditions", "convection bcs", "radiation bcs",
-         "linear solver"],
+         "prescribed fields", "linear solver"],
     ),
     ("fe", "hessian"): (
         ["problem", "discretization", "residuals", "qoi"],
         ["output", "dirichlet bcs", "surface flux bcs", "volumetric sources",
          "initial conditions", "convection bcs", "radiation bcs",
-         "linear solver"],
+         "prescribed fields", "linear solver"],
     ),
     ("fe", "calibrate"): (
         ["problem", "discretization", "residuals", "qoi", "optimizer"],
         ["output", "dirichlet bcs", "surface flux bcs", "volumetric sources",
          "initial conditions", "convection bcs", "radiation bcs",
-         "linear solver"],
+         "prescribed fields", "linear solver"],
     ),
     ("fe", "cross_validate"): (
         ["problem", "discretization", "residuals", "qoi", "optimizer"],
         ["output", "dirichlet bcs", "surface flux bcs", "volumetric sources",
          "initial conditions", "convection bcs", "radiation bcs",
-         "linear solver", "cross validation"],
+         "prescribed fields", "linear solver", "cross validation"],
     ),
 }
 
@@ -116,7 +116,7 @@ _SECTIONS: dict[tuple[str, str], tuple[list[str], list[str]]] = {
 _FE_SPECIMEN_SECTIONS: tuple[str, ...] = (
     "discretization", "dirichlet bcs", "surface flux bcs",
     "volumetric sources", "initial conditions", "convection bcs",
-    "radiation bcs", "qoi",
+    "radiation bcs", "prescribed fields", "qoi",
 )
 
 

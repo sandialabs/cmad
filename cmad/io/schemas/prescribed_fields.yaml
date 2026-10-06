@@ -1,0 +1,20 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+additionalProperties:
+  type: object
+  additionalProperties: false
+  minProperties: 1
+  maxProperties: 1
+  properties:
+    data file:
+      type: string
+    expression:
+      oneOf:
+        - type: number
+        - type: string
+        - type: array
+          minItems: 1
+          items:
+            oneOf:
+              - type: number
+              - type: string

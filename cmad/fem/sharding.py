@@ -136,11 +136,12 @@ def place_element_leaves(
 def shard_kernel_arrays(
         arrays: FEKernelArrays, device_mesh: Mesh,
 ) -> FEKernelArrays:
-    """``arrays`` with its element axis leaves, the U gather and R scatter
-    indices and the per element geometry of every block (already padded to
+    """``arrays`` with its element axis leaves sharded across ``device_mesh``:
+    the U gather indices, the R scatter indices, the prescribed field gather
+    indices, and the per element geometry of every block, already padded to
     a multiple of the device count by
-    :func:`cmad.fem.kernel_arrays.build_fe_kernel_arrays`), sharded across
-    ``device_mesh``; the other fields are left as they are."""
+    :func:`cmad.fem.kernel_arrays.build_fe_kernel_arrays`. The other fields
+    are left as they are."""
     return replace(
         arrays,
         u_gather_eq_by_block=shard_element_leaves(
@@ -148,6 +149,9 @@ def shard_kernel_arrays(
         ),
         r_scatter_eq_by_block=shard_element_leaves(
             arrays.r_scatter_eq_by_block, device_mesh,
+        ),
+        prescribed_gather_by_block=shard_element_leaves(
+            arrays.prescribed_gather_by_block, device_mesh,
         ),
         geometry_cache={
             block: replace(
