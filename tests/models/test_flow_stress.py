@@ -4,9 +4,9 @@ The rate-independent relation reproduces the expression the models
 computed inline, ``phi - (Y + hardening(alpha))``, to the bit, and
 ``make_yield_function`` accepts every existing parameter tree and nothing
 else. Johnson-Cook is checked by hand on every branch of its clips; its
-slope at zero strain is also checked. Peric's and Perzyna's rate laws hold
-at the zero of their yield functions; Perzyna's value and slope at zero
-rate are also checked.
+slope at zero strain is also checked, and it is finite below zero strain.
+Peric's and Perzyna's rate laws hold at the zero of their yield functions;
+Perzyna's value and slope at zero rate are also checked.
 """
 import unittest
 
@@ -106,6 +106,15 @@ class TestJohnsonCookYieldFunction(unittest.TestCase):
                 expected = _PHI - float(np.prod(_johnson_cook_terms(
                     0.1, alpha_dot, T)))
                 np.testing.assert_allclose(float(value), expected, rtol=1e-14)
+
+    def test_finite_and_flat_below_zero_strain(self) -> None:
+        # A local Newton iterate can step alpha slightly negative; the
+        # flow stress there is the one at zero, not NaN.
+        yield_function = make_yield_function(_JC)
+        at_zero = float(yield_function(_PHI, 0.0, 10.0, 500.0, _JC))
+        below = float(yield_function(_PHI, -1.0e-8, 10.0, 500.0, _JC))
+        self.assertTrue(np.isfinite(below))
+        self.assertEqual(below, at_zero)
 
     def test_slope_at_zero_strain_is_the_offset_slope(self) -> None:
         yield_function = make_yield_function(_JC)

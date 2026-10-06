@@ -42,8 +42,10 @@ POWER_LAW_OFFSET = 1e-10
 
 
 def offset_power(x: JaxArray | float, p: JaxArray | float) -> JaxArray:
-    """``(x + POWER_LAW_OFFSET) ** p``, a power with a finite slope at zero."""
-    return jnp.power(x + POWER_LAW_OFFSET, p)
+    """``(x + POWER_LAW_OFFSET) ** p``, a power with a finite slope at zero,
+    and flat at its value at zero below it, so a local Newton iterate that
+    strays negative stays finite."""
+    return jnp.power(jnp.where(x < 0.0, 0.0, x) + POWER_LAW_OFFSET, p)
 
 
 def rate_independent_flow_stress(
