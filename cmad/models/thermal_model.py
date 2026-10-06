@@ -18,7 +18,10 @@ class ThermalModel(Model):
     the heat flux for the energy balance and the heat capacity rate for
     its rate term. A model with no local state sets ``heat_flux_closed_form``
     at construction and has ``supports_closed_form`` True; a model with
-    local state provides ``heat_flux`` from it. ``face_flux`` is the heat
+    local state provides ``heat_flux`` from it. The temperature gradient
+    in ``U`` is with respect to the current position; under finite
+    deformation the energy balance converts it before the call. ``face_flux``
+    is the heat
     flux out of one face of a plate modeled in its plane, per unit face
     area, set at construction by a model that has one. ``heat_generation``
     is the rate of heat generation per unit reference volume, set by a

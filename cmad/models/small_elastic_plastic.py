@@ -377,7 +377,7 @@ class SmallElasticPlastic(MechanicsModel):
                          resolve_parameters=self.resolve_parameters,
                          compute_thermal_stretch=self.compute_thermal_stretch)
 
-        if "taylor quinney" in plastic_subtree:
+        if "taylor-quinney" in plastic_subtree:
             self.dissipation = partial(
                 self._dissipation_fn, def_type=def_type,
                 elastic_stress=elastic_stress_fun,
@@ -565,6 +565,6 @@ class SmallElasticPlastic(MechanicsModel):
         plastic_strain_increment = (
             plastic_strain_from_state(xi, def_type, has_material_rotation)
             - plastic_strain_from_state(xi_prev, def_type, has_material_rotation))
-        beta = params["plastic"]["taylor quinney"]
+        beta = params["plastic"]["taylor-quinney"]
         return beta * jnp.sum(material_cauchy * plastic_strain_increment) \
             / step_time.dt
