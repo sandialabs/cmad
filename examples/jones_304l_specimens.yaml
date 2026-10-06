@@ -33,6 +33,7 @@ xt10:
   curvature elements: 20
   num steps: 50
   roi band: 1.4
+  emissivity bound: mid
 
 # A fast test with the IR temperature.
 xt6:
