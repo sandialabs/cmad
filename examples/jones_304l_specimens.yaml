@@ -34,6 +34,22 @@ xt10:
   num steps: 50
   roi band: 1.4
 
+# A fast test with the IR temperature.
+xt6:
+  geometry: data/jones_304l/X-Specimen-NominalGeometry.mat
+  data: data/jones_304l/XT6-Data.mat
+  frame min: 159
+  frame max: 808
+  drop threshold: 0.2
+  exclude frames: []
+  y min: 60
+  y max: 184
+  h: 3
+  curvature elements: 20
+  num steps: 50
+  roi band: 1.4
+  emissivity bound: mid
+
 o1:
   geometry: data/jones_304l/O1-NominalGeometry.mat
   data: data/jones_304l/O1-3-Data.mat

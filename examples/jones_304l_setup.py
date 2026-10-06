@@ -12,6 +12,13 @@ jones_304l_compare.py reads. --materials takes a calibration's
 opt_params.yaml as the start values of the calibrate files and the
 values of the primal files.
 
+--model picks the material model, be_bar with Voce hardening or the rate
+model with Johnson-Cook, and --temperature how the temperature enters:
+none (isothermal), coupled (the thermomechanics residual with the
+plastic heating, the measured temperature at the cuts, and a temperature
+match term), or measured (the mechanics residual reading the measured
+temperature as a prescribed field).
+
 Usage (--specimens lists the tags; --steps picks which of meshes,
 archives, and inputs run, all three by default):
     python examples/jones_304l_setup.py --specimens o5
@@ -22,6 +29,9 @@ archives, and inputs run, all three by default):
     # the same, starting the calibrate files from a finished calibration
     python examples/jones_304l_setup.py --steps inputs --specimens xt10 o5 o14 \
         --materials results/jones_304l_xt10/calibrate_2d/opt_params.yaml
+    # the rate model with the measured temperature prescribed
+    python examples/jones_304l_setup.py --steps inputs --specimens xt6 \
+        --model rate_johnson_cook --temperature measured
 """
 from __future__ import annotations
 
@@ -32,7 +42,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import yaml
+
+from cmad.io.calibration_data import CalibrationData
 
 EXAMPLES = Path(__file__).resolve().parent
 RECORD = EXAMPLES / "jones_304l_specimens.yaml"
@@ -40,7 +53,7 @@ MESH_DIR = EXAMPLES / "meshes"
 INPUT_DIR = EXAMPLES / "jones_304l_inputs"
 
 GLOBAL_NEWTON: dict[str, Any] = {
-    "nonlinear max iters": 30,
+    "nonlinear max iters": 10,
     "nonlinear absolute tol": 1.0e-8,
     "nonlinear relative tol": 1.0e-6,
     "line search": {"max evals": 5},
@@ -56,6 +69,17 @@ OPTIMIZER: dict[str, Any] = {
 }
 ELASTIC = {"E": 192.7e3, "nu": 0.27}
 START = {"Y": 330.0, "H": 2500.0, "D": 2.5}
+JOHNSON_COOK_START = {"A": 335.0, "B": 1100.0, "n": 0.6, "C": 0.03, "m": 1.0}
+# The reference temperature of an isothermal run; with the temperature
+# coupled or measured it is read from the archives.
+REFERENCE_TEMPERATURE = 296.0
+ALPHA = 1.6e-5
+# 304L in mm, Mg, s, and K: W/(mm K), Mg/mm^3, mJ/(Mg K), and W/(mm^2 K).
+THERMAL = {"conductivity": 16.0, "density": 7.85e-9, "specific heat": 5.0e+8}
+CONVECTION_H = 2.5e-2
+TAYLOR_QUINNEY = 0.9
+MODELS = ("be_bar", "rate_johnson_cook")
+TEMPERATURES = ("none", "coupled", "measured")
 
 
 def load_record() -> tuple[float, dict[str, dict[str, Any]]]:
@@ -117,31 +141,89 @@ def make_archives(tag: str, entry: dict[str, Any], thickness: float,
         if entry["exclude frames"]:
             cmd += ["--exclude-frames"]
             cmd += [str(f) for f in entry["exclude frames"]]
+        if "emissivity bound" in entry:
+            cmd += ["--emissivity-bound", str(entry["emissivity bound"])]
         run(cmd)
 
 
-def materials_section(active: bool) -> dict[str, Any]:
+def ambient_temperature(archive: str) -> float:
+    """The mean of the archive's first temperature row, the temperature the
+    specimen started at."""
+    path = Path(archive)
+    if not path.exists():
+        raise SystemExit(f"{archive} does not exist; run the archives stage")
+    temperature = CalibrationData.read(path).temperature
+    if temperature is None:
+        raise SystemExit(f"{archive} holds no temperature")
+    return round(float(np.mean(temperature[0])), 2)
+
+
+def run_reference_temperature(
+        entries: dict[str, dict[str, Any]], thickness: float, temperature: str,
+) -> float:
+    """The reference temperature of the material every specimen in the run
+    shares: the ambient of the archives averaged over the specimens, or
+    296 K when the temperature is not used."""
+    if temperature == "none":
+        return REFERENCE_TEMPERATURE
+    return float(np.mean([
+        ambient_temperature(archive_name(tag, entry, thickness, 2))
+        for tag, entry in entries.items()
+    ]))
+
+
+def materials_section(
+        active: bool, model: str, temperature: str, ndims: int,
+        reference_temperature: float,
+) -> dict[str, Any]:
     def param(value: float) -> Any:
         if not active:
             return value
         return {"value": value, "active": True, "transform": {"log": value}}
 
-    return {
-        "solid": {
-            "elastic": dict(ELASTIC),
-            "plastic": {
-                "effective stress": {"J2": {}},
-                "flow stress": {
-                    "initial yield": {"Y": param(START["Y"])},
-                    "hardening": {
-                        "voce_modulus": {
-                            "H": param(START["H"]), "D": param(START["D"]),
-                        },
+    if model == "be_bar":
+        plastic: dict[str, Any] = {
+            "effective stress": {"J2": {}},
+            "flow stress": {
+                "initial yield": {"Y": param(START["Y"])},
+                "hardening": {
+                    "voce_modulus": {
+                        "H": param(START["H"]), "D": param(START["D"]),
                     },
                 },
             },
+        }
+        solid: dict[str, Any] = {"elastic": dict(ELASTIC), "plastic": plastic}
+        return {"solid": solid}
+
+    jc = {name: param(value) for name, value in JOHNSON_COOK_START.items()}
+    plastic = {
+        "effective stress": {"J2": {}},
+        "flow stress": {
+            "johnson_cook": {
+                **jc,
+                "reference rate": 1.0e-4,
+                "reference temperature": reference_temperature,
+                "melt temperature": 1673.0,
+            },
         },
     }
+    solid = {
+        "elastic": dict(ELASTIC),
+        "plastic": plastic,
+        "thermal expansion": {
+            "alpha": ALPHA, "reference temperature": reference_temperature,
+        },
+    }
+    if temperature == "coupled":
+        plastic["taylor-quinney"] = TAYLOR_QUINNEY
+        thermal: dict[str, Any] = dict(THERMAL)
+        if ndims == 2:
+            thermal["face convection"] = {
+                "h": CONVECTION_H, "T_inf": reference_temperature,
+            }
+        solid["thermal"] = thermal
+    return {"solid": solid}
 
 
 def load_materials(path: Path) -> dict[str, Any]:
@@ -150,23 +232,32 @@ def load_materials(path: Path) -> dict[str, Any]:
     return materials
 
 
-def residuals_section(ndims: int, materials: dict[str, Any]) -> dict[str, Any]:
+def residuals_section(ndims: int, materials: dict[str, Any], model: str,
+                      temperature: str,
+                      reference_temperature: float) -> dict[str, Any]:
+    gr_type = "thermomechanics" if temperature == "coupled" else "mechanics"
     if ndims == 2:
-        gr: dict[str, Any] = {"type": "mechanics", "def_type": "plane_stress"}
+        gr: dict[str, Any] = {"type": gr_type, "def_type": "plane_stress"}
     else:
         gr = {
-            "type": "mechanics", "def_type": "full_3d",
+            "type": gr_type, "def_type": "full_3d",
             "mixed": True, "stabilization multiplier": 1.0,
         }
     gr.update(GLOBAL_NEWTON)
-    local: dict[str, Any] = {"type": "be_bar_elastic_plastic"}
+    if model == "be_bar":
+        local: dict[str, Any] = {"type": "be_bar_elastic_plastic"}
+    else:
+        local = {
+            "type": "rate_elastic_plastic", "finite deformation": True,
+            "reference temperature": reference_temperature,
+        }
     local.update(LOCAL_NEWTON)
     local["materials"] = materials
     return {"global residual": gr, "local residual": local}
 
 
 def discretization_section(tag: str, entry: dict[str, Any], thickness: float,
-                           ndims: int) -> dict[str, Any]:
+                           ndims: int, temperature: str) -> dict[str, Any]:
     section: dict[str, Any] = {
         "mesh file": f"examples/meshes/{mesh_name(tag, entry, thickness, ndims)}",
         "build coordinate sidesets": True,
@@ -175,12 +266,19 @@ def discretization_section(tag: str, entry: dict[str, Any], thickness: float,
     }
     if ndims == 2:
         section["thickness"] = thickness
+    if temperature == "coupled":
+        section["quadrature"] = {"volume degree": 2}
+        section["time refinement"] = {"max depth": 4}
     return section
 
 
+def archive_name(tag: str, entry: dict[str, Any], thickness: float,
+                 ndims: int) -> str:
+    return f"{data_stem(tag, entry, thickness, ndims)}_calibration_data.npz"
+
+
 def dirichlet_section(tag: str, entry: dict[str, Any], thickness: float,
-                      ndims: int) -> dict[str, Any]:
-    archive = f"{data_stem(tag, entry, thickness, ndims)}_calibration_data.npz"
+                      ndims: int, temperature: str) -> dict[str, Any]:
     field = {
         "bot_x": ["equilibrium", 0, "ymin_sides"],
         "bot_y": ["equilibrium", 1, "ymin_sides"],
@@ -190,52 +288,113 @@ def dirichlet_section(tag: str, entry: dict[str, Any], thickness: float,
     if ndims == 3:
         field["bot_z"] = ["equilibrium", 2, "ymin_sides"]
         field["top_z"] = ["equilibrium", 2, "ymax_sides"]
-    return {"field data file": archive, "field": field}
+    if temperature == "coupled":
+        field["bot_T"] = ["energy balance", 0, "ymin_sides"]
+        field["top_T"] = ["energy balance", 0, "ymax_sides"]
+    return {
+        "field data file": archive_name(tag, entry, thickness, ndims),
+        "field": field,
+    }
+
+
+def convection_section(ndims: int, T_inf: float) -> dict[str, Any]:
+    """Convection to the air on the free boundary and, in 3D, on the two
+    faces; in 2D the faces are the material's face convection."""
+    sidesets = ["free_sides"]
+    if ndims == 3:
+        sidesets += ["zmin_sides", "zmax_sides"]
+    return {"expression": {
+        sideset: ["energy balance", sideset, CONVECTION_H, T_inf]
+        for sideset in sidesets
+    }}
+
+
+def specimen_thermal_sections(tag: str, entry: dict[str, Any],
+                              thickness: float, ndims: int,
+                              temperature: str,
+                              reference_temperature: float) -> dict[str, Any]:
+    """The sections the thermal form adds per specimen: the prescribed
+    temperature in the measured form; the convection and the initial
+    temperature in the coupled form."""
+    archive = archive_name(tag, entry, thickness, ndims)
+    if temperature == "measured":
+        return {"prescribed fields": {"T": {"data file": archive}}}
+    if temperature == "coupled":
+        return {
+            "convection bcs": convection_section(ndims, reference_temperature),
+            "initial conditions": {"T": reference_temperature},
+        }
+    return {}
 
 
 def calibrate_qoi(tag: str, entry: dict[str, Any], thickness: float,
-                  ndims: int) -> dict[str, Any]:
-    """The log sum of the displacement and load matches, every weight 1."""
-    archive = f"{data_stem(tag, entry, thickness, ndims)}_calibration_data.npz"
-    return {
-        "name": "fe_log_sum",
-        "terms": [
-            {
-                "name": "fe_displacement_match",
-                "calibration_data_file": archive,
-            },
-            {
-                "name": "fe_load_match",
-                "calibration_data_file": archive,
-                "sideset": "ymax_sides",
-                "components": [1],
-            },
-        ],
-    }
+                  ndims: int, temperature: str) -> dict[str, Any]:
+    """The log sum of the displacement and load matches, every weight 1,
+    and of the temperature match in the coupled form."""
+    archive = archive_name(tag, entry, thickness, ndims)
+    terms = [
+        {
+            "name": "fe_displacement_match",
+            "calibration_data_file": archive,
+        },
+        {
+            "name": "fe_load_match",
+            "calibration_data_file": archive,
+            "sideset": "ymax_sides",
+            "components": [1],
+        },
+    ]
+    if temperature == "coupled":
+        terms.append({
+            "name": "fe_temperature_match",
+            "calibration_data_file": archive,
+        })
+    return {"name": "fe_log_sum", "terms": terms}
+
+
+def file_stem(kind: str, ndims: int, temperature: str) -> str:
+    suffix = "_T_measured" if temperature == "measured" else ""
+    return f"{kind}_{ndims}d{suffix}"
 
 
 def input_file(tag: str, entry: dict[str, Any], thickness: float,
-               ndims: int, kind: str,
+               ndims: int, kind: str, model: str, temperature: str,
+               reference_temperature: float,
                materials: dict[str, Any] | None = None) -> dict[str, Any]:
-    out_path = f"results/jones_304l_{tag}/{kind}_{ndims}d"
-    # Without --materials the script's own values go in, active in a
-    # calibrate file and fixed in a primal file; with it, the given
-    # subtree goes into both kinds as it is.
-    if materials is None:
-        if kind == "calibrate":
-            materials = materials_section(active=True)
-        else:
-            materials = materials_section(active=False)
+    stem = file_stem(kind, ndims, temperature)
+    out_path = f"results/jones_304l_{tag}/{stem}"
+    if kind == "primal":
+        materials = materials_section(
+            False, model, temperature, ndims, reference_temperature,
+        )
+    elif materials is None:
+        materials = materials_section(
+            True, model, temperature, ndims, reference_temperature,
+        )
     deck: dict[str, Any] = {
-        "problem": {"type": "fe", "name": f"{tag}_{kind}_{ndims}d"},
-        "discretization": discretization_section(tag, entry, thickness, ndims),
-        "residuals": residuals_section(ndims, materials),
-        "dirichlet bcs": dirichlet_section(tag, entry, thickness, ndims),
+        "problem": {"type": "fe", "name": f"{tag}_{stem}"},
+        "discretization": discretization_section(
+            tag, entry, thickness, ndims, temperature,
+        ),
+        "residuals": residuals_section(
+            ndims, materials, model, temperature, reference_temperature,
+        ),
+        "dirichlet bcs": dirichlet_section(
+            tag, entry, thickness, ndims, temperature,
+        ),
+        **specimen_thermal_sections(
+            tag, entry, thickness, ndims, temperature, reference_temperature,
+        ),
         "output": {"path": out_path},
     }
     if kind == "primal":
-        deck["output"]["global residual"] = ["u"]
-        deck["output"]["local residual"] = {"solid": ["cauchy", "alpha"]}
+        deck["residuals"]["global residual"]["print convergence"] = True
+        nodal = ["u", "T"] if temperature == "coupled" else ["u"]
+        element = ["cauchy", "alpha"]
+        if temperature == "coupled":
+            element.append("heat flux")
+        deck["output"]["global residual"] = nodal
+        deck["output"]["local residual"] = {"solid": element}
         deck["qoi"] = {
             "name": "fe_load_match",
             "sideset": "ymax_sides",
@@ -243,7 +402,7 @@ def input_file(tag: str, entry: dict[str, Any], thickness: float,
             "output_file": f"{out_path}/reaction.csv",
         }
     elif kind == "calibrate":
-        deck["qoi"] = calibrate_qoi(tag, entry, thickness, ndims)
+        deck["qoi"] = calibrate_qoi(tag, entry, thickness, ndims, temperature)
         deck["optimizer"] = copy.deepcopy(OPTIMIZER)
     else:
         raise ValueError(f"unknown input file kind {kind!r}")
@@ -251,25 +410,36 @@ def input_file(tag: str, entry: dict[str, Any], thickness: float,
 
 
 def joint_input_file(entries: dict[str, dict[str, Any]], thickness: float,
-                     ndims: int,
+                     ndims: int, model: str, temperature: str,
+                     reference_temperature: float,
                      materials: dict[str, Any] | None = None) -> dict[str, Any]:
     """One calibrate file over every specimen in ``entries``: the shared
     sections once, then each specimen's own under ``specimens``."""
+    stem = file_stem("calibrate", ndims, temperature)
+    if materials is None:
+        materials = materials_section(
+            True, model, temperature, ndims, reference_temperature,
+        )
     return {
-        "problem": {"type": "fe", "name": f"joint_calibrate_{ndims}d"},
+        "problem": {"type": "fe", "name": f"joint_{stem}"},
         "residuals": residuals_section(
-            ndims, materials_section(active=True) if materials is None
-            else materials,
+            ndims, materials, model, temperature, reference_temperature,
         ),
         "optimizer": copy.deepcopy(OPTIMIZER),
-        "output": {"path": f"results/jones_304l_joint/calibrate_{ndims}d"},
+        "output": {"path": f"results/jones_304l_joint/{stem}"},
         "specimens": {
             tag: {
                 "discretization": discretization_section(
-                    tag, entry, thickness, ndims,
+                    tag, entry, thickness, ndims, temperature,
                 ),
-                "dirichlet bcs": dirichlet_section(tag, entry, thickness, ndims),
-                "qoi": calibrate_qoi(tag, entry, thickness, ndims),
+                "dirichlet bcs": dirichlet_section(
+                    tag, entry, thickness, ndims, temperature,
+                ),
+                **specimen_thermal_sections(
+                    tag, entry, thickness, ndims, temperature,
+                    reference_temperature,
+                ),
+                "qoi": calibrate_qoi(tag, entry, thickness, ndims, temperature),
             }
             for tag, entry in entries.items()
         },
@@ -280,26 +450,34 @@ HEADER = "# generated by jones_304l_setup.py from jones_304l_specimens.yaml\n"
 
 
 def make_inputs(tag: str, entry: dict[str, Any], thickness: float,
-                dims: list[int],
+                dims: list[int], model: str, temperature: str,
+                reference_temperature: float,
                 materials: dict[str, Any] | None = None) -> None:
     out_dir = INPUT_DIR / tag
     out_dir.mkdir(parents=True, exist_ok=True)
     for ndims in dims:
         for kind in ("primal", "calibrate"):
-            deck = input_file(tag, entry, thickness, ndims, kind, materials)
-            path = out_dir / f"{kind}_{ndims}d.yaml"
+            deck = input_file(
+                tag, entry, thickness, ndims, kind, model, temperature,
+                reference_temperature, materials,
+            )
+            path = out_dir / f"{file_stem(kind, ndims, temperature)}.yaml"
             path.write_text(HEADER + yaml.safe_dump(deck, sort_keys=False))
             print(f"wrote {path}")
 
 
 def make_joint_input(entries: dict[str, dict[str, Any]], thickness: float,
-                     dims: list[int],
+                     dims: list[int], model: str, temperature: str,
+                     reference_temperature: float,
                      materials: dict[str, Any] | None = None) -> None:
     out_dir = INPUT_DIR / "joint"
     out_dir.mkdir(parents=True, exist_ok=True)
     for ndims in dims:
-        deck = joint_input_file(entries, thickness, ndims, materials)
-        path = out_dir / f"calibrate_{ndims}d.yaml"
+        deck = joint_input_file(
+            entries, thickness, ndims, model, temperature,
+            reference_temperature, materials,
+        )
+        path = out_dir / f"{file_stem('calibrate', ndims, temperature)}.yaml"
         path.write_text(HEADER + yaml.safe_dump(deck, sort_keys=False))
         print(f"wrote {path}")
 
@@ -332,7 +510,18 @@ def main() -> None:
              "replaces the start values in the calibrate files and the "
              "values in the primal files",
     )
+    parser.add_argument(
+        "--model", default="be_bar", choices=MODELS,
+        help="the material model (default be_bar)",
+    )
+    parser.add_argument(
+        "--temperature", default="none", choices=TEMPERATURES,
+        help="how the temperature enters: none, coupled, or measured "
+             "(default none)",
+    )
     args = parser.parse_args()
+    if args.model == "be_bar" and args.temperature != "none":
+        raise SystemExit("--temperature applies to --model rate_johnson_cook")
     materials = None if args.materials is None else load_materials(args.materials)
 
     thickness, record = load_record()
@@ -360,10 +549,21 @@ def main() -> None:
             make_meshes(tag, entry, thickness, args.dims)
         if "archives" in steps:
             make_archives(tag, entry, thickness, args.dims)
-        if "inputs" in steps:
-            make_inputs(tag, entry, thickness, args.dims, materials)
-    if "inputs" in steps and len(entries) > 1:
-        make_joint_input(entries, thickness, args.dims, materials)
+    if "inputs" not in steps:
+        return
+    reference_temperature = run_reference_temperature(
+        entries, thickness, args.temperature,
+    )
+    for tag, entry in entries.items():
+        make_inputs(
+            tag, entry, thickness, args.dims, args.model, args.temperature,
+            reference_temperature, materials,
+        )
+    if len(entries) > 1:
+        make_joint_input(
+            entries, thickness, args.dims, args.model, args.temperature,
+            reference_temperature, materials,
+        )
 
 
 if __name__ == "__main__":
