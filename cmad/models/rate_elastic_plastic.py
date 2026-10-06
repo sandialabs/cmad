@@ -63,6 +63,7 @@ from cmad.models.temperature_dependent_parameters import (
     DEFAULT_REFERENCE_TEMPERATURE,
     has_parameter_forms,
 )
+from cmad.models.thermal_expansion import thermal_strain_increment
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -73,7 +74,7 @@ from cmad.models.var_types import (
     put_2D_tensor_into_3D,
 )
 from cmad.parameters.parameters import Parameters
-from cmad.typing import JaxArray, StateBlock, StateList
+from cmad.typing import JaxArray, Scalar, StateBlock, StateList
 
 
 def stress_from_state(
@@ -109,9 +110,10 @@ def material_frame_increment(
         U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
         def_type: int, uniaxial_stress_idx: int,
         finite_deformation: bool, has_material_rotation: bool,
+        thermal_stretch: Scalar, thermal_stretch_prev: Scalar,
 ) -> JaxArray:
     """Input of the stress equation in the material frame: ``ε − ε_prev``,
-    or ``D Δt`` for finite deformation."""
+    or ``D Δt`` for finite deformation, minus the step's thermal strain."""
 
     local_var_idx = 2
     F = gather_F(xi, U, def_type, local_var_idx, uniaxial_stress_idx)
@@ -123,6 +125,8 @@ def material_frame_increment(
             F, F_prev, def_type)
     else:
         increment = small_strain_increment(F, F_prev)
+    increment = increment - thermal_strain_increment(
+        thermal_stretch, thermal_stretch_prev, finite_deformation)
 
     if def_type == DefType.UNIAXIAL_STRESS and has_material_rotation:
         off_axis = get_vector(xi[3], 3)
@@ -166,13 +170,15 @@ def elastic_predictor(
         finite_deformation: bool, has_material_rotation: bool,
         elastic_stress: Callable[..., JaxArray],
         previous_stress: Callable[..., JaxArray],
+        thermal_stretch: Scalar, thermal_stretch_prev: Scalar,
 ) -> StateList:
     """Elastic predictor state ``[cauchy_prev + C:increment,
     alpha_prev]``, the closed form root of the elastic branch.
     """
     increment = material_frame_increment(
         xi, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
-        finite_deformation, has_material_rotation)
+        finite_deformation, has_material_rotation, thermal_stretch,
+        thermal_stretch_prev)
     cauchy_prev = previous_stress(
         stress_from_state(
             xi_prev, def_type, uniaxial_stress_idx, has_material_rotation),
@@ -196,16 +202,20 @@ def start_from_elastic_predictor(
         elastic_stress: Callable[..., JaxArray],
         resolve_parameters: Callable[..., dict[str, Any]],
         previous_stress: Callable[..., JaxArray],
+        compute_thermal_stretch: Callable[..., Scalar],
 ) -> StateList:
     """Starting state for the local Newton: the elastic predictor taken at
     the previous stretches, no current iterate existing yet.
     """
+    thermal_stretch = compute_thermal_stretch(params, U)
+    thermal_stretch_prev = compute_thermal_stretch(params, U_prev)
     params_prev = resolve_parameters(params, U_prev)
     params = resolve_parameters(params, U)
     return elastic_predictor(
         xi_prev, xi_prev, params, params_prev, U, U_prev, def_type,
         uniaxial_stress_idx, finite_deformation, has_material_rotation,
-        elastic_stress, previous_stress)
+        elastic_stress, previous_stress, thermal_stretch,
+        thermal_stretch_prev)
 
 
 def compute_yield_fun(
@@ -213,15 +223,16 @@ def compute_yield_fun(
         params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
         effective_stress: Callable[..., JaxArray],
         yield_function: Callable[..., JaxArray],
-        shear_scale_factor: float,
+        shear_scale_factor: float, reference_temperature: float,
 ) -> JaxArray:
 
     plastic_params = params["plastic"]
 
     phi = effective_stress(cauchy, plastic_params)
     alpha_dot = (alpha - alpha_prev) / step_time.dt
-    yield_fun = yield_function(phi, alpha, alpha_dot, temperature_at_point(U),
-                               plastic_params["flow stress"])
+    yield_fun = yield_function(
+        phi, alpha, alpha_dot, temperature_at_point(U, reference_temperature),
+        plastic_params["flow stress"])
 
     return yield_fun / shear_scale_factor
 
@@ -232,6 +243,7 @@ def compute_yield_fun_and_normal(
         effective_stress: Callable[..., JaxArray],
         yield_function: Callable[..., JaxArray],
         shear_scale_factor: float, is_complex: bool,
+        reference_temperature: float,
 ) -> tuple[JaxArray, JaxArray]:
 
     yield_normal = grad(effective_stress, holomorphic=is_complex)(
@@ -239,7 +251,7 @@ def compute_yield_fun_and_normal(
 
     return compute_yield_fun(
         cauchy, alpha, alpha_prev, params, U, step_time, effective_stress,
-        yield_function, shear_scale_factor), yield_normal
+        yield_function, shear_scale_factor, reference_temperature), yield_normal
 
 
 def start_from_radial_return(
@@ -254,15 +266,20 @@ def start_from_radial_return(
         shear_scale_factor: float, yield_threshold: float,
         resolve_parameters: Callable[..., dict[str, Any]],
         previous_stress: Callable[..., JaxArray],
+        compute_thermal_stretch: Callable[..., Scalar],
+        reference_temperature: float,
 ) -> StateList:
     """Starting state for the local Newton: the elastic predictor, returned
     to the yield surface along its own normal when it lies outside."""
+    thermal_stretch = compute_thermal_stretch(params, U)
+    thermal_stretch_prev = compute_thermal_stretch(params, U_prev)
     params_prev = resolve_parameters(params, U_prev)
     params = resolve_parameters(params, U)
     trial = elastic_predictor(
         xi_prev, xi_prev, params, params_prev, U, U_prev, def_type,
         uniaxial_stress_idx, finite_deformation, has_material_rotation,
-        elastic_stress, previous_stress)
+        elastic_stress, previous_stress, thermal_stretch,
+        thermal_stretch_prev)
     cauchy_trial = stress_from_state(
         trial, def_type, uniaxial_stress_idx, has_material_rotation)
     alpha_prev = get_scalar(xi_prev[1])[0]
@@ -273,7 +290,8 @@ def start_from_radial_return(
         return compute_yield_fun(
             cauchy_trial - delta_gamma * return_direction,
             alpha_prev + delta_gamma, alpha_prev, params, U, step_time,
-            effective_stress, yield_function, shear_scale_factor)
+            effective_stress, yield_function, shear_scale_factor,
+            reference_temperature)
 
     delta_gamma = plastic_multiplier_increment(g, yield_threshold)
     is_plastic = g(jnp.zeros(())) > yield_threshold
@@ -439,7 +457,7 @@ class RateElasticPlastic(MechanicsModel):
             plastic_subtree["flow stress"], hardening_funs)
         yield_threshold = compute_yield_threshold(
             yield_tol, self.reference_parameters, yield_function,
-            self.shear_scale_factor)
+            self.shear_scale_factor, reference_temperature)
 
         residual = partial(self._residual_fn, def_type=def_type,
                            elastic_stress=elastic_stress_fun,
@@ -452,7 +470,9 @@ class RateElasticPlastic(MechanicsModel):
                            finite_deformation=finite_deformation,
                            has_material_rotation=has_material_rotation,
                            resolve_parameters=self.resolve_parameters,
-                           previous_stress=previous_stress)
+                           previous_stress=previous_stress,
+                           compute_thermal_stretch=self.compute_thermal_stretch,
+                           reference_temperature=reference_temperature)
 
         cauchy = partial(self._cauchy_fn, def_type=def_type,
                          uniaxial_stress_idx=uniaxial_stress_idx,
@@ -471,7 +491,9 @@ class RateElasticPlastic(MechanicsModel):
                 shear_scale_factor=self.shear_scale_factor,
                 yield_threshold=yield_threshold,
                 resolve_parameters=self.resolve_parameters,
-                previous_stress=previous_stress))
+                previous_stress=previous_stress,
+                compute_thermal_stretch=self.compute_thermal_stretch,
+                reference_temperature=reference_temperature))
         else:
             self.initial_guess_fn = jit(partial(
                 start_from_elastic_predictor, def_type=def_type,
@@ -480,7 +502,8 @@ class RateElasticPlastic(MechanicsModel):
                 has_material_rotation=has_material_rotation,
                 elastic_stress=elastic_stress_fun,
                 resolve_parameters=self.resolve_parameters,
-                previous_stress=previous_stress))
+                previous_stress=previous_stress,
+                compute_thermal_stretch=self.compute_thermal_stretch))
 
         super().__init__(residual, cauchy)
 
@@ -518,8 +541,12 @@ class RateElasticPlastic(MechanicsModel):
             finite_deformation: bool, has_material_rotation: bool,
             resolve_parameters: Callable[..., dict[str, Any]],
             previous_stress: Callable[..., JaxArray],
+            compute_thermal_stretch: Callable[..., Scalar],
+            reference_temperature: float,
     ) -> JaxArray:
 
+        thermal_stretch = compute_thermal_stretch(params, U)
+        thermal_stretch_prev = compute_thermal_stretch(params, U_prev)
         params_prev = resolve_parameters(params, U_prev)
         params = resolve_parameters(params, U)
 
@@ -535,7 +562,8 @@ class RateElasticPlastic(MechanicsModel):
 
         increment = material_frame_increment(
             xi, xi_prev, params, U, U_prev, def_type, uniaxial_stress_idx,
-            finite_deformation, has_material_rotation)
+            finite_deformation, has_material_rotation, thermal_stretch,
+            thermal_stretch_prev)
         trial_delta_cauchy = elastic_stress(increment, params)
         delta_gamma = alpha - alpha_prev
 
@@ -552,12 +580,12 @@ class RateElasticPlastic(MechanicsModel):
             compute_yield_fun_and_normal(cauchy, alpha, alpha_prev, params, U,
                                          step_time, effective_stress,
                                          yield_function, shear_scale_factor,
-                                         is_complex)
+                                         is_complex, reference_temperature)
         trial_yield_fun = \
             compute_yield_fun(cauchy_prev + trial_delta_cauchy, alpha_prev,
                               alpha_prev, params, U, step_time,
                               effective_stress, yield_function,
-                              shear_scale_factor)
+                              shear_scale_factor, reference_temperature)
         plastic_increment = delta_gamma * yield_normal
         delta_cauchy = trial_delta_cauchy \
             - elastic_stress(plastic_increment, params)

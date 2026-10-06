@@ -48,7 +48,7 @@ from cmad.models.var_types import (
     get_vector_from_dev_sym_tensor,
 )
 from cmad.parameters.parameters import Parameters
-from cmad.typing import JaxArray, StateBlock, StateList
+from cmad.typing import JaxArray, Scalar, StateBlock, StateList
 
 _NUM_RETURN_SWEEPS = 2
 _NUM_IE_STEPS = 2
@@ -135,15 +135,18 @@ def start_from_elastic_predictor(
 
 def compute_cauchy(
         xi: StateList, params: dict[str, Any], U: GlobalFieldsAtPoint,
-        def_type: int, oop_stretch_idx: int,
+        def_type: int, oop_stretch_idx: int, thermal_stretch: Scalar,
 ) -> JaxArray:
+    """The Cauchy stress on the elastic volume ratio ``J_e = J /
+    thermal_stretch^3``; the deviator ``zeta`` is isochoric and carries no
+    thermal part."""
     elastic = ElasticConstants.from_params(params["elastic"])
     I = jnp.eye(3)
     F = gather_F(xi, U, def_type, oop_stretch_idx)
-    J = det_3x3(F)
+    J_e = det_3x3(F) / thermal_stretch ** 3
     zeta = get_dev_sym_tensor_from_vector(xi[0], zeta_ndims(def_type))
-    dev_cauchy = elastic.mu * zeta / J
-    hydro_cauchy = 0.5 * elastic.kappa * (J - 1. / J)
+    dev_cauchy = elastic.mu * zeta / J_e
+    hydro_cauchy = 0.5 * elastic.kappa * (J_e - 1. / J_e)
     return dev_cauchy + hydro_cauchy * I
 
 
@@ -151,6 +154,7 @@ def compute_yield_fun(
         zeta: JaxArray, alpha: StateBlock, alpha_prev: StateBlock,
         params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
         yield_function: Callable[..., JaxArray], shear_scale_factor: float,
+        reference_temperature: float,
 ) -> JaxArray:
     """Von Mises yield function on the Kirchhoff stress.
 
@@ -164,8 +168,9 @@ def compute_yield_fun(
     s = mu * zeta
     phi = J2_effective_stress(s, None)
     alpha_dot = (alpha - alpha_prev) / step_time.dt
-    yield_fun = yield_function(phi, alpha, alpha_dot, temperature_at_point(U),
-                               plastic_params["flow stress"])
+    yield_fun = yield_function(
+        phi, alpha, alpha_dot, temperature_at_point(U, reference_temperature),
+        plastic_params["flow stress"])
 
     return yield_fun / shear_scale_factor
 
@@ -174,7 +179,7 @@ def compute_yield_fun_and_normal(
         zeta: JaxArray, alpha: StateBlock, alpha_prev: StateBlock,
         params: dict[str, Any], U: GlobalFieldsAtPoint, step_time: StepTime,
         yield_function: Callable[..., JaxArray], shear_scale_factor: float,
-        is_complex: bool,
+        is_complex: bool, reference_temperature: float,
 ) -> tuple[JaxArray, JaxArray]:
     """Yield function and flow normal, the gradient of the J2 effective
     stress at the deviatoric Kirchhoff stress.
@@ -185,7 +190,7 @@ def compute_yield_fun_and_normal(
 
     return compute_yield_fun(
         zeta, alpha, alpha_prev, params, U, step_time, yield_function,
-        shear_scale_factor,
+        shear_scale_factor, reference_temperature,
     ), yield_normal
 
 
@@ -197,6 +202,7 @@ def start_from_radial_return(
         yield_function: Callable[..., JaxArray],
         shear_scale_factor: float, yield_threshold: float,
         resolve_parameters: Callable[..., dict[str, Any]],
+        reference_temperature: float,
 ) -> StateList:
     """Starting state for the local Newton: the elastic predictor, its
     deviator returned to the yield surface along its own normal when it
@@ -219,7 +225,7 @@ def start_from_radial_return(
         return compute_yield_fun(
             returned_zeta(delta_gamma, Ie), alpha_prev + delta_gamma,
             alpha_prev, params, U, step_time, yield_function,
-            shear_scale_factor)
+            shear_scale_factor, reference_temperature)
 
     def det_equation(Ie: JaxArray, zeta: JaxArray) -> JaxArray:
         return det_3x3(zeta + Ie * eye) - 1.
@@ -336,7 +342,7 @@ class BeBarElasticPlastic(MechanicsModel):
             plastic_subtree["flow stress"], hardening_funs)
         yield_threshold = compute_yield_threshold(
             yield_tol, self.reference_parameters, yield_function,
-            self.shear_scale_factor)
+            self.shear_scale_factor, reference_temperature)
 
         residual = partial(
             self._residual_fn,
@@ -344,12 +350,15 @@ class BeBarElasticPlastic(MechanicsModel):
             yield_function=yield_function,
             shear_scale_factor=self.shear_scale_factor,
             yield_threshold=yield_threshold, is_complex=is_complex,
-            resolve_parameters=self.resolve_parameters)
+            resolve_parameters=self.resolve_parameters,
+            compute_thermal_stretch=self.compute_thermal_stretch,
+            reference_temperature=reference_temperature)
 
         cauchy = partial(
             self._cauchy_fn,
             def_type=def_type, oop_stretch_idx=self._oop_stretch_idx,
-            resolve_parameters=self.resolve_parameters)
+            resolve_parameters=self.resolve_parameters,
+            compute_thermal_stretch=self.compute_thermal_stretch)
 
         if initial_guess == "radial return":
             self.initial_guess_fn = jit(partial(
@@ -358,7 +367,8 @@ class BeBarElasticPlastic(MechanicsModel):
                 yield_function=yield_function,
                 shear_scale_factor=self.shear_scale_factor,
                 yield_threshold=yield_threshold,
-                resolve_parameters=self.resolve_parameters))
+                resolve_parameters=self.resolve_parameters,
+                reference_temperature=reference_temperature))
         else:
             self.initial_guess_fn = jit(partial(
                 start_from_elastic_predictor,
@@ -394,8 +404,11 @@ class BeBarElasticPlastic(MechanicsModel):
             shear_scale_factor: float, yield_threshold: float,
             is_complex: bool,
             resolve_parameters: Callable[..., dict[str, Any]],
+            compute_thermal_stretch: Callable[..., Scalar],
+            reference_temperature: float,
     ) -> JaxArray:
 
+        thermal_stretch = compute_thermal_stretch(params, U)
         params = resolve_parameters(params, U)
         ndims = zeta_ndims(def_type)
         zeta = get_dev_sym_tensor_from_vector(xi[0], ndims)
@@ -411,10 +424,10 @@ class BeBarElasticPlastic(MechanicsModel):
 
         yield_fun, yield_normal = compute_yield_fun_and_normal(
             zeta, alpha, alpha_prev, params, U, step_time, yield_function,
-            shear_scale_factor, is_complex)
+            shear_scale_factor, is_complex, reference_temperature)
         trial_yield_fun = compute_yield_fun(
             dev_be_bar_trial, alpha_prev, alpha_prev, params, U, step_time,
-            yield_function, shear_scale_factor)
+            yield_function, shear_scale_factor, reference_temperature)
         delta_gamma = alpha - alpha_prev
 
         C_elastic = jnp.concatenate(
@@ -430,7 +443,8 @@ class BeBarElasticPlastic(MechanicsModel):
         if def_type == DefType.PLANE_STRESS:
             # The out of plane stretch is fixed by sigma_33 = 0, which holds
             # whether or not the step yields, so it closes both branches.
-            cauchy = compute_cauchy(xi, params, U, def_type, oop_stretch_idx)
+            cauchy = compute_cauchy(
+                xi, params, U, def_type, oop_stretch_idx, thermal_stretch)
             C_oop = jnp.atleast_1d(cauchy[2, 2] / shear_scale_factor)
             C_elastic = jnp.r_[C_elastic, C_oop]
             C_plastic = jnp.r_[C_plastic, C_oop]
@@ -444,6 +458,9 @@ class BeBarElasticPlastic(MechanicsModel):
             U: GlobalFieldsAtPoint, U_prev: GlobalFieldsAtPoint,
             def_type: int, oop_stretch_idx: int,
             resolve_parameters: Callable[..., dict[str, Any]],
+            compute_thermal_stretch: Callable[..., Scalar],
     ) -> JaxArray:
+        thermal_stretch = compute_thermal_stretch(params, U)
         params = resolve_parameters(params, U)
-        return compute_cauchy(xi, params, U, def_type, oop_stretch_idx)
+        return compute_cauchy(
+            xi, params, U, def_type, oop_stretch_idx, thermal_stretch)

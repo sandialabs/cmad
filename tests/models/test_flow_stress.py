@@ -37,7 +37,7 @@ class TestRateIndependentYieldFunction(unittest.TestCase):
         for phi in (0.0, 150.0, 400.0):
             for alpha in np.linspace(0.0, 0.5, 6):
                 expected = phi - (_Y + voce_hardening(alpha, {"S": _S, "D": _D}))
-                value = yield_function(phi, alpha, 0.0, None, _flow_params())
+                value = yield_function(phi, alpha, 0.0, 300.0, _flow_params())
                 self.assertEqual(float(value), float(expected))
 
     def test_accepts_every_existing_tree(self) -> None:
@@ -66,7 +66,7 @@ class TestRateIndependentYieldFunction(unittest.TestCase):
         expected = yield_tol * flow_params["initial yield"]["Y"] \
             / shear_scale_factor
         threshold = compute_yield_threshold(
-            yield_tol, params, yield_function, shear_scale_factor)
+            yield_tol, params, yield_function, shear_scale_factor, 300.0)
         self.assertEqual(threshold, float(expected))
 
 
@@ -102,10 +102,10 @@ class TestJohnsonCookYieldFunction(unittest.TestCase):
     def test_value_by_hand_on_every_branch(self) -> None:
         yield_function = make_yield_function(_JC)
         for alpha_dot in (10.0, 0.1, -1.0):
-            for T in (100.0, 294.0, 500.0, 1793.0, None):
+            for T in (100.0, 294.0, 500.0, 1793.0):
                 value = yield_function(_PHI, 0.1, alpha_dot, T, _JC)
                 expected = _PHI - float(np.prod(_johnson_cook_terms(
-                    0.1, alpha_dot, 294.0 if T is None else T)))
+                    0.1, alpha_dot, T)))
                 np.testing.assert_allclose(float(value), expected, rtol=1e-14)
 
     def test_slope_at_zero_strain_is_the_offset_slope(self) -> None:
@@ -131,7 +131,7 @@ class TestPericYieldFunction(unittest.TestCase):
         alpha, alpha_dot = 0.05, 2.0
         sigma_y = float(_Y + voce_hardening(alpha, {"S": _S, "D": _D}))
         phi = brentq(
-            lambda phi: float(yield_function(phi, alpha, alpha_dot, None, _PERIC)),
+            lambda phi: float(yield_function(phi, alpha, alpha_dot, 300.0, _PERIC)),
             sigma_y, 10.0 * sigma_y)
         rate = ((phi / sigma_y) ** (1.0 / p["epsilon"]) - 1.0) / p["eta"]
         np.testing.assert_allclose(rate, alpha_dot, rtol=1e-12)

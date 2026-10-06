@@ -15,8 +15,16 @@ from cmad.models.global_fields import GlobalFieldsAtPoint
 from cmad.models.kinematics import gather_F
 from cmad.models.model import Model
 from cmad.models.temperature_dependent_parameters import evaluate_parameters
+from cmad.models.thermal_expansion import make_thermal_stretch_function
 from cmad.parameters.parameters import Parameters
-from cmad.typing import CauchyFn, JaxArray, Params, ResidualFn, StateList
+from cmad.typing import (
+    CauchyFn,
+    JaxArray,
+    Params,
+    ResidualFn,
+    Scalar,
+    StateList,
+)
 
 
 def require_def_type(def_type: int | None, model_name: str) -> int:
@@ -49,7 +57,8 @@ class MechanicsModel(Model):
 
     It also holds the two scale factors for the mixed formulation's
     pressure equation, plain constants set from the parameters at
-    construction.
+    construction, and the thermal stretch function
+    (:mod:`cmad.models.thermal_expansion`).
 
     Subclasses set ``_def_type`` (and ``_oop_stretch_idx`` when they
     carry an out-of-plane stretch unknown) and call ``_init_parameters()``
@@ -69,6 +78,8 @@ class MechanicsModel(Model):
     reference_parameters: dict[str, Any]
     bulk_scale_factor: float
     shear_scale_factor: float
+    compute_thermal_stretch: Callable[
+        [dict[str, Any], GlobalFieldsAtPoint], Scalar]
     _Sigma: NDArray[np.floating]
 
     def __init__(
@@ -113,3 +124,5 @@ class MechanicsModel(Model):
             cast(Params, self.reference_parameters["elastic"]))
         self.bulk_scale_factor = float(elastic.kappa)
         self.shear_scale_factor = 2. * float(elastic.mu)
+        self.compute_thermal_stretch = make_thermal_stretch_function(
+            parameters.values, reference_temperature)

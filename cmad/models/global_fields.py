@@ -61,11 +61,14 @@ class StepTime:
         return cls(t=t, t_prev=t_prev)
 
 
-def temperature_at_point(U: GlobalFieldsAtPoint) -> Scalar | None:
-    """``None`` when the point carries no ``T`` field."""
+def temperature_at_point(
+        U: GlobalFieldsAtPoint, reference_temperature: float,
+) -> Scalar:
+    """The point's temperature, or ``reference_temperature`` when it
+    carries no ``T`` field."""
     if "T" in U.fields:
         return U.fields["T"][0]
-    return None
+    return reference_temperature
 
 
 def mp_U_from_F(

@@ -117,9 +117,7 @@ def make_parameter_resolver(
     def resolve_parameters(
             params: dict[str, Any], U: GlobalFieldsAtPoint,
     ) -> dict[str, Any]:
-        T = temperature_at_point(U)
-        if T is None:
-            T = reference_temperature
-        return evaluate_parameters(params, T)
+        return evaluate_parameters(
+            params, temperature_at_point(U, reference_temperature))
 
     return resolve_parameters
