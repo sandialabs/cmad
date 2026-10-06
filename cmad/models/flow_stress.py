@@ -3,8 +3,8 @@
 The block's equation in the plastic branch is ``yield_function(phi, alpha,
 alpha_dot, T, params) = 0`` with ``phi`` the effective stress, ``alpha`` the
 hardening variable, ``alpha_dot`` its backward Euler rate over the step,
-``T`` the temperature at the point (``None`` when the point carries no
-temperature field), and ``params`` the ``flow stress`` subtree. The
+``T`` the temperature at the point, and ``params`` the ``flow stress``
+subtree. The
 function is in stress units, positive where the state lies outside the
 yield surface, zero at the converged plastic state, and at most zero at
 zero stress, which :func:`cmad.models.paths.compute_yield_threshold` relies
@@ -47,7 +47,7 @@ def offset_power(x: JaxArray | float, p: JaxArray | float) -> JaxArray:
 
 
 def rate_independent_flow_stress(
-        alpha: JaxArray, alpha_dot: JaxArray, T: Scalar | None,
+        alpha: JaxArray, alpha_dot: JaxArray, T: Scalar,
         params: dict[str, Any],
         hardening_funs: dict[str, Callable[..., JaxArray]],
 ) -> JaxArray:
@@ -57,35 +57,31 @@ def rate_independent_flow_stress(
 
 
 def johnson_cook_flow_stress(
-        alpha: JaxArray, alpha_dot: JaxArray, T: Scalar | None,
+        alpha: JaxArray, alpha_dot: JaxArray, T: Scalar,
         params: dict[str, Any],
 ) -> JaxArray:
     """Johnson and Cook 1983: ``(A + B alpha^n) (1 + C ln(alpha_dot /
     reference rate)) (1 - T*^m)``.
 
     ``T*`` is the homologous temperature ``(T - T_ref) / (T_melt - T_ref)``,
-    clipped to ``[0, 1]``; a point with no temperature field is taken to be
-    at ``T_ref``, so its thermal term is one. Below the reference rate,
-    where the logarithm would be negative, the rate term is set to one.
-    Both powers are evaluated at ``x + POWER_LAW_OFFSET`` so their slope at
-    zero is finite, which raises the initial flow stress by ``B alpha_0^n``.
+    clipped to ``[0, 1]``. Below the reference rate, where the logarithm
+    would be negative, the rate term is set to one. Both powers are
+    evaluated at ``x + POWER_LAW_OFFSET`` so their slope at zero is finite,
+    which raises the initial flow stress by ``B alpha_0^n``.
     """
     p = params["johnson_cook"]
     strain_hardening = p["A"] + p["B"] * offset_power(alpha, p["n"])
     rate_dependence = 1.0 + p["C"] * jnp.log(
         jnp.maximum(alpha_dot / p["reference rate"], 1.0))
-    if T is None:
-        T_star: JaxArray | float = 0.0
-    else:
-        T_ref = p["reference temperature"]
-        T_star = jnp.clip(
-            (T - T_ref) / (p["melt temperature"] - T_ref), 0.0, 1.0)
+    T_ref = p["reference temperature"]
+    T_star = jnp.clip(
+        (T - T_ref) / (p["melt temperature"] - T_ref), 0.0, 1.0)
     thermal_softening = jnp.maximum(1.0 - offset_power(T_star, p["m"]), 0.0)
     return strain_hardening * rate_dependence * thermal_softening
 
 
 def peric_flow_stress(
-        alpha: JaxArray, alpha_dot: JaxArray, T: Scalar | None,
+        alpha: JaxArray, alpha_dot: JaxArray, T: Scalar,
         params: dict[str, Any],
         hardening_funs: dict[str, Callable[..., JaxArray]],
 ) -> JaxArray:
@@ -125,7 +121,7 @@ def consistency_yield_function(
     """
     def yield_function(
             phi: JaxArray, alpha: JaxArray, alpha_dot: JaxArray,
-            T: Scalar | None, params: dict[str, Any],
+            T: Scalar, params: dict[str, Any],
     ) -> JaxArray:
         return phi - flow_stress_fun(alpha, alpha_dot, T, params)
 

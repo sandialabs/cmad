@@ -17,6 +17,7 @@ from cmad.models.mechanics_model import MechanicsModel, require_def_type
 from cmad.models.temperature_dependent_parameters import (
     DEFAULT_REFERENCE_TEMPERATURE,
 )
+from cmad.models.thermal_expansion import elastic_deformation_gradient
 from cmad.models.var_types import (
     VarType,
     get_num_eqs,
@@ -24,7 +25,7 @@ from cmad.models.var_types import (
     get_vector_from_sym_tensor,
 )
 from cmad.parameters.parameters import Parameters
-from cmad.typing import JaxArray, StateList
+from cmad.typing import JaxArray, Scalar, StateList
 
 
 class Elastic(MechanicsModel):
@@ -110,15 +111,20 @@ class Elastic(MechanicsModel):
                            def_type=def_type,
                            elastic_stress=elastic_stress_fun,
                            shear_scale_factor=self.shear_scale_factor,
-                           resolve_parameters=self.resolve_parameters)
+                           resolve_parameters=self.resolve_parameters,
+                           compute_thermal_stretch=self.compute_thermal_stretch,
+                           finite_deformation=self.is_finite_deformation)
 
         cauchy = partial(self._cauchy_fn, def_type=def_type)
 
         if def_type == DefType.FULL_3D or def_type == DefType.PLANE_STRAIN:
-            cauchy_closed_form = partial(self._cauchy_closed_form_fn,
-                                         def_type=def_type,
-                                         elastic_stress=elastic_stress_fun,
-                                         resolve_parameters=self.resolve_parameters)
+            cauchy_closed_form = partial(
+                self._cauchy_closed_form_fn,
+                def_type=def_type,
+                elastic_stress=elastic_stress_fun,
+                resolve_parameters=self.resolve_parameters,
+                compute_thermal_stretch=self.compute_thermal_stretch,
+                finite_deformation=self.is_finite_deformation)
             super().__init__(residual, cauchy,
                              cauchy_closed_form_fun=cauchy_closed_form)
         else:
@@ -151,15 +157,19 @@ class Elastic(MechanicsModel):
             def_type: int, elastic_stress: Callable[..., JaxArray],
             shear_scale_factor: float,
             resolve_parameters: Callable[..., dict[str, Any]],
+            compute_thermal_stretch: Callable[..., Scalar],
+            finite_deformation: bool,
     ) -> JaxArray:
 
+        thermal_stretch = compute_thermal_stretch(params, U)
         params = resolve_parameters(params, U)
 
         # state variables for the model
         cauchy = get_sym_tensor_from_vector(xi[0], 3)
 
         # global state variables
-        F = gather_F(xi, U, def_type, 1)  # 3D deformation gradient
+        F = elastic_deformation_gradient(
+            gather_F(xi, U, def_type, 1), thermal_stretch, finite_deformation)
 
         # elastic residual
         C_elastic_cauchy_tensor = cauchy - elastic_stress(F, params)
@@ -203,8 +213,11 @@ class Elastic(MechanicsModel):
             def_type: int,
             elastic_stress: Callable[..., JaxArray],
             resolve_parameters: Callable[..., dict[str, Any]],
+            compute_thermal_stretch: Callable[..., Scalar],
+            finite_deformation: bool,
     ) -> JaxArray:
 
+        thermal_stretch = compute_thermal_stretch(params, U)
         params = resolve_parameters(params, U)
         grad_u = U.grad_fields["u"]
         if def_type == DefType.PLANE_STRAIN:
@@ -216,4 +229,6 @@ class Elastic(MechanicsModel):
                        jnp.c_[jnp.zeros((1, 2)), 1.0]]
         else:
             F = jnp.eye(3) + grad_u
-        return elastic_stress(F, params)
+        return elastic_stress(
+            elastic_deformation_gradient(F, thermal_stretch, finite_deformation),
+            params)

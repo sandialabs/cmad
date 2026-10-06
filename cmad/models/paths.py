@@ -9,18 +9,20 @@ from cmad.typing import JaxArray, Scalar
 def compute_yield_threshold(
         yield_tol: float, params: dict[str, Any],
         yield_function: Callable[..., JaxArray], shear_scale_factor: float,
+        reference_temperature: float,
 ) -> float:
     """Threshold on the yield function for :func:`cond_residual`.
 
     ``yield_tol`` is relative to the flow stress at the relation's
-    reference state (zero strain, zero rate, the reference temperature),
+    reference state (zero strain, zero rate, ``reference_temperature``),
     the negated yield function at zero stress, so a single number means
     the same thing across materials and unit systems. The models divide
     the yield function by ``shear_scale_factor``, so the threshold
     carries that factor too.
     """
     flow_params = params["plastic"]["flow stress"]
-    reference_flow_stress = -yield_function(0.0, 0.0, 0.0, None, flow_params)
+    reference_flow_stress = -yield_function(
+        0.0, 0.0, 0.0, reference_temperature, flow_params)
     return float(yield_tol * reference_flow_stress / shear_scale_factor)
 
 

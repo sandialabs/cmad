@@ -107,7 +107,7 @@ class TestResolver(unittest.TestCase):
         tree["elastic"]["E"] = _forms()["poly"]
         resolve = make_parameter_resolver(tree, 400.0)
         U = mp_U_from_F(np.eye(3), T=600.0)
-        self.assertEqual(float(temperature_at_point(U)), 600.0)
+        self.assertEqual(float(temperature_at_point(U, 400.0)), 600.0)
         values = resolve(tree, U)
         self.assertAlmostEqual(float(values["elastic"]["E"]), _C0 + _C1 * 600.0)
 
@@ -155,7 +155,7 @@ class TestModel(unittest.TestCase):
         self.assertIsInstance(U, GlobalFieldsAtPoint)
         self.assertEqual(U.fields["T"].shape, (1,))
         self.assertEqual(U.grad_fields["T"].shape, (1, 2))
-        self.assertIsNone(temperature_at_point(mp_U_from_F(np.eye(2))))
+        self.assertEqual(temperature_at_point(mp_U_from_F(np.eye(2)), 350.0), 350.0)
 
 
 if __name__ == "__main__":
