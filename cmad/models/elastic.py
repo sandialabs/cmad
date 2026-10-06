@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from functools import partial
-from typing import Any, ClassVar
+from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
@@ -33,8 +33,8 @@ class Elastic(MechanicsModel):
     General elastic model
     """
 
-    supports_closed_form: ClassVar[bool] = True
-    supports_mixed: ClassVar[bool] = True
+    supports_closed_form = True
+    supports_mixed = True
 
     _def_type: int
     _ndims: int
@@ -55,6 +55,10 @@ class Elastic(MechanicsModel):
         self.is_finite_deformation = stress_fun_is_finite(elastic_stress_fun)
 
         self._def_type = def_type
+        # the plane stress and uniaxial stress forms solve for stretches
+        # and have no closed form stress
+        self.supports_closed_form = def_type in (
+            DefType.FULL_3D, DefType.PLANE_STRAIN)
         ndims = def_type_ndims(def_type)
         self._ndims = ndims
 
@@ -148,6 +152,11 @@ class Elastic(MechanicsModel):
 
     def derived_output_field_names(self) -> list[str]:
         return ["cauchy"]
+
+    def state_output_fields(self) -> list[tuple[str, VarType]]:
+        """The stress state is written as the derived ``cauchy`` output, so
+        only the other local state (the stretches) is listed here."""
+        return super().state_output_fields()[1:]
 
     @staticmethod
     def _residual_fn(

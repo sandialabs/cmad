@@ -49,6 +49,7 @@ from cmad.fem.quadrature import (
 from cmad.fem.sharding import place_element_leaves
 from cmad.global_residuals.global_residual import GlobalResidual
 from cmad.global_residuals.modes import GlobalResidualMode
+from cmad.global_residuals.thermomechanics import Thermomechanics
 from cmad.io.calibration_data import CalibrationData, is_calibration_data
 from cmad.io.deck import apply_deck_defaults, load_deck
 from cmad.io.deformation import load_history, load_times
@@ -63,9 +64,14 @@ from cmad.io.registry import (
 )
 from cmad.io.schema import validate_deck
 from cmad.io.times import read_times
+from cmad.models.conduction import Conduction
 from cmad.models.deformation_types import DefType
 from cmad.models.mechanics_model import MechanicsModel
 from cmad.models.model import Model
+from cmad.models.temperature_dependent_parameters import (
+    DEFAULT_REFERENCE_TEMPERATURE,
+)
+from cmad.models.thermomechanics_model import ThermomechanicsModel
 from cmad.parameters.parameters import Parameters
 from cmad.qois.fe_qoi import FEQoI
 from cmad.qois.qoi import QoI
@@ -432,6 +438,10 @@ def build_fe_problem_from_sections(
     )
     local_section = resolved["residuals"]["local residual"]
     models_by_block = _build_models_by_block(local_section, mesh, def_type)
+    if isinstance(gr, Thermomechanics):
+        models_by_block = _compose_thermomechanics_models(
+            models_by_block, local_section,
+        )
     modes_by_block = {
         block: (
             GlobalResidualMode.CLOSED_FORM
@@ -460,6 +470,7 @@ def build_fe_problem_from_sections(
     U_init = _build_initial_condition(
         resolved.get("initial conditions"), gr, mesh, dof_map,
         float(t_schedule[0]),
+        local_section.get("reference temperature", DEFAULT_REFERENCE_TEMPERATURE),
     )
 
     neumann_bcs = _build_neumann_bcs(
@@ -644,6 +655,31 @@ def _build_models_by_block(
         )
         for block in materials
     }
+
+
+def _compose_thermomechanics_models(
+        models_by_block: dict[str, Model], local_section: dict[str, Any],
+) -> dict[str, Model]:
+    """Each block's mechanics model with a conduction model on the same
+    parameters, the pair the thermomechanics global residual binds to."""
+    composed: dict[str, Model] = {}
+    for block, model in models_by_block.items():
+        if not isinstance(model, MechanicsModel):
+            raise ValueError(
+                f"residuals.local residual.type: the thermomechanics global "
+                f"residual needs a mechanics model; got {type(model).__name__}",
+            )
+        if "thermal" not in model.parameters.values:
+            raise ValueError(
+                f"residuals.local residual.materials.{block}: the "
+                f"thermomechanics global residual needs a thermal subtree "
+                f"(conductivity, and density with specific heat for a "
+                f"transient heat problem)",
+            )
+        composed[block] = ThermomechanicsModel(
+            model, Conduction.from_deck(local_section, model.parameters, None),
+        )
+    return composed
 
 
 def _resolve_resid_idx(
@@ -980,21 +1016,27 @@ def _build_initial_condition(
         mesh: Mesh,
         dof_map: GlobalDofMap,
         t_init: float,
+        reference_temperature: float,
 ) -> NDArray[np.float64] | None:
     """The initial global vector from the ``initial conditions`` section,
-    or ``None`` when the section is absent (every field starts at zero).
+    or ``None`` when there is nothing to set (every field starts at zero).
 
     Entries are keyed by the field's var name: one number or expression
     for a scalar field, a list of one per component for a vector field.
     An expression may use ``x``, ``y``, ``z``, and ``t``, as a boundary
     condition expression does; the field's basis coefficients take its
     values at their coordinates (:func:`cmad.fem.dof.dof_physical_coords`)
-    at ``t_init``. A field without an entry stays zero.
+    at ``t_init``. A field without an entry stays zero, except the
+    temperature ``T``, which starts at ``reference_temperature``.
     """
-    if not ic_section:
+    ic_section = ic_section or {}
+    var_names = [str(name) for name in gr.var_names]
+    if not ic_section and "T" not in var_names:
         return None
     U_init = np.zeros(dof_map.num_total_dofs, dtype=np.float64)
-    var_names = [str(name) for name in gr.var_names]
+    if "T" in var_names and "T" not in ic_section:
+        _, eq = dof_physical_coords(mesh, dof_map, "T")
+        U_init[eq[:, 0]] = reference_temperature
     for field_name, entry in ic_section.items():
         where = f"initial conditions.{field_name}"
         if field_name not in var_names:

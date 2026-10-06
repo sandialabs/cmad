@@ -1,7 +1,7 @@
 """Heat conduction: Fourier's flux and the heat capacity."""
 from collections.abc import Callable
 from functools import partial
-from typing import Any, ClassVar
+from typing import Any
 
 from jax import numpy as jnp
 
@@ -27,7 +27,7 @@ class Conduction(ThermalModel):
     rate term is zero and the problem is steady.
     """
 
-    supports_closed_form: ClassVar[bool] = True
+    supports_closed_form = True
 
     def __init__(
             self, parameters: Parameters,

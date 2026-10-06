@@ -25,7 +25,7 @@ pressure by ``κ(T)/κ(T_prev)``.
 """
 from collections.abc import Callable
 from functools import partial
-from typing import Any, ClassVar, cast
+from typing import Any, cast
 
 import jax.numpy as jnp
 import numpy as np
@@ -319,7 +319,7 @@ class RateElasticPlastic(MechanicsModel):
     Plastic: Modular effective stress and hardening
     """
 
-    supports_mixed: ClassVar[bool] = True
+    supports_mixed = True
 
     _def_type: int
     _ndims: int

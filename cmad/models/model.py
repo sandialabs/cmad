@@ -36,9 +36,9 @@ class Model(ABC):
     :class:`cmad.models.mechanics_model.MechanicsModel`.
     """
 
-    # ---- class configuration (subclasses may override) ----
-    supports_closed_form: ClassVar[bool] = False
-    supports_mixed: ClassVar[bool] = False
+    # ---- class configuration (subclasses may override, per instance too) ----
+    supports_closed_form: bool = False
+    supports_mixed: bool = False
     initial_guess_fn: Callable[..., StateList] | None = None
 
     # ---- attributes the subclass must set before super().__init__() ----
