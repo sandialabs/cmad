@@ -153,12 +153,17 @@ def energy_balance(
     ``N rho c (T - T_prev) / dt - grad_N . q`` times ``w dv``, with the
     heat capacity rate and the heat flux ``q`` from the model
     (closed-form or from the local state per ``mode``). A model with a
-    ``face_flux`` adds ``N 2 face_flux`` over the area element
+    ``heat_generation`` subtracts ``N heat_generation`` times ``w dv``.
+    A model with a ``face_flux`` adds ``N 2 face_flux`` over the area element
     ``w dv / thickness``, the heat leaving both faces of a plate modeled
     in its plane."""
     q = _heat_flux_by_mode(xi, xi_prev, params, U_ip, U_ip_prev, model, mode)
     c_rate = model.heat_capacity_rate(params, U_ip, U_ip_prev, step_time)
     R = (shapes_T.N * c_rate - shapes_T.grad_N @ q) * w * dv
+    if model.heat_generation is not None:
+        R = R - shapes_T.N * (
+            model.heat_generation(
+                xi, xi_prev, params, U_ip, U_ip_prev, step_time) * w * dv)
     if model.face_flux is not None:
         assert thickness is not None
         R = R + shapes_T.N * (
